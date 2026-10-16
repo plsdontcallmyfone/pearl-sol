@@ -1,0 +1,17 @@
+[package]
+name = "escrow-litesvm-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "In-process LiteSVM tests for the agent-chain escrow program (no validator, no ports)"
+
+# Standalone: not a member of the agent/ Anchor workspace.
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+litesvm = "0.6.1"
+solana-sdk = "2.2"
+anchor-lang = "0.31.1"
+escrow = { path = "../../programs/escrow", features = ["no-entrypoint"] }
