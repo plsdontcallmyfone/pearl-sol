@@ -38,7 +38,16 @@ allows running as many agents as needed.
 - [x] Anchor workspaces scaffolded: token/ (reserve, bridge) and agent/ (escrow,
       agents, jobs, mining). Program keypairs + payer in keys/localnet/ (committed,
       localnet only). Anchor.toml points at :10600 / :10630 and the local payer.
-- [ ] M1 localnet build
+- [ ] M1 localnet build: four build agents started 2026-10-16, each owning paths
+      and committing only its own files (see CLAUDE.md "Who is working on what"):
+      1. bridge: token/programs/bridge, agent/programs/escrow, services/relayer (:10660)
+      2. reserve: token/programs/reserve, services/crank, fixtures/pump, scripts/pump-fixtures.sh
+      3. pearl: crates/pearl-job (+ `pearl-job` CLI), services/miner, services/attester (:10661)
+      4. market: agent/programs/{agents,jobs,mining}, services/agent-cli
+      Program tests run in LiteSVM (no ports). Not yet built: scripts/demo.sh, the
+      real-validator end to end run (SPEC 5, M1 step 4); that is the orchestrator's
+      integration step once all four report. If a session dies mid-build, check
+      `git log` and each scope's files to see which workstreams landed.
 
 ## Research results so far
 
@@ -98,7 +107,8 @@ allows running as many agents as needed.
 
 ## Next step
 
-Build M1 (SPEC section 5) with parallel agents, one per workstream.
+Wait for the four build agents, review their reports, then write scripts/demo.sh
+and run the full M1 flow on the two real localnet validators.
 
 ## Gotchas
 
