@@ -27,9 +27,17 @@ up() {
   for p in $RPC $((RPC+1)) $FAUCET $GOSSIP; do
     if lsof -ti :"$p" >/dev/null 2>&1; then echo "port $p is taken, refusing" >&2; exit 1; fi
   done
+  local extra=()
+  if [[ $c == token ]]; then
+    # pump.fun programs + mainnet accounts pinned by scripts/pump-fixtures.sh
+    local fx="$ROOT/fixtures/pump/validator-args.txt"
+    [[ -f $fx ]] || { echo "missing $fx, run scripts/pump-fixtures.sh" >&2; exit 1; }
+    # shellcheck disable=SC2207
+    extra=($(sed "s#fixtures/#$ROOT/fixtures/#g" "$fx"))
+  fi
   solana-test-validator --ledger "$RUN/$c-ledger" --reset --quiet \
     --bind-address 127.0.0.1 --rpc-port "$RPC" --faucet-port "$FAUCET" \
-    --gossip-port "$GOSSIP" --dynamic-port-range "$DYN" "$@" \
+    --gossip-port "$GOSSIP" --dynamic-port-range "$DYN" ${extra[@]+"${extra[@]}"} "$@" \
     >"$RUN/$c.log" 2>&1 &
   echo $! >"$pidf"
   for _ in $(seq 60); do

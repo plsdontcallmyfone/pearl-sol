@@ -1,0 +1,2 @@
+Dumped from Solana mainnet at slot 457802307 on 2026-10-16T22:22:38Z by scripts/pump-fixtures.sh.
+Programs have their programdata zero padding stripped. Accounts skipped (absent on mainnet): 0.
