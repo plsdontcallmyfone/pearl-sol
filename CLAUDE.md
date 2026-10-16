@@ -34,3 +34,5 @@ explicitly; never touch `solana config`.
 | Who | Started | Scope |
 |-----|---------|-------|
 | Claude session f2b59a9f (orchestrator) | 2026-10-16 | SPEC.md, repo layout, M1 localnet coordination |
+| Research subagent (chain/bridge) | 2026-10-16 | research/NOTES-chain-bridge.md only |
+| Claude subagent (pump research) | 2026-10-16 | research/NOTES-pump.md only (read-only web + mainnet RPC research) |

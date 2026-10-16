@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Two independent local SVM clusters:
+#   token  = Solana stand-in (pump.fun, mining reserve, bridge lock side)
+#   agent  = our agent chain (jobs, mining, bridge mint side)
+# Usage: scripts/localnet.sh up|down|status [token|agent]   (default: both)
+# Kills by the PID this script recorded, never by pattern.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUN="$ROOT/.ledger"
+mkdir -p "$RUN"
+
+ports() {
+  case "$1" in
+    token) RPC=10600 FAUCET=10602 GOSSIP=10603 DYN=10604-10629 ;;
+    agent) RPC=10630 FAUCET=10632 GOSSIP=10633 DYN=10634-10659 ;;
+    *) echo "unknown chain $1" >&2; exit 1 ;;
+  esac
+}
+
+up() {
+  local c=$1; shift
+  ports "$c"
+  local pidf="$RUN/$c.pid"
+  if [[ -f $pidf ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
+    echo "$c already up (pid $(cat "$pidf"))"; return
+  fi
+  for p in $RPC $((RPC+1)) $FAUCET $GOSSIP; do
+    if lsof -ti :"$p" >/dev/null 2>&1; then echo "port $p is taken, refusing" >&2; exit 1; fi
+  done
+  solana-test-validator --ledger "$RUN/$c-ledger" --reset --quiet \
+    --bind-address 127.0.0.1 --rpc-port "$RPC" --faucet-port "$FAUCET" \
+    --gossip-port "$GOSSIP" --dynamic-port-range "$DYN" "$@" \
+    >"$RUN/$c.log" 2>&1 &
+  echo $! >"$pidf"
+  for _ in $(seq 60); do
+    solana -u "http://127.0.0.1:$RPC" cluster-version >/dev/null 2>&1 && { echo "$c up on :$RPC (pid $(cat "$pidf"))"; return; }
+    sleep 1
+  done
+  echo "$c failed to start, see $RUN/$c.log" >&2; exit 1
+}
+
+down() {
+  local pidf="$RUN/$1.pid"
+  [[ -f $pidf ]] || { echo "$1 not running"; return; }
+  local pid; pid=$(cat "$pidf")
+  if ps -p "$pid" -o command= 2>/dev/null | grep -q "$RUN/$1-ledger"; then
+    kill "$pid" && echo "$1 stopped (pid $pid)"
+  else
+    echo "$1: pid $pid is not our validator, leaving it"
+  fi
+  rm -f "$pidf"
+}
+
+status() { ports "$1"; printf '%s :%s ' "$1" "$RPC"; solana -u "http://127.0.0.1:$RPC" cluster-version 2>/dev/null || echo down; }
+
+cmd=${1:-status}; shift || true
+chains=${1:-"token agent"}; shift || true
+for c in $chains; do
+  case $cmd in
+    up) up "$c" "$@" ;;
+    down) down "$c" ;;
+    status) status "$c" ;;
+  esac
+done
