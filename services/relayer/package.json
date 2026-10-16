@@ -1,0 +1,22 @@
+{
+  "name": "@pearl-sol/relayer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "pearl-sol bridge relayer: token chain (Solana) <-> agent chain (own SVM). SPEC 2.3, 3.1, 4.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "cli": "node src/cli.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.99.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "litesvm": "0.3.3",
+    "typescript": "5.7.3"
+  }
+}
