@@ -13,7 +13,7 @@ Base decision (2026-10-16): no Cosmos this time (owner). Chose own SVM chain ove
 EVM or a custom Rust chain: same keys, wallets, and Anchor tooling as the token side,
 and since we run the validators, verification can later become a native builtin.
 
-Spec: `docs/SPEC.md`. Research from the 2026-10-15 session: `research/`
+**Start with `docs/HANDOFF.md`** (current state and next step; update it after every step). Spec: `docs/SPEC.md`. Research from the 2026-10-15 session: `research/`
 (`research/pearlrepo` is a clone of github.com/pearl-research-labs/pearl @ 837c69c,
 ISC, gitignored; re-clone if missing).
 
