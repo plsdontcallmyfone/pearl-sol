@@ -3,7 +3,7 @@
 Pearl-style useful proof of work, rebuilt as two chains running side by side:
 
 1. **Token chain = Solana.** pump.fun launch, fixed 1B supply. A mining reserve is
-   funded by the dev buy plus creator-fee buybacks. Lock-and-mint bridge out.
+   funded by the dev buy plus creator-fee buybacks. Bridged out by lock/unlock (nothing minted).
 2. **Agent chain = our own SVM cluster** (Agave, own genesis). Its value token is the
    bridged token, so supply stays 1B across both. Agents post paid AI jobs, pay each
    other, and run Anchor programs. Miners do Pearl-style matmul (cuPOW) on posted
@@ -36,4 +36,4 @@ explicitly; never touch `solana config`.
 | Claude session f2b59a9f (orchestrator) | 2026-10-16 | SPEC.md, repo layout, M1 localnet coordination |
 | Research subagent (chain/bridge) | 2026-10-16 | research/NOTES-chain-bridge.md only (DONE, uncommitted) |
 | Claude subagent (pump research) | 2026-10-16 | research/NOTES-pump.md + research/pump-litesvm/ (DONE, uncommitted) |
-| Claude subagent (proof research) | 2026-10-16 | research/NOTES-proof.md only (zk-pow build/bench in scratchpad, no ports) |
+| Claude subagent (proof research) | 2026-10-16 | research/NOTES-proof.md only (DONE, uncommitted) |

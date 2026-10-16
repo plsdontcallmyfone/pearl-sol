@@ -8,3 +8,5 @@ test-ledger/
 .env
 **/*-keypair.json
 !keys/README.md
+# localnet-only throwaway keys are committed so program IDs stay stable
+!keys/localnet/*-keypair.json

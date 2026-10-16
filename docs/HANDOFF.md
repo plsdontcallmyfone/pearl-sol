@@ -30,11 +30,14 @@ allows running as many agents as needed.
 - [x] scripts/localnet.sh up|down|status: two validators, token :10600 and
       agent :10630, both verified (commit 9005000)
 - [ ] Research agents (started 2026-10-16), writing into research/:
-      NOTES-proof.md (Pearl proof internals, SVM verify cost, binding a proof to a job),
+      NOTES-proof.md (DONE, summarised below),
       NOTES-pump.md (DONE, summarised below),
       NOTES-chain-bridge.md (DONE, summarised below).
       If a file is missing, that agent did not finish: rerun its topic.
-- [ ] docs/SPEC.md: programs, bridge flow, emission formula, milestones
+- [x] docs/SPEC.md v1 (programs, bridge flow, emission, signed message formats, M1-M3)
+- [x] Anchor workspaces scaffolded: token/ (reserve, bridge) and agent/ (escrow,
+      agents, jobs, mining). Program keypairs + payer in keys/localnet/ (committed,
+      localnet only). Anchor.toml points at :10600 / :10630 and the local payer.
 - [ ] M1 localnet build
 
 ## Research results so far
@@ -83,9 +86,19 @@ allows running as many agents as needed.
     ports, do not run as-is). NOTES-pump.md has a solana-test-validator clone
     command for our 10600 block (written, not yet run).
 
+- Proof (research/NOTES-proof.md, DONE):
+  - Pearl ZK proof: 59.5 KB, verify 10-15 ms native, far over 1.4M CU on chain.
+  - Plain (non-ZK) tile proof: about 13 KB at the smallest tile, 0.36 ms native,
+    about 1.3-1.9M CU in SBF (split into 2 instructions, or add a BLAKE3 syscall
+    in our fork for about 300-400k CU).
+  - Job binding needs no circuit change: the 76-byte header is built from the
+    job account; a miner-bound seed variant mixes in the miner pubkey.
+  - CPU miner: zk-pow/src/ffi/mine.rs try_mine_one; difficulty 0x1d020000 is
+    about 1 s per win on CPU. Pearl emission reference: 2.1B cap, C = 650,226.
+
 ## Next step
 
-Read the three NOTES files, write docs/SPEC.md, then build M1.
+Build M1 (SPEC section 5) with parallel agents, one per workstream.
 
 ## Gotchas
 
