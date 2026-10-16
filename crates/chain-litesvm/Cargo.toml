@@ -1,0 +1,33 @@
+[package]
+name = "pearl-chain-litesvm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "End-to-end check of pearl-chain's hand-built transactions against the real jobs/mining programs in LiteSVM"
+
+# Standalone, excluded from the crates/ workspace (heavy solana deps). Loads the built
+# programs from agent/target/deploy (run `anchor build` in agent/ first).
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+litesvm = "0.6.1"
+solana-sdk = "2.2"
+bincode = "1.3"
+anchor-lang = "0.31.1"
+jobs = { path = "../../agent/programs/jobs", features = ["no-entrypoint"] }
+mining = { path = "../../agent/programs/mining", features = ["no-entrypoint"] }
+pearl-job = { path = "../pearl-job" }
+pearl-chain = { path = "../pearl-chain" }
+pearl-attester = { path = "../../services/attester" }
+ed25519-dalek = "2.2"
+serde_json = "1"
+base64 = "0.22"
+hex = "0.4"
+bs58 = "0.5"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3

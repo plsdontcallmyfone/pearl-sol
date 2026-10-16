@@ -39,6 +39,6 @@ explicitly; never touch `solana config`.
 | Claude subagent (proof research) | 2026-10-16 | research/NOTES-proof.md only (DONE, uncommitted) |
 | Claude subagent (bridge/escrow/relayer) | 2026-10-16 | token/programs/bridge, agent/programs/escrow, services/relayer, token/tests/bridge*, agent/tests/escrow* (IN PROGRESS) |
 | Claude subagent (reserve) | 2026-10-16 | token/programs/reserve, token/tests/reserve*, services/crank, fixtures/pump/, scripts/pump-fixtures.sh, token branch of scripts/localnet.sh (DONE) |
-| Claude subagent (proof crates) | 2026-10-16 | crates/ (pearl-job), services/miner, services/attester (IN PROGRESS) |
+| Claude subagent (proof crates) | 2026-10-16 | crates/ (pearl-job, pearl-chain, chain-litesvm), services/miner, services/attester, keys/localnet/{attester,miner}-keypair.json (DONE, committed) |
 | Claude subagent (market) | 2026-10-16 | agent/programs/{agents,jobs,mining}, agent/tests/{agents,jobs,mining}*, services/agent-cli (DONE, committed) |
 | Claude subagent (bridge/escrow/relayer) | 2026-10-16 | token/programs/bridge, agent/programs/escrow, services/relayer, token/tests/bridge*, agent/tests/escrow* (DONE) |

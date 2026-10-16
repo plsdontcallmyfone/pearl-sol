@@ -1,0 +1,45 @@
+# pearl-sol native Rust workspace (separate from the Anchor workspaces in token/ and agent/).
+[workspace]
+resolver = "2"
+members = [
+    "pearl-job",
+    "pearl-chain",
+    "../services/miner",
+    "../services/attester",
+]
+# Standalone (own [workspace]): pulls solana-sdk + LiteSVM, so it stays out of the main build.
+exclude = ["chain-litesvm"]
+
+[workspace.package]
+edition = "2021"
+license = "ISC"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
+primitive-types = { version = "0.12", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+bs58 = "0.5"
+base64 = "0.22"
+rand = "0.9"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+curve25519-dalek = "4.1"
+sha2 = "0.10"
+ureq = { version = "2", default-features = false, features = ["json"] }
+tiny_http = "0.12"
+pearl-job = { path = "pearl-job" }
+pearl-chain = { path = "pearl-chain" }
+
+# Naive int matmul is slow unoptimised; tests run at localnet difficulty.
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+[profile.test]
+opt-level = 3
+[profile.release]
+opt-level = 3

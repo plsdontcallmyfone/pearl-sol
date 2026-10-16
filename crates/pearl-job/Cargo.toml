@@ -1,0 +1,25 @@
+[package]
+name = "pearl-job"
+description = "Job-bound Pearl plain proofs: commitments, CPU share mining, native verify, Freivalds"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "pearl_job"
+
+[[bin]]
+name = "pearl-job"
+path = "src/bin/pearl-job.rs"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+primitive-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+rand.workspace = true
+clap.workspace = true
+base64.workspace = true

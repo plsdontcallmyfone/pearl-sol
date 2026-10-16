@@ -1,0 +1,19 @@
+[package]
+name = "pearl-chain"
+description = "Thin agent-chain access for pearl-sol services: JSON-RPC, legacy tx building, jobs/mining account layouts"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+base64.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+curve25519-dalek.workspace = true
+ureq.workspace = true
+pearl-job.workspace = true
