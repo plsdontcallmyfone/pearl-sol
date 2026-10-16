@@ -76,6 +76,12 @@ allows running as many agents as needed.
       integration step once all four report. If a session dies mid-build, check
       `git log` and each scope's files to see which workstreams landed.
 
+- [x] Integration step 1: `scripts/localnet.sh up` now loads our built programs
+      at genesis (reserve, bridge on token; escrow, agents, jobs, mining on agent;
+      upgrade authority = localnet payer) and preloads the escrow with 1e18
+      lamports. Verified: all 6 programs executable, escrow balance 1B. Both
+      workspaces build (`anchor build` in token/ and agent/).
+
 ## Research results so far
 
 - Chain/bridge (research/NOTES-chain-bridge.md, DONE):

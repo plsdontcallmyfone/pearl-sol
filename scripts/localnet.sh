@@ -34,7 +34,19 @@ up() {
     [[ -f $fx ]] || { echo "missing $fx, run scripts/pump-fixtures.sh" >&2; exit 1; }
     # shellcheck disable=SC2207
     extra=($(sed "s#fixtures/#$ROOT/fixtures/#g" "$fx"))
+  else
+    # agent chain: the whole 1e18-lamport supply sits in the bridge escrow PDA
+    extra=(--account GoszXkVtKwDgZSEWNjdPwuJ2eJGtohz6bCvnthNd5n5U
+      "$ROOT/services/relayer/fixtures/escrow-account.json")
   fi
+  # our programs at genesis, if built (upgrade authority = localnet payer)
+  local payer; payer=$(solana-keygen pubkey "$ROOT/keys/localnet/payer-keypair.json")
+  local progs; [[ $c == token ]] && progs="reserve bridge" || progs="escrow agents jobs mining"
+  for p in $progs; do
+    local so="$ROOT/$c/target/deploy/$p.so"
+    [[ -f $so ]] || { echo "note: $so not built, skipping" >&2; continue; }
+    extra+=(--upgradeable-program "$(solana-keygen pubkey "$ROOT/keys/localnet/$p-keypair.json")" "$so" "$payer")
+  done
   solana-test-validator --ledger "$RUN/$c-ledger" --reset --quiet \
     --bind-address 127.0.0.1 --rpc-port "$RPC" --faucet-port "$FAUCET" \
     --gossip-port "$GOSSIP" --dynamic-port-range "$DYN" ${extra[@]+"${extra[@]}"} "$@" \
