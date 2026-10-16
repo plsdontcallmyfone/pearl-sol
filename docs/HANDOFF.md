@@ -44,6 +44,13 @@ allows running as many agents as needed.
       2. reserve: token/programs/reserve, services/crank, fixtures/pump, scripts/pump-fixtures.sh
       3. pearl: crates/pearl-job (+ `pearl-job` CLI), services/miner, services/attester (:10661)
       4. market: agent/programs/{agents,jobs,mining}, services/agent-cli
+         DONE (2286ea7): 8 unit + 18 LiteSVM tests pass; submit_share 31-43k CU.
+         Deviations to fold into SPEC: poster picks created_slot (within
+         max_slot_lag 150); alpha x P cap is per job lifetime, not per epoch;
+         jobs has its own evaluator set (init sets both); permissionless
+         advance_epoch; claim is per job; pool tracks `outstanding`; terms_hash
+         = sha256("pearl-sol:terms:v1" || poster || job_id || m || n || k || W ||
+         P || deadline_slot || share_target). agent-cli not yet run on a validator.
       Program tests run in LiteSVM (no ports). Not yet built: scripts/demo.sh, the
       real-validator end to end run (SPEC 5, M1 step 4); that is the orchestrator's
       integration step once all four report. If a session dies mid-build, check
