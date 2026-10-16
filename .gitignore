@@ -1,0 +1,10 @@
+research/pearlrepo/
+target/
+node_modules/
+.anchor/
+test-ledger/
+.ledger/
+*.log
+.env
+**/*-keypair.json
+!keys/README.md

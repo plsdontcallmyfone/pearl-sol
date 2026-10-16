@@ -1,0 +1,67 @@
+Pearl Research Labs
+  URL: https://pearlresearch.ai/
+  # Making InferenceSmarter
+## Our Services
+```
+1import os
+2
+3from openai import OpenAI
+4
+5client = OpenAI(
+6    base_url="https://inference.pearlresearch.ai/v1",
+7    api_key=os.environ["PEARL_API_KEY"],
+8)
+9
+10completion = client.chat.completions.create(
+11    model="deepseek-ai/DeepSeek-V4-Pro-0813",
+12    messages=[{\
+13        "role": "user",\
+14        "content": "Explain proof of useful work.",\
+15    }],
+16)
+17
+18print(completion.choices[0].message.content)
+```
+
+Together AI and Pearl Research Labs Team Up to Reduce the Cost of AI ...
+  URL: https://www.together.ai/blog/together-ai-partners-with-pearl-research-labs
+  This protocol uses Proof of Useful Work to harness the computation of inference and training workloads to secure a blockchain and mine a new ...
+
+Pearl Research Labs (@prlnet) / X
+  URL: https://x.com/prlnet?lang=en
+  # Pearl Research Labs (@prlnet)
+- Verified: yes
+
+New AI-compute cryptocurrency Pearl sparks a GPU mining rush but ...
+  URL: https://finance.yahoo.com/markets/crypto/articles/ai-compute-cryptocurrency-pearl-sparks-124000702.html
+  # New AI-compute cryptocurrency Pearl sparks a GPU mining rush but profitability is already sliding — RTX 5090 daily revenue has halved to $17.19 since April
+By Pearl's own research, computation is useful only if someone pays for the result, which makes most of the current mining AI-shaped proof-of-work.
+
+Proof of Useful Work - Pearl Research Labs
+  URL: https://pearlresearch.ai/research/blog/proof-of-useful-work
+  A technical introduction to Proof-of-Useful-Work. How matrix multiplications can secure a blockchain while doing the work AI customers already pay for.
+
+Pearl (PRL): The AI-Compute Cryptocurrency, Explained
+  URL: https://hashrateindex.com/blog/pearl-prl-ai-compute-cryptocurrency/
+  ## **Who Built Pearl and How It Launched**
+Pearl Research Labs is led by co-founder and CEO Omri Weinstein, a complexity theorist with a Princeton PhD, a stint in Columbia's theoretical computer science group, and a current post at the Hebrew University, plus industry time he lists as ex-Nvidia and ex-Vast Data.
+
+## **What Pearl Means for Miners (and Whether It Lasts)**
+Pearl is the most credible attempt yet to make proof-of-work useful.
+
+An Empirical Study of Pearl's cuPOW Protocol - arXiv
+  URL: https://arxiv.org/html/2606.04819v2
+  We present an empirical measurement study of Pearl's Proof-of-Useful-Work protocol on mainnet. Our measurements show that the dominant ...
+
+Network · Pearl Research Labs
+  URL: https://pearlresearch.ai/network
+  The Pearl network: a Bitcoin-style Layer 1 whose proof of work is real AI computation. The whitepaper, the research behind Proof-of-Useful-Work, and answers to ...
+
+GitHub - pearl-research-labs/pearl: Monorepo for the Pearl network
+  URL: https://github.com/pearl-research-labs/pearl
+  14 hours ago · Pearl is an L1 blockchain based on the Proof-of-Useful-Work protocol, where mining is done as a by-product of arbitrary matrix ...
+  Category: github
+
+Pearl - Proof of Useful Work for AI Compute - Alea Research
+  URL: https://alearesearch.substack.com/p/pearl-proof-of-useful-work-for-ai
+  Pearl is a Bitcoin-style L1 that replaces SHA-256 hashing with matrix multiplication as its proof of work function, using block rewards, ...

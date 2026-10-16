@@ -1,0 +1,61 @@
+Omri Weinstein on X: "A milestone for Pearl Research Labs: our first major ...
+  URL: https://x.com/WeinsteinOmri/status/2055338344750661833
+  A milestone for Pearl Research Labs: our first major enterprise partnership is live with Together AI. @togethercompute's inference platform ...
+
+Pearl Research Labs
+  URL: https://pearlresearch.ai/
+  # Making InferenceSmarter
+## Our Services
+```
+1import os
+2
+3from openai import OpenAI
+4
+5client = OpenAI(
+6    base_url="https://inference.pearlresearch.ai/v1",
+7    api_key=os.environ["PEARL_API_KEY"],
+8)
+9
+10completion = client.chat.completions.create(
+11    model="deepseek-ai/DeepSeek-V4-Pro-0813",
+12    messages=[{\
+13        "role": "user",\
+14        "content": "Explain proof of useful work.",\
+15    }],
+16)
+17
+18print(completion.choices[0].message.content)
+```
+
+Together AI and Pearl Research Labs Team Up to Reduce the Cost of AI ...
+  URL: https://www.together.ai/blog/together-ai-partners-with-pearl-research-labs
+  Pearl changes the unit economics of AI, by allowing every GPU cycle powering AI training and inference to simultaneously produce a native proof- ...
+
+[PDF] Pearl Floating Point Scheme Specification
+  URL: https://pearlresearch.ai/Pearl_Whitepaper.pdf
+  The starting point of this document is the PoUW of Komargodski and Weinstein [4] low-rank noise derived from a public seed,
+
+New AI-compute cryptocurrency Pearl sparks a GPU mining rush but ...
+  URL: https://finance.yahoo.com/markets/crypto/articles/ai-compute-cryptocurrency-pearl-sparks-124000702.html
+  "Pearl changes the unit economics of AI," said Omri Weinstein, co-founder and CEO of Pearl Research Labs, in the announcement. Mining is ...
+
+Pearl (PRL): The AI-Compute Cryptocurrency, Explained
+  URL: https://hashrateindex.com/blog/pearl-prl-ai-compute-cryptocurrency/
+  Weinstein's framing is that Pearl "changes the unit economics of AI" by letting every GPU cycle spent on training or inference simultaneously ...
+
+An Empirical Study of Pearl's cuPOW Protocol - arXiv
+  URL: https://arxiv.org/html/2606.04819v2
+  Pearl implements the cuPOW protocol proposed by Komargodski and Weinstein. Pearl's mainnet launch (approximately March 2026). a 38% average ...
+
+GitHub - pearl-research-labs/pearl: Monorepo for the Pearl network
+  URL: https://github.com/pearl-research-labs/pearl
+  14 hours ago · Follow the prompts to set a passphrase and record your seed. Then start the wallet and generate a Taproot mining address: ./bin/oyster -u ...
+  Category: github
+
+Redefining the unit economics of AI - Pearl Research Labs
+  URL: https://pearlresearch.ai/about/vision
+  Beyond money, Pearl introduces a new trust layer for AI systems, intertwined with compute itself, enabling a new class of applications on the network.
+
+Pearl Research (PRL): The “Bitcoin of AI Compute” - Compr - KuCoin
+  URL: https://www.kucoin.com/news/insight/PRL/6a1837a357e8dc00078b3caf
+  The project is developed by Pearl Research Labs, backed by strong mathematical foundations from researchers including Omri Weinstein (ex-NVIDIA, ...

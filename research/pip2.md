@@ -1,0 +1,285 @@
+---
+pip: 2
+title: Grouped-GEMM Proof-of-Useful-Work for Mixture-of-Experts
+description: Adds a version 2 Pearl PoUW certificate for routed grouped matrix multiplications used by Mixture-of-Experts workloads.
+author: Pearl Team
+status: Final
+type: Standards Track
+category: Consensus
+created: 2026-06-01
+---
+
+## Abstract
+
+This PIP specifies a version 2 Pearl Proof-of-Useful-Work (PoUW) certificate for grouped general matrix multiplication (Grouped-GEMM) workloads, with Mixture-of-Experts (MoE) architectures as the primary motivating case.
+
+In the [version 1 Pearl PoUW protocol](https://pearlresearch.ai/), a miner commits to two matrices, derives low-rank noise from the commitments and chain state, executes a noised tiled matrix multiplication, opens a winning tile, and supplies a succinct zero-knowledge proof that the opened computation is consistent with the commitments and satisfies the proof-of-work target. This works well when the useful computation is naturally represented as one large matrix multiplication. In MoE layers, the input activation matrix is naturally viewed row-wise, with each row corresponding to a token. A router assigns each token to several experts, so the useful work becomes a grouped collection of smaller expert matrix multiplications, rather than one dense multiplication. Treating each expert multiplication as an independent version 1 PoUW instance repeats commitment hashing, noise generation, and peeling work over the same activation data.
+
+This PIP introduces a V2 certificate format that lowers mining overhead for MoE miners. The miner commits once to a global activation matrix, once to the stacked expert-weight matrix, and once to the routing table. The miner then performs a Pearl-style noised Grouped-GEMM over expert-local activation batches and contiguous expert-weight slices. The verifier checks the usual Pearl PoUW tile-opening relation, with the additional requirement that the opened expert-local rows are consistent with the committed routing table and the committed global activation matrix. A dense MatMul is a special case of Grouped-GEMM, and can therefore be proven using a V2 certificate with virtually the same overhead. However, the V1 and V2 certificate details differ, so a winning dense-MatMul witness under V1 is generally not a winning Grouped-GEMM witness under V2.
+
+## Motivation
+
+Pearl's base PoUW protocol is designed around matrix multiplication: the useful computation is a product `A * B`, while the mining work is extracted from the execution trace of a noised tiled multiplication of committed inputs. The protocol adds low-rank noise to make each tile computationally hard and fair, collects intermediate states to obtain lottery tickets, and peels the noise to recover the useful product. The costs of commitment hashing, noising, tile hashing, and peeling are amortized by the size of the underlying GEMM.
+
+MoE workloads break this amortization pattern. A batch of `M` tokens is routed to experts, and each expert receives only the subset of tokens assigned to it. If there are `n_E` experts and each token is routed to `top_k` experts, then the average number of tokens per expert is `M * top_k / n_E`.
+
+A naive adaptation of Pearl PoUW would run the V1 protocol separately for each expert-local multiplication `A_e * W_e`, where `A_e` is the matrix of activations routed to expert `e`, and `W_e` is the expert's weight matrix. Because each expert-local multiplication has a smaller effective row dimension than the full dense batch, overheads that are negligible for a large GEMM can become visible.
+
+This PIP preserves the security and lottery semantics of Pearl PoUW while matching the execution pattern of MoE workloads: grouped matrix multiplications.
+
+## Algorithmic Overview
+
+Running the V1 protocol independently for each expert-local multiplication repeats work that is naturally shared in an MoE grouped-GEMM workload:
+
+1. **Repeated activation commitment.** The same token activation may be routed to several experts. In the naive construction, that activation is hashed repeatedly as part of multiple expert-local matrices.
+2. **Repeated activation noising.** Each expert-local `A_e` is noised as a separate input matrix, even though its rows are gathered from a single global activation matrix.
+3. **Repeated peeling against shared activations.** Peeling terms involving the activation matrix are recomputed for the same activation rows across multiple expert-weight matrices.
+
+The V2 protocol keeps the version 1 Pearl PoUW structure, but changes the order in which noising, routing, and peeling are applied. V2 treats the MoE computation as one routed grouped-GEMM instance, rather than as many independent GEMM instances.
+
+At preprocessing time, once per relevant blockchain update, the miner commits to the expert weights as one horizontally stacked matrix
+
+```
+W = [W_1 || W_2 || ... || W_{n_E}]
+```
+
+and derives the weight-side noise factors `E_WL` and `E_WR`, as well as the noised weight matrix `W' = W + E_WL E_WR`. Since each expert `W_e` is a contiguous slice of `W`, the same left noise factor `E_WL` is shared across all experts.
+
+The miner then commits once to the global activation matrix `A`. This single commitment is used to derive the activation-side noising `E_AL, E_AR` before routing. Logically, it first forms the noised global activation matrix and only then gathers expert-local batches from the already-noised rows:
+
+```
+A'   := A + E_AL E_AR
+A'_e := GatherRows(A', route[e])
+```
+
+This means that if the same token is used by several experts, its activation row is noised once and reused across the corresponding expert-local products.
+
+Finally, the miner peels the noised result. In V1 the denoising terms are:
+
+```
+A' W' - AW = (A E_WL) E_WR + E_AL (E_AR W').
+```
+
+In V2, since `E_WL` is common to all expert slices, the first peeling term
+
+```
+A * E_WL
+```
+
+is evaluated once over the global activation matrix. The result is then routed to the relevant experts, instead of recomputing the same activation-by-noise product separately for each expert-local multiplication.
+
+After these shared steps, the miner executes the noised grouped GEMM over the routed expert batches and contiguous expert-weight slices. A winning tile is still an opened noised matrix-multiplication trace, as in V1. The opened rows and columns in the expert-local multiplication `A_e * W_e` are authenticated through Merkle proofs against `A` and `W`.
+
+## Specification
+
+### Certificate Version
+
+This PIP assigns Pearl PoUW certificate version `0x02` to Grouped-GEMM proofs.
+
+```
+certificate := version || bytes
+version     := 0x02
+```
+
+Version 2 certificates are not valid under version 1 validation rules. Activation is therefore a consensus hard fork: upgraded nodes MUST parse and verify version 2 certificates according to this specification, while non-upgraded nodes will reject blocks using this certificate version.
+
+This PIP does not change the block identity rule. As in the existing certificate mechanism, certificate bytes are not part of the block identifier. The block header contains `pouw_meta`, a commitment to the public PoUW witness data, and the certificate proves that the committed witness satisfies the version 2 relation.
+
+### Notation
+
+Let:
+
+```
+A      := global activation matrix, token-major, shape M x d
+W      := stacked expert-weight matrix, shape d x (n_E * h)
+n_E    := number of experts
+top_k  := number of experts selected per token
+R      := low-rank noise parameter
+sigma  := chain state used for PoUW seed derivation
+mu     := mining configuration
+```
+
+For expert `e`, let:
+
+```
+route[e] := ordered list of u32 token indices routed to expert e
+A_e      := GatherRows(A, route[e])
+W_e      := contiguous expert slice of W belonging to expert e
+C_e      := A_e * W_e
+```
+
+The useful computation certified by this PIP is:
+
+```
+for each expert e:
+    C_e = A_e * W_e
+```
+
+All `W_e` are contiguous slices of one committed matrix `W`. All `A_e` are gathered from one committed activation matrix `A` according to the committed routing table.
+
+### Commitments and Routing
+
+A version 2 PoUW instance has three primary commitments:
+
+```
+H_W := CommitmentHash(W, mu, sigma)
+H_A := CommitmentHash(A, mu, sigma)
+H_R := CommitmentHash(route, mu, sigma)
+```
+
+`H_W` commits to the stacked expert-weight matrix. Expert `e` occupies a deterministic contiguous slice of `W`; the slice layout is part of `mu`.
+
+`H_A` commits to the global activation matrix in token-major order.
+
+`H_R` commits to the routing table. The routing table is expert-major: for each expert `e`, it contains the ordered list of global token indices assigned to that expert.
+
+The `j`-th row of the expert-local matrix `A_e` is:
+
+```
+A_e[j, :] = A[route[e][j], :]
+```
+
+The verifier expects `route` to be serialized as an expert-major concatenation of lists
+
+```
+route' := route[1] || route[2] || ... || route[n_E],
+```
+
+with each token index encoded as `u32`, together with a `routing_offsets` list of length `n_E` indicating the first position in `route'` where each expert slice begins.
+
+A verifier MUST check that opened routing elements used by a winning tile are authenticated by `H_R`. For the exposed routing elements in the opened tile, the verifier MUST also check that the exposed token indices are monotonic in tile order.
+
+### Seed Derivation
+
+As in V1, there are two low-rank-noise seeds. The activation-side seed must depend on `H_R`:
+
+```
+s_W := H_W
+s_A := BLAKE3(H_A || H_R || s_W)
+```
+
+The exact encodings of `W`, `A`, `route`, `mu`, `sigma`, and the derived commitments `H_W`, `H_A`, and `H_R` are deferred to the reference implementation. They MUST be jointly collision-resistant.
+
+### Mining Configuration
+
+The version 2 mining configuration `mu` contains all fields required by the version 1 matrix-multiplication verifier, plus the grouped-GEMM fields needed to interpret `A`, `W`, and `route`:
+
+```
+mu := {
+    mode: GROUPED_GEMM,
+    common_dimension: d,
+    noise_rank: R,
+    mma_type: int7xint7,
+    matmul_tile_shape: (t_m, t_n),
+    expert_count: n_E,
+}
+```
+
+The exact set of allowed parameters `d`, `n_E`, `h`, `top_k` is deferred to the reference implementation. `d`, `n_E` should be included in the configuration.
+
+### Noise Generation
+
+Version 2 uses the version 1 low-rank-noise paradigm, applied to grouped inputs.
+
+For each expert `e`, the noised multiplication is logically:
+
+```
+A'_e = A_e + E_A,e
+W'_e = W_e + E_W,e
+C'_e = A'_e * W'_e,
+```
+
+and the definition of a winning tile is as in version 1 for these noised matmuls. The noise matrices are defined as
+
+```
+E_A,e := GatherRows(E_AL, route[e]) * E_AR
+E_W,e := E_WL * GatherColumns(E_WR, (e-1)*h..e*h)
+```
+
+where the noise factors are derived from the seeds `s_W, s_A` as in version 1:
+
+```
+E_AL := left activations noise factor of shape M x R
+E_AR := right activations noise factor of shape R x d
+E_WL := left weights noise factor of shape d x R
+E_WR := right weights noise factor of shape R x (n_E * h).
+```
+
+### The zkSNARK Verifier
+
+Unlike traditional proof-of-work, proof-of-useful-work may operate on private data. For this reason, block-opening authenticity is verified by a zkSNARK circuit. The V2 verifier receives the zkSNARK proof together with the following plaintext public values:
+
+```
+pouw_meta := {
+   mu,
+   H_W,
+   H_A,
+   H_R,
+   winning_tile_hash,
+   routing_offsets,
+   expert_idx,
+   opened_tile_position_within_expert,
+   opened_tokens_global_indices,
+}
+```
+
+and checks that the proof attests that `pouw_meta` is consistent with the private witness. Concretely, the zk verifier approves that:
+
+> There exist private activation rows, expert-weight columns, and Merkle proofs satisfying: (1) the opened weight columns are consistent with `H_W`; (2) the opened activation rows are consistent with `H_A` and `opened_tokens_global_indices`; (3) `opened_tokens_global_indices` are consistent with `H_R`; and (4) the expert-local multiplication of activations and features is consistent with `winning_tile_hash`.
+
+Thus, version 2 extends the version 1 SNARK statement to the routing-aware setting. The `winning_tile_hash` and Merkle proofs checked in the SNARK are as in V1. Plaintext checks on `pouw_meta` follow the V1 rules, with the additional MoE fields above. The exact additional sanity checks are deferred to the reference implementation. The proof system and recursive compression strategy are inherited from version 1.
+
+## Rationale
+
+### Why commit to global activations?
+
+The entire inputs to the task the miner is about to perform must be committed to in advance in a non-malleable way. If even a small part of the activation data were not committed in advance, it could be changed after the fact, reducing the search for a winning tile to a non-matrix-multiplication problem, which is not comparable to Pearl's universal useful-work clock.
+
+### Why commit to routing?
+
+Likewise, if routing were not committed in advance, a miner could alter the layout of winning tiles and forge winning tiles without making any matrix multiplications. For the same reason, a Fiat-Shamir challenger must bind all public parameters.
+
+### Why not verify router computation?
+
+In mixture of experts workloads, the router is itself derived from a matrix multiplication of the tokens with some router weight matrix. However, this multiplication is usually negligible relative to the grouped-GEMM following this router evaluation, and is therefore not included as the useful mining task. Moreover, the routing table size is small compared to the activations matrix, and hence the philosophy of Pearl is preserved: authenticate a heavy computation (matrix multiplication) done on relatively lightweight input (activations + weights + routing).
+
+### Why use one stacked expert-weight matrix?
+
+Horizontally stacking the expert matrices binds all experts to use the same `E_WL` left-factor matrix. This allows noise-peeling work to be shared across MoE-duplicated tokens, while preserving the security properties of the V1 Pearl protocol.
+
+### Why expose winning tile routing entries?
+
+The opened tile location and hash are public, as in version 1. In version 2, the verifier also needs the routing entries that map opened expert-local rows to global activation rows. Exposing those routing elements for the winning tile only gives limited information about the routing table, which can further be masked by randomly permuting the input tokens in advance.
+
+### Why normalize by opened effective work?
+
+As in V1, the verifier scales the threshold on `winning_tile_hash` proportionally to the work needed to produce the opened tile in the specified expert. This keeps version 2 an unbiased metric of useful work in the grouped-GEMM setting.
+
+## Backwards Compatibility
+
+This PIP is not backwards compatible with nodes that only understand Pearl PoUW certificate version `0x01`. Blocks using certificate version `0x02` require upgraded consensus validation. The upgrade is therefore a hard fork.
+
+Wallets, addresses, transaction relay, mempool policy unrelated to PoUW certificates, and script validation are unaffected.
+
+Miners that do not run MoE workloads may continue to mine using version 1 certificates, subject to network activation rules.
+
+## Security Considerations
+
+TBD.
+
+## Privacy Considerations
+
+TBD.
+
+## Reference Implementation
+
+TBD.
+
+## Test Vectors
+
+TBD.
+
+## Copyright
+
+Copyright and related rights waived via
+[CC0](https://creativecommons.org/publicdomain/zero/1.0/).
