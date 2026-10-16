@@ -41,6 +41,16 @@ allows running as many agents as needed.
 - [ ] M1 localnet build: four build agents started 2026-10-16, each owning paths
       and committing only its own files (see CLAUDE.md "Who is working on what"):
       1. bridge: token/programs/bridge, agent/programs/escrow, services/relayer (:10660)
+         DONE (9d23936, 5d0f61b): 10 bridge + 7 escrow + 8 relayer tests pass (LiteSVM).
+         Escrow PDA GoszXkVtKwDgZSEWNjdPwuJ2eJGtohz6bCvnthNd5n5U, preload file
+         services/relayer/fixtures/escrow-account.json. TODO at integration: add
+         that --account to the agent validator in localnet.sh, then
+         `node src/cli.ts init-bridge <mint>` and `init-escrow`. The invariant
+         allows in-flight transfers. Orchestrator changed the default so a
+         surplus (a donation) no longer halts the bridge; only a deficit refuses
+         (ALLOW_SURPLUS=0 restores strict mode). Unlocks to a new account need
+         amount_spl >= about 891 (rent). sigverify.rs is duplicated in both
+         programs: keep them in sync.
       2. reserve: token/programs/reserve, services/crank, fixtures/pump, scripts/pump-fixtures.sh
          DONE (758ecd3, 869b3b7, 2e1b90e): 16/16 LiteSVM tests vs real pump bytecode,
          plus launch, curve buyback and fund_mining run on the real :10600 validator.

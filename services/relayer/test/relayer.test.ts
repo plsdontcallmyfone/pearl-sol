@@ -232,12 +232,12 @@ describe("relayer over LiteSVM", () => {
     assert.equal(lamports(w.agent, agentUser.publicKey), 0n);
     assert.equal(rl.health(2000).ok, false);
 
-    // Surplus (donation into the escrow) is also refused by default...
+    // Surplus (donation into the escrow) is refused only in strict mode...
     w.agent.svm.setAccount(escrowPda(), { ...e, lamports: e.lamports + 3 * 1024 });
-    t = await rl.tick();
+    t = await relayer(w, { allowSurplus: false }).tick();
     assert.match(String(t.refused), /invariant/);
-    // ...but accepted with allowSurplus.
-    t = await relayer(w, { allowSurplus: true }).tick();
+    // ...and accepted by default, since over-backing cannot be exploited.
+    t = await rl.tick();
     assert.equal(t.refused, null);
     assert.deepEqual(t.unlocked, ["0"]);
     assert.equal(lamports(w.agent, agentUser.publicKey), 1_000_000_000n);

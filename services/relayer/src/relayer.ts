@@ -125,7 +125,7 @@ export class Relayer {
   constructor(opts: RelayerOptions) {
     this.o = {
       genesisEscrowLamports: GENESIS_ESCROW_LAMPORTS,
-      allowSurplus: false,
+      allowSurplus: true,
       maxPerTick: 50,
       dryRun: false,
       log: (m, e) => console.log(JSON.stringify({ t: new Date().toISOString(), msg: m, ...e })),

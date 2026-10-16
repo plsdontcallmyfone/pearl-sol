@@ -10,7 +10,7 @@
 //   HEALTH_PORT      health endpoint              default 10660
 //   COMMITMENT       processed|confirmed|finalized  default confirmed
 //   GENESIS_ESCROW_LAMPORTS  escrow balance at genesis  default 1e18
-//   ALLOW_SURPLUS    1 to accept donated surplus in vault/escrow  default 0 (strict)
+//   ALLOW_SURPLUS    0 to also refuse on a donated surplus (over-backed)  default 1; a deficit always refuses
 
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -54,6 +54,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     healthPort: Number(env.HEALTH_PORT ?? 10660),
     commitment: (env.COMMITMENT ?? "confirmed") as Commitment,
     genesisEscrowLamports: BigInt(env.GENESIS_ESCROW_LAMPORTS ?? GENESIS_ESCROW_LAMPORTS),
-    allowSurplus: env.ALLOW_SURPLUS === "1",
+    allowSurplus: env.ALLOW_SURPLUS !== "0",
   };
 }
