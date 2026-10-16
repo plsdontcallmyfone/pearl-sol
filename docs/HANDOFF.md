@@ -42,6 +42,16 @@ allows running as many agents as needed.
       and committing only its own files (see CLAUDE.md "Who is working on what"):
       1. bridge: token/programs/bridge, agent/programs/escrow, services/relayer (:10660)
       2. reserve: token/programs/reserve, services/crank, fixtures/pump, scripts/pump-fixtures.sh
+         DONE (758ecd3, 869b3b7, 2e1b90e): 16/16 LiteSVM tests vs real pump bytecode,
+         plus launch, curve buyback and fund_mining run on the real :10600 validator.
+         Pump fixtures (4 MB, mainnet slot 457802307) committed and loaded by
+         `scripts/localnet.sh up token`. TODO at integration: set the real
+         agent-chain mining_pool PDA with `crank update --miningPool` (a
+         placeholder was used). Deviations: separate crank_buyback (curve) and
+         crank_buyback_amm (PumpSwap) instructions, a collect_curve_fees
+         instruction, an optional config.cranker allowlist (a fully open crank
+         can be sandwiched), new min_buy / sol_floor / max_fund_per_call fields,
+         and max_slippage_bps defaulting to 300 (it must cover pump's 1.25% fee).
       3. pearl: crates/pearl-job (+ `pearl-job` CLI), services/miner, services/attester (:10661)
       4. market: agent/programs/{agents,jobs,mining}, services/agent-cli
          DONE (2286ea7): 8 unit + 18 LiteSVM tests pass; submit_share 31-43k CU.
