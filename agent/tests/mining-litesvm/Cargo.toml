@@ -1,0 +1,21 @@
+[package]
+name = "market-litesvm-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "In-process LiteSVM tests for the agents, jobs and mining programs (no validator, no ports)"
+
+# Standalone: not a member of the agent/ Anchor workspace. Loads the built .so files
+# from agent/target/deploy, so run `anchor build -p agents -p jobs -p mining` first.
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+litesvm = "0.6.1"
+solana-sdk = "2.2"
+solana-ed25519-program = "2.2.3"
+anchor-lang = "0.31.1"
+agents = { path = "../../programs/agents", features = ["no-entrypoint"] }
+jobs = { path = "../../programs/jobs", features = ["no-entrypoint"] }
+mining = { path = "../../programs/mining", features = ["no-entrypoint"] }

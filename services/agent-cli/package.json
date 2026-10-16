@@ -1,0 +1,21 @@
+{
+  "name": "pearl-agent-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent CLI for the pearl-sol agent chain: register, post jobs, watch, accept",
+  "license": "ISC",
+  "bin": { "pearl-agent": "dist/index.js" },
+  "scripts": {
+    "build": "tsc -p .",
+    "selftest": "node dist/index.js selftest",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@solana/web3.js": "1.98.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.7.3"
+  }
+}

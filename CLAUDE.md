@@ -37,3 +37,4 @@ explicitly; never touch `solana config`.
 | Research subagent (chain/bridge) | 2026-10-16 | research/NOTES-chain-bridge.md only (DONE, uncommitted) |
 | Claude subagent (pump research) | 2026-10-16 | research/NOTES-pump.md + research/pump-litesvm/ (DONE, uncommitted) |
 | Claude subagent (proof research) | 2026-10-16 | research/NOTES-proof.md only (DONE, uncommitted) |
+| Claude subagent (market) | 2026-10-16 | agent/programs/{agents,jobs,mining}, agent/tests/{agents,jobs,mining}*, services/agent-cli (DONE, committed) |
