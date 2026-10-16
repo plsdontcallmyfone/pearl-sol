@@ -1,0 +1,13 @@
+{
+  "name": "pump-litesvm-check",
+  "private": true,
+  "description": "In-process (no validator, no ports) check of pump create_v2+buy, v3 trades, fee sweep/collect, migrate_v2 and PumpSwap against mainnet program bytes",
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@pump-fun/pump-sdk": "4.1.0",
+    "@pump-fun/pump-swap-sdk": "2.1.0",
+    "@solana/spl-token": "0.4.9",
+    "@solana/web3.js": "1.98.0",
+    "litesvm": "0.3.3"
+  }
+}

@@ -35,4 +35,5 @@ explicitly; never touch `solana config`.
 |-----|---------|-------|
 | Claude session f2b59a9f (orchestrator) | 2026-10-16 | SPEC.md, repo layout, M1 localnet coordination |
 | Research subagent (chain/bridge) | 2026-10-16 | research/NOTES-chain-bridge.md only (DONE, uncommitted) |
-| Claude subagent (pump research) | 2026-10-16 | research/NOTES-pump.md only (read-only web + mainnet RPC research) |
+| Claude subagent (pump research) | 2026-10-16 | research/NOTES-pump.md + research/pump-litesvm/ (DONE, uncommitted) |
+| Claude subagent (proof research) | 2026-10-16 | research/NOTES-proof.md only (zk-pow build/bench in scratchpad, no ports) |

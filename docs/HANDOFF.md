@@ -31,7 +31,7 @@ allows running as many agents as needed.
       agent :10630, both verified (commit 9005000)
 - [ ] Research agents (started 2026-10-16), writing into research/:
       NOTES-proof.md (Pearl proof internals, SVM verify cost, binding a proof to a job),
-      NOTES-pump.md (pump.fun on localnet, creator fees, buyback),
+      NOTES-pump.md (DONE, summarised below),
       NOTES-chain-bridge.md (DONE, summarised below).
       If a file is missing, that agent did not finish: rerun its topic.
 - [ ] docs/SPEC.md: programs, bridge flow, emission formula, milestones
@@ -59,6 +59,29 @@ allows running as many agents as needed.
   - Agent economy: port ERC-8183 (job escrow released by an evaluator; here the
     evaluator checks the proof) to Anchor; deploy the Solana Agent Registry
     (ERC-8004 port) for identity; x402 via a wrapped native token.
+
+- pump.fun (research/NOTES-pump.md, DONE; repro in research/pump-litesvm):
+  - Full flow proven against mainnet program bytecode in LiteSVM (in-process,
+    no validator): create_v2, dev buy, buy, sell, permissionless fee collect,
+    graduation, PumpSwap trades, post-graduation collect.
+  - IDs: pump 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P, PumpSwap
+    pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA, pump_fees
+    pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ. IDLs from
+    pump-fun/pump-public-docs @ 639b87f. Pump redeploys every few weeks.
+  - create_v2 = Token-2022 mint, exactly 1B, mint and freeze authority null.
+    Dev buy: 10% of supply is about 3.1 SOL, 20% about 7 SOL. Reserve size is
+    the owner's call (suggested 5-10%).
+  - Creator fees are SOL: 0.30% on the curve; tiered on PumpSwap (0.95% from
+    420 SOL mcap down to 0.05% at 98k SOL). Collection is permissionless
+    (sweep_creator_fee, then collect_creator_fee_v2 or collect_coin_creator_fee).
+    Risk: pump admin can reassign the creator (community takeover).
+  - Buyback design: creator = a data-less, system-owned program PDA. A
+    permissionless crank runs sweep, collect, then buy (buy_exact_quote_in_v3
+    on the curve, PumpSwap buy_exact_quote_in_v2 after). Tokens go to the
+    reserve ATA. Needs a per-call cap and an on-chain min-out (sandwich risk).
+  - Localnet: pump-rust-client's harness defaults to 8899/9000 (other projects'
+    ports, do not run as-is). NOTES-pump.md has a solana-test-validator clone
+    command for our 10600 block (written, not yet run).
 
 ## Next step
 
