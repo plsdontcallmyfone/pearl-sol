@@ -32,10 +32,33 @@ allows running as many agents as needed.
 - [ ] Research agents (started 2026-10-16), writing into research/:
       NOTES-proof.md (Pearl proof internals, SVM verify cost, binding a proof to a job),
       NOTES-pump.md (pump.fun on localnet, creator fees, buyback),
-      NOTES-chain-bridge.md (own SVM cluster, bridge choice, agent-economy primitives).
+      NOTES-chain-bridge.md (DONE, summarised below).
       If a file is missing, that agent did not finish: rerun its topic.
 - [ ] docs/SPEC.md: programs, bridge flow, emission formula, milestones
 - [ ] M1 localnet build
+
+## Research results so far
+
+- Chain/bridge (research/NOTES-chain-bridge.md, DONE):
+  - Plain Agave cluster from our own genesis, own Agave fork from day one. The
+    local solana-cli 3.1.12 has no solana-genesis/agave-validator (Anza stopped
+    shipping them in v3.0): build from the fork for production. Localnet M1 uses
+    solana-test-validator.
+  - Gas must be native lamports, not SPL. Pattern: the whole 1B supply sits as
+    lamports in a bridge escrow at genesis; deposit = unlock from escrow,
+    withdraw = lock back. No minting. 1 SPL base unit (6 dp) = 1000 lamports.
+    Genesis: --inflation none, --fee-burn-percentage 0. Invariant to watch:
+    SPL locked on Solana x 1000 = lamport supply - escrow balance.
+  - Pearl's verifier (zk-pow plonky2/starky) cannot run in a BPF program. M1:
+    M-of-N attesters verify off chain and the program checks their signatures
+    with the ed25519 precompile. Later: a native builtin or syscall in our fork
+    (no feature gate needed on our own chain).
+  - Bridge: M1 = own Anchor lock/unlock on both sides + relayer, 1-of-1 then
+    2-of-3 signers. Production = self-hosted Hyperlane Sealevel (to verify: the
+    route type and 6-to-9 decimal scaling).
+  - Agent economy: port ERC-8183 (job escrow released by an evaluator; here the
+    evaluator checks the proof) to Anchor; deploy the Solana Agent Registry
+    (ERC-8004 port) for identity; x402 via a wrapped native token.
 
 ## Next step
 
