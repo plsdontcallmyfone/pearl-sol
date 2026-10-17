@@ -138,10 +138,22 @@ allows running as many agents as needed.
   - CPU miner: zk-pow/src/ffi/mine.rs try_mine_one; difficulty 0x1d020000 is
     about 1 s per win on CPU. Pearl emission reference: 2.1B cap, C = 650,226.
 
+- 3. pearl: DONE (f966a2d): 23 tests + 1 LiteSVM end to end against the real
+     jobs/mining .so; proof 12.6 KB, verify about 95 us, share target 0x1d010000
+     about 1 s per share per core. result_hash = blake3_keyed(C as i32 LE
+     row-major, key = job_key). Share message has no tile (one share per nonce).
+- All four M1 workstreams DONE. Left: the real-validator end to end run.
+- Validators run locally (owner OK, see CLAUDE.md), not on claude-host.
+
 ## Next step
 
-Wait for the four build agents, review their reports, then write scripts/demo.sh
-and run the full M1 flow on the two real localnet validators.
+Integration agent (started 2026-10-16) writes scripts/demo.sh and runs the full
+M1 flow (SPEC 5 step 4) on the two local validators: crank init + launch, relayer
+init-bridge <mint> + init-escrow, agent-cli init, crank update --miningPool
+<mining_pool PDA>, trades to accrue fees, crank once + fund, relayer, agent
+bridge-in + register + post-job, attester (:10661) + miner, claim, deliver,
+bridge out, invariant at each step. If this session dies, check git log for
+"demo" commits and rerun `scripts/demo.sh`.
 
 ## Gotchas
 

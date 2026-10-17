@@ -26,6 +26,11 @@ ISC, gitignored; re-clone if missing).
     10660-10669     relayer, indexer, miner/pool services
     10670-10679     web frontends
 
+Validators run LOCALLY on this Mac via scripts/localnet.sh: the owner told this
+repo to proceed locally on 2026-10-16, an exception to the global claude-host rule
+(syncing to claude-host was blocked by the permission classifier). Keep it to
+these two validators and stop them when idle.
+
 `lsof -ti :<port>` before binding. Kill by PID only. Always pass `-u` and `-k`
 explicitly; never touch `solana config`.
 
