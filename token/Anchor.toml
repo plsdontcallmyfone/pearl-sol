@@ -8,6 +8,7 @@ skip-lint = false
 [programs.localnet]
 bridge = "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8"
 reserve = "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p"
+storefront = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr"
 
 [registry]
 url = "https://api.apr.dev"

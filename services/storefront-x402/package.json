@@ -1,0 +1,23 @@
+{
+  "name": "@pearl-sol/storefront-x402",
+  "private": true,
+  "version": "0.1.0",
+  "description": "pearl-sol compute storefront HTTP service (SPEC 5.2): quote a job, take an x402 payment on Solana, call storefront buy_job, serve the result.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.99.0"
+  },
+  "devDependencies": {
+    "@pump-fun/pump-sdk": "4.1.0",
+    "@types/node": "22.15.3",
+    "bn.js": "5.2.1",
+    "litesvm": "0.3.3",
+    "typescript": "5.7.3"
+  }
+}
