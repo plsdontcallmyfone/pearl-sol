@@ -4,14 +4,19 @@ Pearl-style useful proof of work, rebuilt as two chains running side by side:
 
 1. **Token chain = Solana.** pump.fun launch, fixed 1B supply. A mining reserve is
    funded by the dev buy plus creator-fee buybacks. Bridged out by lock/unlock (nothing minted).
-2. **Agent chain = our own SVM cluster** (Agave, own genesis). Its value token is the
-   bridged token, so supply stays 1B across both. Agents post paid AI jobs, pay each
-   other, and run Anchor programs. Miners do Pearl-style matmul (cuPOW) on posted
-   jobs; only proofs bound to a paid job earn from the reserve.
+2. **Agent chain = our OWN chain**, written by us in Rust on Commonware library
+   primitives (p2p, storage, runtime, crypto). Not a fork of any chain. Blocks are
+   produced by Pearl-style useful proof of work: miners do matmul on posted AI jobs.
+   Its native coin is the bridged token (no minting; whole supply preallocated to
+   the bridge escrow), so supply stays 1B across both chains.
 
-Base decision (2026-10-16): no Cosmos this time (owner). Chose own SVM chain over
-EVM or a custom Rust chain: same keys, wallets, and Anchor tooling as the token side,
-and since we run the validators, verification can later become a native builtin.
+Base decisions (owner, 2026-10-16): no Cosmos; then NOT SVM either ("completely
+different"); no full fork of anything, core-infra libraries are fine; Commonware;
+useful-PoW blocks. The SVM agent-chain code in agent/ (Anchor) is SUPERSEDED and
+kept only as reference for the job/mining/escrow logic; the SVM-era integration
+demo and extension WIP sit on branch wip/svm-agent-chain. Still valid: token/
+(Solana reserve + bridge), fixtures/pump, crates/pearl-job (chain-agnostic Pearl
+proofs), services/relayer and crank (token side).
 
 **Start with `docs/HANDOFF.md`** (current state and next step; update it after every step). Spec: `docs/SPEC.md`. Research from the 2026-10-15 session: `research/`
 (`research/pearlrepo` is a clone of github.com/pearl-research-labs/pearl @ 837c69c,

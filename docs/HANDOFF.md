@@ -20,8 +20,13 @@ allows running as many agents as needed.
 
 ## Decisions
 
-- No Cosmos (owner). SVM chosen over EVM or a custom chain: same keys and Anchor
-  tooling as the token side; a native verify builtin is possible later.
+- PIVOT 2026-10-16 (owner): the agent chain is our OWN chain on Commonware
+  primitives with useful-PoW block production. Not SVM, not Cosmos, not a fork.
+  agent/ (Anchor) is superseded, reference only. Branch wip/svm-agent-chain holds
+  the stopped SVM integration demo + extension WIP.
+- Still valid: token chain = Solana (pump.fun, reserve, bridge program),
+  crates/pearl-job, relayer/crank token side.
+- Validators/builds run locally on this Mac (owner OK), not claude-host.
 - Ports 10600-10699 (see CLAUDE.md). Repo is local git only, no remote.
 
 ## State
@@ -156,14 +161,18 @@ allows running as many agents as needed.
 
 ## Next step
 
-Integration agent (started 2026-10-16) writes scripts/demo.sh and runs the full
-M1 flow (SPEC 5 step 4) on the two local validators: crank init + launch, relayer
-init-bridge <mint> + init-escrow, agent-cli init, crank update --miningPool
-<mining_pool PDA>, trades to accrue fees, crank once + fund, relayer, agent
-bridge-in + register + post-job, attester (:10661) + miner, claim, deliver,
-bridge out, invariant at each step. If this session dies, check git log for
-"demo" commits and rerun `scripts/demo.sh`.
-
+1. Commonware research agent (started 2026-10-16) -> research/NOTES-commonware.md.
+   If missing, rerun: crates, PoW on Commonware runtime/p2p/storage, state DB with
+   roots + reorg rollback, ed25519, permissionless peers.
+2. Orchestrator writes docs/SPEC.md v2 for the own chain: block/header format,
+   useful-PoW binding (seed = blake3(job_key || block_header_digest || hash_b'),
+   replacing the miner pubkey; commitments stay job-level so posters precompute
+   them), fallback blocks when no job is open (no subsidy), difficulty (WTEMA),
+   native tx types (transfer, bridge unlock/lock, agent register, post job,
+   deliver result), reward from the reserve pool with the alpha x P cap,
+   confirmations-based bridge finality.
+3. Then build: node crates, miner as block producer, RPC, rewire relayer and the
+   extension to our RPC.
 ## Gotchas
 
 - ~/memechain and ~/ansemchain are deleted locally. The private backup
