@@ -56,3 +56,4 @@ explicitly; never touch `solana config`.
 | Claude subagent (storefront) | 2026-10-16 | token/programs/storefront, token/tests/storefront-litesvm, services/storefront-x402, keys/localnet/storefront-keypair.json, storefront entry in token/Anchor.toml, no bridge changes needed (DONE, committed 18f3cd0) |
 | Claude subagent (miner v2) | 2026-10-16 | crates/pearl-job (pow module), crates/pearl-node (node RPC client, tx encoding, mock node), services/miner (block producer), services/attester (node mode) (DONE, committed) |
 | Claude subagent (chain node) | 2026-10-16 | chain/ (Cargo workspace: agent-types, state, executor, consensus-pow, sync, net, mempool, rpc, bin/agent-node), docs/RPC.md, scripts/devnet.sh, .devnet/ (IN PROGRESS) |
+| Claude subagent (relayer v2) | 2026-10-16 | services/relayer only: rewire to agent-chain node RPC (BridgeUnlock/BridgeLock, K-deep), order deposits, finalize_order, invariant (DONE) |

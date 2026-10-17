@@ -1,27 +1,33 @@
-// Byte-level codec for the bridge (token chain) and escrow (agent chain)
-// programs: PDAs, instruction builders, account decoders, SPEC section 6
-// messages and the ed25519 precompile instruction. Hand-encoded so the relayer
-// does not depend on generated IDL files.
+// Byte-level codec for the Solana side: the bridge program (token/programs/bridge,
+// unchanged) and the storefront program (token/programs/storefront): PDAs,
+// instruction builders, account decoders, signed messages and the ed25519
+// precompile instruction. Hand-encoded so the relayer does not depend on IDL files.
+//
+// The agent chain's own transaction encoding lives in src/agent-tx.ts.
 
 import { createHash, createPrivateKey, sign as edSign } from "node:crypto";
 import { Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
 export const BRIDGE_PROGRAM_ID = new PublicKey("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
-export const ESCROW_PROGRAM_ID = new PublicKey("4EgFJ3Vnck4EqEtuDFnmF8Zrpcz8mmTU2DbnZBHyQuum");
+export const STOREFRONT_PROGRAM_ID = new PublicKey("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
 export const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 export const ATA_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 export const ED25519_PROGRAM_ID = new PublicKey("Ed25519SigVerify111111111111111111111111111");
 export const INSTRUCTIONS_SYSVAR_ID = new PublicKey("Sysvar1nstructions1111111111111111111111111");
 
-export const CHAIN_TOKEN = 0;
+/** Bridge `Processed` PDA chain tag for releases (withdrawals from the agent chain). */
 export const CHAIN_AGENT = 1;
-/** 1 SPL base unit (6 dp) = 1000 lamports (9 dp). */
-export const LAMPORTS_PER_SPL_UNIT = 1000n;
-/** Whole agent-chain supply held by the escrow at genesis: 1B x 1e9. */
-export const GENESIS_ESCROW_LAMPORTS = 1_000_000_000_000_000_000n;
+/** 1 SPL base unit (6 dp) = 1000 agent-chain base units (9 dp). */
+export const UNITS_PER_SPL = 1000n;
+/** Whole agent-chain supply, all in the bridge escrow at genesis: 1B x 1e9. */
+export const TOTAL_SUPPLY = 1_000_000_000_000_000_000n;
 
 export const DEPOSIT_DOMAIN = Buffer.from("pearl-sol:deposit:v1");
+export const DEPOSIT_ORDER_DOMAIN = Buffer.from("pearl-sol:deposit-order:v1");
 export const WITHDRAW_DOMAIN = Buffer.from("pearl-sol:withdraw:v1");
+export const RESULT_DOMAIN = Buffer.from("pearl-sol:result:v1");
+export const EXPIRED_DOMAIN = Buffer.from("pearl-sol:expired:v1");
+export const ORDER_JOB_DOMAIN = Buffer.from("pearl-sol:order-job:v1");
 
 // ---------- primitives ----------
 
@@ -30,9 +36,21 @@ export function u64le(n: bigint): Buffer {
   b.writeBigUInt64LE(n);
   return b;
 }
+export function u32le(n: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(n);
+  return b;
+}
+export function u16le(n: number): Buffer {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(n);
+  return b;
+}
 
-function sha256(s: string): Buffer {
-  return createHash("sha256").update(s).digest();
+export function sha256(...parts: (Buffer | Uint8Array | string)[]): Buffer {
+  const h = createHash("sha256");
+  for (const p of parts) h.update(p);
+  return h.digest();
 }
 export const ixDisc = (name: string): Buffer => sha256(`global:${name}`).subarray(0, 8);
 export const accDisc = (name: string): Buffer => sha256(`account:${name}`).subarray(0, 8);
@@ -47,12 +65,11 @@ export const depositPda = (nonce: bigint): PublicKey => pda([Buffer.from("deposi
 export const bridgeProcessedPda = (nonce: bigint): PublicKey =>
   pda([Buffer.from("processed"), Buffer.from([CHAIN_AGENT]), u64le(nonce)], BRIDGE_PROGRAM_ID);
 
-export const escrowConfigPda = (): PublicKey => pda([Buffer.from("config")], ESCROW_PROGRAM_ID);
-export const escrowPda = (): PublicKey => pda([Buffer.from("escrow")], ESCROW_PROGRAM_ID);
-export const withdrawalPda = (nonce: bigint): PublicKey =>
-  pda([Buffer.from("withdrawal"), u64le(nonce)], ESCROW_PROGRAM_ID);
-export const escrowProcessedPda = (nonce: bigint): PublicKey =>
-  pda([Buffer.from("processed"), Buffer.from([CHAIN_TOKEN]), u64le(nonce)], ESCROW_PROGRAM_ID);
+export const storefrontConfigPda = (program = STOREFRONT_PROGRAM_ID): PublicKey => pda([Buffer.from("config")], program);
+/** The storefront's trader PDA: a bridge Deposit with this sender is an order. */
+export const traderPda = (program = STOREFRONT_PROGRAM_ID): PublicKey => pda([Buffer.from("trader")], program);
+export const orderPda = (nonce: bigint, program = STOREFRONT_PROGRAM_ID): PublicKey =>
+  pda([Buffer.from("order"), u64le(nonce)], program);
 
 export function ata(owner: PublicKey, mint: PublicKey, tokenProgram = TOKEN_2022_PROGRAM_ID): PublicKey {
   return pda([owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()], ATA_PROGRAM_ID);
@@ -60,16 +77,26 @@ export function ata(owner: PublicKey, mint: PublicKey, tokenProgram = TOKEN_2022
 export const vaultAta = (mint: PublicKey, tokenProgram = TOKEN_2022_PROGRAM_ID): PublicKey =>
   ata(bridgeConfigPda(), mint, tokenProgram);
 
-// ---------- SPEC section 6 messages ----------
+// ---------- signed messages (RAW ed25519, no framing) ----------
 
 /** `domain || nonce u64 LE || recipient [32] || amount_spl u64 LE` */
 export function bridgeMessage(domain: Buffer, nonce: bigint, recipient: PublicKey, amountSpl: bigint): Buffer {
   return Buffer.concat([domain, u64le(nonce), recipient.toBuffer(), u64le(amountSpl)]);
 }
+/** Plain deposit unlock (agent chain BridgeUnlock, SPEC 4.3). */
 export const depositMessage = (nonce: bigint, recipient: PublicKey, amountSpl: bigint): Buffer =>
   bridgeMessage(DEPOSIT_DOMAIN, nonce, recipient, amountSpl);
+/** Storefront order unlock: plain fields plus sha256(PostJob body). */
+export const depositOrderMessage = (nonce: bigint, recipient: PublicKey, amountSpl: bigint, bodyHash: Buffer): Buffer =>
+  Buffer.concat([bridgeMessage(DEPOSIT_ORDER_DOMAIN, nonce, recipient, amountSpl), bodyHash]);
+/** Bridge release on Solana (unchanged). */
 export const withdrawMessage = (nonce: bigint, recipient: PublicKey, amountSpl: bigint): Buffer =>
   bridgeMessage(WITHDRAW_DOMAIN, nonce, recipient, amountSpl);
+export const resultMessage = (jobId: Buffer, deliverer: PublicKey, resultHash: Buffer): Buffer =>
+  Buffer.concat([RESULT_DOMAIN, jobId, deliverer.toBuffer(), resultHash]);
+export const expiredMessage = (jobId: Buffer): Buffer => Buffer.concat([EXPIRED_DOMAIN, jobId]);
+/** Order job id on the chain: sha256("pearl-sol:order-job:v1" || nonce LE). */
+export const orderJobId = (nonce: bigint): Buffer => sha256(ORDER_JOB_DOMAIN, u64le(nonce));
 
 // ---------- ed25519 ----------
 
@@ -153,33 +180,18 @@ export function decodeBridgeConfig(data: Uint8Array): BridgeConfig {
   };
 }
 
-export interface EscrowConfig {
-  admin: PublicKey;
-  withdrawNonce: bigint;
-  threshold: number;
-  signers: PublicKey[];
-}
-export function decodeEscrowConfig(data: Uint8Array): EscrowConfig {
-  const b = checkDisc(data, "Config");
-  return {
-    admin: new PublicKey(b.subarray(8, 40)),
-    withdrawNonce: b.readBigUInt64LE(40),
-    threshold: b[48],
-    signers: readKeys(b, 51),
-  };
-}
-
-/** Deposit (token chain) and Withdrawal (agent chain) share one layout. */
-export interface Transfer {
+/** Bridge `Deposit` record (token chain). */
+export interface Deposit {
   nonce: bigint;
   sender: PublicKey;
+  /** Agent-chain recipient. */
   recipient: PublicKey;
   /** SPL base units. */
   amount: bigint;
   slot: bigint;
 }
-function decodeTransfer(data: Uint8Array, name: string): Transfer {
-  const b = checkDisc(data, name);
+export function decodeDeposit(data: Uint8Array): Deposit {
+  const b = checkDisc(data, "Deposit");
   return {
     nonce: b.readBigUInt64LE(8),
     sender: new PublicKey(b.subarray(16, 48)),
@@ -188,12 +200,111 @@ function decodeTransfer(data: Uint8Array, name: string): Transfer {
     slot: b.readBigUInt64LE(88),
   };
 }
-export const decodeDeposit = (d: Uint8Array): Transfer => decodeTransfer(d, "Deposit");
-export const decodeWithdrawal = (d: Uint8Array): Transfer => decodeTransfer(d, "Withdrawal");
 
 /** SPL / Token-2022 token account amount (offset 64). */
 export function tokenAccountAmount(data: Uint8Array): bigint {
   return Buffer.from(data).readBigUInt64LE(64);
+}
+
+/** storefront `Config`: only the fields the relayer needs. */
+export interface StorefrontConfig {
+  admin: PublicKey;
+  threshold: number;
+  attesters: PublicKey[];
+}
+export function decodeStorefrontConfig(data: Uint8Array): StorefrontConfig {
+  const b = checkDisc(data, "Config");
+  // admin, mint, bridge_program (3 x 32), paused u8, protocol_fee_bps u16, max_slippage_bps u16,
+  // min_sol_in u64, max_sol_in u64, max_dim u32, max_blocks_cap u32, max_deadline_blocks u64.
+  const at = 8 + 96 + 1 + 2 + 2 + 8 + 8 + 4 + 4 + 8; // 141
+  return { admin: new PublicKey(b.subarray(8, 40)), threshold: b[at], attesters: readKeys(b, at + 1) };
+}
+
+export const ORDER_STATUS_PENDING = 1;
+export const ORDER_STATUS_FINALIZED = 2;
+export const ORDER_STATUS_EXPIRED = 3;
+
+/** storefront::layout offsets (including the 8-byte discriminator). */
+export const ORDER_LAYOUT = {
+  STATUS: 9, DEPOSIT_NONCE: 12, JOB_ID: 20, BUYER: 52, RECIPIENT: 84, BODY_HASH: 116, TOKENS: 156, WORKER_PAY: 164,
+  PROTOCOL_FEE: 172, DELIVERER: 196, RESULT_HASH: 228, SPEC: 470, LEN: 1070,
+} as const;
+const MAX_EVALUATORS = 8;
+
+/** A job spec in the PostJob body field order (SPEC 4.1 / docs/RPC.md). */
+export interface PostJobBody {
+  m: number;
+  n: number;
+  k: number;
+  config: Buffer; // 52 bytes
+  hashA: Buffer;
+  hashB: Buffer;
+  dataUri: Buffer;
+  workerPay: bigint;
+  protocolFee: bigint;
+  /** Absolute for PostJob txs; RELATIVE (blocks after unlock) for storefront orders. */
+  deadline: bigint;
+  maxBlocks: number;
+  evaluators: PublicKey[];
+  threshold: number;
+}
+
+/** PostJob body bytes, exactly as storefront `post_job_body` and the chain's codec. */
+export function encodePostJobBody(p: PostJobBody): Buffer {
+  if (p.config.length !== 52 || p.hashA.length !== 32 || p.hashB.length !== 32) throw new Error("bad PostJob field size");
+  return Buffer.concat([
+    u32le(p.m), u32le(p.n), u32le(p.k), p.config, p.hashA, p.hashB,
+    u16le(p.dataUri.length), p.dataUri,
+    u64le(p.workerPay), u64le(p.protocolFee), u64le(p.deadline), u32le(p.maxBlocks),
+    Buffer.from([p.evaluators.length]), ...p.evaluators.map((e) => e.toBuffer()), Buffer.from([p.threshold]),
+  ]);
+}
+
+export interface Order {
+  status: number;
+  depositNonce: bigint;
+  jobId: Buffer;
+  buyer: PublicKey;
+  recipient: PublicKey;
+  bodyHash: Buffer;
+  tokens: bigint;
+  /** PostJob body rebuilt from the stored spec + W + P (relative deadline). */
+  body: PostJobBody;
+}
+
+export function decodeOrder(data: Uint8Array): Order {
+  const L = ORDER_LAYOUT;
+  const d = checkDisc(data, "Order");
+  if (d.length < L.LEN) throw new Error(`Order account too short (${d.length})`);
+  const S = L.SPEC;
+  const evc = d[S + 141];
+  const uriLen = d.readUInt16LE(S + 398);
+  if (evc > MAX_EVALUATORS || uriLen > 200) throw new Error("Order spec out of range");
+  const k32 = (o: number) => Buffer.from(d.subarray(o, o + 32));
+  return {
+    status: d[L.STATUS],
+    depositNonce: d.readBigUInt64LE(L.DEPOSIT_NONCE),
+    jobId: k32(L.JOB_ID),
+    buyer: new PublicKey(k32(L.BUYER)),
+    recipient: new PublicKey(k32(L.RECIPIENT)),
+    bodyHash: k32(L.BODY_HASH),
+    tokens: d.readBigUInt64LE(L.TOKENS),
+    body: {
+      m: d.readUInt32LE(S),
+      n: d.readUInt32LE(S + 4),
+      k: d.readUInt32LE(S + 8),
+      config: Buffer.from(d.subarray(S + 12, S + 64)),
+      hashA: k32(S + 64),
+      hashB: k32(S + 96),
+      deadline: d.readBigUInt64LE(S + 128),
+      maxBlocks: d.readUInt32LE(S + 136),
+      threshold: d[S + 140],
+      evaluators: Array.from({ length: evc }, (_, i) => new PublicKey(k32(S + 142 + 32 * i))),
+      dataUri: Buffer.from(d.subarray(S + 400, S + 400 + uriLen)),
+      workerPay: d.readBigUInt64LE(L.WORKER_PAY),
+      protocolFee: d.readBigUInt64LE(L.PROTOCOL_FEE),
+    },
+  };
 }
 
 // ---------- instruction builders ----------
@@ -202,9 +313,7 @@ const w = (pubkey: PublicKey, isSigner = false) => ({ pubkey, isSigner, isWritab
 const r = (pubkey: PublicKey, isSigner = false) => ({ pubkey, isSigner, isWritable: false });
 
 function keyVec(keys: PublicKey[]): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32LE(keys.length);
-  return Buffer.concat([len, ...keys.map((k) => k.toBuffer())]);
+  return Buffer.concat([u32le(keys.length), ...keys.map((k) => k.toBuffer())]);
 }
 
 export function bridgeInitializeIx(admin: PublicKey, mint: PublicKey, signers: PublicKey[], threshold: number,
@@ -239,31 +348,36 @@ export function bridgeReleaseIx(a: { payer: PublicKey; mint: PublicKey; nonce: b
   });
 }
 
-export function escrowInitializeIx(admin: PublicKey, signers: PublicKey[], threshold: number): TransactionInstruction {
+/** storefront `initialize(params = all None, attesters, threshold)` (tests and localnet setup). */
+export function storefrontInitializeIx(admin: PublicKey, attesters: PublicKey[], threshold: number,
+  program = STOREFRONT_PROGRAM_ID): TransactionInstruction {
   return new TransactionInstruction({
-    programId: ESCROW_PROGRAM_ID,
-    keys: [w(admin, true), w(escrowConfigPda()), r(escrowPda()), r(SystemProgram.programId)],
-    data: Buffer.concat([ixDisc("initialize"), keyVec(signers), Buffer.from([threshold])]),
+    programId: program,
+    keys: [w(admin, true), w(storefrontConfigPda(program)), w(traderPda(program)), r(SystemProgram.programId)],
+    data: Buffer.concat([ixDisc("initialize"), Buffer.alloc(10), keyVec(attesters), Buffer.from([threshold])]),
   });
 }
 
-export function escrowUnlockIx(a: { payer: PublicKey; nonce: bigint; recipient: PublicKey; amountSpl: bigint }):
-  TransactionInstruction {
+function closeOrderKeys(caller: PublicKey, nonce: bigint, program: PublicKey) {
+  return [r(caller, true), r(storefrontConfigPda(program)), w(orderPda(nonce, program)), r(INSTRUCTIONS_SYSVAR_ID)];
+}
+
+/** storefront `finalize_order(deliverer, result_hash, result_uri)`; caller = buyer, admin or an attester. */
+export function finalizeOrderIx(a: { caller: PublicKey; nonce: bigint; deliverer: PublicKey; resultHash: Buffer;
+  resultUri: string; program?: PublicKey }): TransactionInstruction {
+  const program = a.program ?? STOREFRONT_PROGRAM_ID;
+  const uri = Buffer.from(a.resultUri);
   return new TransactionInstruction({
-    programId: ESCROW_PROGRAM_ID,
-    keys: [w(a.payer, true), r(escrowConfigPda()), w(escrowPda()), w(a.recipient), w(escrowProcessedPda(a.nonce)),
-      r(INSTRUCTIONS_SYSVAR_ID), r(SystemProgram.programId)],
-    data: Buffer.concat([ixDisc("unlock"), u64le(a.nonce), a.recipient.toBuffer(), u64le(a.amountSpl)]),
+    programId: program,
+    keys: closeOrderKeys(a.caller, a.nonce, program),
+    data: Buffer.concat([ixDisc("finalize_order"), a.deliverer.toBuffer(), a.resultHash, u32le(uri.length), uri]),
   });
 }
 
-export function escrowLockIx(a: { sender: PublicKey; nonce: bigint; amountLamports: bigint; solanaRecipient: PublicKey }):
-  TransactionInstruction {
-  return new TransactionInstruction({
-    programId: ESCROW_PROGRAM_ID,
-    keys: [w(a.sender, true), w(escrowConfigPda()), w(escrowPda()), w(withdrawalPda(a.nonce)), r(SystemProgram.programId)],
-    data: Buffer.concat([ixDisc("lock"), u64le(a.amountLamports), a.solanaRecipient.toBuffer()]),
-  });
+/** storefront `expire_order()`. */
+export function expireOrderIx(a: { caller: PublicKey; nonce: bigint; program?: PublicKey }): TransactionInstruction {
+  const program = a.program ?? STOREFRONT_PROGRAM_ID;
+  return new TransactionInstruction({ programId: program, keys: closeOrderKeys(a.caller, a.nonce, program), data: ixDisc("expire_order") });
 }
 
 /** ATA program CreateIdempotent. */

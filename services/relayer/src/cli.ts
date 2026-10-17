@@ -1,37 +1,23 @@
 // Bridge helper CLI (localnet). Uses the same env vars as the relayer (src/config.ts).
 //
-//   node src/cli.ts escrow-account-json <out.json> [lamports]   --account file for solana-test-validator
-//   node src/cli.ts init-bridge <mint> [threshold] [signer,...] admin = TOKEN_PAYER
-//   node src/cli.ts init-escrow [threshold] [signer,...]        admin = AGENT_PAYER
-//   node src/cli.ts deposit <amount_spl> <agent_recipient> [sender_key]
-//   node src/cli.ts lock <amount_lamports> <solana_recipient> [sender_key]
-//   node src/cli.ts status                                      snapshot + invariant, no signing
+//   node src/cli.ts init-bridge <mint> [threshold] [signer,...]   admin = TOKEN_PAYER
+//   node src/cli.ts deposit <amount_spl> <chain_recipient> [sender_key]
+//   node src/cli.ts lock <amount_chain_units> <solana_recipient> [sender_key]   BridgeLock via the node
+//   node src/cli.ts status                                         snapshot + invariant, no signing
 //
 // Signers default to the public keys of SIGNER_KEYS.
 
-import { writeFileSync } from "node:fs";
 import { PublicKey } from "@solana/web3.js";
+import { KIND, bridgeLockBody, signTx } from "./agent-tx.ts";
 import { RpcChain } from "./chain.ts";
-import {
-  BRIDGE_PROGRAM_ID,
-  ESCROW_PROGRAM_ID,
-  GENESIS_ESCROW_LAMPORTS,
-  bridgeConfigPda,
-  bridgeDepositIx,
-  bridgeInitializeIx,
-  decodeBridgeConfig,
-  decodeEscrowConfig,
-  escrowConfigPda,
-  escrowInitializeIx,
-  escrowLockIx,
-  escrowPda,
-} from "./codec.ts";
+import { BRIDGE_PROGRAM_ID, bridgeConfigPda, bridgeDepositIx, bridgeInitializeIx, decodeBridgeConfig } from "./codec.ts";
 import { loadConfig, loadKeypair } from "./config.ts";
+import { NodeRpc } from "./node.ts";
 import { Relayer } from "./relayer.ts";
 
 const cfg = loadConfig();
 const token = new RpcChain("token", cfg.tokenRpc, cfg.commitment);
-const agent = new RpcChain("agent", cfg.agentRpc, cfg.commitment);
+const node = NodeRpc.http(cfg.nodeRpc);
 const [cmd, ...args] = process.argv.slice(2);
 
 function signerSet(arg?: string): PublicKey[] {
@@ -41,40 +27,12 @@ function signerSet(arg?: string): PublicKey[] {
 
 async function main(): Promise<void> {
   switch (cmd) {
-    case "escrow-account-json": {
-      const out = args[0] ?? "escrow-account.json";
-      const lamports = BigInt(args[1] ?? GENESIS_ESCROW_LAMPORTS);
-      // Written by hand: 1e18 is above 2^53, so it must not pass through a JS number.
-      const json = `{
-  "pubkey": "${escrowPda().toBase58()}",
-  "account": {
-    "lamports": ${lamports.toString()},
-    "data": ["", "base64"],
-    "owner": "${ESCROW_PROGRAM_ID.toBase58()}",
-    "executable": false,
-    "rentEpoch": 0,
-    "space": 0
-  }
-}
-`;
-      writeFileSync(out, json);
-      console.log(`wrote ${out}: escrow PDA ${escrowPda().toBase58()} with ${lamports} lamports`);
-      console.log(`use: solana-test-validator --account ${escrowPda().toBase58()} ${out}`);
-      return;
-    }
     case "init-bridge": {
       const mint = new PublicKey(args[0]);
       const threshold = Number(args[1] ?? 1);
       const admin = loadKeypair(cfg.tokenPayerFile);
       const sig = await token.send([bridgeInitializeIx(admin.publicKey, mint, signerSet(args[2]), threshold)], admin);
       console.log(`bridge initialized: config ${bridgeConfigPda().toBase58()} tx ${sig}`);
-      return;
-    }
-    case "init-escrow": {
-      const threshold = Number(args[0] ?? 1);
-      const admin = loadKeypair(cfg.agentPayerFile);
-      const sig = await agent.send([escrowInitializeIx(admin.publicKey, signerSet(args[1]), threshold)], admin);
-      console.log(`escrow initialized: config ${escrowConfigPda().toBase58()} escrow ${escrowPda().toBase58()} tx ${sig}`);
       return;
     }
     case "deposit": {
@@ -91,28 +49,29 @@ async function main(): Promise<void> {
       return;
     }
     case "lock": {
-      const lamports = BigInt(args[0]);
+      const amount = BigInt(args[0]);
       const to = new PublicKey(args[1]);
-      const sender = loadKeypair(args[2] ?? cfg.agentPayerFile);
-      const [c] = await agent.getAccounts([escrowConfigPda()]);
-      if (!c || !c.owner.equals(ESCROW_PROGRAM_ID)) throw new Error("escrow not initialized");
-      const ec = decodeEscrowConfig(c.data);
-      const ix = escrowLockIx({ sender: sender.publicKey, nonce: ec.withdrawNonce, amountLamports: lamports, solanaRecipient: to });
-      const sig = await agent.send([ix], sender);
-      console.log(`withdrawal nonce ${ec.withdrawNonce}: ${lamports} lamports -> ${to.toBase58()} tx ${sig}`);
+      const sender = loadKeypair(args[2] ?? cfg.agentKeyFile);
+      const info = await node.getChainInfo();
+      const acct = await node.getAccount(sender.publicKey.toBase58());
+      const minFee = BigInt(((await node.call("getParams", {})) as { min_fee: string }).min_fee ?? "0");
+      const tx = signTx(sender, { chainId: info.chainId, from: sender.publicKey, nonce: acct.nonce, fee: minFee, kind: KIND.BridgeLock },
+        bridgeLockBody(to, amount));
+      console.log(`BridgeLock ${amount} -> ${to.toBase58()} tx ${await node.sendTx(tx)}`);
       return;
     }
     case "status": {
       const payer = loadKeypair(cfg.tokenPayerFile);
-      const r = new Relayer({ token, agent, signers: [], tokenPayer: payer, agentPayer: payer, cursorFile: cfg.cursorFile,
-        genesisEscrowLamports: cfg.genesisEscrowLamports, allowSurplus: cfg.allowSurplus, dryRun: true, log: () => {} });
+      const r = new Relayer({ token, node, signers: [], tokenPayer: payer, agentKey: payer, stateFile: cfg.stateFile,
+        storefrontProgram: cfg.storefrontProgram, totalSupply: cfg.totalSupply, allowSurplus: cfg.allowSurplus, dryRun: true,
+        log: () => {} });
       const t = await r.tick();
       console.log(JSON.stringify(t, null, 2));
       if (t.refused || t.errors.length) process.exitCode = 1;
       return;
     }
     default:
-      console.error("usage: node src/cli.ts escrow-account-json|init-bridge|init-escrow|deposit|lock|status ...");
+      console.error("usage: node src/cli.ts init-bridge|deposit|lock|status ...");
       process.exitCode = 2;
   }
 }

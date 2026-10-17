@@ -2,9 +2,11 @@
   "name": "@pearl-sol/relayer",
   "private": true,
   "version": "0.1.0",
-  "description": "pearl-sol bridge relayer: token chain (Solana) <-> agent chain (own SVM). SPEC 2.3, 3.1, 4.",
+  "description": "pearl-sol bridge relayer: Solana (bridge + storefront) <-> agent-chain node RPC (docs/RPC.md), K-deep. SPEC 1, 4.3, 5.1.",
   "type": "module",
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "start": "node src/main.ts",
     "cli": "node src/cli.ts",
@@ -12,7 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@solana/web3.js": "1.99.0"
+    "@solana/web3.js": "1.99.0",
+    "@noble/hashes": "1.8.0"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
