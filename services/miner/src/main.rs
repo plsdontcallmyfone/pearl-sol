@@ -15,7 +15,7 @@ use pearl_node::{read_key_file, HttpNode, DEFAULT_RPC};
 #[derive(Parser)]
 #[command(name = "pearl-miner", about = "v2 agent-chain block producer (useful PoW on posted jobs, CPU)")]
 struct Args {
-    /// Node JSON-RPC endpoint.
+    /// Node JSON-RPC endpoint (pool mode: used only to fetch `blob:` job data).
     #[arg(long, default_value = DEFAULT_RPC)]
     rpc: String,
     /// Payout key file (Solana JSON array, or base58 / hex of the 64-byte keypair or 32-byte seed).
@@ -37,6 +37,9 @@ struct Args {
     attester: String,
     #[arg(long, default_value = "results")]
     results_dir: PathBuf,
+    /// Deliver C as a local file:// URI instead of a blob: put to the node.
+    #[arg(long)]
+    result_file: bool,
     /// Tx fee (raised to the template's min_fee).
     #[arg(long, default_value_t = 0)]
     fee: u64,
@@ -66,7 +69,9 @@ fn main() -> Result<()> {
             stats_every: Duration::from_secs(a.stats_secs.max(1)),
             max_shares: a.shares,
         };
+        let data_node = HttpNode::new(&a.rpc);
         let mut m = PoolMiner::new(&pool, key.verifying_key().to_bytes(), cfg, Box::new(|v| println!("{v}")));
+        m.data_node = Some(&data_node);
         return m.run(&|| false);
     }
     let node = HttpNode::new(&a.rpc);
@@ -80,6 +85,7 @@ fn main() -> Result<()> {
         fee: a.fee,
         chain_id: a.chain_id,
         max_blocks: a.blocks,
+        result_blob: !a.result_file,
         ..MinerConfig::default()
     };
     let att: Option<&dyn ResultAttester> = if a.deliver { Some(&attester) } else { None };

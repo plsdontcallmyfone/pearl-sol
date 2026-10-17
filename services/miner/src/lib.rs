@@ -85,6 +85,9 @@ pub struct MinerConfig {
     pub max_blocks: Option<u64>,
     /// Retry a delivery step after this long without progress.
     pub deliver_retry: Duration,
+    /// Deliver C as a `blob:` (putBlob to the node) instead of a local `file://` URI.
+    /// Falls back to file:// if the node refuses the blob.
+    pub result_blob: bool,
 }
 
 impl Default for MinerConfig {
@@ -99,6 +102,7 @@ impl Default for MinerConfig {
             chain_id: None,
             max_blocks: None,
             deliver_retry: Duration::from_secs(30),
+            result_blob: true,
         }
     }
 }
@@ -198,7 +202,7 @@ impl<'a> Miner<'a> {
             return Ok(Some(p.clone()));
         }
         let job = t.job.as_ref().ok_or_else(|| anyhow!("template names a job but carries no job object"))?;
-        let d = data::load(&job.data_uri).with_context(|| format!("load job data {}", job.data_uri))?;
+        let d = pearl_node::load_job_data(self.node, &job.data_uri).with_context(|| format!("load job data {}", job.data_uri))?;
         let prep = Arc::new(PreparedJob::new(job.to_job(), &d.a, &d.b)?);
         self.log(json!({"event": "job_loaded", "job": hex::encode(id), "m": job.m, "n": job.n, "data_uri": job.data_uri}));
         self.prepared.insert(id, prep.clone());
@@ -313,7 +317,13 @@ impl<'a> Miner<'a> {
         std::fs::create_dir_all(&self.cfg.results_dir)?;
         let path = std::fs::canonicalize(&self.cfg.results_dir)?.join(format!("{}.i32", hex::encode(id)));
         data::write_i32(&path, &c)?;
-        let uri = format!("file://{}", path.display());
+        let mut uri = format!("file://{}", path.display());
+        if self.cfg.result_blob {
+            match self.node.put_blob(&pearl_job::freivalds::c_to_bytes(&c)) {
+                Ok(u) => uri = u,
+                Err(e) => self.log(json!({"event": "result_blob_failed", "job": hex::encode(id), "error": format!("{e:#}")})),
+            }
+        }
         self.log(json!({"event": "result_computed", "job": hex::encode(id), "result_hash": hex::encode(rh), "result_uri": uri}));
         self.deliveries.insert(id, Delivery { stage: Stage::Submit, result_hash: rh, uri });
         Ok(())

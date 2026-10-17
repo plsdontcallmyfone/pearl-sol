@@ -38,6 +38,9 @@ impl RewardNode {
     pub fn new(chain_id: u32, target_bits: u32, k: u64, reward: u64) -> Self {
         let n = Self { mock: MockNode::new(chain_id, target_bits), k, ledger: Arc::default() };
         n.ledger.lock().unwrap().reward = reward;
+        // 64 x 64 fallback work (128 tiles per nonce) keeps share odds per nonce high in tests;
+        // the chain default is 4 x 8 (one tile) since 2026-10-17.
+        n.mock.state.lock().unwrap().fallback = pearl_job::pow::FallbackParams { m: 64, n: 64, ..Default::default() };
         n
     }
 

@@ -62,7 +62,8 @@ fn share_nonce_rescans_for_a_block() {
     // preferred when one exists.
     let node = RewardNode::new(CHAIN, BLOCK, K, 0);
     let t = pearl_node::NodeApi::fallback_template(&node, &key(0)).unwrap();
-    let fb = FallbackParams::default();
+    // many tiles per proof (the 4x8 default has one), so a rescan has something to find
+    let fb = FallbackParams { m: 64, n: 64, ..FallbackParams::default() };
     let (mut shares, mut blocks) = (0, 0);
     for n in 0..40 {
         if let Some(p) = mine_share_nonce(&t.header, None, &fb, EASY, n).unwrap() {

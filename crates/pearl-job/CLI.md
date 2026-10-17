@@ -25,8 +25,13 @@ A job's data directory holds:
 | `B.i8` | B, k x n int8 row-major (natural layout, not transposed) |
 | `manifest.json` | `{"m", "n", "k", "a": "A.i8", "b": "B.i8"}` (paths relative to the manifest) |
 
-`--data` and the job's `data_uri` accept `file:///abs/dir`,
-`file:///abs/dir/manifest.json` or a plain path. Only `file://` in M1.
+| `job.blob` | the same data as one blob: `"PSD1" || m u32 || n u32 || k u32 || A || B` (LE) |
+
+`--data` accepts `file:///abs/dir`, `file:///abs/dir/manifest.json` or a plain path.
+A job's on-chain `data_uri` may also be `blob:<blake3 of job.blob, hex>` (M2 data
+availability): `putBlob` the file to any node, and miners / attesters fetch it with
+`getBlob` (`pearl_node::load_job_data`). Result C may likewise be a `blob:` of the raw
+C bytes.
 
 C (the result) is `m x n` i32 little-endian row-major (`.i32`).
 `result_hash = blake3_keyed(C bytes, key = job_key)`.
@@ -59,7 +64,8 @@ JobSpec JSON (also what the miner and attester use; `jobs::Job` maps onto it):
 
 ### `gen --m M --n N [--k 1024] --out-dir DIR [--seed S]`
 Random int7 A, B (deterministic with `--seed`) into DIR.
-`{ok, m, n, k, manifest, a, b, data_uri}` (absolute paths; `data_uri` = `file://<manifest>`).
+`{ok, m, n, k, manifest, a, b, data_uri, blob_file, blob_id, blob_uri, blob_size}` (absolute
+paths; `data_uri` = `file://<manifest>`; `blob_file` = DIR/job.blob, `blob_uri` = `blob:<blob_id>`).
 
 ### `config [--k 1024] [--rank 32] [--rows 0,1,2,3] [--cols 0,1,2,3,4,5,6,7]`
 `{ok, config, k, rank, h, w, row_period, col_period}`. m must be a multiple of

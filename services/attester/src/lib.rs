@@ -72,7 +72,8 @@ pub struct ResultRequest {
     /// C as i32 LE row-major m x n, base64. Either this or `result_uri`.
     #[serde(default)]
     pub result_b64: Option<String>,
-    /// `file:///path/C.i32`. Defaults to the job's on-chain result_uri in Chain mode.
+    /// `blob:<hex>` (node mode, fetched with getBlob) or `file:///path/C.i32`. Defaults to
+    /// the job's on-chain result_uri.
     #[serde(default)]
     pub result_uri: Option<String>,
     #[serde(default)]
@@ -92,11 +93,15 @@ pub struct ResultResponse {
     pub elapsed_ms: f64,
 }
 
-fn read_result(b64: &Option<String>, uri: &Option<String>, len: usize) -> Result<Vec<i32>> {
+fn read_result(b64: &Option<String>, uri: &Option<String>, len: usize, node: Option<&dyn NodeApi>) -> Result<Vec<i32>> {
     let bytes = match (b64, uri) {
         (Some(b), _) => base64::engine::general_purpose::STANDARD.decode(b.trim()).context("result_b64")?,
+        (None, Some(u)) if u.starts_with(data::BLOB_URI_PREFIX) => {
+            let node = node.ok_or_else(|| anyhow!("blob: result URIs need node mode (getBlob)"))?;
+            pearl_node::fetch_blob(node, u).context("fetch result blob")?
+        }
         (None, Some(u)) => {
-            let p = u.strip_prefix("file://").ok_or_else(|| anyhow!("result_uri must be file:// in M1"))?;
+            let p = u.strip_prefix("file://").ok_or_else(|| anyhow!("result_uri must be blob: or file://"))?;
             std::fs::read(p).with_context(|| format!("read {p}"))?
         }
         _ => bail!("need result_b64 or result_uri"),
@@ -203,13 +208,21 @@ impl Attester {
     /// Returns `(result_hash, elapsed_ms)`.
     fn check_result(&self, spec: &JobSpec, req: &ResultRequest, uri: &Option<String>) -> Result<([u8; 32], f64)> {
         let t0 = Instant::now();
-        let d = data::load(&spec.data_uri).context("load job data")?;
+        let node: Option<&dyn NodeApi> = match &self.source {
+            JobSource::Node(n) => Some(n.as_ref()),
+            _ => None,
+        };
+        let d = match node {
+            Some(n) => pearl_node::load_job_data(n, &spec.data_uri),
+            None => data::load(&spec.data_uri),
+        }
+        .context("load job data")?;
         let job = spec.to_job()?;
         let (m, n, k) = (job.m as usize, job.n as usize, job.config.k());
         ensure!(d.manifest.m == job.m && d.manifest.n == job.n && d.manifest.k as usize == k, "job data dims differ from the job");
         let (ha, hb) = pearl_job::commit(&job.job_key(), &d.a, &d.b, k, n);
         ensure!(ha == job.hash_a && hb == job.hash_b, "job data does not match the job's commitments");
-        let c = read_result(&req.result_b64, uri, m * n)?;
+        let c = read_result(&req.result_b64, uri, m * n, node)?;
         ensure!(
             freivalds(&d.a, &d.b, &c, m, n, k, self.freivalds_rounds, &mut rand::rng()),
             "Freivalds check failed: C != AB"

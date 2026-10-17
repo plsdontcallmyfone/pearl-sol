@@ -81,6 +81,8 @@ pub fn mine_share_nonce(header: &BlockHeader, prep: Option<&PreparedJob>, fallba
 
 pub struct PoolMiner<'a> {
     pub pool: &'a dyn PoolApi,
+    /// A node to fetch `blob:` job data from (getBlob). None: only file:// data.
+    pub data_node: Option<&'a dyn pearl_node::NodeApi>,
     pub payout: [u8; 32],
     pub cfg: PoolMinerConfig,
     pub stats: PoolStats,
@@ -98,6 +100,7 @@ impl<'a> PoolMiner<'a> {
     pub fn new(pool: &'a dyn PoolApi, payout: [u8; 32], cfg: PoolMinerConfig, log: Logger) -> Self {
         Self {
             pool,
+            data_node: None,
             payout,
             cfg,
             stats: PoolStats::default(),
@@ -125,7 +128,11 @@ impl<'a> PoolMiner<'a> {
             return Ok(Some(p.clone()));
         }
         let job = t.job.as_ref().ok_or_else(|| anyhow!("work names a job but carries no job object"))?;
-        let d = data::load(&job.data_uri).with_context(|| format!("load job data {}", job.data_uri))?;
+        let d = match self.data_node {
+            Some(n) => pearl_node::load_job_data(n, &job.data_uri),
+            None => data::load(&job.data_uri),
+        }
+        .with_context(|| format!("load job data {}", job.data_uri))?;
         let prep = Arc::new(PreparedJob::new(job.to_job(), &d.a, &d.b)?);
         self.log(json!({"event": "job_loaded", "job": hex::encode(id), "m": job.m, "n": job.n, "data_uri": job.data_uri}));
         self.prepared.insert(id, prep.clone());

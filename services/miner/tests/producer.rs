@@ -307,3 +307,40 @@ fn bench_rates() {
         println!("{label} threads={threads}: {rate:.0} nonces/s ({:.2} ms per nonce per thread)", 1e3 * threads as f64 / rate);
     }
 }
+
+/// M2 data availability: the job's data is a `blob:` on the node; C is delivered as a
+/// `blob:` (putBlob) and the attester reads both through the node.
+#[test]
+fn blob_job_data_and_blob_result() {
+    let dir = tmp("blob");
+    let node = MockNode::new(CHAIN, EASY);
+    let (mut job, c) = make_job(&dir, [0x0b; 32], 9);
+    let d = data::load(&job.data_uri).unwrap();
+    let blob = data::encode_job_blob(job.m, job.n, 1024, &d.a, &d.b).unwrap();
+    let uri = node.put_blob(&blob).unwrap();
+    assert_eq!(uri, data::blob_uri(&data::blob_id(&blob)));
+    job.data_uri = uri;
+    std::fs::remove_dir_all(dir.join(hex::encode(&[0x0b; 4]))).unwrap(); // no local copy
+    node.add_job(job.clone());
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 2, true), log);
+    m.run(&|| false).unwrap();
+    assert!(events(&logs, "job_loaded") >= 1);
+    let j = node.job(&[0x0b; 32]).unwrap();
+    assert!(j.is("Completed"), "job is {}", j.status);
+    assert!(j.result_uri.starts_with("blob:"), "result uri {}", j.result_uri);
+    let id = data::parse_blob_uri(&j.result_uri).unwrap();
+    assert_eq!(node.get_blob(&id).unwrap().unwrap(), pearl_job::freivalds::c_to_bytes(&c));
+    assert_eq!(j.result_hash, Some(result_hash(&job.to_job().job_key(), &c)));
+    // a blob the node does not hold: the job is skipped, fallback blocks continue
+    let node2 = MockNode::new(CHAIN, EASY);
+    let mut job2 = job.clone();
+    job2.data_uri = data::blob_uri(&[7; 32]);
+    node2.add_job(job2);
+    let (logs2, log2) = collecting_log();
+    let mut m2 = Miner::new(&node2, None, miner_key(), cfg(&dir, 1, false), log2);
+    m2.run(&|| false).unwrap();
+    assert!(node2.state.lock().unwrap().blocks.iter().all(|b| b.header.is_fallback()));
+    drop(logs2);
+}

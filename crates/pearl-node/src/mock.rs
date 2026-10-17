@@ -41,6 +41,8 @@ pub struct MockState {
     /// Advance the tip right after handing out each template (makes them stale).
     pub steal_templates: bool,
     pub templates_served: u64,
+    /// putBlob / getBlob store.
+    pub blobs: HashMap<[u8; 32], Vec<u8>>,
 }
 
 impl MockState {
@@ -154,6 +156,18 @@ impl MockNode {
                 Ok(json!({"account": crate::b58(&key32(&p["account"])?), "balance": a.balance.to_string(), "nonce": a.nonce}))
             }
             "sendTx" => Ok(json!({"tx_hash": self.send_tx(&b64.decode(p["tx"].as_str().unwrap_or(""))?)?})),
+            "putBlob" => {
+                let d = b64.decode(p["data"].as_str().unwrap_or(""))?;
+                let uri = self.put_blob(&d)?;
+                Ok(json!({"blob_id": uri.trim_start_matches("blob:"), "uri": uri, "size": d.len(), "new": true}))
+            }
+            "getBlob" => {
+                let id = key32(&p["blob_id"])?;
+                Ok(match self.get_blob(&id)? {
+                    Some(d) => json!({"blob_id": hex::encode(id), "uri": pearl_job::data::blob_uri(&id), "size": d.len(), "data": b64.encode(&d)}),
+                    None => Value::Null,
+                })
+            }
             m => bail!("method not found: {m}"),
         })();
         match r {
@@ -252,6 +266,17 @@ impl NodeApi for MockNode {
 
     fn get_job(&self, job_id: &[u8; 32]) -> Result<Option<JobInfo>> {
         Ok(self.job(job_id))
+    }
+
+    fn get_blob(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        Ok(self.state.lock().unwrap().blobs.get(id).cloned())
+    }
+
+    fn put_blob(&self, data: &[u8]) -> Result<String> {
+        ensure!(!data.is_empty(), "empty blob");
+        let id = pearl_job::data::blob_id(data);
+        self.state.lock().unwrap().blobs.insert(id, data.to_vec());
+        Ok(pearl_job::data::blob_uri(&id))
     }
 
     fn get_account(&self, account: &[u8; 32]) -> Result<Account> {

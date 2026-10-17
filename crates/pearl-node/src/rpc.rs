@@ -9,6 +9,8 @@
 //! | getJob | `{"job_id": <hex>}` | job object (`JobInfo::from_json`) or null |
 //! | getAccount | `{"account": <base58>}` | `{"balance", "nonce"}` (null = empty account) |
 //! | sendTx | `{"tx": <base64>}` | `{"tx_hash"}` or a hash string |
+//! | getBlob | `{"blob_id": <hex>}` | `{"blob_id", "uri", "size", "data": <base64>}` or null |
+//! | putBlob | `{"data": <base64>}` | `{"blob_id", "uri", "size", "new"}` |
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -133,6 +135,20 @@ impl NodeApi for HttpNode {
         }
         let g = |k: &str| v.get(k).filter(|x| !x.is_null()).map(num).transpose().map(|x| x.unwrap_or(0));
         Ok(Account { balance: g("balance")?, nonce: g("nonce")? })
+    }
+
+    fn get_blob(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        let v = self.call("getBlob", json!({"blob_id": hex::encode(id)}))?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        let d = v.get("data").and_then(|d| d.as_str()).ok_or_else(|| anyhow!("getBlob result has no data"))?;
+        Ok(Some(base64::engine::general_purpose::STANDARD.decode(d)?))
+    }
+
+    fn put_blob(&self, data: &[u8]) -> Result<String> {
+        let v = self.call("putBlob", json!({"data": b64(data)}))?;
+        v.get("uri").and_then(|u| u.as_str()).map(String::from).ok_or_else(|| anyhow!("putBlob result has no uri: {v}"))
     }
 
     fn send_tx(&self, wire: &[u8]) -> Result<String> {

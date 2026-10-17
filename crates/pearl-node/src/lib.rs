@@ -320,6 +320,42 @@ pub trait NodeApi: Send + Sync {
     fn get_account(&self, account: &[u8; 32]) -> Result<Account>;
     /// Returns the tx hash (hex) the node reports.
     fn send_tx(&self, wire: &[u8]) -> Result<String>;
+    /// getBlob: the blob's bytes, or None if this node does not hold it (yet: a node
+    /// starts fetching a blob that a job references, so a later retry may succeed).
+    fn get_blob(&self, _id: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        bail!("this node API has no blob store")
+    }
+    /// putBlob: store bytes on the node; returns the `blob:<hex>` URI.
+    fn put_blob(&self, _data: &[u8]) -> Result<String> {
+        bail!("this node API has no blob store")
+    }
+}
+
+/// Fetch a `blob:` URI's bytes from the node and check them against the id.
+pub fn fetch_blob(node: &dyn NodeApi, uri: &str) -> Result<Vec<u8>> {
+    let id = pearl_job::data::parse_blob_uri(uri).ok_or_else(|| anyhow!("malformed blob URI {uri:?}"))?;
+    let bytes = node.get_blob(&id)?.ok_or_else(|| anyhow!("blob {uri} is not on this node yet (getBlob returned null)"))?;
+    ensure!(pearl_job::data::blob_id(&bytes) == id, "blob {uri}: content does not match its id");
+    Ok(bytes)
+}
+
+/// Job data from a `data_uri`: `blob:<hex>` through the node's getBlob (a PSD1 job blob),
+/// anything else (file://, a path) from the local filesystem.
+pub fn load_job_data(node: &dyn NodeApi, uri: &str) -> Result<pearl_job::data::JobData> {
+    if uri.starts_with(pearl_job::data::BLOB_URI_PREFIX) {
+        return pearl_job::data::decode_job_blob(&fetch_blob(node, uri)?);
+    }
+    pearl_job::data::load(uri)
+}
+
+/// Result C (m*n i32) from a `result_uri`: `blob:<hex>` via getBlob, or `file://` / a path.
+pub fn load_result(node: &dyn NodeApi, uri: &str, len: usize) -> Result<Vec<i32>> {
+    if uri.starts_with(pearl_job::data::BLOB_URI_PREFIX) {
+        return pearl_job::data::decode_result_blob(&fetch_blob(node, uri)?, len);
+    }
+    let p = uri.strip_prefix("file://").unwrap_or(uri);
+    ensure!(!p.contains("://"), "unsupported result URI scheme in {uri:?} (blob: or file://)");
+    pearl_job::data::read_i32(std::path::Path::new(p), len)
 }
 
 /// Read an ed25519 key file: Solana JSON array (64 bytes), or a base58 / hex string of

@@ -386,7 +386,14 @@ fn run(cli: Cli) -> Result<Value> {
             let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, seed);
             let mp = data::save(&out_dir, m, n, k, &a, &b)?;
             let abs = std::fs::canonicalize(&mp)?;
+            // the same data as one blob for the node's blob store (putBlob, data_uri blob:<id>)
+            let blob = data::encode_job_blob(m, n, k, &a, &b)?;
+            let blob_path = out_dir.join("job.blob");
+            std::fs::write(&blob_path, &blob)?;
+            let blob_id = data::blob_id(&blob);
             json!({"ok": true, "m": m, "n": n, "k": k,
+                   "blob_file": std::fs::canonicalize(&blob_path)?.display().to_string(),
+                   "blob_id": hex::encode(blob_id), "blob_uri": data::blob_uri(&blob_id), "blob_size": blob.len(),
                    "manifest": abs.display().to_string(),
                    "a": std::fs::canonicalize(out_dir.join("A.i8"))?.display().to_string(),
                    "b": std::fs::canonicalize(out_dir.join("B.i8"))?.display().to_string(),

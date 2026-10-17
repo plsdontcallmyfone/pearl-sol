@@ -58,6 +58,9 @@ pub fn read_i32(path: &Path, expect_len: usize) -> Result<Vec<i32>> {
 /// Resolve a data URI to a manifest path. Accepts `file:///abs/dir`,
 /// `file:///abs/dir/manifest.json` or a plain filesystem path. Other schemes are M2.
 pub fn manifest_path(uri: &str) -> Result<PathBuf> {
+    if uri.starts_with(BLOB_URI_PREFIX) {
+        bail!("{uri:?} is a blob: URI; fetch it from a node with getBlob (pearl_node::load_job_data)");
+    }
     let p = if let Some(rest) = uri.strip_prefix("file://") {
         PathBuf::from(rest)
     } else if uri.contains("://") {
@@ -88,4 +91,79 @@ pub fn save(dir: &Path, m: u32, n: u32, k: u32, a: &[i8], b: &[i8]) -> Result<Pa
     let mp = dir.join("manifest.json");
     std::fs::write(&mp, serde_json::to_vec_pretty(&manifest)?)?;
     Ok(mp)
+}
+
+// ---------------------------------------------------------------- blob data (M2 data availability)
+
+/// URI scheme of the agent chain's content-addressed blob store (docs/RPC.md "Blobs").
+pub const BLOB_URI_PREFIX: &str = "blob:";
+/// Magic of a job data blob.
+pub const JOB_BLOB_MAGIC: &[u8; 4] = b"PSD1";
+
+/// `blob:<64 hex>` -> blob id (`blake3` of the blob bytes).
+pub fn parse_blob_uri(uri: &str) -> Option<[u8; 32]> {
+    let rest = uri.trim().strip_prefix(BLOB_URI_PREFIX)?;
+    if rest.len() != 64 {
+        return None;
+    }
+    hex::decode(rest).ok()?.try_into().ok()
+}
+
+pub fn blob_uri(id: &[u8; 32]) -> String {
+    format!("{BLOB_URI_PREFIX}{}", hex::encode(id))
+}
+
+pub fn blob_id(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// Job data as one blob: `"PSD1" || m u32 || n u32 || k u32 || A (m*k i8, row-major) ||
+/// B (k*n i8, row-major)`, integers little-endian.
+pub fn encode_job_blob(m: u32, n: u32, k: u32, a: &[i8], b: &[i8]) -> Result<Vec<u8>> {
+    ensure!(a.len() == m as usize * k as usize, "A has {} entries, expected m*k", a.len());
+    ensure!(b.len() == k as usize * n as usize, "B has {} entries, expected k*n", b.len());
+    let mut v = Vec::with_capacity(16 + a.len() + b.len());
+    v.extend_from_slice(JOB_BLOB_MAGIC);
+    for x in [m, n, k] {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    v.extend_from_slice(crate::job::as_u8(a));
+    v.extend_from_slice(crate::job::as_u8(b));
+    Ok(v)
+}
+
+pub fn decode_job_blob(bytes: &[u8]) -> Result<JobData> {
+    ensure!(bytes.len() >= 16 && &bytes[..4] == JOB_BLOB_MAGIC, "not a job data blob (magic PSD1)");
+    let u = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+    let (m, n, k) = (u(4), u(8), u(12));
+    let (la, lb) = (m as usize * k as usize, k as usize * n as usize);
+    ensure!(bytes.len() == 16 + la + lb, "job blob is {} bytes, expected {}", bytes.len(), 16 + la + lb);
+    let a = bytes[16..16 + la].iter().map(|&x| x as i8).collect();
+    let b = bytes[16 + la..].iter().map(|&x| x as i8).collect();
+    Ok(JobData { manifest: Manifest { m, n, k, a: String::new(), b: String::new() }, a, b })
+}
+
+/// Result C (m x n i32, row-major, little-endian) from blob bytes.
+pub fn decode_result_blob(bytes: &[u8], expect_len: usize) -> Result<Vec<i32>> {
+    ensure!(bytes.len() == expect_len * 4, "result blob has {} bytes, expected {}", bytes.len(), expect_len * 4);
+    Ok(bytes.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+#[cfg(test)]
+mod blob_tests {
+    use super::*;
+
+    #[test]
+    fn job_blob_roundtrip() {
+        let (a, b) = random_matrices(4, 8, 64, Some(1));
+        let v = encode_job_blob(4, 8, 64, &a, &b).unwrap();
+        let d = decode_job_blob(&v).unwrap();
+        assert_eq!((d.manifest.m, d.manifest.n, d.manifest.k), (4, 8, 64));
+        assert_eq!((d.a, d.b), (a, b));
+        assert!(decode_job_blob(&v[..v.len() - 1]).is_err());
+        let id = blob_id(&v);
+        assert_eq!(parse_blob_uri(&blob_uri(&id)), Some(id));
+        assert_eq!(parse_blob_uri("blob:12"), None);
+        assert!(manifest_path(&blob_uri(&id)).is_err());
+    }
 }
