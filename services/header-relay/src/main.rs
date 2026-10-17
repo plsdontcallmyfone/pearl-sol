@@ -86,6 +86,13 @@ enum Cmd {
     Status,
     /// Devnet: mine N fallback blocks via getBlockTemplate / submitBlock.
     Mine { n: u64 },
+    /// R5: accumulator proof of the final header at HEIGHT (short form, current size) as one
+    /// JSON line; `--restore` also re-creates its light-client record if it was closed.
+    AccProof {
+        height: u64,
+        #[arg(long)]
+        restore: bool,
+    },
     /// Dump a header chain with proofs, txs and final withdrawal proofs as JSON.
     Harvest {
         #[arg(long)]
@@ -132,8 +139,12 @@ fn main() -> Result<()> {
         Cmd::Status => {
             let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
             match s.config() {
-                Ok(c) => println!("{}", json!({"initialized": true, "tip_height": c.tip_height, "tip_hash": hex::encode(c.tip_hash),
-                    "final_height": c.final_height, "final_floor": c.final_floor, "checkpoint_height": c.checkpoint_height})),
+                Ok(c) => {
+                    let acc = s.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
+                    println!("{}", json!({"initialized": true, "tip_height": c.tip_height, "tip_hash": hex::encode(c.tip_hash),
+                        "final_height": c.final_height, "final_floor": c.final_floor, "checkpoint_height": c.checkpoint_height,
+                        "accumulator": acc.map(|(st, n, last)| json!({"start_height": st, "count": n, "next_height": st + n, "last_hash": hex::encode(last)}))}))
+                }
                 Err(_) => println!("{}", json!({"initialized": false})),
             }
             Ok(())
@@ -147,7 +158,42 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Harvest { out, to } => harvest(&node, &out, to),
+        Cmd::AccProof { height, restore } => {
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            acc_proof(&node, &mut s, height, restore)
+        }
     }
+}
+
+fn sha_parts(parts: &[&[u8]]) -> [u8; 32] {
+    chain::sha256(parts)
+}
+
+/// Short-form accumulator proof of the node's canonical header at `height`, against the
+/// light client's current accumulator (leaf hashes rebuilt from the node's headers).
+fn acc_proof(node: &Node, s: &mut Sol, height: u64, restore: bool) -> Result<()> {
+    let d = s.account(&client::acc_addr())?.context("no accumulator (header-relay init / run starts one)")?;
+    let (start, count, last) = client::acc_state(&d).context("accumulator layout")?;
+    if height < start || height >= start + count {
+        anyhow::bail!("height {height} is not in the accumulator (heights {start}..{})", start + count);
+    }
+    let mut hashes = Vec::with_capacity(count as usize);
+    for h in start..start + count {
+        hashes.push(node.header_at(h)?.context("node header")?.hash);
+    }
+    if *hashes.last().unwrap() != last {
+        anyhow::bail!("the node's chain does not match the accumulator's last hash");
+    }
+    let hd = node.header_at(height)?.context("node header")?;
+    let proof = pearl_verify_sbf::acc::prove_short(sha_parts, &hashes, height - start).context("proof")?;
+    let mut restored = false;
+    if restore && s.account(&client::header_addr(&hd.hash))?.is_none() {
+        s.send(&[client::restore_header(s.pk(), hd.bytes, count, proof.clone())], &[])?;
+        restored = true;
+    }
+    println!("{}", json!({"height": height, "hash": hex::encode(hd.hash), "header": hex::encode(hd.bytes), "count": count,
+        "start_height": start, "proof": hex::encode(&proof), "form": "short (siblings to the current peak)", "restored": restored}));
+    Ok(())
 }
 
 fn read_key(p: &PathBuf) -> Result<Keypair> {
@@ -181,7 +227,9 @@ fn init(node: &Node, s: &mut Sol, height: Option<u64>, relay_reward: u64, retain
     let cw = chain::u256_hex_le(cp.cum_work.as_deref().context("cumulative_work")?)?;
     let p = chain::lc_params(node, relay_reward, retain_final)?;
     s.send(&[client::initialize(s.pk(), p, cp.bytes, cw, ts)], &[])?;
-    println!("light client initialized at height {h} ({})", hex::encode(cp.hash));
+    // R5: the final-header accumulator starts at the checkpoint (admin = this key).
+    s.send(&[client::init_accumulator(s.pk())], &[])?;
+    println!("light client initialized at height {h} ({}), accumulator started", hex::encode(cp.hash));
     Ok(())
 }
 
@@ -232,6 +280,7 @@ impl Relay<'_> {
         }
         self.maybe_reorg()?;
         self.mark_finals()?;
+        self.accumulate_finals()?;
         self.close_old()?;
         Ok(relayed)
     }
@@ -281,12 +330,12 @@ impl Relay<'_> {
     }
 
     fn register_jobs(&mut self, hd: &ChainHeader) -> Result<()> {
-        let txs = self.node.block_txs(&hd.hash)?;
+        let (txs, cb) = self.node.block_body(&hd.hash)?;
         let jobs = chain::jobs_in(&txs);
         if jobs.is_empty() {
             return Ok(());
         }
-        let (_, paths) = chain::tx_root_paths(&txs);
+        let (_, paths) = chain::tx_root_paths(&txs, cb.as_deref());
         for (job_id, i) in jobs {
             if self.sol.account(&client::job_addr(&job_id))?.is_some() {
                 continue;
@@ -335,10 +384,46 @@ impl Relay<'_> {
         Ok(())
     }
 
-    /// Close final headers we paid for once they are `retain_final` below the floor.
+    /// R5: append final headers to the accumulator in height order (batches of 24). A
+    /// light client deployed before the accumulator gets one when this key is its admin.
+    fn accumulate_finals(&mut self) -> Result<()> {
+        let cfg = self.sol.config()?;
+        let Some(data) = self.sol.account(&client::acc_addr())? else {
+            if cfg.admin == self.sol.pk() {
+                self.sol.send(&[client::init_accumulator(self.sol.pk())], &[])?;
+                println!("accumulator started at final height {}", cfg.final_height);
+            }
+            return Ok(());
+        };
+        let (start, count, _) = client::acc_state(&data).context("accumulator layout")?;
+        let mut next = start + count;
+        while next <= cfg.final_floor {
+            let mut batch = vec![];
+            while next <= cfg.final_floor && batch.len() < 24 {
+                let Some(hd) = self.node.header_at(next)? else { break };
+                if !matches!(self.sol.header_state(&hd.hash)?, Some((lightclient::STATUS_VERIFIED, _, _))) {
+                    break;
+                }
+                batch.push(hd.hash);
+                next += 1;
+            }
+            if batch.is_empty() {
+                break;
+            }
+            self.sol.send(&[client::accumulate(&batch)], &[])?;
+        }
+        Ok(())
+    }
+
+    /// Close final headers we paid for once they are `retain_final` below the floor and
+    /// in the accumulator.
     fn close_old(&mut self) -> Result<()> {
         let cfg = self.sol.config()?;
-        let upto = cfg.final_floor.saturating_sub(cfg.params.retain_final + 1);
+        let acc_next = match self.sol.account(&client::acc_addr())? {
+            Some(d) => client::acc_state(&d).map(|(s, c, _)| s + c).unwrap_or(0),
+            None => 0,
+        };
+        let upto = cfg.final_floor.saturating_sub(cfg.params.retain_final + 1).min(acc_next);
         let from = self.closed_upto.max(cfg.checkpoint_height + 1);
         for h in from..upto {
             let Some(hd) = self.node.header_at(h)? else { break };
@@ -510,8 +595,9 @@ fn harvest(node: &Node, out: &PathBuf, to: Option<u64>) -> Result<()> {
     let mut headers = vec![];
     for h in 0..=tip {
         let hd = node.header_at(h)?.context("header")?;
-        let txs = node.block_txs(&hd.hash)?;
+        let (txs, cb) = node.block_body(&hd.hash)?;
         headers.push(json!({
+            "coinbase": cb.as_ref().map(hex::encode),
             "height": h,
             "hash": hex::encode(hd.hash),
             "header": hex::encode(hd.bytes),

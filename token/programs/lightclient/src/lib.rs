@@ -28,6 +28,18 @@
 //! Job blocks need the job's commitments: `register_job` proves the PostJob (or the
 //! storefront-order BridgeUnlock) tx against the `tx_root` of a verified canonical
 //! header and stores hash_a, hash_b, m, n, config and the Pearl job header.
+//!
+//! Final-header accumulator (Agent Credit R5; `Accumulator ["acc"]`): a SHA-256 Merkle
+//! mountain range (crates/pearl-verify-sbf `acc`) over the hashes of FINAL headers in
+//! height order, from the final header at `init_accumulator` on. `accumulate` appends
+//! the next final headers (permissionless; each must link by prev_hash to the last one);
+//! `close_header` refuses a final header not yet accumulated, so every final header
+//! from the start stays provable forever: `prove_header` checks a header's MMR
+//! inclusion against the current root or one of the last `ACC_ROOTS` roots (and returns
+//! its hash and height as return data), `restore_header` re-creates a closed final
+//! `HeaderRecord` from such a proof, so every existing reader (`read_final_header`)
+//! works on it again. Other programs can check inclusion inline with
+//! [`verify_accumulated`] over the raw `Accumulator` account.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
@@ -43,6 +55,11 @@ pub const CANON_SEED: &[u8] = b"canon";
 pub const HEADER_SEED: &[u8] = b"header";
 pub const JOB_SEED: &[u8] = b"job";
 pub const POOL_SEED: &[u8] = b"pool";
+pub const ACC_SEED: &[u8] = b"acc";
+
+/// Recent accumulator roots kept (by leaf count mod ACC_ROOTS), so a proof built against a
+/// slightly older size still verifies after a few appends.
+pub const ACC_ROOTS: usize = 128;
 
 /// Canonical-chain ring (by height mod CANON_LEN).
 pub const CANON_LEN: usize = 256;
@@ -64,6 +81,14 @@ pub fn header_pda(hash: &[u8; 32]) -> (Pubkey, u8) {
 
 pub fn job_pda(job_id: &[u8; 32]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[JOB_SEED, job_id], &ID)
+}
+
+pub fn acc_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[ACC_SEED], &ID)
+}
+
+fn sha_parts(parts: &[&[u8]]) -> [u8; 32] {
+    hashv(parts).to_bytes()
 }
 
 pub mod work;
@@ -485,6 +510,90 @@ pub mod lightclient {
         Ok(())
     }
 
+    /// Admin: start the final-header accumulator at the current final header (leaf 0).
+    /// Needed once (Initialize does not create it, so older deployments can add it).
+    pub fn init_accumulator(ctx: Context<InitAccumulator>) -> Result<()> {
+        let c = &ctx.accounts.config;
+        let mut a = ctx.accounts.acc.load_init()?;
+        a.start_height = c.final_height;
+        a.last_hash = c.final_hash;
+        a.count = 0;
+        pv::acc::append(sha_parts, 0, &mut a.peaks, &c.final_hash);
+        a.count = 1;
+        let root = pv::acc::root_of_slots(sha_parts, 1, &a.peaks);
+        a.roots[1 % ACC_ROOTS] = root;
+        a.bump = ctx.bumps.acc;
+        emit!(Accumulated { height: c.final_height, hash: c.final_hash, count: 1, root });
+        Ok(())
+    }
+
+    /// Append the next final headers (remaining accounts, `HeaderRecord`s in height order).
+    /// Permissionless. Each must be verified, final (or canonical at or below the final
+    /// floor), at height `start_height + count` and the child of the last appended header.
+    pub fn accumulate<'info>(ctx: Context<'_, '_, 'info, 'info, Accumulate<'info>>) -> Result<()> {
+        let c = &ctx.accounts.config;
+        let canon = ctx.accounts.canon.load()?;
+        let mut a = ctx.accounts.acc.load_mut()?;
+        require!(!ctx.remaining_accounts.is_empty(), LcError::BadPath);
+        for ai in ctx.remaining_accounts.iter() {
+            require_keys_eq!(*ai.owner, crate::ID, LcError::BadPath);
+            let loader = AccountLoader::<HeaderRecord>::try_from(ai)?;
+            let r = loader.load()?;
+            require!(r.status == STATUS_VERIFIED, LcError::NotVerified);
+            require!(r.height == a.start_height + a.count, LcError::AccOrder);
+            require!(Header(&r.header).prev_hash() == a.last_hash, LcError::AccOrder);
+            let fin = r.is_final == 1 || (r.height <= c.final_floor && is_canonical(&canon, c, &r.hash, r.height));
+            require!(fin, LcError::NotFinal);
+            let n = a.count;
+            pv::acc::append(sha_parts, n, &mut a.peaks, &r.hash);
+            a.count = n + 1;
+            a.last_hash = r.hash;
+            let root = pv::acc::root_of_slots(sha_parts, n + 1, &a.peaks);
+            a.roots[((n + 1) as usize) % ACC_ROOTS] = root;
+            emit!(Accumulated { height: r.height, hash: r.hash, count: n + 1, root });
+        }
+        Ok(())
+    }
+
+    /// Check that `header` is a final header in the accumulator: MMR inclusion of its hash
+    /// at leaf `height - start_height`. `count` = the current leaf count with the short
+    /// proof (siblings to its peak, checked against the stored peak; fits a tx at any
+    /// size), or any count among the last ACC_ROOTS with the full proof (siblings and the
+    /// other peaks, checked against that root; fits a tx up to about 2^15 leaves). Return data:
+    /// `block_hash [32] || height u64 LE`. Read-only; callable by CPI.
+    pub fn prove_header(ctx: Context<ProveHeader>, header: [u8; 256], count: u64, proof: Vec<u8>) -> Result<()> {
+        let a = ctx.accounts.acc.load()?;
+        let (hash, height) = a.verify(&header, count, &proof)?;
+        let mut out = [0u8; 40];
+        out[..32].copy_from_slice(&hash);
+        out[32..].copy_from_slice(&height.to_le_bytes());
+        anchor_lang::solana_program::program::set_return_data(&out);
+        Ok(())
+    }
+
+    /// Re-create the `HeaderRecord` of a closed final header from an accumulator proof
+    /// (as `prove_header`). The payer pays its rent and may close it again later. The
+    /// record is Verified and final, `cum_work` zero, `_pad[0] = 1` (restored).
+    pub fn restore_header(ctx: Context<RestoreHeader>, hash: [u8; 32], header: [u8; 256], count: u64, proof: Vec<u8>) -> Result<()> {
+        let a = ctx.accounts.acc.load()?;
+        let (h, height) = a.verify(&header, count, &proof)?;
+        require!(h == hash, LcError::HashMismatch);
+        let mut r = ctx.accounts.header.load_init()?;
+        r.hash = hash;
+        r.header = header;
+        r.height = height;
+        r.ts_hist[0] = Header(&header).timestamp_ms();
+        r.ts_len = 1;
+        r.status = STATUS_VERIFIED;
+        r.is_final = 1;
+        r.bump = ctx.bumps.header;
+        r.relayer = ctx.accounts.payer.key();
+        r.verified_slot = Clock::get()?.slot;
+        r._pad[0] = 1;
+        emit!(HeaderRestored { hash, height });
+        Ok(())
+    }
+
     /// Close a header no longer needed, rent back to its relayer: a final header
     /// `retain_final` below the final floor, a dead fork header at or below the floor,
     /// or a pending header whose height is at or below the floor.
@@ -495,7 +604,14 @@ pub mod lightclient {
         require_keys_eq!(ctx.accounts.relayer.key(), r.relayer, LcError::WrongRelayer);
         require!(r.hash != c.tip_hash && r.hash != c.final_hash, LcError::CannotClose);
         let ok = if r.is_final == 1 {
-            r.height + c.params.retain_final < c.final_floor
+            let old_enough = r.height + c.params.retain_final < c.final_floor;
+            if old_enough {
+                // A final header must be in the accumulator first (R5); headers below its
+                // start height predate it.
+                let acc = ctx.accounts.acc.load()?;
+                require!(r.height < acc.start_height + acc.count, LcError::NotAccumulated);
+            }
+            old_enough
         } else {
             r.height <= c.final_floor && !(r.status == STATUS_VERIFIED && is_canonical(&canon, c, &r.hash, r.height))
         };
@@ -559,6 +675,89 @@ pub struct HeaderRecord {
     pub is_final: u8,
     pub bump: u8,
     pub _pad: [u8; 4],
+}
+
+/// Final-header accumulator (R5). Fixed layout (see [`acc_layout`]) so other programs
+/// read it raw.
+#[account(zero_copy)]
+#[repr(C)]
+pub struct Accumulator {
+    /// Height of leaf 0.
+    pub start_height: u64,
+    /// Leaves (final headers) appended: heights start_height .. start_height + count.
+    pub count: u64,
+    /// Hash of the last appended header (height start_height + count - 1).
+    pub last_hash: [u8; 32],
+    /// MMR peaks by height: `peaks[b]` is the peak over 2^b leaves when bit b of count is set.
+    pub peaks: [[u8; 32]; 64],
+    /// `roots[n % ACC_ROOTS]` = root when the accumulator held n leaves.
+    pub roots: [[u8; 32]; ACC_ROOTS],
+    pub bump: u8,
+    pub _pad: [u8; 7],
+}
+
+impl Accumulator {
+    /// `(block_hash, height)` of `header` if it is in the accumulator at size `count`.
+    pub fn verify(&self, header: &[u8; 256], count: u64, proof: &[u8]) -> Result<([u8; 32], u64)> {
+        require!(count >= 1 && count <= self.count && self.count - count < ACC_ROOTS as u64, LcError::AccRoot);
+        let h = Header(header);
+        let height = h.height();
+        require!(height >= self.start_height, LcError::AccProof);
+        let i = height - self.start_height;
+        let hash = h.block_hash();
+        // Short form (siblings only) against the current peaks; else the full form against
+        // the root at `count` (current or recent).
+        if count == self.count && pv::acc::short_proof_len(count, i) == Some(proof.len()) {
+            let (b, peak) = pv::acc::verify_to_peak(sha_parts, count, i, &hash, proof).map_err(|_| error!(LcError::AccProof))?;
+            require!(self.peaks[b as usize] == peak, LcError::AccProof);
+            return Ok((hash, height));
+        }
+        let root = self.roots[(count as usize) % ACC_ROOTS];
+        pv::acc::verify(sha_parts, count, i, &hash, proof, &root).map_err(|_| error!(LcError::AccProof))?;
+        Ok((hash, height))
+    }
+}
+
+/// Byte offsets inside the `Accumulator` account (with the 8-byte discriminator).
+pub mod acc_layout {
+    pub const START_HEIGHT: usize = 8;
+    pub const COUNT: usize = 16;
+    pub const LAST_HASH: usize = 24;
+    pub const PEAKS: usize = 56;
+    pub const ROOTS: usize = PEAKS + 64 * 32;
+    pub const LEN: usize = ROOTS + super::ACC_ROOTS * 32 + 8;
+}
+
+/// Raw-account reader for other programs (the caller checks the owner is this program
+/// and the address is [`acc_pda`]): `(block_hash, height)` of `header` if it is a final
+/// header in the accumulator at size `count`, using `sha256` (the Solana syscall).
+pub fn verify_accumulated(acc_data: &[u8], header: &[u8; 256], count: u64, proof: &[u8]) -> Option<([u8; 32], u64)> {
+    use acc_layout::*;
+    use anchor_lang::Discriminator;
+    if acc_data.len() < LEN || acc_data[..8] != *Accumulator::DISCRIMINATOR {
+        return None;
+    }
+    let rd = |o: usize| u64::from_le_bytes(acc_data[o..o + 8].try_into().unwrap());
+    let (start, have) = (rd(START_HEIGHT), rd(COUNT));
+    if count == 0 || count > have || have - count >= ACC_ROOTS as u64 {
+        return None;
+    }
+    let h = Header(header);
+    let height = h.height();
+    if height < start {
+        return None;
+    }
+    let hash = h.block_hash();
+    let i = height - start;
+    if count == have && pv::acc::short_proof_len(count, i) == Some(proof.len()) {
+        let (b, peak) = pv::acc::verify_to_peak(sha_parts, count, i, &hash, proof).ok()?;
+        let po = PEAKS + 32 * b as usize;
+        return (acc_data[po..po + 32] == peak).then_some((hash, height));
+    }
+    let ro = ROOTS + 32 * ((count as usize) % ACC_ROOTS);
+    let root: [u8; 32] = acc_data[ro..ro + 32].try_into().unwrap();
+    pv::acc::verify(sha_parts, count, i, &hash, proof, &root).ok()?;
+    Some((hash, height))
 }
 
 /// Byte offsets inside a `HeaderRecord` account (with the 8-byte discriminator).
@@ -732,11 +931,52 @@ pub struct RegisterJob<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitAccumulator<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ LcError::NotAdmin)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(init, payer = admin, space = acc_layout::LEN, seeds = [ACC_SEED], bump)]
+    pub acc: AccountLoader<'info, Accumulator>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Accumulate<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [CANON_SEED], bump)]
+    pub canon: AccountLoader<'info, Canon>,
+    #[account(mut, seeds = [ACC_SEED], bump = acc.load()?.bump)]
+    pub acc: AccountLoader<'info, Accumulator>,
+}
+
+#[derive(Accounts)]
+pub struct ProveHeader<'info> {
+    #[account(seeds = [ACC_SEED], bump = acc.load()?.bump)]
+    pub acc: AccountLoader<'info, Accumulator>,
+}
+
+#[derive(Accounts)]
+#[instruction(hash: [u8; 32])]
+pub struct RestoreHeader<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [ACC_SEED], bump = acc.load()?.bump)]
+    pub acc: AccountLoader<'info, Accumulator>,
+    #[account(init, payer = payer, space = layout::LEN, seeds = [HEADER_SEED, &hash], bump)]
+    pub header: AccountLoader<'info, HeaderRecord>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct CloseHeader<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     #[account(seeds = [CANON_SEED], bump)]
     pub canon: AccountLoader<'info, Canon>,
+    #[account(seeds = [ACC_SEED], bump = acc.load()?.bump)]
+    pub acc: AccountLoader<'info, Accumulator>,
     #[account(mut, close = relayer)]
     pub header: AccountLoader<'info, HeaderRecord>,
     /// CHECK: receives the rent; must be the header's relayer.
@@ -767,6 +1007,20 @@ pub struct TipChanged {
 
 #[event]
 pub struct HeaderFinal {
+    pub hash: [u8; 32],
+    pub height: u64,
+}
+
+#[event]
+pub struct Accumulated {
+    pub height: u64,
+    pub hash: [u8; 32],
+    pub count: u64,
+    pub root: [u8; 32],
+}
+
+#[event]
+pub struct HeaderRestored {
     pub hash: [u8; 32],
     pub height: u64,
 }
@@ -825,4 +1079,12 @@ pub enum LcError {
     WrongRelayer,
     #[msg("header cannot be closed yet")]
     CannotClose,
+    #[msg("header is not the next one for the accumulator")]
+    AccOrder,
+    #[msg("final header is not in the accumulator yet")]
+    NotAccumulated,
+    #[msg("accumulator size is not current or recent")]
+    AccRoot,
+    #[msg("accumulator proof failed")]
+    AccProof,
 }

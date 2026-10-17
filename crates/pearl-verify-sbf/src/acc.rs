@@ -14,6 +14,11 @@
 //! Proof of leaf `i` against `(n, root)`: the `b` siblings inside its peak's subtree
 //! (bottom-up, 32 bytes each, sides given by the bits of `i - subtree start`) followed
 //! by every OTHER peak left to right (32 bytes each). Its length is fixed by `n` and `i`.
+//!
+//! Short form against the CURRENT peaks (the light client stores them): the `b` siblings
+//! only ([`verify_to_peak`] gives the peak and its height to compare with the stored
+//! slot). At most 20 x 32 bytes below 2^20 leaves, so it fits a Solana tx with the
+//! 256-byte header, where the full form (up to 38 x 32) does not.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -90,6 +95,11 @@ pub fn proof_len(n: u64, i: u64) -> Option<usize> {
     locate(n, i).map(|(_, b, _, peaks)| 32 * (b as usize + peaks - 1))
 }
 
+/// Short-form proof length (siblings only) for leaf `i` of `n`.
+pub fn short_proof_len(n: u64, i: u64) -> Option<usize> {
+    locate(n, i).map(|(_, b, _, _)| 32 * b as usize)
+}
+
 /// Check that `block_hash` is leaf `i` of the `n`-leaf accumulator with `root`.
 pub fn verify(sha: Sha, n: u64, i: u64, block_hash: &[u8; 32], proof: &[u8], root: &[u8; 32]) -> Result<(), Error> {
     let (start, b, pos, peaks) = locate(n, i).ok_or(Error::AccProof)?;
@@ -117,6 +127,31 @@ pub fn verify(sha: Sha, n: u64, i: u64, block_hash: &[u8; 32], proof: &[u8], roo
         return Err(Error::AccProof);
     }
     Ok(())
+}
+
+/// Short form: the peak (and its height `b`) that leaf `i` of `n` with `siblings` (the
+/// first part of a full proof, exactly `32 * b` bytes) climbs to.
+pub fn verify_to_peak(sha: Sha, n: u64, i: u64, block_hash: &[u8; 32], siblings: &[u8]) -> Result<(u32, [u8; 32]), Error> {
+    let (start, b, _, _) = locate(n, i).ok_or(Error::AccProof)?;
+    if siblings.len() != 32 * b as usize {
+        return Err(Error::AccProof);
+    }
+    let mut h = leaf(sha, block_hash);
+    let rel = i - start;
+    for lvl in 0..b as usize {
+        let sib: [u8; 32] = siblings[32 * lvl..32 * lvl + 32].try_into().unwrap();
+        h = if rel >> lvl & 1 == 1 { node(sha, &sib, &h) } else { node(sha, &h, &sib) };
+    }
+    Ok((b, h))
+}
+
+/// Short-form proof (siblings only) of leaf `i` of `block_hashes`.
+pub fn prove_short(sha: Sha, block_hashes: &[[u8; 32]], i: u64) -> Option<Vec<u8>> {
+    let n = block_hashes.len() as u64;
+    let (_, b, _, _) = locate(n, i)?;
+    let mut p = prove(sha, block_hashes, i)?;
+    p.truncate(32 * b as usize);
+    Some(p)
 }
 
 /// Off-chain helpers (relayers, tests): root and proofs from the full leaf list.

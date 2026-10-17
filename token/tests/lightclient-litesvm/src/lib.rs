@@ -317,6 +317,8 @@ impl Env {
         let mut env = Env { svm, payer, work: Keypair::new(), p, cu_log: vec![], txs_sent: 0 };
         let init = client::initialize(env.payer.pubkey(), p, checkpoint.bytes, pv::difficulty::u256_le(&checkpoint.cum_work), checkpoint.ts_hist.clone());
         env.send(&[init], &[]).expect("initialize");
+        // R5: the final-header accumulator starts at the checkpoint
+        env.send(&[client::init_accumulator(env.payer.pubkey())], &[]).expect("init_accumulator");
         // fund the relay reward pool
         let fund = system_instruction::transfer(&env.payer.pubkey(), &client::pool_pda(), 1_000_000_000);
         env.send(&[fund], &[]).expect("fund pool");
@@ -374,6 +376,32 @@ impl Env {
                 Err(f.err)
             }
         }
+    }
+
+    /// Send and return `(CU, return data)`.
+    pub fn send_return(&mut self, ixs: &[Instruction]) -> Result<(u64, Vec<u8>), TransactionError> {
+        let mut all = vec![ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)];
+        all.extend_from_slice(ixs);
+        let tx = Transaction::new_signed_with_payer(&all, Some(&self.payer.pubkey()), &[&self.payer], self.svm.latest_blockhash());
+        assert!(bincode_len(&tx) <= 1232, "tx too large");
+        let r = self.svm.send_transaction(tx);
+        self.svm.expire_blockhash();
+        match r {
+            Ok(m) => Ok((m.compute_units_consumed, m.return_data.data)),
+            Err(f) => {
+                if std::env::var("LC_LOGS").is_ok() {
+                    for l in &f.meta.logs {
+                        eprintln!("  log: {l}");
+                    }
+                }
+                Err(f.err)
+            }
+        }
+    }
+
+    /// Raw accumulator `(start_height, count, last_hash)`.
+    pub fn acc(&self) -> (u64, u64, [u8; 32]) {
+        client::acc_state(&self.svm.get_account(&client::acc_addr()).unwrap().data).unwrap()
     }
 
     pub fn logs_of(&mut self, ixs: &[Instruction]) -> Vec<String> {

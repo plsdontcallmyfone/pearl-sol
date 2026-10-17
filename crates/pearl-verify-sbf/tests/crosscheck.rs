@@ -471,6 +471,9 @@ fn final_header_accumulator() {
             let p = acc::prove(sha, &hs[..n], i).unwrap();
             assert_eq!(Some(p.len()), acc::proof_len(n as u64, i));
             acc::verify(sha, n as u64, i, &hs[i as usize], &p, &root).unwrap();
+            let short = acc::prove_short(sha, &hs[..n], i).unwrap();
+            let (b, peak) = acc::verify_to_peak(sha, n as u64, i, &hs[i as usize], &short).unwrap();
+            assert_eq!(peak, slots[b as usize], "short form climbs to the stored peak");
             assert!(acc::verify(sha, n as u64, i, &hs[(i as usize + 1) % 70], &p, &root).is_err());
             if n > 1 {
                 assert!(acc::verify(sha, n as u64, (i + 1) % n as u64, &hs[i as usize], &p, &root).is_err());

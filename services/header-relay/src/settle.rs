@@ -303,8 +303,8 @@ impl Settle {
             let Some((lc_header, _)) = Self::final_header_where(sol, closed, |h, b| h == closed && pv::blake3::hash(b) == hd.hash)? else {
                 continue;
             };
-            let txs = node.block_txs(&hd.hash)?;
-            let (_, paths) = chain::tx_root_paths(&txs);
+            let (txs, cb) = node.block_body(&hd.hash)?;
+            let (_, paths) = chain::tx_root_paths(&txs, cb.as_deref());
             let pk = sol.pk();
             let mut done = false;
             for (i, t) in txs.iter().enumerate() {

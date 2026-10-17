@@ -3,7 +3,9 @@
 //! default config k=2048 r=128, 4x8 fallback, K=6): genesis checkpoint, 13 headers
 //! (fallback blocks and one job block on a PostJob), two withdrawals in different blocks:
 //! withdrawal 0 released by the node's HISTORICAL MMR proof (getWithdrawalProof
-//! at_height) against an older final header, withdrawal 1 by the current-root proof. fixtures/devnet-pre-rank-penalty.json
+//! at_height) against an older final header, withdrawal 1 by the current-root proof. Every
+//! block carries its coinbase receipt as the last tx_root leaf (R1, re-harvested for it),
+//! proven here with pearl-verify-sbf `verify_coinbase`. fixtures/devnet-pre-rank-penalty.json
 //! is the older k=1024 r=32 64x64 harvest, kept as a rejection test.
 
 use base64::Engine;
@@ -65,6 +67,7 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     p.fallback_m = n("fallback_m") as u32;
     p.fallback_n = n("fallback_n") as u32;
     p.fallback_config = hex::decode(fp["fallback_config"].as_str().unwrap()).unwrap().try_into().unwrap();
+    p.retain_final = 0; // so the short fixture can close the job block's header (R5 below)
     let cfg = pearl_job::MiningConfig::from_bytes(&p.fallback_config).unwrap();
     assert_eq!((cfg.k(), cfg.r(), p.fallback_m, p.fallback_n), (2048, 128, 4, 8), "current default config");
     let hs = f["headers"].as_array().unwrap();
@@ -79,6 +82,7 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     let last_ts = blk(hs.len() - 1).h.timestamp_ms;
     let mut env = Env::new_at(p, &g, (last_ts / 1000) as i64 + 5);
     let mut job_blocks = 0;
+    let (mut receipts, mut reward_total) = (0usize, 0u128);
     for i in 1..hs.len() {
         let b = blk(i);
         assert_eq!(b.h.prev_hash, blk(i - 1).hash);
@@ -89,8 +93,15 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
         }
         // register jobs posted in this block, like the relay does
         let txs: Vec<Vec<u8>> = hs[i]["txs"].as_array().unwrap().iter().map(|t| b64(t.as_str().unwrap())).collect();
-        let (root, paths) = tx_root(&txs);
-        assert_eq!(root, b.h.tx_root, "tx_root rebuilt from the block's txs");
+        // R1: the coinbase receipt is the last tx_root leaf
+        let cb = hex::decode(hs[i]["coinbase"].as_str().expect("harvested with coinbase receipts")).unwrap();
+        let mut leaves = txs.clone();
+        leaves.push(cb.clone());
+        let (root, paths) = tx_root(&leaves);
+        assert_eq!(root, b.h.tx_root, "tx_root rebuilt from the block's txs and its receipt");
+        let c = pv::chaintx::verify_coinbase(&pv::header::Header(&b.bytes), &cb, &paths[txs.len()]).unwrap();
+        receipts += 1;
+        reward_total += c.reward() as u128;
         for (ti, t) in txs.iter().enumerate() {
             let v = pv::chaintx::TxView::any_chain(t).unwrap();
             if v.kind() == pv::chaintx::KIND_POST_JOB {
@@ -109,6 +120,8 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
         }
     }
     assert_eq!(job_blocks, 1, "the fixture has one live job block");
+    assert_eq!(receipts, hs.len() - 1, "every block has a coinbase receipt");
+    assert!(reward_total > 0, "fees and the job block's subsidy are in the receipts");
     let c = env.config();
     assert_eq!(c.tip_hash, blk(hs.len() - 1).hash);
     assert_eq!(pv::difficulty::u256_from_le(&c.tip_work), blk(hs.len() - 1).cum_work, "cumulative work equals the node's");
@@ -153,4 +166,43 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     env.send(&[ix], &[]).unwrap();
     assert_eq!(env.token_balance(&to_t), amount + u64::from_le_bytes(e1[72..80].try_into().unwrap()));
     println!("real devnet: {} headers verified (1 job block), withdrawal {nonce} of {amount} released by historical proof against final header {} ({cu} CU), withdrawal {n1} by the current root", hs.len() - 1, hist["root_height"]);
+
+    // R5 on real headers: accumulate up to the floor, close the job block's header, then
+    // restore it from an accumulator proof and prove its coinbase receipt (R1) again.
+    let sha = |parts: &[&[u8]]| -> [u8; 32] {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        for x in parts {
+            h.update(x);
+        }
+        h.finalize().into()
+    };
+    let floor = env.config().final_floor;
+    let hashes: Vec<[u8; 32]> = (1..=floor as usize).map(|i| blk(i).hash).collect();
+    env.send(&[client::accumulate(&hashes)], &[]).unwrap();
+    let (start, count, last) = env.acc();
+    assert_eq!((start, count, last), (0, floor + 1, blk(floor as usize).hash));
+    let ji = (1..hs.len()).find(|&i| !blk(i).h.is_fallback()).unwrap();
+    let jb = blk(ji);
+    assert!(jb.h.height < floor, "job block old enough to close (retain_final 0)");
+    for i in 1..=ji {
+        env.mark_final(&blk(i).hash).unwrap();
+    }
+    let relayer = solana_sdk::signer::Signer::pubkey(&env.payer);
+    env.send(&[client::close_header(&jb.hash, relayer)], &[]).unwrap();
+    assert!(env.svm.get_account(&client::header_addr(&jb.hash)).map_or(true, |a| a.data.is_empty()));
+    let mut leaves = vec![blk(0).hash];
+    leaves.extend(hashes.iter().copied());
+    let proof = pv::acc::prove_short(sha, &leaves, jb.h.height).unwrap();
+    env.send(&[client::restore_header(relayer, jb.bytes, count, proof)], &[]).unwrap();
+    let data = env.svm.get_account(&client::header_addr(&jb.hash)).unwrap().data;
+    let (_, hb) = lightclient::read_final_header(&data).expect("restored as final");
+    let txs: Vec<Vec<u8>> = hs[ji]["txs"].as_array().unwrap().iter().map(|t| b64(t.as_str().unwrap())).collect();
+    let cb = hex::decode(hs[ji]["coinbase"].as_str().unwrap()).unwrap();
+    let mut leaves = txs.clone();
+    leaves.push(cb.clone());
+    let (_, paths) = tx_root(&leaves);
+    let c = pv::chaintx::verify_coinbase(&pv::header::Header(&hb), &cb, &paths[txs.len()]).unwrap();
+    assert!(c.subsidy > 0 && c.job_id == jb.h.job_id, "the job block's reward, provable after close + restore");
+    println!("R5: {count} final headers accumulated; job block {} closed, restored, coinbase reward {} (fees {}, subsidy {}) proven", jb.h.height, c.reward(), c.fees, c.subsidy);
 }

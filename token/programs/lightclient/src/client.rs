@@ -7,7 +7,7 @@ use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::system_program;
 use anchor_lang::{InstructionData, ToAccountMetas};
 
-use crate::{accounts, instruction, Params, CANON_SEED, CONFIG_SEED, HEADER_SEED, JOB_SEED, POOL_SEED};
+use crate::{accounts, instruction, Params, ACC_SEED, CANON_SEED, CONFIG_SEED, HEADER_SEED, JOB_SEED, POOL_SEED};
 
 pub fn config_pda() -> Pubkey {
     Pubkey::find_program_address(&[CONFIG_SEED], &crate::ID).0
@@ -17,6 +17,9 @@ pub fn canon_pda() -> Pubkey {
 }
 pub fn pool_pda() -> Pubkey {
     Pubkey::find_program_address(&[POOL_SEED], &crate::ID).0
+}
+pub fn acc_addr() -> Pubkey {
+    Pubkey::find_program_address(&[ACC_SEED], &crate::ID).0
 }
 pub fn header_addr(hash: &[u8; 32]) -> Pubkey {
     Pubkey::find_program_address(&[HEADER_SEED, hash], &crate::ID).0
@@ -152,7 +155,43 @@ pub fn register_job(payer: Pubkey, block: &[u8; 32], job_id: [u8; 32], tx: Vec<u
 }
 
 pub fn close_header(hash: &[u8; 32], relayer: Pubkey) -> Instruction {
-    ix(accounts::CloseHeader { config: config_pda(), canon: canon_pda(), header: header_addr(hash), relayer }, instruction::CloseHeader {})
+    ix(accounts::CloseHeader { config: config_pda(), canon: canon_pda(), acc: acc_addr(), header: header_addr(hash), relayer }, instruction::CloseHeader {})
+}
+
+/// R5: start the final-header accumulator at the current final header (admin, once).
+pub fn init_accumulator(admin: Pubkey) -> Instruction {
+    ix(accounts::InitAccumulator { admin, config: config_pda(), acc: acc_addr(), system_program: system_program::ID }, instruction::InitAccumulator {})
+}
+
+/// R5: append final headers (hashes in height order, starting at the accumulator's next height).
+pub fn accumulate(hashes: &[[u8; 32]]) -> Instruction {
+    let mut i = ix(accounts::Accumulate { config: config_pda(), canon: canon_pda(), acc: acc_addr() }, instruction::Accumulate {});
+    i.accounts.extend(hashes.iter().map(|h| AccountMeta::new_readonly(header_addr(h), false)));
+    i
+}
+
+/// R5: prove a final header by accumulator inclusion (return data: hash || height LE).
+pub fn prove_header(header: [u8; 256], count: u64, proof: Vec<u8>) -> Instruction {
+    ix(accounts::ProveHeader { acc: acc_addr() }, instruction::ProveHeader { header, count, proof })
+}
+
+/// R5: re-create a closed final header's record from an accumulator proof.
+pub fn restore_header(payer: Pubkey, header: [u8; 256], count: u64, proof: Vec<u8>) -> Instruction {
+    let hash = pearl_verify_sbf::blake3::hash(&header);
+    ix(
+        accounts::RestoreHeader { payer, acc: acc_addr(), header: header_addr(&hash), system_program: system_program::ID },
+        instruction::RestoreHeader { hash, header, count, proof },
+    )
+}
+
+/// Accumulator state as raw fields: `(start_height, count, last_hash)`.
+pub fn acc_state(data: &[u8]) -> Option<(u64, u64, [u8; 32])> {
+    use crate::acc_layout::*;
+    if data.len() < LEN {
+        return None;
+    }
+    let rd = |o: usize| u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
+    Some((rd(START_HEIGHT), rd(COUNT), data[LAST_HASH..LAST_HASH + 32].try_into().unwrap()))
 }
 
 /// Compute-unit budget used to pack steps (each tx asks for 1.4M; keep headroom).

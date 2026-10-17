@@ -151,6 +151,9 @@ fn valid_chain_tip_finality_and_close() {
     // close: final and retain_final (2) below the floor (4): height 1 yes, 2 not yet,
     // height 3 is canonical but not marked final: refused
     let relayer = env.payer.pubkey();
+    // R5: a final header must be accumulated before it can be closed
+    assert!(custom(lc_code(LcError::NotAccumulated))(&env.send(&[client::close_header(&blks[0].hash, relayer)], &[]).unwrap_err()));
+    env.send(&[client::accumulate(&[blks[0].hash])], &[]).unwrap();
     assert!(custom(lc_code(LcError::CannotClose))(&env.send(&[client::close_header(&blks[1].hash, relayer)], &[]).unwrap_err()));
     assert!(custom(lc_code(LcError::CannotClose))(&env.send(&[client::close_header(&blks[2].hash, relayer)], &[]).unwrap_err()));
     let bal = env.svm.get_balance(&relayer).unwrap();
@@ -603,4 +606,139 @@ fn cu_small_fallback_4x8() {
     }
     env.relay(&blks[2]).unwrap();
     assert_eq!(env.config().tip_height, 3);
+}
+
+fn sha(parts: &[&[u8]]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for p in parts {
+        h.update(p);
+    }
+    h.finalize().into()
+}
+
+/// R5: final headers go into the accumulator in order (final, or canonical at or below
+/// the floor; linked by prev_hash); closed headers stay provable (`prove_header`, CU
+/// measured) and can be restored as readable final records (`restore_header`) that the
+/// raw reader accepts; proofs against recent sizes still verify; tampering fails.
+#[test]
+fn final_header_accumulator_outlives_close_header() {
+    let p = params(3);
+    let g = genesis(0x1e100000);
+    let blks = chain(&p, &g, 20, &[10_000]);
+    let mut env = Env::new(p, &g);
+    for b in &blks {
+        env.relay(b).unwrap();
+    }
+    let floor = env.config().final_floor;
+    assert_eq!(floor, 17);
+    assert_eq!(env.acc(), (0, 1, g.hash));
+    // out of order / not linked / not final yet: refused
+    assert!(custom(lc_code(LcError::AccOrder))(&env.send(&[client::accumulate(&[blks[1].hash])], &[]).unwrap_err()));
+    // canonical at or below the floor counts as final even before mark_final
+    let first: Vec<[u8; 32]> = blks[..10].iter().map(|b| b.hash).collect();
+    let cu = env.send(&[client::accumulate(&first)], &[]).unwrap();
+    println!("accumulate 10 headers: {cu} CU");
+    let rest: Vec<[u8; 32]> = blks[10..17].iter().map(|b| b.hash).collect();
+    env.send(&[client::accumulate(&rest)], &[]).unwrap();
+    assert!(custom(lc_code(LcError::NotFinal))(&env.send(&[client::accumulate(&[blks[17].hash])], &[]).unwrap_err()), "height 18 is above the floor");
+    let (start, count, last) = env.acc();
+    assert_eq!((start, count, last), (0, 18, blks[16].hash));
+    // close old final headers (height + retain_final 2 < floor 17)
+    for b in &blks[..12] {
+        env.mark_final(&b.hash).unwrap();
+    }
+    let relayer = env.payer.pubkey();
+    // (blks[11] is the highest marked final: config.final_hash, never closed)
+    for b in &blks[..11] {
+        env.send(&[client::close_header(&b.hash, relayer)], &[]).unwrap();
+        assert!(env.svm.get_account(&client::header_addr(&b.hash)).map_or(true, |a| a.data.is_empty()));
+    }
+    // every header from the checkpoint on is provable, at the current size
+    let mut hashes = vec![g.hash];
+    hashes.extend(blks[..17].iter().map(|b| b.hash));
+    let mut worst = 0;
+    for (i, b) in blks[..17].iter().enumerate() {
+        let short = pv::acc::prove_short(sha, &hashes, i as u64 + 1).unwrap();
+        let (cu_s, ret_s) = env.send_return(&[client::prove_header(b.bytes, count, short.clone())]).unwrap();
+        assert_eq!(&ret_s[..32], &b.hash);
+        let proof = pv::acc::prove(sha, &hashes, i as u64 + 1).unwrap();
+        let (cu, ret) = env.send_return(&[client::prove_header(b.bytes, count, proof.clone())]).unwrap();
+        worst = worst.max(cu).max(cu_s);
+        assert_eq!(&ret[..32], &b.hash);
+        assert_eq!(u64::from_le_bytes(ret[32..40].try_into().unwrap()), b.h.height);
+        // the raw reader agrees
+        let acc_data = env.svm.get_account(&client::acc_addr()).unwrap().data;
+        assert_eq!(lightclient::verify_accumulated(&acc_data, &b.bytes, count, &proof), Some((b.hash, b.h.height)));
+        assert_eq!(lightclient::verify_accumulated(&acc_data, &b.bytes, count, &short), Some((b.hash, b.h.height)));
+        let mut bad = b.bytes;
+        bad[250] ^= 1;
+        assert!(env.send(&[client::prove_header(bad, count, proof.clone())], &[]).is_err());
+        assert!(lightclient::verify_accumulated(&acc_data, &bad, count, &proof).is_none());
+    }
+    println!("prove_header (18 leaves): max {worst} CU");
+    // a proof built at an older size (10 leaves) still verifies after appends (root ring)
+    let old = pv::acc::prove(sha, &hashes[..10], 3).unwrap();
+    env.send(&[client::prove_header(blks[2].bytes, 10, old.clone())], &[]).unwrap();
+    assert!(custom(lc_code(LcError::AccRoot))(&env.send(&[client::prove_header(blks[2].bytes, 19, old.clone())], &[]).unwrap_err()));
+    assert!(custom(lc_code(LcError::AccProof))(&env.send(&[client::prove_header(blks[2].bytes, 11, old)], &[]).unwrap_err()));
+    // restore a closed header: readable as final again, by the raw reader of other programs
+    let proof = pv::acc::prove(sha, &hashes, 5).unwrap();
+    let cu = env.send(&[client::restore_header(relayer, blks[4].bytes, count, proof.clone())], &[]).unwrap();
+    println!("restore_header: {cu} CU");
+    let data = env.svm.get_account(&client::header_addr(&blks[4].hash)).unwrap().data;
+    assert_eq!(lightclient::read_final_header(&data), Some((blks[4].hash, blks[4].bytes)));
+    assert!(env.send(&[client::restore_header(relayer, blks[4].bytes, count, proof)], &[]).is_err(), "already there");
+    // a header that never was final cannot be restored
+    let fake = child(&p, &blks[3], &Work::Fallback, ChildOpts { dt: 7_000, ..Default::default() });
+    let fp = pv::acc::prove(sha, &hashes, 5).unwrap();
+    assert!(env.send(&[client::restore_header(relayer, fake.bytes, count, fp)], &[]).is_err());
+}
+
+/// R5 CU at scale: an accumulator of 2^20 - 1 final headers (20 peaks, the longest
+/// proofs below 2^20; about 2 years of 60 s blocks), written straight into the account.
+/// prove_header checks no proof of work, so the leaf is a header-shaped 256 bytes at the
+/// right height.
+#[test]
+fn prove_header_cu_at_a_million_headers() {
+    use anchor_lang::Discriminator;
+    let p = params(3);
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let n: u64 = (1 << 20) - 1;
+    let start: u64 = 100;
+    let mut base: Vec<[u8; 32]> = (0..n).map(|k| sha(&[&k.to_le_bytes()])).collect();
+    for &i in &[0u64, 777_777, n - 1] {
+        let mut hdr = g.bytes;
+        hdr[4..12].copy_from_slice(&(start + i).to_le_bytes());
+        let hash = pv::blake3::hash(&hdr);
+        let keep = base[i as usize];
+        base[i as usize] = hash;
+        let mut slots = [[0u8; 32]; 64];
+        for (k, h) in base.iter().enumerate() {
+            pv::acc::append(sha, k as u64, &mut slots, h);
+        }
+        let root = pv::acc::root_of_slots(sha, n, &slots);
+        let mut data = vec![0u8; lightclient::acc_layout::LEN];
+        data[..8].copy_from_slice(lightclient::Accumulator::DISCRIMINATOR);
+        data[8..16].copy_from_slice(&start.to_le_bytes());
+        data[16..24].copy_from_slice(&n.to_le_bytes());
+        data[24..56].copy_from_slice(base.last().unwrap());
+        for b in 0..64 {
+            data[56 + 32 * b..88 + 32 * b].copy_from_slice(&slots[b]);
+        }
+        let ro = lightclient::acc_layout::ROOTS + 32 * (n as usize % lightclient::ACC_ROOTS);
+        data[ro..ro + 32].copy_from_slice(&root);
+        data[lightclient::acc_layout::LEN - 8] = lightclient::acc_pda().1;
+        let mut acct = env.svm.get_account(&client::acc_addr()).unwrap();
+        acct.data = data;
+        env.svm.set_account(client::acc_addr(), acct).unwrap();
+        let proof = pv::acc::prove_short(sha, &base, i).unwrap();
+        let (cu, ret) = env.send_return(&[client::prove_header(hdr, n, proof.clone())]).unwrap();
+        assert_eq!(&ret[..32], &hash);
+        assert_eq!(u64::from_le_bytes(ret[32..40].try_into().unwrap()), start + i);
+        println!("prove_header at {n} leaves, leaf {i}: proof {} bytes, {cu} CU", proof.len());
+        assert!(cu < 80_000, "{cu}");
+        base[i as usize] = keep;
+    }
 }

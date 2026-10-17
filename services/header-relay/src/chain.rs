@@ -95,9 +95,20 @@ impl Node {
 
     /// Block txs (wire bytes) in block order.
     pub fn block_txs(&self, hash: &[u8; 32]) -> Result<Vec<Vec<u8>>> {
+        Ok(self.block_body(hash)?.0)
+    }
+
+    /// Block txs and the coinbase receipt record (97 bytes; the last tx_root leaf, R1).
+    /// `None` for the genesis block and for a pre-R1 node.
+    pub fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
         let v = self.rpc.call("getBlock", json!({"hash": hex::encode(hash)}))?;
         let txs = v["txs"].as_array().cloned().unwrap_or_default();
-        txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect()
+        let txs = txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect::<Result<Vec<_>>>()?;
+        let cb = match v["coinbase"]["record"].as_str() {
+            Some(r) => Some(hex::decode(r)?),
+            None => None,
+        };
+        Ok((txs, cb))
     }
 
     pub fn withdrawal_proof(&self, nonce: u64) -> Result<Value> {
@@ -110,16 +121,22 @@ impl Node {
     }
 }
 
-/// chain/agent-types/src/merkle.rs: root and per-tx paths (33-byte entries).
-pub fn tx_root_paths(txs: &[Vec<u8>]) -> ([u8; 32], Vec<Vec<u8>>) {
-    if txs.is_empty() {
+/// chain/agent-types/src/merkle.rs: root and per-leaf paths (33-byte entries) over the
+/// txs, then the coinbase receipt as the last leaf when given (R1: every block has one).
+/// `paths[i]` is tx `i`'s path; `paths[txs.len()]` the receipt's.
+pub fn tx_root_paths(txs: &[Vec<u8>], coinbase: Option<&[u8]>) -> ([u8; 32], Vec<Vec<u8>>) {
+    let mut leaves: Vec<&[u8]> = txs.iter().map(|t| t.as_slice()).collect();
+    if let Some(c) = coinbase {
+        leaves.push(c);
+    }
+    if leaves.is_empty() {
         return ([0; 32], vec![]);
     }
     let leaf = |h: &[u8; 32]| pv::blake3::hash_parts(&[&[0u8], h]);
     let node = |l: &[u8; 32], r: &[u8; 32]| pv::blake3::hash_parts(&[&[1u8], l, r]);
-    let mut level: Vec<[u8; 32]> = txs.iter().map(|t| leaf(&pv::blake3::hash(t))).collect();
-    let mut paths = vec![Vec::new(); txs.len()];
-    let mut idx: Vec<usize> = (0..txs.len()).collect();
+    let mut level: Vec<[u8; 32]> = leaves.iter().map(|t| leaf(&pv::blake3::hash(t))).collect();
+    let mut paths = vec![Vec::new(); leaves.len()];
+    let mut idx: Vec<usize> = (0..leaves.len()).collect();
     while level.len() > 1 {
         for (t, i) in idx.iter_mut().enumerate() {
             let sib = *i ^ 1;
