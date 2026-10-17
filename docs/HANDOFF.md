@@ -167,8 +167,18 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
 1. light client: token/programs/lightclient (+ SBF plain Pearl verifier, WTEMA
    port, header tree, K finality), proof-mode bridge.release (MMR proof vs
    withdraw_root) and storefront.finalize_order if feasible, services/header-relay.
-2. open net: chain/net on commonware-stream (any key admitted under limits, address
-   gossip, seeds, caps, ban scores), node `--net open --seeds`, devnet.sh open mode.
+2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
+   commonware-stream (any key admitted under limits; plaintext key banner then
+   encrypted handshake; genesis-bound namespace; `key@host:port` pins a seed),
+   scored address book with gossip + persistence (<data_dir>/p2p-addrs.json),
+   outbound subnet diversity, inbound/IP/subnet/pending caps, ban scores; node
+   blocks peers that gossip invalid blocks. `agent-node run --net open --seeds`.
+   Static mode stays the default (demo unchanged). `scripts/devnet.sh open ...` = 5
+   nodes (.devnet-open, RPC 10630-10638 even, p2p 10640-10644). 19 new tests; live:
+   full mesh in 8 s, miner 15 blocks, seed down + restart rejoin via saved book.
+   Risks/not done: local addresses exempt from IP limits (allow_private), no
+   hashed buckets/anchors/feelers, no getPeers RPC, untested across real hosts/NAT,
+   node.json open fields not yet in docs.
 3. pools: DONE (810ad1b, 5e91163): services/pool `pearl-pool` (:10663; routes in
    src/client.rs), PPLNS by share work, fee bps, credits mature after K+1, orphans
    dropped, payouts signed + persisted before send (no double pay on crash);
@@ -177,7 +187,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    Not done: push notifications (about 18% stale shares on the fast devnet),
    vardiff, signed miner requests, live job-block run, payout history pruning.
    Devnet fee helper: services/pool/examples/devnet_fees.rs.
-QUEUED after net lands (same chain/ code): 4. data availability (blob store in the
+4. STARTED 2026-10-17: data availability (blob store in the
 node: putBlob/getBlob, p2p gossip, `blob:<blake3>` data_uri, retained until the job
 closes) + M1 leftovers: chain minimum protocol fee (P = 0 jobs can never be mined),
 getBlock subsidy field, history-by-address RPC. Later: USDC storefront path, demo
