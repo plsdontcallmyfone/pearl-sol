@@ -1,0 +1,16 @@
+[package]
+name = "sync"
+description = "Headers-first backfill over the Commonware p2p resolver"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-resolver.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+bytes = "1"
+rand_core = "0.10"
+tokio = { version = "1", features = ["sync"] }

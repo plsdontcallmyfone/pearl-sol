@@ -1,0 +1,13 @@
+[package]
+name = "net"
+description = "Agent-chain p2p: M1 = Commonware discovery with a static peer set (seam for open membership)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+rand_core = "0.10"

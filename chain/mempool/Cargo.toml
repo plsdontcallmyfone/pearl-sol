@@ -1,0 +1,10 @@
+[package]
+name = "mempool"
+description = "Fee-priority, nonce-ordered transaction pool"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-types.workspace = true
+thiserror.workspace = true
