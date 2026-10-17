@@ -73,7 +73,7 @@ describe("PostJob commitments vs pearl-job", () => {
 
   it("config decode and shape rules", () => {
     const c = decodeConfig(fromHex(LOCALNET_CONFIG_HEX));
-    expect([c.k, c.rank, c.rows.size, c.cols.size, c.rows.period, c.cols.period]).toEqual([1024, 32, 4, 8, 4, 8]);
+    expect([c.k, c.rank, c.rows.size, c.cols.size, c.rows.period, c.cols.period]).toEqual([2048, 128, 4, 8, 4, 8]);
     expect(shapeProblem(c, 8, 16)).toBeNull();
     expect(shapeProblem(c, 6, 16)).toMatch(/multiple of 4/);
     expect(shapeProblem(c, 8, 12)).toMatch(/multiple of 8/);

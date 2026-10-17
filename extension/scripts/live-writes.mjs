@@ -8,7 +8,7 @@
 //      it if the commitments match the header the chain derives).
 // Env: LIVE_KEY (keypair JSON byte array file, holds SOL + SPL tokens + a little native),
 //      LIVE_EVALUATOR (base58, the chain attester), LIVE_JOB_DIR (pearl-job gen out dir
-//      with manifest.json, A.i8, B.i8, m 64 n 64 k 1024), LIVE_MINE_WAIT_S (default 240).
+//      with manifest.json, A.i8, B.i8, m 64 n 64 k 2048), LIVE_MINE_WAIT_S (default 240).
 import { chromium } from "playwright";
 import { readFileSync, rmSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";

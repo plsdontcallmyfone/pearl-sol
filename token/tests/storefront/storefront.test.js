@@ -99,7 +99,7 @@ const pumpEvent = pda(['__event_authority'], PUMP), ammEvent = pda(['__event_aut
 
 function specArgs(o = {}) {
   return {
-    m: 256, n: 256, k: 1024,
+    m: 256, n: 256, k: 2048,
     config: Array.from({ length: 52 }, (_, i) => i),
     hashA: Array(32).fill(0xaa), hashB: Array(32).fill(0xbb),
     dataUri: 'ipfs://bafy-job-matrices',
@@ -265,7 +265,7 @@ test('buy_job on the curve: buys, splits W/P, deposits to the bridge, writes the
   assert.equal(o.protocolFee.toString(), (p * 1000n).toString(), 'P in chain units');
   assert.equal(BigInt(o.workerPay.toString()) + BigInt(o.protocolFee.toString()), tokens * 1000n, 'W + P = amount x 1000');
   assert.deepEqual(Buffer.from(o.bodyHash), sha256(postJobBody(spec0, w * 1000n, p * 1000n)), 'body hash = sha256(PostJob body)');
-  assert.equal(o.spec.m, 256); assert.equal(o.spec.n, 256); assert.equal(o.spec.k, 1024);
+  assert.equal(o.spec.m, 256); assert.equal(o.spec.n, 256); assert.equal(o.spec.k, 2048);
   assert.deepEqual(o.spec.config, spec0.config);
   assert.deepEqual(o.spec.hashA, spec0.hashA);
   assert.equal(o.spec.deadlineBlocks.toString(), '500');

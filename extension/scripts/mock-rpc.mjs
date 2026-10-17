@@ -144,14 +144,14 @@ function job(i) {
   const statuses = ["open", "open", "delivered", "completed", "expired", "open"];
   const st = statuses[i % statuses.length];
   const poster = i === 1 && ME ? ME : base58.encode(blake3(Buffer.from(`poster-${i % 3}`)));
-  const config = "00040000200000000003000000000007" + "0".repeat(72);
+  const config = "00080000800000000003000000000007" + "0".repeat(72);
   // every third job is a storefront order: Pearl header id = the poster (docs/RPC.md)
   const terms = blake3(Buffer.from(`t${i}`));
   const headerId = i % 3 === 2 ? Buffer.from(base58.decode(poster)) : Buffer.from(id, "hex");
   const header = Buffer.concat([headerId, terms, Buffer.alloc(12)]);
   return {
     job_id: id, poster, status: st, mineable: st === "open",
-    m: 64 * (1 + (i % 3)), n: 64, k: 1024, config, hash_a: hex(blake3(Buffer.from(`a${i}`))), hash_b: hex(blake3(Buffer.from(`b${i}`))),
+    m: 64 * (1 + (i % 3)), n: 64, k: 2048, config, hash_a: hex(blake3(Buffer.from(`a${i}`))), hash_b: hex(blake3(Buffer.from(`b${i}`))),
     data_uri: i % 2 === 0 ? `blob:${hex(blake3(Buffer.from(`data-${i}`)))}` : `ipfs://bafy-mock-${i}`, worker_pay: String(BigInt(1 + i * 3) * 1_000_000_000n), protocol_fee: String(BigInt(1 + i) * 250_000_000n),
     deadline_height: 1400 + i * 20, max_blocks: 10 + i, blocks_mined: Math.min(10 + i, i * 2), cap_remaining: String(BigInt(1 + i) * 150_000_000n), subsidy_paid: String(BigInt(i) * 7_000_000n),
     evaluators: [base58.encode(blake3(Buffer.from("attester")))], threshold: 1, terms_hash: hex(terms), job_key: hex(blake3(Buffer.concat([header, Buffer.from(config, "hex")]))), job_header: hex(header), header_id: hex(headerId),

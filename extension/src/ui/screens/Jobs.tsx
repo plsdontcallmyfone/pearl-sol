@@ -302,7 +302,7 @@ function PostJob({ st, toast, onPosted }: { st: WalletState; toast: (m: string) 
           <Field label="A.i8" hint={aFile ? `${aFile.size.toLocaleString("en-US")} bytes` : "m x k bytes"}><input className="input" type="file" onChange={(e) => setA(e.target.files?.[0] ?? null)} style={{ paddingTop: 8 }} data-testid="file-a" /></Field>
           <Field label="B.i8" hint={bFile ? `${bFile.size.toLocaleString("en-US")} bytes` : "k x n bytes"}><input className="input" type="file" onChange={(e) => setB(e.target.files?.[0] ?? null)} style={{ paddingTop: 8 }} data-testid="file-b" /></Field>
         </div>
-        <Field label="Mining config (52 bytes hex)" hint="Default: localnet k 1024, rank 32, 4 x 8 tile (m multiple of 4, n of 8).">
+        <Field label="Mining config (52 bytes hex)" hint="Default: localnet k 2048, rank 128, 4 x 8 tile (m multiple of 4, n of 8).">
           <input className="input" value={config} onChange={(e) => setConfig(e.target.value)} spellCheck={false} />
         </Field>
         <Field label="Data URI"><input className="input" value={dataUri} onChange={(e) => setDataUri(e.target.value)} placeholder="blob:<hex> (putBlob), file:///... or ipfs://..." spellCheck={false} data-testid="job-uri" /></Field>

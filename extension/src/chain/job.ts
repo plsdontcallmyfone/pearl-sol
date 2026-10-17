@@ -15,8 +15,8 @@ import { jobIdForPost, orderTermsHash, termsHash } from "./messages";
 
 export const CHUNK_LEN = 1024;
 
-/** Localnet default config (k=1024, r=32, 4x8 tile): `pearl-job config` output. */
-export const LOCALNET_CONFIG_HEX = "00040000200000000003000000000007000000000000000000000000000000000000000000000000000000000000000000000000";
+/** Localnet default config (k=2048, r=128, 4x8 tile; r >= 128 since the rank penalty, 2026-10-17): `pearl-job config` output. */
+export const LOCALNET_CONFIG_HEX = "00080000800000000003000000000007000000000000000000000000000000000000000000000000000000000000000000000000";
 
 /** The 76-byte Pearl job header. `headerId` is `getJob.header_id` (job id, or the poster for an order). */
 export function jobHeader(headerId: Uint8Array, terms: Uint8Array): Uint8Array {
@@ -101,6 +101,7 @@ export function shapeProblem(c: MiningConfig, m: number, n: number): string | nu
   const h = c.rows.size, w = c.cols.size;
   const dpl = k - (k % r);
   if (!(r >= 32 && r <= 1024 && (r & (r - 1)) === 0)) return `rank must be a power of two in 32..1024, got ${r}`;
+  if (r < 128) return `rank must be >= 128 (rank penalty), got ${r}`;
   if (k % 64 !== 0 || k < 1024 || k > 1 << 16) return `k must be a multiple of 64 in 1024..65536, got ${k}`;
   if (k > 4 * r * r || k < 16 * r) return "k must be within 16r..4r^2";
   if (h % 2 || w % 2 || h * w < 32 || h * w > 256) return "tile h x w must be even and within 32..256";

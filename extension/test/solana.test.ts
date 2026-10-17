@@ -41,7 +41,7 @@ function checkAccounts(ix: Instruction, idlJson: any, name: string) {
 }
 
 const spec: StoreJobSpec = {
-  m: 64, n: 64, k: 1024, config: new Uint8Array(52).fill(3), hashA: new Uint8Array(32).fill(0xaa), hashB: new Uint8Array(32).fill(0xbb),
+  m: 64, n: 64, k: 2048, config: new Uint8Array(52).fill(3), hashA: new Uint8Array(32).fill(0xaa), hashB: new Uint8Array(32).fill(0xbb),
   dataUri: "ipfs://example-job", deadlineBlocks: 500n, maxBlocks: 10, evaluators: [me, mint], threshold: 1,
 };
 
@@ -74,7 +74,7 @@ describe("storefront IDL", () => {
     const ix = openOrderIx(SF, me, 99n, mint, spec);
     const want = coder.encode("open_order", {
       draft_id: new BN(99), recipient: P(mint),
-      spec: { m: 64, n: 64, k: 1024, config: Array.from(spec.config), hash_a: Array.from(spec.hashA), hash_b: Array.from(spec.hashB), data_uri: spec.dataUri, deadline_blocks: new BN(500), max_blocks: 10, evaluators: [P(me), P(mint)], threshold: 1 },
+      spec: { m: 64, n: 64, k: 2048, config: Array.from(spec.config), hash_a: Array.from(spec.hashA), hash_b: Array.from(spec.hashB), data_uri: spec.dataUri, deadline_blocks: new BN(500), max_blocks: 10, evaluators: [P(me), P(mint)], threshold: 1 },
     });
     expect(hex(ix.data)).toBe(hex(new Uint8Array(want)));
     checkAccounts(ix, sfIdl, "open_order");
