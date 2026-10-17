@@ -63,6 +63,12 @@ pub struct Blk {
 }
 
 impl Blk {
+    /// A harvested header (node getHeader) with its proof.
+    pub fn from_wire(bytes: [u8; 256], proof: Vec<u8>, cum_work: pv::U256, ts_hist: Vec<u64>) -> Self {
+        let h = BlockHeader::from_bytes(&bytes).unwrap();
+        Blk { h, bytes, hash: h.block_hash(), proof, ts_hist, cum_work }
+    }
+
     pub fn job_id(&self) -> Option<[u8; 32]> {
         if self.h.is_fallback() { None } else { Some(self.h.job_id) }
     }
@@ -293,11 +299,16 @@ pub fn program_path(name: &str) -> String {
 
 impl Env {
     pub fn new(p: Params, checkpoint: &Blk) -> Self {
+        Self::new_at(p, checkpoint, (T0 / 1000) as i64 + 1_000_000)
+    }
+
+    /// `clock_s`: Solana unix time (header timestamps may not exceed it + max_future).
+    pub fn new_at(p: Params, checkpoint: &Blk, clock_s: i64) -> Self {
         let mut svm = LiteSVM::new();
         let so = std::fs::read(program_path("lightclient")).expect("build first: cd token && anchor build -p lightclient");
         svm.add_program(lightclient::ID, &so);
         let mut clock: Clock = svm.get_sysvar();
-        clock.unix_timestamp = (T0 / 1000) as i64 + 1_000_000;
+        clock.unix_timestamp = clock_s;
         svm.set_sysvar(&clock);
         let payer = Keypair::new();
         svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
@@ -312,7 +323,7 @@ impl Env {
     }
 
     pub fn new_work_account(&mut self) {
-        let size = client::work_size(PROOF_CAP as usize, 1024, self.p.fallback_n as usize);
+        let size = client::work_size_for(&self.p);
         let rent = self.svm.minimum_balance_for_rent_exemption(size);
         let work = self.work.insecure_clone();
         let create = system_instruction::create_account(&self.payer.pubkey(), &work.pubkey(), rent, size as u64, &lightclient::ID);

@@ -541,3 +541,26 @@ fn storefront_finalize_and_expire_by_proof() {
     env.send(&[exp], &[]).unwrap();
     assert_eq!(env.order(8).status, storefront::STATUS_EXPIRED);
 }
+
+/// Owner decision 2026-10-17: shrink fallback matrices via the chain parameters
+/// fallback_m / fallback_n. 4 x 8 is the smallest shape the 4x8 tile allows.
+#[test]
+fn cu_small_fallback_4x8() {
+    let mut p = params(4);
+    p.fallback_m = 4;
+    p.fallback_n = 8;
+    let g = genesis(0x1e100000);
+    let blks = chain(&p, &g, 3, &[10_000]);
+    let mut env = Env::new(p, &g);
+    env.relay(&blks[0]).unwrap();
+    env.cu_log.clear();
+    let before = env.txs_sent;
+    env.relay(&blks[1]).unwrap();
+    let total: u64 = env.cu_log.iter().map(|(_, c)| c).sum();
+    println!("\n4x8 fallback header: {} txs, {} CU total", env.txs_sent - before, total);
+    for (l, c) in env.cu_log.iter().filter(|(l, _)| l != "write_proof") {
+        println!("  {c:>9}  {l}");
+    }
+    env.relay(&blks[2]).unwrap();
+    assert_eq!(env.config().tip_height, 3);
+}

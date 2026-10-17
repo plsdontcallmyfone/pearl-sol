@@ -266,3 +266,10 @@ pub fn plan(fallback: bool, fb_m: u32, fb_n: u32, fb_k: u32, budget: u64) -> Vec
 pub const WRITE_CHUNK: usize = 950;
 /// Proof bytes in the `begin_verify` tx.
 pub const FIRST_CHUNK: usize = 700;
+
+/// Work account size for these params: 32 KiB of proof, then scratch for the larger of
+/// fallback B (k*n) and the noised strips of a localnet 4x8 tile (12 x k bytes).
+pub fn work_size_for(p: &Params) -> usize {
+    let k = u32::from_le_bytes(p.fallback_config[0..4].try_into().unwrap()) as usize;
+    work_size(32 * 1024, k, (p.fallback_n as usize).max(16))
+}
