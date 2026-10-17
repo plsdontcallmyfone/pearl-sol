@@ -67,7 +67,7 @@ export function App() {
 
   const acct = st.selected!;
   return (
-    <div className="app">
+    <div className="app with-tabs">
       <div className="topbar">
         <button className="acct-btn" onClick={() => setMenu(!menu)} aria-expanded={menu} aria-label="Switch account" data-testid="acct-btn">
           <div className="avatar">{initials(acct.name)}</div>

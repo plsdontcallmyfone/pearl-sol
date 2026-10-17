@@ -9,6 +9,9 @@
 }
 
 :root {
+  /* bottom tab bar: its height plus the device safe area; scrolling content is padded by it */
+  --tabbar-h: 54px;
+  --tabbar-space: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
   --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
 
   --page: #f4f4f6;
@@ -103,8 +106,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .num { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 
 #root { height: 100%; }
-.app { display: flex; flex-direction: column; height: 100vh; max-height: 100vh; }
-body.popup .app { height: 600px; }
+.app { position: relative; display: flex; flex-direction: column; height: 100vh; max-height: 100vh; }
+body.popup .app { height: 100%; max-height: 100%; }
+/* The tab bar sits over the bottom of the screen; every scrolling screen under it keeps
+   bottom padding of the bar's height plus the safe area so its last row stays visible. */
+.app.with-tabs .scroll { padding-bottom: calc(16px + var(--tabbar-space)); }
 .scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 12px 16px; }
 .scroll::-webkit-scrollbar { width: 6px; }
 .scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
@@ -145,7 +151,9 @@ body.popup .app { height: 600px; }
 
 /* ------------------------------------------------ tabs */
 .tabbar {
-  display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line-soft); background: var(--panel); flex-shrink: 0; height: 54px;
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line-soft); background: var(--panel);
+  height: var(--tabbar-space); padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box;
 }
 .tab {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: transparent; color: var(--faint);
@@ -326,7 +334,7 @@ body.popup .app { height: 600px; }
 .scrim { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.12); }
 
 .toast {
-  position: fixed; bottom: 66px; left: 12px; right: 12px; z-index: 30; padding: 10px 12px; border-radius: 10px; font-size: 12px; font-weight: 550;
+  position: fixed; bottom: calc(var(--tabbar-space) + 12px); left: 12px; right: 12px; z-index: 30; padding: 10px 12px; border-radius: 10px; font-size: 12px; font-weight: 550;
   background: var(--text); color: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 

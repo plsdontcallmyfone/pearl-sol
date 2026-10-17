@@ -34,3 +34,15 @@ export function termsHash(t: {
     u64(t.workerPay), u64(t.protocolFee), u64(t.deadlineHeight), u32(t.maxBlocks),
   );
 }
+
+/**
+ * Storefront order header terms (chain/state schema `order_terms_hash`):
+ * blake3("pearl-sol:order-terms:v1" || poster || m u32 || n u32 || k u32 || max_blocks u32 || deadline_blocks u64).
+ * Every field is known when the order is opened, so the buyer can commit hash_a / hash_b
+ * against the order's Pearl header `poster || order_terms || 0 u64 || 0 u32`.
+ * `deadline_blocks` is RELATIVE, as in the order's PostJob body.
+ */
+export function orderTermsHash(t: { poster: Uint8Array; m: number; n: number; k: number; maxBlocks: number; deadlineBlocks: bigint }): Uint8Array {
+  if (t.poster.length !== 32) throw new Error("poster is 32 bytes");
+  return blake3(utf8("pearl-sol:order-terms:v1"), t.poster, u32(t.m), u32(t.n), u32(t.k), u32(t.maxBlocks), u64(t.deadlineBlocks));
+}

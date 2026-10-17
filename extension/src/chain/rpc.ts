@@ -93,6 +93,8 @@ export interface Job {
   terms_hash: string;
   job_key: string;
   job_header: string;
+  /** first field of the Pearl header: job_id for a PostJob, the poster for a storefront order */
+  header_id: string;
   posted_height: number;
   deliverer: string | null;
   result_hash: string | null;

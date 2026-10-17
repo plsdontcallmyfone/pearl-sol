@@ -80,6 +80,7 @@ const ui: Record<string, Handler> = {
   },
   postJob: async (m) => W.postJob(await needUnlocked(), m.input),
   storefrontQuote: async (m) => W.storefrontQuote(BigInt(m.solIn)),
+  prepareStorefrontJob: async (m) => W.prepareStorefrontJob(await needUnlocked(), m.recipient, m.spec).view,
   storefrontBuy: async (m) => W.storefrontBuy(await needUnlocked(), m.input),
   storefrontOrder: async (m) => W.storefrontOrder(m.nonce),
   miningRewards: async (m) => W.miningRewards(await needUnlocked(), !!m.force),

@@ -1,24 +1,27 @@
-// Pearl job commitments for PostJob, ported from crates/pearl-job (job.rs, merkle.rs,
-// pattern.rs) and the v2 header rule in docs/RPC.md. Parity with the `pearl-job`
-// CLI is checked in test/job-parity.test.ts.
+// Pearl job commitments for PostJob and storefront orders, ported from crates/pearl-job
+// (job.rs, merkle.rs, pattern.rs) and the v2 header rule in docs/RPC.md. Parity with the
+// `pearl-job` CLI and chain/state vectors is checked in test/job-parity.test.ts.
 //
-//   header76 = job_id || terms_hash || 0 u64 || 0 u32
+//   header76 = header_id || terms_hash || 0 u64 || 0 u32
+//     PostJob:          header_id = job_id, terms_hash = terms (W, P, absolute deadline)
+//     storefront order: header_id = poster (the unlock recipient), terms_hash = order_terms
 //   job_key  = blake3(header76 || config52)
 //   hash_a   = blake3_keyed(pad1024(A row-major, m x k), job_key)
 //   hash_b   = blake3_keyed(pad1024(B^T row-major), job_key)   (B is k x n)
 
 import { concat, fromHex, hex, u32, u64 } from "../core/bytes";
 import { blake3, blake3Keyed } from "../core/crypto";
-import { jobIdForPost, termsHash } from "./messages";
+import { jobIdForPost, orderTermsHash, termsHash } from "./messages";
 
 export const CHUNK_LEN = 1024;
 
 /** Localnet default config (k=1024, r=32, 4x8 tile): `pearl-job config` output. */
 export const LOCALNET_CONFIG_HEX = "00040000200000000003000000000007000000000000000000000000000000000000000000000000000000000000000000000000";
 
-export function jobHeader(jobId: Uint8Array, terms: Uint8Array): Uint8Array {
-  if (jobId.length !== 32 || terms.length !== 32) throw new Error("job id and terms hash are 32 bytes");
-  return concat(jobId, terms, u64(0n), u32(0));
+/** The 76-byte Pearl job header. `headerId` is `getJob.header_id` (job id, or the poster for an order). */
+export function jobHeader(headerId: Uint8Array, terms: Uint8Array): Uint8Array {
+  if (headerId.length !== 32 || terms.length !== 32) throw new Error("header id and terms hash are 32 bytes");
+  return concat(headerId, terms, u64(0n), u32(0));
 }
 
 export function jobKey(header: Uint8Array, config: Uint8Array): Uint8Array {
@@ -126,16 +129,53 @@ export interface JobCommitInput {
 }
 
 export function commitJob(i: JobCommitInput) {
-  const cfg = decodeConfig(i.config);
-  const problem = shapeProblem(cfg, i.m, i.n);
-  if (problem) throw new Error(problem);
-  if (i.a.length !== i.m * cfg.k) throw new Error(`A must be m x k = ${i.m * cfg.k} bytes, got ${i.a.length}`);
-  if (i.b.length !== cfg.k * i.n) throw new Error(`B must be k x n = ${cfg.k * i.n} bytes, got ${i.b.length}`);
+  const cfg = checkMatrices(i.config, i.m, i.n, i.a, i.b);
   const jobId = jobIdForPost(i.poster, i.nonce);
   const terms = termsHash({ poster: i.poster, jobId, m: i.m, n: i.n, k: cfg.k, workerPay: i.workerPay, protocolFee: i.protocolFee, deadlineHeight: i.deadlineHeight, maxBlocks: i.maxBlocks });
   const header = jobHeader(jobId, terms);
   const key = jobKey(header, i.config);
   return { jobId, termsHash: terms, header, jobKey: key, k: cfg.k, hashA: commitA(key, i.a), hashB: commitB(key, i.b, cfg.k, i.n) };
+}
+
+function checkMatrices(config: Uint8Array, m: number, n: number, a: Uint8Array, b: Uint8Array) {
+  const cfg = decodeConfig(config);
+  const problem = shapeProblem(cfg, m, n);
+  if (problem) throw new Error(problem);
+  if (a.length !== m * cfg.k) throw new Error(`A must be m x k = ${m * cfg.k} bytes, got ${a.length}`);
+  if (b.length !== cfg.k * n) throw new Error(`B must be k x n = ${cfg.k * n} bytes, got ${b.length}`);
+  return cfg;
+}
+
+export interface OrderCommitInput {
+  poster: Uint8Array; // the bridge unlock recipient (the job's poster on the agent chain)
+  m: number;
+  n: number;
+  config: Uint8Array;
+  maxBlocks: number;
+  deadlineBlocks: bigint; // relative, as in the order body
+  a: Uint8Array;
+  b: Uint8Array;
+}
+
+/** Storefront order commitments: header `poster || order_terms`, computable at buy time. */
+export function commitOrder(i: OrderCommitInput) {
+  const cfg = checkMatrices(i.config, i.m, i.n, i.a, i.b);
+  const terms = orderTermsHash({ poster: i.poster, m: i.m, n: i.n, k: cfg.k, maxBlocks: i.maxBlocks, deadlineBlocks: i.deadlineBlocks });
+  const header = jobHeader(i.poster, terms);
+  const key = jobKey(header, i.config);
+  return { headerId: i.poster, termsHash: terms, header, jobKey: key, k: cfg.k, hashA: commitA(key, i.a), hashB: commitB(key, i.b, cfg.k, i.n) };
+}
+
+/**
+ * Recompute a node job's header and job_key from its own fields (`header_id`, `terms_hash`,
+ * `config`). Returns null when consistent, else what disagrees. Nodes that predate
+ * `header_id` fall back to `job_id`.
+ */
+export function jobHeaderProblem(j: { job_id: string; header_id?: string; terms_hash: string; config: string; job_key: string; job_header?: string }): string | null {
+  const header = jobHeader(fromHex(j.header_id || j.job_id), fromHex(j.terms_hash));
+  if (j.job_header && j.job_header.toLowerCase() !== hex(header)) return "job_header does not match header_id || terms_hash";
+  if (hex(jobKey(header, fromHex(j.config))) !== j.job_key.toLowerCase()) return "job_key does not match the header and config";
+  return null;
 }
 
 export const localnetConfig = () => fromHex(LOCALNET_CONFIG_HEX);

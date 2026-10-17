@@ -1,9 +1,9 @@
 // Chain operations for the selected account: balances, sends, bridge in/out with
 // pending tracking, agents, jobs, storefront orders, mining rewards.
 
-import { b58, b64, fromHex, hex, isAddress, key32 } from "../core/bytes";
+import { b58, b64, fromB64, fromHex, hex, isAddress, key32 } from "../core/bytes";
 import { pubkeyOf } from "../core/crypto";
-import { commitJob } from "../chain/job";
+import { commitJob, commitOrder, jobHeaderProblem } from "../chain/job";
 import { orderJobId } from "../chain/messages";
 import { ChainRpc, Job } from "../chain/rpc";
 import { PostJobBody, TxBody, UnsignedTx, signTx } from "../chain/tx";
@@ -385,7 +385,16 @@ export async function listJobs(status: string | undefined, offset: number, limit
 }
 export async function getJob(jobId: string) {
   const c = await ctx();
-  return c.chain.job(jobId);
+  const j = await c.chain.job(jobId);
+  if (!j) return j;
+  // Recompute the Pearl header from header_id || terms_hash and check job_key locally.
+  let headerCheck: string | null;
+  try {
+    headerCheck = jobHeaderProblem(j);
+  } catch (e) {
+    headerCheck = errMsg(e);
+  }
+  return { ...j, headerOk: headerCheck === null, headerCheck };
 }
 
 export interface PostJobInput {
@@ -405,7 +414,6 @@ export interface PostJobInput {
 
 export async function preparePostJob(address: string, i: PostJobInput) {
   const t0 = await prepareChainTx(address, { kind: "Transfer", to: new Uint8Array(32), amount: 0n });
-  const { fromB64 } = await import("../core/bytes");
   const evaluators = i.evaluators.map((e) => key32(e));
   if (i.threshold < 1 || i.threshold > evaluators.length) throw new Error("threshold must be between 1 and the number of evaluators");
   const cm = commitJob({
@@ -467,20 +475,51 @@ export async function storefrontQuote(solIn: bigint) {
   };
 }
 
+export interface StorefrontJobInput {
+  m: number;
+  n: number;
+  config: string;
+  a: string; // base64 int8, m x k
+  b: string; // base64 int8, k x n
+  dataUri: string;
+  deadlineBlocks: string; // relative to the unlock height
+  maxBlocks: number;
+  evaluators: string[];
+  threshold: number;
+}
+
 export interface StorefrontInput {
   solIn: string;
   recipient?: string;
-  spec: { m: number; n: number; k: number; config: string; hashA: string; hashB: string; dataUri: string; deadlineBlocks: string; maxBlocks: number; evaluators: string[]; threshold: number };
+  spec: StorefrontJobInput;
+}
+
+/**
+ * The order's commitments, computed from the matrices: the job header is
+ * `recipient || order_terms(recipient, m, n, k, max_blocks, deadline_blocks)`.
+ */
+export function prepareStorefrontJob(address: string, recipient: string | undefined, j: StorefrontJobInput) {
+  const poster = pk(recipient?.trim() || address);
+  if (!j.evaluators.length) throw new Error("add at least one evaluator address (the attester in M1)");
+  if (j.threshold < 1 || j.threshold > j.evaluators.length) throw new Error("threshold must be between 1 and the number of evaluators");
+  const deadlineBlocks = BigInt(j.deadlineBlocks);
+  if (deadlineBlocks < 1n) throw new Error("deadline must be at least 1 block after the unlock");
+  const config = fromHex(j.config);
+  const cm = commitOrder({ poster, m: j.m, n: j.n, config, maxBlocks: j.maxBlocks, deadlineBlocks, a: fromB64(j.a), b: fromB64(j.b) });
+  const spec: StoreJobSpec = {
+    m: j.m, n: j.n, k: cm.k, config, hashA: cm.hashA, hashB: cm.hashB, dataUri: j.dataUri,
+    deadlineBlocks, maxBlocks: j.maxBlocks, evaluators: j.evaluators.map((e) => pk(e)), threshold: j.threshold,
+  };
+  return {
+    spec, recipient: poster,
+    view: { headerId: hex(cm.headerId), recipient: b58(poster), termsHash: hex(cm.termsHash), header: hex(cm.header), jobKey: hex(cm.jobKey), hashA: hex(cm.hashA), hashB: hex(cm.hashB), k: cm.k },
+  };
 }
 
 export async function storefrontBuy(address: string, i: StorefrontInput) {
   const c = await ctx();
   const solIn = BigInt(i.solIn);
-  const recipient = pk(i.recipient?.trim() || address);
-  const spec: StoreJobSpec = {
-    m: i.spec.m, n: i.spec.n, k: i.spec.k, config: fromHex(i.spec.config), hashA: fromHex(i.spec.hashA), hashB: fromHex(i.spec.hashB), dataUri: i.spec.dataUri,
-    deadlineBlocks: BigInt(i.spec.deadlineBlocks), maxBlocks: i.spec.maxBlocks, evaluators: i.spec.evaluators.map((e) => pk(e)), threshold: i.spec.threshold,
-  };
+  const { spec, recipient, view } = prepareStorefrontJob(address, i.recipient, i.spec);
   const me = pk(address);
   const draftId = new DataView(crypto.getRandomValues(new Uint8Array(8)).buffer).getBigUint64(0, true);
   const openSig = await sendSolana(c, address, [openOrderIx(c.storefront, me, draftId, recipient, spec)], "Opened storefront order", "storefront-open");
@@ -495,7 +534,7 @@ export async function storefrontBuy(address: string, i: StorefrontInput) {
       : buyJobAmmIx(c.storefront, c.bridge, me, draftId, nonce, solIn, m.minOut, m.accounts);
     try {
       const sig = await sendSolana(c, address, [computeUnitLimit(400_000), ix], "Bought an AI job", "storefront-buy", solIn.toString());
-      return { openSig, buySig: sig, nonce: Number(nonce), order: b58(orderPda(c.storefront, nonce)), jobId: hex(orderJobId(nonce)), venue: m.venue };
+      return { openSig, buySig: sig, nonce: Number(nonce), order: b58(orderPda(c.storefront, nonce)), jobId: hex(orderJobId(nonce)), venue: m.venue, ...view };
     } catch (e) {
       last = e;
       if (!/WrongNonce|0x1779|already in use/.test(errMsg(e))) break;

@@ -166,7 +166,7 @@ function Market({ st, onOpen, toast }: { st: WalletState; onOpen: (id: string) =
 }
 
 function JobDetail({ id, back, me }: { id: string; back: () => void; me: string }) {
-  const job = usePoll(() => call<Job | null>("getJob", { jobId: id }), 6000, [id]);
+  const job = usePoll(() => call<(Job & { headerOk: boolean; headerCheck: string | null }) | null>("getJob", { jobId: id }), 6000, [id]);
   const j = job.data;
   const steps = ["open", "delivered", "completed"];
   const idx = j ? (j.status === "expired" ? -1 : steps.indexOf(j.status)) : 0;
@@ -207,6 +207,8 @@ function JobDetail({ id, back, me }: { id: string; back: () => void; me: string 
               <KV k="Subsidy paid" v={nat(j.subsidy_paid)} />
               <KV k="Cap remaining" v={nat(j.cap_remaining)} />
               <KV k="job_key" v={short(j.job_key, 8)} title={j.job_key} />
+              <KV k="Header id" v={j.header_id && j.header_id !== j.job_id ? "poster (order)" : "job id"} title={j.header_id || j.job_id} />
+              <KV k="Header check" v={<span className={`badge ${j.headerOk ? "ok" : "bad"}`} data-testid="header-check" title={j.headerCheck ?? ""}>{j.headerOk ? "job_key verified" : "mismatch"}</span>} />
             </div>
             <div className="section-title"><span className="eyebrow">Result</span></div>
             <div className="card divided">
@@ -303,13 +305,13 @@ function PostJob({ st, toast, onPosted }: { st: WalletState; toast: (m: string) 
         <Field label="Mining config (52 bytes hex)" hint="Default: localnet k 1024, rank 32, 4 x 8 tile (m multiple of 4, n of 8).">
           <input className="input" value={config} onChange={(e) => setConfig(e.target.value)} spellCheck={false} />
         </Field>
-        <Field label="Data URI"><input className="input" value={dataUri} onChange={(e) => setDataUri(e.target.value)} placeholder="file:///.../manifest.json or ipfs://..." spellCheck={false} /></Field>
+        <Field label="Data URI"><input className="input" value={dataUri} onChange={(e) => setDataUri(e.target.value)} placeholder="file:///.../manifest.json or ipfs://..." spellCheck={false} data-testid="job-uri" /></Field>
       </div>
       <div className="card card-body">
         <div className="title" style={{ fontSize: 13.5 }}>Terms</div>
         <div className="grid2" style={{ marginTop: 10 }}>
           <Field label={`Worker pay W`} hint="Escrowed, paid on completion"><input className="input" value={w} onChange={(e) => setW(e.target.value)} placeholder="0.0" inputMode="decimal" data-testid="job-w" /></Field>
-          <Field label={`Protocol fee P`} hint="To the mining pool, kept"><input className="input" value={p} onChange={(e) => setP(e.target.value)} placeholder="0.0" inputMode="decimal" /></Field>
+          <Field label={`Protocol fee P`} hint="To the mining pool, kept"><input className="input" value={p} onChange={(e) => setP(e.target.value)} placeholder="0.0" inputMode="decimal" data-testid="job-p" /></Field>
         </div>
         <div className="grid2">
           <Field label="Deadline height" hint={height !== undefined ? `tip is ${height.toLocaleString("en-US")}` : "absolute block height"}>
@@ -358,20 +360,23 @@ interface Quote {
   maxDeadlineBlocks: string;
 }
 
+interface OrderCommit { headerId: string; recipient: string; termsHash: string; header: string; jobKey: string; hashA: string; hashB: string; k: number }
+
 function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void }) {
   const [sol, setSol] = useState("");
   const [m, setM] = useState("64");
   const [n, setN] = useState("64");
   const [config, setConfig] = useState(LOCALNET_CONFIG_HEX);
-  const [hashA, setHA] = useState("");
-  const [hashB, setHB] = useState("");
+  const [aFile, setA] = useState<File | null>(null);
+  const [bFile, setB] = useState<File | null>(null);
   const [uri, setUri] = useState("");
   const [deadline, setDeadline] = useState("500");
   const [maxBlocks, setMaxBlocks] = useState("10");
   const [evals, setEvals] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [placed, setPlaced] = useState<{ nonce: number; order: string; jobId: string; venue: string } | null>(null);
+  const [preview, setPreview] = useState<OrderCommit | null>(null);
+  const [placed, setPlaced] = useState<({ nonce: number; order: string; jobId: string; venue: string } & OrderCommit) | null>(null);
   let lamports: bigint | null = null;
   try {
     lamports = sol ? parseUnits(sol, SOL_DECIMALS) : null;
@@ -380,19 +385,33 @@ function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void
   }
   const quote = usePoll(() => (lamports && lamports > 0n ? call<Quote>("storefrontQuote", { solIn: lamports.toString() }) : Promise.resolve(null)), 0, [sol, st.network.id]);
   const q = quote.data;
-  const hexOk = (h: string) => /^[0-9a-fA-F]{64}$/.test(h.trim());
-  const missing = !lamports ? "Enter SOL to spend" : !hexOk(hashA) || !hexOk(hashB) ? "Enter hash_a and hash_b" : !evals.trim() ? "Add an evaluator" : q?.paused ? "Storefront is paused" : null;
+  const missing = !lamports ? "Enter SOL to spend" : !aFile || !bFile ? "Choose A and B" : !evals.trim() ? "Add an evaluator" : q?.paused ? "Storefront is paused" : null;
+  const spec = async () => {
+    if (!aFile || !bFile) throw new Error("choose the A and B matrix files");
+    return {
+      m: Number(m), n: Number(n), config: config.trim(), a: await fileB64(aFile), b: await fileB64(bFile), dataUri: uri.trim(),
+      deadlineBlocks: deadline.trim(), maxBlocks: Number(maxBlocks), evaluators: evals.split(/[\s,]+/).filter(Boolean), threshold: 1,
+    };
+  };
+  const doPreview = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setPreview(await call<OrderCommit>("prepareStorefrontJob", { spec: await spec() }));
+    } catch (e) {
+      setPreview(null);
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const buy = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await call("storefrontBuy", {
-        input: {
-          solIn: lamports!.toString(),
-          spec: { m: Number(m), n: Number(n), k: 1024, config: config.trim(), hashA: hashA.trim(), hashB: hashB.trim(), dataUri: uri.trim(), deadlineBlocks: deadline, maxBlocks: Number(maxBlocks), evaluators: evals.split(/[\s,]+/).filter(Boolean), threshold: 1 },
-        },
-      });
+      const r = await call<{ nonce: number; order: string; jobId: string; venue: string } & OrderCommit>("storefrontBuy", { input: { solIn: lamports!.toString(), spec: await spec() } });
       setPlaced(r);
+      setPreview(null);
       toast("Order placed on Solana");
     } catch (e) {
       setErr((e as Error).message);
@@ -400,6 +419,8 @@ function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void
       setBusy(false);
     }
   };
+  // Any input change invalidates the preview.
+  const edit = <T,>(set: (v: T) => void) => (v: T) => (set(v), setPreview(null));
   return (
     <>
       <Notice kind="accent">
@@ -410,18 +431,23 @@ function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void
           <input className="input" value={sol} onChange={(e) => setSol(e.target.value)} placeholder="0.5" inputMode="decimal" data-testid="store-sol" />
         </Field>
         <div className="grid2">
-          <Field label="m"><input className="input" value={m} onChange={(e) => setM(e.target.value)} /></Field>
-          <Field label="n"><input className="input" value={n} onChange={(e) => setN(e.target.value)} /></Field>
+          <Field label="m (rows of A)"><input className="input" value={m} onChange={(e) => edit(setM)(e.target.value)} inputMode="numeric" data-testid="store-m" /></Field>
+          <Field label="n (cols of B)"><input className="input" value={n} onChange={(e) => edit(setN)(e.target.value)} inputMode="numeric" data-testid="store-n" /></Field>
         </div>
-        <Field label="hash_a (hex)"><input className="input" value={hashA} onChange={(e) => setHA(e.target.value)} spellCheck={false} /></Field>
-        <Field label="hash_b (hex)"><input className="input" value={hashB} onChange={(e) => setHB(e.target.value)} spellCheck={false} /></Field>
-        <Field label="Mining config (hex)"><input className="input" value={config} onChange={(e) => setConfig(e.target.value)} spellCheck={false} /></Field>
-        <Field label="Data URI"><input className="input" value={uri} onChange={(e) => setUri(e.target.value)} spellCheck={false} /></Field>
         <div className="grid2">
-          <Field label="Deadline (blocks after unlock)"><input className="input" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
-          <Field label="Max blocks"><input className="input" value={maxBlocks} onChange={(e) => setMaxBlocks(e.target.value)} /></Field>
+          <Field label="A.i8" hint={aFile ? `${aFile.size.toLocaleString("en-US")} bytes` : "m x k bytes"}><input className="input" type="file" onChange={(e) => edit(setA)(e.target.files?.[0] ?? null)} style={{ paddingTop: 8 }} data-testid="store-file-a" /></Field>
+          <Field label="B.i8" hint={bFile ? `${bFile.size.toLocaleString("en-US")} bytes` : "k x n bytes"}><input className="input" type="file" onChange={(e) => edit(setB)(e.target.files?.[0] ?? null)} style={{ paddingTop: 8 }} data-testid="store-file-b" /></Field>
         </div>
-        <Field label="Evaluators" hint="Base58, comma separated; threshold 1."><input className="input" value={evals} onChange={(e) => setEvals(e.target.value)} spellCheck={false} /></Field>
+        <Field label="Mining config (hex)"><input className="input" value={config} onChange={(e) => edit(setConfig)(e.target.value)} spellCheck={false} /></Field>
+        <Field label="Data URI"><input className="input" value={uri} onChange={(e) => setUri(e.target.value)} spellCheck={false} data-testid="store-uri" /></Field>
+        <div className="grid2">
+          <Field label="Deadline (blocks)" hint="After the unlock"><input className="input" value={deadline} onChange={(e) => edit(setDeadline)(e.target.value)} inputMode="numeric" data-testid="store-deadline" /></Field>
+          <Field label="Max blocks"><input className="input" value={maxBlocks} onChange={(e) => edit(setMaxBlocks)(e.target.value)} inputMode="numeric" data-testid="store-max-blocks" /></Field>
+        </div>
+        <Field label="Evaluators" hint="Base58, comma separated; threshold 1."><input className="input" value={evals} onChange={(e) => setEvals(e.target.value)} spellCheck={false} data-testid="store-evals" /></Field>
+        <div className="small subtle" style={{ marginTop: 2 }}>
+          hash_a and hash_b are computed here from the matrices, against the order header (your address, then the order terms m, n, k, max blocks and deadline), so they match what miners derive from the posted job.
+        </div>
       </div>
       <div className="card divided" style={{ marginTop: 10 }}>
         {quote.error ? <div style={{ padding: 12 }}><Notice kind="warn">{quote.error}</Notice></div> : (
@@ -434,21 +460,35 @@ function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void
           </>
         )}
       </div>
-      <div style={{ marginTop: 10 }}>
-        <Notice kind="warn">An order's job_key depends on W, P and the absolute deadline, which are only fixed after the swap and the unlock, so hash_a / hash_b cannot be precomputed for it here. Enter commitments your miner pipeline expects.</Notice>
-      </div>
+      {preview && !placed && <OrderCommitCard c={preview} testid="order-preview" />}
       {err && <div style={{ marginTop: 10 }}><Notice kind="bad">{err}</Notice></div>}
       {placed && (
-        <div className="card divided" style={{ marginTop: 10 }} data-testid="order-placed">
-          <KV k="Order" v={short(placed.order, 6)} title={placed.order} />
-          <KV k="Bridge nonce" v={placed.nonce} />
-          <KV k="Agent-chain job id" v={short(placed.jobId, 8)} title={placed.jobId} />
-        </div>
+        <>
+          <div className="card divided" style={{ marginTop: 10 }} data-testid="order-placed">
+            <KV k="Order" v={short(placed.order, 6)} title={placed.order} />
+            <KV k="Bridge nonce" v={placed.nonce} />
+            <KV k="Agent-chain job id" v={short(placed.jobId, 8)} title={placed.jobId} />
+          </div>
+          <OrderCommitCard c={placed} testid="order-placed-commit" />
+        </>
       )}
-      <div style={{ marginTop: 12 }}>
-        <Btn kind="primary" block disabled={!!missing} busy={busy} onClick={buy} testid="store-buy">{missing ?? `Buy job for ${sol} SOL`}</Btn>
+      <div className="btn-row" style={{ marginTop: 12 }}>
+        <Btn disabled={!aFile || !bFile || !evals.trim()} busy={busy} onClick={doPreview} testid="store-preview">Preview</Btn>
+        <Btn kind="primary" disabled={!!missing} busy={busy} onClick={buy} testid="store-buy">{missing ?? `Buy job for ${sol} SOL`}</Btn>
       </div>
     </>
+  );
+}
+
+function OrderCommitCard({ c, testid }: { c: OrderCommit; testid: string }) {
+  return (
+    <div className="card divided" style={{ marginTop: 10 }} data-testid={testid}>
+      <KV k="Header id (poster)" v={short(c.recipient, 6)} title={c.headerId} />
+      <KV k="order_terms" v={short(c.termsHash, 8)} title={c.termsHash} />
+      <KV k="job_key" v={short(c.jobKey, 8)} title={c.jobKey} />
+      <KV k="hash_a" v={short(c.hashA, 8)} title={c.hashA} />
+      <KV k="hash_b" v={short(c.hashB, 8)} title={c.hashB} />
+    </div>
   );
 }
 

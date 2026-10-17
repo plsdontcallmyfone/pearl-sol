@@ -1,0 +1,8 @@
+{
+  "rule": "blake3(\"pearl-sol:order-terms:v1\" || poster || m u32 LE || n u32 LE || k u32 LE || max_blocks u32 LE || deadline_blocks u64 LE)",
+  "cases": [
+    {"poster_hex": "0707070707070707070707070707070707070707070707070707070707070707", "m": 64, "n": 64, "k": 1024, "max_blocks": 10, "deadline_blocks": "500", "order_terms": "d4e5a7e3a78d646e046af17e9b2f7e2f73e0f00c085294ce4cc9d0f7acfc0ff8"},
+    {"poster_hex": "0101010101010101010101010101010101010101010101010101010101010101", "m": 8, "n": 16, "k": 1024, "max_blocks": 1, "deadline_blocks": "1", "order_terms": "4dbdff0e6602abe353826213a747e68b4dfd1d42995674aa010ba5a58fd7f2f3"},
+    {"poster_hex": "abababababababababababababababababababababababababababababababab", "m": 4096, "n": 2048, "k": 65536, "max_blocks": 100000, "deadline_blocks": "18446744073709551615", "order_terms": "83eaa099ca8795b45dc91e0afc34e7a49e3b77985ee4c554e832dc86295a7d4d"}
+  ]
+}

@@ -20,6 +20,8 @@ npm install
 npm run build          # tsc + Vite (popup, approval) + esbuild (worker, content, inpage) -> dist/
 npm test               # vitest: tx vectors, job parity, Solana ixs vs IDLs, vault, signing
 npm run test:ui        # headless Chromium (Playwright) with dist/ loaded; screenshots -> screenshots/
+# live writes against `DEMO_KEEP_UP=1 scripts/demo.sh` (bridge in, PostJob, storefront buy, both mined):
+LIVE_KEY=key.json LIVE_EVALUATOR=<attester> LIVE_JOB_DIR=<pearl-job gen dir> node scripts/live-writes.mjs
 ```
 
 Load `dist/` with chrome://extensions, Developer mode, "Load unpacked".
@@ -41,9 +43,9 @@ test dApp page 10673). Dev ports stay inside 10670-10679.
 | Bridge in | `bridge.deposit(amount, agent_recipient)` on Solana; tracked until `getDeposit(solana_nonce)` reports the relayer unlock. Retries if another deposit took the nonce. |
 | Bridge out | `BridgeLock` tx (amount a positive multiple of 1000); tracked through inclusion, the withdrawal nonce (`getBridgeEvents`), K-deep confirmations (progress bar), then the Solana `processed` PDA `["processed", 1, nonce]` that marks the release. Runs in the background (alarm every minute) as well. |
 | Agents | `RegisterAgent` (name + URI), profile shown from `getAgent`. |
-| Jobs | Browse (`listJobs` with status filters, paging), job detail (`getJob`): status, terms, mining progress, result. |
+| Jobs | Browse (`listJobs` with status filters, paging), job detail (`getJob`): status, terms, mining progress, result, and a local check that `job_header` = `header_id || terms_hash || 0 || 0` and `job_key` = blake3(header, config). |
 | Post job | Reads A (m x k) and B (k x n) int8 files, computes `job_id`, `terms_hash`, the 76-byte header, `job_key`, `hash_a`, `hash_b` in TS (blake3), previews, then sends `PostJob`. Byte parity with the `pearl-job` CLI is tested. |
-| Storefront | Quote (curve or PumpSwap, slippage from the storefront config), then `open_order` + `buy_job` / `buy_job_amm` (two txs; the pair is over the 1232-byte limit together). |
+| Storefront | Reads A and B like Post job and computes `hash_a` / `hash_b` itself against the order header `recipient || order_terms(recipient, m, n, k, max_blocks, deadline_blocks)` (chain/state `order_terms_hash`; parity with the Rust vector `chain/state/vectors/order_terms.json` and with `pearl-job`). Quote (curve or PumpSwap, slippage from the storefront config), then `open_order` + `buy_job` / `buy_job_amm` (two txs; the pair is over the 1232-byte limit together). |
 | Mining | Scans recent canonical blocks (`getBlock`, depth configurable) for blocks whose `miner` is this account: count, job vs fallback, matured (>= K deep) vs immature, fees. |
 | Activity | Local log of everything sent from the wallet (both chains) + `getSignaturesForAddress` on Solana. |
 
@@ -126,10 +128,6 @@ scripts/      build.mjs, ui-check.mjs (Playwright), mock-rpc.mjs
 
 ## Known limits
 
-- Storefront orders: an order's `job_key` covers W, P and the absolute deadline, which
-  are only fixed after the swap and the unlock, so the wallet cannot precompute
-  `hash_a` / `hash_b` for an order; the Buy form takes them as input (as the x402
-  service does).
 - Mining rewards: `getBlock` in docs/RPC.md has no subsidy field, so the wallet sums
   fees only (it uses a `reward` / `subsidy` field if a node adds one).
 - Agent-chain activity is the wallet's own log (the node has no history-by-address

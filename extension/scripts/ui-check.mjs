@@ -71,6 +71,27 @@ try {
     await p.waitForSelector(".toast", { state: "detached", timeout: 4000 }).catch(() => {});
     await p.waitForTimeout(350);
     await p.screenshot({ path: resolve(shots, `${name}.png`) });
+    if (p === page) await clearOfTabbar(name);
+  };
+  // Scroll the active screen to the bottom and make sure its last row ends above the tab
+  // bar (the tab bar must never cover content, on any route).
+  const clearOfTabbar = async (route) => {
+    const r = await page.evaluate(async () => {
+      const bar = document.querySelector(".tabbar");
+      const sc = [...document.querySelectorAll(".scroll")].pop();
+      if (!bar || !sc) return { skip: true };
+      const before = sc.scrollTop;
+      sc.scrollTop = sc.scrollHeight;
+      await new Promise((res) => setTimeout(res, 120));
+      const kids = [...sc.querySelectorAll(":scope > *, :scope > * > *")].filter((e) => e.getBoundingClientRect().height > 0);
+      const last = Math.max(...kids.map((e) => e.getBoundingClientRect().bottom));
+      const top = bar.getBoundingClientRect().top;
+      const vh = window.innerHeight;
+      sc.scrollTop = before;
+      return { last: Math.round(last), top: Math.round(top), barBottom: Math.round(bar.getBoundingClientRect().bottom), vh };
+    });
+    if (r.skip) return;
+    check(`${route}: last row clear of the tab bar`, r.last <= r.top && r.barBottom <= r.vh, `last row ends ${r.last}, tab bar ${r.top} to ${r.barBottom}, viewport ${r.vh}`);
   };
   const tab = async (t) => {
     await page.click(`[data-testid=tab-${t}]`);
@@ -160,7 +181,9 @@ try {
   }
   if (await page.$("[data-testid=job-row]")) {
     await page.locator("[data-testid=job-row]").first().click();
-    await page.waitForTimeout(700);
+    await page.waitForSelector("[data-testid=header-check]", { timeout: 8000 }).catch(() => {});
+    const hc = await page.textContent("[data-testid=header-check]").catch(() => "");
+    check("job detail recomputes job_key from header_id", hc === "job_key verified", hc);
     await shot("10-job-detail");
     await page.click("[aria-label=Back]");
   }
@@ -177,7 +200,16 @@ try {
   await shot("11-post-job");
   await page.click(".seg button:has-text('Buy')");
   await page.fill("[data-testid=store-sol]", "0.5");
-  await page.waitForTimeout(1200);
+  await page.fill("[data-testid=store-m]", "8");
+  await page.fill("[data-testid=store-n]", "16");
+  await page.setInputFiles("[data-testid=store-file-a]", resolve(root, "test/fixtures/job/A.i8"));
+  await page.setInputFiles("[data-testid=store-file-b]", resolve(root, "test/fixtures/job/B.i8"));
+  await page.fill("[data-testid=store-evals]", base58.encode(new Uint8Array(32).fill(5)));
+  await page.click("[data-testid=store-preview]");
+  await page.waitForSelector("[data-testid=order-preview]", { timeout: 8000 }).catch(() => {});
+  const op = (await page.textContent("[data-testid=order-preview]").catch(() => "")) ?? "";
+  check("Buy form computes the order commitments from the matrices", /hash_a/.test(op) && /order_terms/.test(op), op.replace(/\s+/g, " ").slice(0, 120));
+  await page.waitForTimeout(800);
   await shot("12-storefront");
   await page.click(".seg button:has-text('Mining')");
   await page.waitForSelector("[data-testid=rewards] .hero-amount:not(:has(.skel))", { timeout: 20000 }).catch(() => {});
