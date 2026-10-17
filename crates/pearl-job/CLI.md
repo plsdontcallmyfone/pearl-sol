@@ -46,7 +46,7 @@ Either `--job-file job.json` (a JobSpec, below) or flags; flags override the fil
 | `--terms-hash <hex32>` | header bytes 32..64 |
 | `--slot <u64>` | created_slot, header bytes 64..72 |
 | `--target-bits <u32>` | share target (compact nbits), header bytes 72..76 |
-| `--config <hex52>` | mining config; default = localnet (k=1024, r=32, 4x8 tile) |
+| `--config <hex52>` | mining config; default = localnet (k=2048, r=128, 4x8 tile) |
 | `--m`, `--n` | dims; taken from the data manifest when `--data` is given |
 | `--hash-a`, `--hash-b` | commitments; computed from `--data` when omitted, and checked against the data when given |
 
@@ -62,12 +62,12 @@ JobSpec JSON (also what the miner and attester use; `jobs::Job` maps onto it):
 
 ## Subcommands
 
-### `gen --m M --n N [--k 1024] --out-dir DIR [--seed S]`
+### `gen --m M --n N [--k 2048] --out-dir DIR [--seed S]`
 Random int7 A, B (deterministic with `--seed`) into DIR.
 `{ok, m, n, k, manifest, a, b, data_uri, blob_file, blob_id, blob_uri, blob_size}` (absolute
 paths; `data_uri` = `file://<manifest>`; `blob_file` = DIR/job.blob, `blob_uri` = `blob:<blob_id>`).
 
-### `config [--k 1024] [--rank 32] [--rows 0,1,2,3] [--cols 0,1,2,3,4,5,6,7]`
+### `config [--k 2048] [--rank 128] [--rows 0,1,2,3] [--cols 0,1,2,3,4,5,6,7]`
 `{ok, config, k, rank, h, w, row_period, col_period}`. m must be a multiple of
 `row_period`, n of `col_period`.
 

@@ -33,18 +33,18 @@ enum Cmd {
         m: u32,
         #[arg(long)]
         n: u32,
-        #[arg(long, default_value_t = 1024)]
+        #[arg(long, default_value_t = 2048)]
         k: u32,
         #[arg(long)]
         out_dir: PathBuf,
         #[arg(long)]
         seed: Option<u64>,
     },
-    /// Build a 52-byte mining config (defaults: localnet k=1024 r=32, 4x8 tile).
+    /// Build a 52-byte mining config (defaults: localnet k=2048 r=128, 4x8 tile; r >= 128, rank penalty).
     Config {
-        #[arg(long, default_value_t = 1024)]
+        #[arg(long, default_value_t = 2048)]
         k: u32,
-        #[arg(long, default_value_t = 32)]
+        #[arg(long, default_value_t = 128)]
         rank: u16,
         /// Comma-separated row pattern, e.g. 0,1,2,3
         #[arg(long, default_value = "0,1,2,3")]

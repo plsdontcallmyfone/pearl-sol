@@ -44,11 +44,13 @@ in that nesting order (dimension 0 fastest). `size = length0*length1*length2`,
 `period = stride2*length2`. An offset t is a valid tile start iff, walking dimensions
 from last to first, `t %= stride*length; t < stride` holds at each step.
 
-Localnet default (`pearl-job config`): k=1024, r=32, rows 0..4, cols 0..8, h = 4, w = 8:
-`00040000 2000 0000 000300000000 000700000000` followed by 32 zero bytes.
+Localnet default (`pearl-job config`): k=2048, r=128, rows 0..4, cols 0..8, h = 4, w = 8:
+`00080000 8000 0000 000300000000 000700000000` followed by 32 zero bytes. Until the
+rank-penalty port (2026-10-17) it was k=1024, r=32 (`00040000 2000 ...`), which is
+now refused.
 
 Shape rules (`job::check_shape`, Pearl `public_params_sanity_check`): r a power of
-two in [32, 1024]; k multiple of 64, 1024 <= k <= 65536, 16r <= k <= 4r^2;
+two in [32, 1024] **and r >= 128** (Pearl's rank-penalty floor, section 7.7); k multiple of 64, 1024 <= k <= 65536, 16r <= k <= 4r^2;
 h, w even; 32 <= h*w <= 256; dlen = k - k % r is a multiple of 64; m, n <= 2^24;
 m and n are multiples of the row and column pattern periods.
 
@@ -127,8 +129,9 @@ per sibling.
 8. `jackpot_hash = blake3_k(msg as 16 x u32 LE, a_seed)`.
 9. Difficulty: `target = nbits_to_target(share_target)` (Bitcoin compact; zero if the
    mantissa is 0, the exponent is 0 or bit 0x00800000 is set),
-   `bound = min(U256::MAX, target * h*w*dlen)`. Accept iff
-   `U256::from_le(jackpot_hash) <= bound`. No rank penalty (a Pearl-mainnet rule).
+   `bound = min(U256::MAX, target * h*w*(dlen/r)*128)` (Pearl's rank-penalized bound,
+   section 7.7; equal to `target * h*w*dlen` at r = 128). Accept iff
+   `U256::from_le(jackpot_hash) <= bound`.
 
 ### Root recomputation (keyed BLAKE3 chunk tree)
 
@@ -157,6 +160,8 @@ The tree is BLAKE3's own tree with `job_key` as the key, so the root equals
 
 Work per verify: 12 chunks (about 192 compressions) + parents, about 2 + 2*k/8 + 4 +
 8 = 270 single-block keyed hashes for noise (k=1024), 32 x 1024 MACs, 1 jackpot hash.
+(Measured at the pre-rank-penalty k=1024, r=32 config. At the current k=2048, r=128 every
+term doubles: 24 chunks, about 2 + 2*2048/8 + 16 + 32 = 562 noise hashes, 32 x 2048 MACs.)
 
 ## 6. Cross-check against Pearl
 
@@ -233,7 +238,7 @@ int7(x)       = (x & 0x7f) - 64                                     (values in [
 hash_a, hash_b = section 1 commitments of A and B^T under job_key
 ```
 then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (m*k + k*n
-bytes of XOF and keyed hashing: 12 KiB at 4 x 8 and k = 1024, 128 KiB at 64 x 64) before the usual
+bytes of XOF and keyed hashing: 24 KiB at 4 x 8 and k = 2048, 256 KiB at 64 x 64) before the usual
 check. A node verifies with the parameters in force at the block's parent; changing
 them by AdminConfig applies from the next block on.
 
@@ -254,12 +259,13 @@ M4 laptop with other builds running, 2026-10-17, mean of 500 to 1000 verifies):
   `hash_b = 0xBB*32`, m = 192, n = 320:
   `b = e8f7d72728f2143cdb331ee04fd00792ebf1a07d9ef60367a8640ed8e78bbcac`,
   `a = 3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c05fd2`.
-- Fallback job for `pow_digest = 0x09*32`, default params (m = 4, n = 8):
-  `hash_a = 8e192020e50ab1ce7d29a4d5b8294650fb782a41a0dc11c912ec791bcd726ec4`,
-  `hash_b = 0fad28125cae2afdecc42b89699dca662ca5028c7c43dd4b24a96c354b5e5575`.
-- Same `pow_digest`, m = n = 64 (the pre-2026-10-17 default):
-  `hash_a = f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a`,
-  `hash_b = 5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347`.
+- Fallback job for `pow_digest = 0x09*32`, default params (m = 4, n = 8, k = 2048,
+  r = 128):
+  `hash_a = 0e68c8d3bae3e18efe30f78e02f313921ce6dc7adcd6d496e3605fd7d445ee62`,
+  `hash_b = 33e22b577f66feb98851fcb1f4ff628dcd6c42857b8b7e24f37f08bd542f1ae6`.
+- Same `pow_digest`, m = n = 64 (the pre-2026-10-17 shape), k = 2048, r = 128:
+  `hash_a = f675c2fc3e528ca43cc87d78024ceace26202d5d71485c8cc75f7f3c847e4bc2`,
+  `hash_b = dbbaa3865d4f10ddcb5b3b337e42b05c739b6a89c64a0f7b24669136d2408c05`.
 - Header `version 1, height 5, prev 0xab*32, timestamp_ms 1760000000000,
   target 0x1e040000, job_id 0x07*32, miner 0x4d*32, tx_root 0x01*32,
   state_root 0x02*32, withdraw_root 0x03*32, proof_hash 0, nonce 0`:
@@ -274,3 +280,25 @@ M4 laptop with other builds running, 2026-10-17, mean of 500 to 1000 verifies):
 `pow::fallback_job(pow_digest, params)`, `pow::mine_header_nonce(template, work, nonce)`
 and `pow::verify_block(header, job, proof_bytes, fallback_params)` (the full check a
 node runs: proof_hash, mode, job binding, seed, target).
+
+### 7.7 Rank penalty (Pearl mainnet rule, ported 2026-10-17)
+
+Pearl activated it as a softfork at mainnet height 96251
+(`node/chaincfg/params.go:266-274,369`, `node/blockchain/validate.go:515-555`); the rule
+itself is `zk-pow/src/api/sanity_checks.rs:161-251` (`check_rank_penalty`,
+`penalized_adjustment_factor`, `penalized_target_bound`), `PENALTY_BASE_RANK = 128`
+(`sanity_checks.rs:12-13`). This chain has it from genesis, on every proof (v1 shares,
+job blocks, fallback blocks, pool shares), in `job::check_shape` and
+`job::difficulty_bound` and in the SBF mirror (`pearl-verify-sbf` `config.rs`,
+`difficulty.rs`, `verify.rs`):
+
+1. `r >= 128`, else the config is refused (posting, AdminConfig, mining, verify).
+2. `bound = target * h*w * (dlen / r) * 128`, saturating at `U256::MAX` on the consensus
+   path (Pearl `scale`); `job::penalized_target_bound` is the non-saturating form for
+   share targets (`None` on overflow). At r = 128 this is Pearl's ordinary
+   `target * h*w*dlen`; at r = 128 * 2^j it is 2^j times smaller.
+
+The work credited to one jackpot attempt is therefore `h*w*128` multiply-accumulates per
+rank block (one transcript checkpoint), at most `h*w*dlen`. It does not look at A or B;
+the analysis of zero and low-rank job matrices is in research/NOTES-rank-penalty.md.
+
