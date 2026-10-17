@@ -168,7 +168,7 @@ async function nextNonce(c: Ctx, address: string): Promise<bigint> {
   const cache = (await getLocal("chainNonces")) ?? {};
   const k = `${c.net.chainRpc}:${address}`;
   const local = cache[k];
-  const n = local && Date.now() - local.at < 10 * 60_000 && local.nonce > a.nonce ? local.nonce : a.nonce;
+  const n = local && Date.now() - local.at < 3 * 60_000 && local.nonce > a.nonce ? local.nonce : a.nonce;
   return BigInt(n);
 }
 async function bumpNonce(c: Ctx, address: string, used: bigint) {
