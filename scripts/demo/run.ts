@@ -16,7 +16,7 @@ import {
   loadKp, nodeCall, portBusy, procs, run, sleep, start, waitFor,
 } from "./lib.ts";
 import {
-  BRIDGE_PROGRAM_ID, ORDER_LAYOUT, ORDER_STATUS_FINALIZED, STOREFRONT_PROGRAM_ID, ata, bridgeConfigPda, decodeBridgeConfig,
+  BRIDGE_PROGRAM_ID, ORDER_LAYOUT, ORDER_STATUS_FINALIZED, ORDER_STATUS_REFUNDED, STOREFRONT_PROGRAM_ID, ata, bridgeRefundPda, bridgeConfigPda, decodeBridgeConfig,
   decodeOrder, orderPda, storefrontConfigPda, tokenAccountAmount, traderPda, u16le, u32le, u64le,
 } from "../../services/relayer/src/codec.ts";
 import { KIND, signTx, transferBody } from "../../services/relayer/src/agent-tx.ts";
@@ -84,6 +84,8 @@ function relayerEnv(): Record<string, string> {
   return {
     TOKEN_RPC, NODE_RPC, SIGNER_KEYS: resolve(ROOT, KEYS.attester), TOKEN_PAYER: resolve(ROOT, KEYS.payer),
     AGENT_KEY: resolve(ROOT, KEYS.payer), STATE_FILE: resolve(DEMO, "relayer-state.json"), POLL_MS: "1000", HEALTH_PORT: "10660",
+    // held-back orders are refunded on Solana this long after they were first held back (step 8)
+    REFUND_GRACE_MS: process.env.DEMO_REFUND_GRACE_MS ?? "5000",
   };
 }
 
@@ -380,6 +382,27 @@ async function step4(): Promise<string> {
     deadline_blocks: JOB.deadlineBlocks, max_blocks: JOB.maxBlocks } };
   const quote = await httpJson(`${STOREFRONT_URL}/quote?m=${JOB.m}&n=${JOB.n}&k=${JOB.k}&max_blocks=${JOB.maxBlocks}`);
   info("quote", { price_lamports: quote.body.price_lamports, venue: quote.body.venue, tokens_spl: quote.body.estimate?.tokens_spl });
+  lastOrderBody = body;
+  const r = await payOrder(body);
+  const nonce = BigInt(r.body.id);
+  // relayer: BridgeUnlock with job_order; the job shows up on the chain
+  const d = await depositFinal(nonce);
+  const job = await waitFor("getJob for the order", () => nodeCall("getJob", { job_id: r.body.job_id }), 60_000);
+  if (job.poster !== recipient.toBase58() || job.hash_a !== c.hash_a || job.hash_b !== c.hash_b) throw new Error(`job mismatch ${JSON.stringify(job)}`);
+  if (job.job_key !== c.job_key) throw new Error(`node job_key ${job.job_key} != buyer's ${c.job_key}`);
+  const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
+  order = { nonce, jobId: job.job_id, P: BigInt(job.protocol_fee), W: BigInt(job.worker_pay), postedHeight: job.posted_height };
+  writeFileSync(resolve(DEMO, "order.json"), JSON.stringify({ ...order, nonce: nonce.toString(), P: order.P.toString(), W: order.W.toString() }));
+  return `order ${nonce} (Solana Order ${orderPda(nonce).toBase58()}, ${o.tokens} SPL bought) unlocked at height ${d.height}: ` +
+    `job ${job.job_id.slice(0, 16)} ${job.status} W=${job.worker_pay} P=${job.protocol_fee} cap=${job.cap_remaining} ` +
+    `deadline ${job.deadline_height} data ${job.data_uri} (blob put on node 1)`;
+}
+
+let lastOrderBody: unknown = null;
+
+/** x402 purchase of `body` through storefront-x402 (402 challenge, then the buyer-signed payment); returns the 201 response. */
+async function payOrder(body: unknown): Promise<any> {
+  const recipient = buyer.kp.publicKey;
   // x402: first call answers 402 with the payment requirements
   const r402 = await httpJson(`${STOREFRONT_URL}/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (r402.status !== 402) throw new Error(`expected 402, got ${r402.status} ${JSON.stringify(r402.body)}`);
@@ -397,20 +420,9 @@ async function step4(): Promise<string> {
   const buyerSolBefore = await conn.getBalance(recipient);
   const r = await httpJson(`${STOREFRONT_URL}/jobs`, { method: "POST", headers: { "content-type": "application/json", "x-payment": xPayment }, body: JSON.stringify(body) });
   if (r.status !== 201) throw new Error(`POST /jobs with payment: ${r.status} ${JSON.stringify(r.body)}`);
-  const nonce = BigInt(r.body.id);
   info("order placed", { nonce: r.body.id, order: r.body.order, job_id: r.body.job_id, venue: r.body.venue, paid: req.maxAmountRequired,
     buyerSolSpent: buyerSolBefore - (await conn.getBalance(recipient)) });
-  // relayer: BridgeUnlock with job_order; the job shows up on the chain
-  const d = await depositFinal(nonce);
-  const job = await waitFor("getJob for the order", () => nodeCall("getJob", { job_id: r.body.job_id }), 60_000);
-  if (job.poster !== recipient.toBase58() || job.hash_a !== c.hash_a || job.hash_b !== c.hash_b) throw new Error(`job mismatch ${JSON.stringify(job)}`);
-  if (job.job_key !== c.job_key) throw new Error(`node job_key ${job.job_key} != buyer's ${c.job_key}`);
-  const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
-  order = { nonce, jobId: job.job_id, P: BigInt(job.protocol_fee), W: BigInt(job.worker_pay), postedHeight: job.posted_height };
-  writeFileSync(resolve(DEMO, "order.json"), JSON.stringify({ ...order, nonce: nonce.toString(), P: order.P.toString(), W: order.W.toString() }));
-  return `order ${nonce} (Solana Order ${orderPda(nonce).toBase58()}, ${o.tokens} SPL bought) unlocked at height ${d.height}: ` +
-    `job ${job.job_id.slice(0, 16)} ${job.status} W=${job.worker_pay} P=${job.protocol_fee} cap=${job.cap_remaining} ` +
-    `deadline ${job.deadline_height} data ${job.data_uri} (blob put on node 1)`;
+  return r;
 }
 
 async function step5(): Promise<string> {
@@ -503,6 +515,58 @@ async function step6(): Promise<string> {
     `(ATA ${ata(to, MINT).toBase58()}) by ${how} (bridge release mode = proof only) by chain height ${heightAtRelease}; light client tip ${lc?.tip} final ${lc?.final}`;
 }
 
+/**
+ * Refund path (owner decision 2026-10-17): the chain's min protocol fee is raised by
+ * AdminConfig above any order's P (an order paid on Solana is now underpaid for the
+ * chain), a new x402 order is held back by the relayer (never signed), and once
+ * REFUND_GRACE_MS passes the relayer refunds it on Solana: bridge refund_deposit back
+ * to the Order's buyer + storefront mark_refunded. The deposit is never unlocked, even
+ * after the floor is restored, and the invariant is exact.
+ */
+async function stepRefund(): Promise<string> {
+  if (!lastOrderBody) throw new Error("no order body from step 5");
+  const p0 = await nodeCall("getParams");
+  const key = Number(p0.keys.min_protocol_fee);
+  const admin = payer; // devnet admin = keys/localnet/payer
+  if ((await chainBalance(admin.publicKey)) < 10_000n) await sendChainTx(user.kp, KIND.Transfer, transferBody(admin.publicKey, 1_000_000n));
+  const adminConfig = (v: bigint) => Buffer.concat([Buffer.from([key]), u16le(8), u64le(v)]);
+  const HIGH = 10n ** 16n;
+  await sendChainTx(admin, KIND.AdminConfig, adminConfig(HIGH));
+  await waitFor("min_protocol_fee_effective raised", async () => (BigInt((await nodeCall("getParams")).min_protocol_fee_effective) === HIGH ? true : null), 60_000);
+  const r = await payOrder(lastOrderBody);
+  const nonce = BigInt(r.body.id);
+  const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
+  if (o.body.protocolFee >= HIGH) throw new Error(`order P ${o.body.protocolFee} not below the raised floor`);
+  const buyerAta = ata(o.buyer, MINT);
+  const before = (await conn.getAccountInfo(buyerAta)) ? tokenAccountAmount((await conn.getAccountInfo(buyerAta))!.data) : 0n;
+  const held = await waitFor("relayer holds the order back (needsRefund)", async () => {
+    const h = (await httpJson(RELAYER_HEALTH)).body;
+    return h?.needsRefund?.[nonce.toString()] ? h.needsRefund[nonce.toString()] : null;
+  }, 60_000);
+  info("held back", { nonce: nonce.toString(), reason: held.reason, P: held.protocolFee, floor: held.minProtocolFeeEffective });
+  const st = await waitFor("Order Refunded on Solana", async () => {
+    const a = await conn.getAccountInfo(orderPda(nonce));
+    return a && decodeOrder(a.data).status === ORDER_STATUS_REFUNDED ? true : null;
+  }, 120_000);
+  const rec = await conn.getAccountInfo(bridgeRefundPda(nonce));
+  if (!st || !rec) throw new Error("no refund record");
+  const how = await lastIxName(bridgeRefundPda(nonce), BRIDGE_PROGRAM_ID, ["refund_deposit"]);
+  if (!how?.startsWith("refund_deposit")) throw new Error(`refund record written by ${how}`);
+  const after = tokenAccountAmount((await conn.getAccountInfo(buyerAta))!.data);
+  if (after - before !== o.tokens) throw new Error(`buyer got ${after - before} SPL back, want ${o.tokens}`);
+  // restore the floor: the refunded deposit must still never be unlocked
+  await sendChainTx(admin, KIND.AdminConfig, adminConfig(BigInt(p0.min_protocol_fee)));
+  await waitFor("floor restored", async () => (BigInt((await nodeCall("getParams")).min_protocol_fee_effective) === BigInt(p0.min_protocol_fee_effective) ? true : null), 60_000);
+  await sleep(5000);
+  const dep = await node.getDeposit(nonce);
+  if (dep.processed) throw new Error(`refunded deposit ${nonce} was unlocked on the chain`);
+  const inv = await invariant();
+  if (!/ in_flight_deposits_spl=0 .*delta=0 strict=true/.test(inv)) throw new Error(`invariant not exact after the refund: ${inv}`);
+  return `chain min_protocol_fee raised to ${HIGH} by AdminConfig; x402 order ${nonce} (P=${o.body.protocolFee}) held back ` +
+    `(${held.reason}), refunded after REFUND_GRACE_MS by ${how}: ${o.tokens} SPL back to the Order's buyer ${o.buyer.toBase58()} ` +
+    `(storefront wallet), Order status Refunded; floor restored, deposit still not unlocked; invariant exact`;
+}
+
 // ------------------------------------------------------------ teardown
 
 function stopPid(name: string, pid: number) {
@@ -559,6 +623,7 @@ try {
   await step("5. storefront order over x402 -> job on the chain", step4);
   await step("6. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
   await step("7. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
+  await step("8. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
@@ -568,12 +633,12 @@ if (!keepUp) {
   const s = Date.now();
   try {
     const d = await teardown();
-    results.push({ step: "8. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
-    console.log(`\n== 8. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+    results.push({ step: "9. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 9. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
   } catch (e) {
     failed = true;
-    results.push({ step: "8. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
-    console.log(`\n== 8. teardown\n   FAIL: ${(e as Error).message}`);
+    results.push({ step: "9. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 9. teardown\n   FAIL: ${(e as Error).message}`);
   }
 } else {
   console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);
