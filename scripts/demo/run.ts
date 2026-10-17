@@ -171,11 +171,11 @@ async function chainBalance(k: PublicKey): Promise<bigint> {
   return (await node.getAccount(k.toBase58())).balance;
 }
 
-async function sendChainTx(kp: Keypair, kind: number, body: Buffer): Promise<string> {
+async function sendChainTx(kp: Keypair, kind: number, body: Buffer, fee?: bigint): Promise<string> {
   const ci = await node.getChainInfo();
   const p = await nodeCall("getParams");
   const acct = await node.getAccount(kp.publicKey.toBase58());
-  const tx = signTx(kp, { chainId: ci.chainId, from: kp.publicKey, nonce: acct.nonce, fee: BigInt(p.min_fee), kind }, body);
+  const tx = signTx(kp, { chainId: ci.chainId, from: kp.publicKey, nonce: acct.nonce, fee: fee ?? BigInt(p.min_fee), kind }, body);
   const h = await node.sendTx(tx);
   await waitFor(`chain tx ${h.slice(0, 12)} included`, async () => (await node.getTx(h))?.status === "included", 120_000);
   return h;
@@ -567,6 +567,85 @@ async function stepRefund(): Promise<string> {
     `(storefront wallet), Order status Refunded; floor restored, deposit still not unlocked; invariant exact`;
 }
 
+/**
+ * Agent Credit R1 + R2 + R5 (2026-10-17): the miner's payout key puts a payout lien
+ * (SetRoute, 50%) on its income to a lender's Solana key; the chain itself splits each
+ * matured coinbase into withdrawal entries from the miner to the lender, which
+ * header-relay --settle releases on Solana by light-client proof (bridge proof mode
+ * since step 7). The lender's release key then clears it (ClearRoute). R1: a block's
+ * coinbase receipt is proven against its header's tx_root; R5: the light client's
+ * final-header accumulator proves an old final header on chain (prove_header).
+ */
+async function stepLien(): Promise<string> {
+  const lender = demoKey("lender").kp.publicKey;
+  const release = demoKey("lien-release").kp;
+  const tip0 = (await node.getChainInfo()).height;
+  const BPS = 5000;
+  const body = Buffer.concat([lender.toBuffer(), u16le(BPS), u64le(BigInt(tip0 + 10_000)), u64le(10n ** 15n), release.publicKey.toBuffer()]);
+  const setHash = await sendChainTx(miner, 9, body);
+  const setHeight = (await node.getTx(setHash))!.height!;
+  const route0 = await nodeCall("getRoute", { account: miner.publicKey.toBase58() });
+  if (!route0?.active || route0.route_bps !== BPS) throw new Error(`route not active: ${JSON.stringify(route0)}`);
+  // income for the miner: a user tx paying a 2-token fee; its block's coinbase matures K
+  // blocks later and the chain splits it (50% = 1e9 base units = 1,000,000 SPL units out)
+  await sendChainTx(user.kp, KIND.Transfer, transferBody(user.kp.publicKey, 1n), 2_000_000_000n);
+  const lenderBefore = await splBalance(lender);
+  const routed = await waitFor("lien entries in the withdrawal log", async () => {
+    const r = await nodeCall("getRoute", { account: miner.publicKey.toBase58() });
+    return BigInt(r.withdrawn) >= 1_000_000_000n ? r : null;
+  }, 180_000);
+  const ev = await nodeCall("getBridgeEvents", { from_nonce: 0, limit: 1000 });
+  const entries = (ev.withdrawals as any[]).filter((w) => w.solana_recipient === lender.toBase58());
+  if (!entries.length || entries.some((w) => w.from !== miner.publicKey.toBase58())) throw new Error(`lien entries ${JSON.stringify(entries)}`);
+  const first = entries[0];
+  const got = await waitFor("lien income released to the lender on Solana", async () => {
+    const b = await splBalance(lender);
+    return b >= lenderBefore + BigInt(first.amount_spl) ? b : null;
+  }, 600_000);
+  const processed = PublicKey.findProgramAddressSync([Buffer.from("processed"), Buffer.from([1]), u64le(BigInt(first.nonce))], BRIDGE_PROGRAM_ID)[0];
+  const how = await lastIxName(processed, BRIDGE_PROGRAM_ID, ["release_proof", "release"]);
+  if (!how?.startsWith("release_proof")) throw new Error(`lien withdrawal ${first.nonce} released by ${how}`);
+  // R1: a block the miner mined after SetRoute: receipt fields, tx_root path, reward split
+  let proved = "";
+  for (let h = setHeight; h < setHeight + 20 && !proved; h++) {
+    const b = await nodeCall("getBlock", { height: h });
+    const hd = await nodeCall("getHeader", { height: h });
+    if (!b?.coinbase || b.coinbase.miner !== miner.publicKey.toBase58()) continue;
+    const rec = Buffer.from(b.coinbase.record, "hex");
+    if (rec.length !== 97 || rec[0] !== 0 || rec.readBigUInt64LE(1) !== BigInt(h)) throw new Error(`receipt at ${h}`);
+    let acc = Buffer.from(blake3(Buffer.concat([Buffer.from([0]), Buffer.from(blake3(rec))])));
+    const path = Buffer.from(b.coinbase.path, "hex");
+    for (let o = 0; o < path.length; o += 33) {
+      const sib = path.subarray(o, o + 32);
+      acc = Buffer.from(blake3(Buffer.concat([Buffer.from([1]), ...(path[o + 32] === 1 ? [sib, acc] : [acc, sib])])));
+    }
+    if (acc.toString("hex") !== hd.header_fields.tx_root) throw new Error(`receipt path at ${h} does not reach tx_root`);
+    proved = `block ${h}: fees ${b.coinbase.fees} subsidy ${b.coinbase.subsidy} matures at ${b.coinbase.mature_height}`;
+  }
+  if (!proved) throw new Error("no block by the miner after SetRoute");
+  // clear by the release key (raw ed25519 over route-clear:v1 || chain_id || account || route_nonce)
+  const ci = await node.getChainInfo();
+  const msg = Buffer.concat([Buffer.from("pearl-sol:route-clear:v1"), u32le(ci.chainId), miner.publicKey.toBuffer(), u64le(BigInt(route0.route_nonce))]);
+  const { ed25519 } = await import("@noble/curves/ed25519");
+  const sig = Buffer.from(ed25519.sign(msg, release.secretKey.subarray(0, 32)));
+  await sendChainTx(miner, 10, Buffer.concat([miner.publicKey.toBuffer(), u64le(BigInt(route0.route_nonce)), sig]));
+  const rEnd = await nodeCall("getRoute", { account: miner.publicKey.toBase58() });
+  if (rEnd.active || !rEnd.cleared) throw new Error(`route not cleared: ${JSON.stringify(rEnd)}`);
+  // R5: accumulator on the light client; an early final header proven on chain
+  const st = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "status"]).trim().split("\n").pop()!);
+  const acc = st.accumulator;
+  if (!acc || acc.count < 10) throw new Error(`accumulator ${JSON.stringify(acc)}`);
+  const ap = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "acc-proof", String(acc.start_height + 1)]).trim().split("\n").pop()!);
+  const accPda = PublicKey.findProgramAddressSync([Buffer.from("acc")], LIGHTCLIENT_ID)[0];
+  const proof = Buffer.from(ap.proof, "hex");
+  const data = Buffer.concat([disc("prove_header"), Buffer.from(ap.header, "hex"), u64le(BigInt(ap.count)), u32le(proof.length), proof]);
+  const sim = await send([new TransactionInstruction({ programId: LIGHTCLIENT_ID, keys: [m(accPda)], data })], [payer]);
+  return `miner key SetRoute ${BPS} bps to lender ${lender.toBase58()} at height ${setHeight}; ${entries.length} lien withdrawal entries ` +
+    `(routed ${routed.routed}, withdrawn ${routed.withdrawn} base units) from the miner; lender got ${got - lenderBefore} SPL on Solana by ${how}; ` +
+    `ClearRoute by the release key (route_nonce ${route0.route_nonce}) ended it; R1 receipt ${proved} proven to tx_root; ` +
+    `R5 accumulator ${acc.count} final headers from ${acc.start_height}, prove_header of height ${ap.height} on chain (${sim.slice(0, 16)}...)`;
+}
+
 // ------------------------------------------------------------ teardown
 
 function stopPid(name: string, pid: number) {
@@ -624,6 +703,7 @@ try {
   await step("6. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
   await step("7. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
   await step("8. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
+  await step("9. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
@@ -633,12 +713,12 @@ if (!keepUp) {
   const s = Date.now();
   try {
     const d = await teardown();
-    results.push({ step: "9. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
-    console.log(`\n== 9. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+    results.push({ step: "10. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 10. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
   } catch (e) {
     failed = true;
-    results.push({ step: "9. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
-    console.log(`\n== 9. teardown\n   FAIL: ${(e as Error).message}`);
+    results.push({ step: "10. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 10. teardown\n   FAIL: ${(e as Error).message}`);
   }
 } else {
   console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);
