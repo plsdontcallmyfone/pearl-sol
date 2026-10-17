@@ -1,0 +1,31 @@
+[package]
+name = "pearl-verify-sbf"
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+description = "no_std Pearl block verifier for the Solana light client: BLAKE3 core, PSJ1 block proofs (job + fallback, resumable), WTEMA, Commonware MMR and tx_root proofs"
+
+# Standalone (own workspace): used by token/programs/lightclient (SBF) and by native tests.
+[workspace]
+
+[lib]
+name = "pearl_verify_sbf"
+
+[features]
+default = []
+
+[dependencies]
+primitive-types = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+blake3 = "1.8"
+sha2 = "0.10"
+pearl-job = { path = "../pearl-job" }
+hex = "0.4"
+rand = "0.9"
+commonware-storage = "=2026.9.0"
+commonware-cryptography = "=2026.9.0"
+commonware-codec = "=2026.9.0"
+
+[profile.test]
+opt-level = 3
