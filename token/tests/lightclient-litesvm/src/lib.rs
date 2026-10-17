@@ -24,6 +24,8 @@ use solana_sdk::{
 pub const T0: u64 = 1_760_000_000_000;
 pub const CHAIN_ID: u32 = 1347616769;
 pub const PROOF_CAP: u32 = 32 * 1024;
+/// k of the localnet config (`pearl_job::MiningConfig::localnet_default`, r = 128).
+pub const LOCAL_K: u32 = 2048;
 pub const ED25519: Pubkey = solana_sdk::pubkey!("Ed25519SigVerify111111111111111111111111111");
 pub const IX_SYSVAR: Pubkey = solana_sdk::pubkey!("Sysvar1nstructions1111111111111111111111111");
 pub const TOKEN_2022: Pubkey = solana_sdk::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
@@ -214,7 +216,7 @@ impl PostJob {
         let mut b = Vec::new();
         b.extend_from_slice(&self.m.to_le_bytes());
         b.extend_from_slice(&self.n.to_le_bytes());
-        b.extend_from_slice(&1024u32.to_le_bytes());
+        b.extend_from_slice(&u32::from_le_bytes(self.config[0..4].try_into().unwrap()).to_le_bytes());
         b.extend_from_slice(&self.config);
         b.extend_from_slice(&self.hash_a);
         b.extend_from_slice(&self.hash_b);
@@ -239,7 +241,7 @@ pub fn post_job_ids(poster: &[u8; 32], nonce: u64, m: u32, n: u32, w: u64, p: u6
     let mut t = b"pearl-sol:terms:v2".to_vec();
     t.extend_from_slice(poster);
     t.extend_from_slice(&job_id);
-    for x in [m, n, 1024] {
+    for x in [m, n, LOCAL_K] {
         t.extend_from_slice(&x.to_le_bytes());
     }
     for x in [w, p, deadline] {
@@ -417,8 +419,10 @@ impl Env {
         Ok(())
     }
 
+    /// Job blocks in these tests use the localnet config, as the fallback config does.
     pub fn plan(&self, b: &Blk) -> Vec<Vec<Step>> {
-        client::plan(b.h.is_fallback(), self.p.fallback_m, self.p.fallback_n, 1024, client::TX_CU_BUDGET)
+        let shape = client::Shape::new(b.h.is_fallback(), self.p.fallback_m, self.p.fallback_n, &self.p.fallback_config, b.proof.len());
+        client::plan(&shape, client::TX_CU_BUDGET)
     }
 
     /// Submit + upload + verify one header the way the relay does.
@@ -675,7 +679,7 @@ impl Env {
             spec: storefront::JobSpec {
                 m: 64,
                 n: 64,
-                k: 1024,
+                k: pearl_job::MiningConfig::localnet_default().common_dim,
                 config: pearl_job::MiningConfig::localnet_default().to_bytes(),
                 hash_a: [0; 32],
                 hash_b: [0; 32],

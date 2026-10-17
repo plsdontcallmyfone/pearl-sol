@@ -10,11 +10,13 @@
 //!   40  32  header hash being verified
 //!   72   4  proof_len         76   4  proof_cap
 //!   80   1  flags             81   1  is_fallback      82   1  flags2
+//!   84   2  noise blocks done (A)                     86   2  noise blocks done (B^T)
 //!   88   8  gen_b_done (64-byte XOF blocks of B written)
 //!   96  32  job_key          128  52  config
 //!  180   4  m                184   4  n
 //!  188  32  hash_a           220  32  hash_b
-//!  256 1744  progress A (done u64, len u64, 54 CVs)
+//!  256 1744  progress A (done u64, len u64, 54 CVs): first the proof hash, then
+//!            (fallback) the hash_a rebuild, then the jackpot state (1092 bytes)
 //! 2000 1744  progress B^T
 //! 4096  ...  proof bytes (proof_cap), then scratch: B (k*n bytes) for fallback blocks
 //!            while hashing B^T; afterwards (and for job blocks) the noised strips
@@ -47,6 +49,7 @@ pub const F_BOUND: u8 = 1 << 7;
 /// flags2 (byte 82)
 pub const F2_NOISE_A: u8 = 1 << 0;
 pub const F2_NOISE_B: u8 = 1 << 1;
+pub const F2_JACKPOT: u8 = 1 << 2;
 
 pub struct Work<'a, 'info> {
     d: RefMut<'a, &'info mut [u8]>,
@@ -54,6 +57,9 @@ pub struct Work<'a, 'info> {
 
 fn rd_u32(d: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(d[o..o + 4].try_into().unwrap())
+}
+fn rd_u16(d: &[u8], o: usize) -> u16 {
+    u16::from_le_bytes(d[o..o + 2].try_into().unwrap())
 }
 fn rd_u64(d: &[u8], o: usize) -> u64 {
     u64::from_le_bytes(d[o..o + 8].try_into().unwrap())
@@ -123,6 +129,7 @@ impl<'a, 'info> Work<'a, 'info> {
         d[80] = F_BOUND;
         d[81] = fallback as u8;
         d[82] = 0;
+        d[84..88].fill(0);
         d[88..96].fill(0);
         d[96..128].copy_from_slice(&p.job_key);
         d[128..180].copy_from_slice(&cfg);
@@ -155,13 +162,23 @@ impl<'a, 'info> Work<'a, 'info> {
         &self.d[PROOF_OFF..PROOF_OFF + self.proof_len()]
     }
 
-    pub fn proof_hash_step(&mut self, h: &Header) -> Result<()> {
+    /// Step 1, resumable: `count` 1 KiB chunks of blake3(proof) (progress in the A
+    /// slot); with the last chunk, compare with the header, parse and check structure.
+    pub fn proof_hash_step(&mut self, h: &Header, count: u64) -> Result<()> {
+        require!(!self.has(F_PROOF_OK), LcError::BadStep);
         self.set_flag(F_FROZEN);
+        let mut prog = self.load_prog(PROG_A);
+        let root = pv::fallback::hash_plain(self.proof(), &mut prog, count);
+        let Some(root) = root else {
+            self.store_prog(PROG_A, &prog);
+            return Ok(());
+        };
+        require!(root == h.proof_hash(), LcError::VerifyFailed);
         let p = self.params()?;
         let proof = self.proof();
-        require!(pv::blake3::hash(proof) == h.proof_hash(), LcError::VerifyFailed);
         let v = pv::proof::parse(proof).map_err(verr)?;
         pv::verify::check_structure(proof, &v, &p, h.nonce()).map_err(verr)?;
+        self.d[PROG_A..PROG_A + PROG_LEN].fill(0);
         self.set_flag(F_PROOF_OK);
         Ok(())
     }
@@ -228,6 +245,8 @@ impl<'a, 'info> Work<'a, 'info> {
 
     pub fn hash_a_step(&mut self, pow_digest: &[u8; 32], count: u64) -> Result<()> {
         require!(self.is_fallback() && !self.has(F_FB_HASH_A), LcError::BadStep);
+        // the A progress slot holds the proof hash until that step is done
+        require!(self.has(F_PROOF_OK), LcError::BadStep);
         let p = self.params()?;
         let xa = pv::fallback::xof(pv::fallback::CTX_A, pow_digest);
         let mut prog = self.load_prog(PROG_A);
@@ -262,41 +281,62 @@ impl<'a, 'info> Work<'a, 'info> {
         Ok((start, ha, hb))
     }
 
-    /// Step 3a: noised strips of one side into scratch (needs both commitments and that
-    /// side's opening, so for fallback blocks B is no longer needed).
-    pub fn noise_step(&mut self, side: Side, pow_digest: &[u8; 32]) -> Result<()> {
+    /// Step 3a, resumable: noise column blocks `[done, done + count)` of one side into
+    /// scratch (needs both commitments and that side's opening, so for fallback blocks
+    /// B is no longer needed).
+    pub fn noise_step(&mut self, side: Side, pow_digest: &[u8; 32], count: u32) -> Result<()> {
         let need = if side == Side::A { F_PROOF_OK | F_A_OK } else { F_PROOF_OK | F_BT_OK };
         require!(self.has(need), LcError::BadStep);
         if self.is_fallback() {
             require!(self.has(F_FB_HASH_A | F_FB_HASH_B), LcError::BadStep);
         }
+        let (at, flag) = if side == Side::A { (84, F2_NOISE_A) } else { (86, F2_NOISE_B) };
+        require!(self.d[82] & flag == 0, LcError::BadStep);
         let p = self.params()?;
         let (start, ha, hb) = self.noise_layout(&p)?;
-        let rows = {
-            let proof = self.proof();
-            let v = pv::proof::parse(proof).map_err(verr)?;
-            pv::verify::noised_side(proof, &v, &p, pow_digest, side).map_err(verr)?
-        };
-        let (o, len) = if side == Side::A { (start, ha) } else { (start + ha, hb) };
-        require!(rows.len() == len, LcError::BadStep);
-        let dst = &mut self.d[o..o + len];
-        for (d, s) in dst.iter_mut().zip(rows.iter()) {
-            *d = *s as u8;
+        let nb = pv::verify::noise_blocks(&p);
+        let done = rd_u16(&self.d, at) as usize;
+        let end = (done + count as usize).min(nb);
+        let (o, len) = if side == Side::A { (0, ha) } else { (ha, hb) };
+        let plen = self.proof_len();
+        let d: &mut [u8] = &mut self.d;
+        let (head, tail) = d.split_at_mut(start);
+        let proof = &head[PROOF_OFF..PROOF_OFF + plen];
+        let v = pv::proof::parse(proof).map_err(verr)?;
+        pv::verify::noised_side_range(proof, &v, &p, pow_digest, side, done, end, &mut tail[o..o + len]).map_err(verr)?;
+        self.d[at..at + 2].copy_from_slice(&(end as u16).to_le_bytes());
+        if end == nb {
+            self.d[82] |= flag;
         }
-        self.d[82] |= if side == Side::A { F2_NOISE_A } else { F2_NOISE_B };
         Ok(())
     }
 
-    /// Step 3b: jackpot over the stored noised strips, hash and target.
-    pub fn jackpot_step(&mut self, pow_digest: &[u8; 32], target_bits: u32) -> Result<()> {
+    /// Step 3b, resumable: `count` rank blocks of the jackpot over the stored noised
+    /// strips (state in the A slot); with the last block, hash and target. Returns true
+    /// when the jackpot is complete and meets the target.
+    pub fn jackpot_step(&mut self, pow_digest: &[u8; 32], target_bits: u32, count: u32) -> Result<bool> {
         require!(self.has(F_PROOF_OK | F_A_OK | F_BT_OK), LcError::BadStep);
+        require!(!self.has(F_JACKPOT_OK), LcError::BadStep);
         require!(self.d[82] & (F2_NOISE_A | F2_NOISE_B) == F2_NOISE_A | F2_NOISE_B, LcError::BadStep);
+        if self.d[82] & F2_JACKPOT == 0 {
+            self.d[PROG_A..PROG_A + PROG_LEN].fill(0);
+            self.d[82] |= F2_JACKPOT;
+        }
         let p = self.params()?;
         let (start, ha, hb) = self.noise_layout(&p)?;
-        let a: &[i8] = unsafe { core::slice::from_raw_parts(self.d[start..].as_ptr() as *const i8, ha) };
-        let bt: &[i8] = unsafe { core::slice::from_raw_parts(self.d[start + ha..].as_ptr() as *const i8, hb) };
-        pv::verify::jackpot_noised(a, bt, &p, pow_digest, target_bits).map_err(verr)?;
+        let mut st = Box::<pv::verify::JackpotState>::default();
+        st.read_from(&self.d[PROG_A..PROG_A + pv::verify::JackpotState::BYTES]);
+        let done = {
+            let a: &[i8] = unsafe { core::slice::from_raw_parts(self.d[start..].as_ptr() as *const i8, ha) };
+            let bt: &[i8] = unsafe { core::slice::from_raw_parts(self.d[start + ha..].as_ptr() as *const i8, hb) };
+            pv::verify::jackpot_step(a, bt, &p, &mut st, count).map_err(verr)?
+        };
+        st.to_bytes(&mut self.d[PROG_A..PROG_A + pv::verify::JackpotState::BYTES]);
+        if !done {
+            return Ok(false);
+        }
+        pv::verify::jackpot_finish(&st, &p, pow_digest, target_bits).map_err(verr)?;
         self.set_flag(F_JACKPOT_OK);
-        Ok(())
+        Ok(true)
     }
 }

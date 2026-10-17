@@ -12,12 +12,13 @@
 //! 2. Proof upload into a relayer-owned work account: `begin_verify` (binds the work
 //!    account to the header and the job), `write_proof` chunks.
 //! 3. Verify steps (any number per transaction, in this order):
-//!    `verify_proof_hash` (blake3(proof) = header.proof_hash, PSJ1 parse, dims, tile,
-//!    leaf sets; freezes the buffer), fallback blocks only: `fallback_gen_b`,
+//!    `verify_proof_hash` (blake3(proof) = header.proof_hash in 1 KiB-chunk ranges, then
+//!    PSJ1 parse, dims, tile, leaf sets; freezes the buffer), fallback blocks only: `fallback_gen_b`,
 //!    `fallback_hash_bt`, `fallback_hash_a` (rebuild hash_b / hash_a from pow_digest in
 //!    ranges), then `verify_opening(A)`, `verify_opening(B^T)`, `verify_jackpot`
 //!    preceded by `verify_noise(A)`, `verify_noise(B^T)` (seeds, noise; then jackpot,
-//!    target). The last step marks the header Verified and, when
+//!    rank-penalized target; noise and jackpot run in ranges). The last step marks the
+//!    header Verified and, when
 //!    it extends the tip, moves the tip.
 //! 4. `reorg(new_tip)`: switch to a heavier verified branch (path headers passed as
 //!    remaining accounts), refused if the fork point is below the final floor
@@ -281,12 +282,13 @@ pub mod lightclient {
     }
 
     /// Step 1: proof_hash, parse, dims, tile, exact leaf sets. Freezes the proof bytes.
-    pub fn verify_proof_hash(ctx: Context<VerifyStep>) -> Result<()> {
+    /// Resumable: `count` 1 KiB chunks of the proof hash per call.
+    pub fn verify_proof_hash(ctx: Context<VerifyStep>, count: u32) -> Result<()> {
         let rec = ctx.accounts.header.load()?;
         let info = ctx.accounts.work.to_account_info();
         let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
         w.check_target(&rec)?;
-        w.proof_hash_step(&Header(&rec.header))
+        w.proof_hash_step(&Header(&rec.header), count as u64)
     }
 
     /// Fallback blocks: generate `count` 64-byte XOF blocks of B into scratch.
@@ -330,8 +332,9 @@ pub mod lightclient {
         w.opening_step(s)
     }
 
-    /// Step 3a: one side's noised strips (side 0 = A, 1 = B^T) into the work account.
-    pub fn verify_noise(ctx: Context<VerifyStep>, side: u8) -> Result<()> {
+    /// Step 3a: one side's noised strips (side 0 = A, 1 = B^T) into the work account,
+    /// `count` 8-column noise blocks per call (resumable).
+    pub fn verify_noise(ctx: Context<VerifyStep>, side: u8, count: u32) -> Result<()> {
         let rec = ctx.accounts.header.load()?;
         let info = ctx.accounts.work.to_account_info();
         let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
@@ -341,19 +344,22 @@ pub mod lightclient {
             SIDE_BT => Side::Bt,
             _ => return err!(LcError::BadStep),
         };
-        w.noise_step(s, &Header(&rec.header).pow_digest())
+        w.noise_step(s, &Header(&rec.header).pow_digest(), count)
     }
 
-    /// Step 3b: jackpot, target. Marks the header Verified, extends the tip when
+    /// Step 3b: jackpot, `count` rank blocks per call (resumable). The call that
+    /// completes it checks the target, marks the header Verified, extends the tip when
     /// the parent is the tip, and pays the relay reward from the pool.
-    pub fn verify_jackpot(ctx: Context<VerifyFinal>) -> Result<()> {
+    pub fn verify_jackpot(ctx: Context<VerifyFinal>, count: u32) -> Result<()> {
         {
             let rec = ctx.accounts.header.load()?;
             let info = ctx.accounts.work.to_account_info();
             let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
             w.check_target(&rec)?;
             let h = Header(&rec.header);
-            w.jackpot_step(&h.pow_digest(), h.target_bits())?;
+            if !w.jackpot_step(&h.pow_digest(), h.target_bits(), count)? {
+                return Ok(());
+            }
         }
         let slot = Clock::get()?.slot;
         let (hash, height, prev, cw, relayer) = {

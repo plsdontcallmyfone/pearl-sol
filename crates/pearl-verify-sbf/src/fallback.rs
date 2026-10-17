@@ -122,6 +122,28 @@ pub fn hash_a(key: &[u8; 32], xa: &Output, m: u32, k: u32, st: &mut Progress, co
     root
 }
 
+/// Resumable plain `blake3(data)` (the proof hash), `count` 1 KiB chunks per call.
+/// Returns the hash once the last chunk is in.
+pub fn hash_plain(data: &[u8], st: &mut Progress, count: u64) -> Option<[u8; 32]> {
+    let iv = blake3::IV;
+    let len = data.len();
+    let total = chunks(len as u64);
+    let end = (st.done + count).min(total);
+    let mut root = None;
+    while st.done < end {
+        let j = st.done;
+        let s = j as usize * 1024;
+        let o = blake3::chunk_output(&iv, 0, &data[s..(s + 1024).min(len)], j);
+        if j + 1 == total {
+            root = Some(st.tree.finish(&iv, 0, o).root_hash());
+        } else {
+            st.tree.push_chunk(&iv, 0, o.chaining_value(), j);
+        }
+        st.done += 1;
+    }
+    root
+}
+
 fn finish_or_push(kw: &Cv, st: &mut Progress, o: Output, idx: u64, total: u64) -> Option<[u8; 32]> {
     if idx + 1 == total {
         Some(st.tree.finish(kw, KEYED_HASH, o).root_hash())

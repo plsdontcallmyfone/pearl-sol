@@ -91,8 +91,8 @@ fn step_accounts(authority: Pubkey, work: Pubkey, hash: &[u8; 32]) -> accounts::
     accounts::VerifyStep { authority, work, header: header_addr(hash) }
 }
 
-pub fn verify_proof_hash(authority: Pubkey, work: Pubkey, hash: &[u8; 32]) -> Instruction {
-    ix(step_accounts(authority, work, hash), instruction::VerifyProofHash {})
+pub fn verify_proof_hash(authority: Pubkey, work: Pubkey, hash: &[u8; 32], count: u32) -> Instruction {
+    ix(step_accounts(authority, work, hash), instruction::VerifyProofHash { count })
 }
 pub fn fallback_gen_b(authority: Pubkey, work: Pubkey, hash: &[u8; 32], count: u32) -> Instruction {
     ix(step_accounts(authority, work, hash), instruction::FallbackGenB { count })
@@ -106,10 +106,10 @@ pub fn fallback_hash_a(authority: Pubkey, work: Pubkey, hash: &[u8; 32], count: 
 pub fn verify_opening(authority: Pubkey, work: Pubkey, hash: &[u8; 32], side: u8) -> Instruction {
     ix(step_accounts(authority, work, hash), instruction::VerifyOpening { side })
 }
-pub fn verify_noise(authority: Pubkey, work: Pubkey, hash: &[u8; 32], side: u8) -> Instruction {
-    ix(step_accounts(authority, work, hash), instruction::VerifyNoise { side })
+pub fn verify_noise(authority: Pubkey, work: Pubkey, hash: &[u8; 32], side: u8, count: u32) -> Instruction {
+    ix(step_accounts(authority, work, hash), instruction::VerifyNoise { side, count })
 }
-pub fn verify_jackpot(authority: Pubkey, work: Pubkey, hash: &[u8; 32], relayer: Pubkey) -> Instruction {
+pub fn verify_jackpot(authority: Pubkey, work: Pubkey, hash: &[u8; 32], relayer: Pubkey, count: u32) -> Instruction {
     ix(
         accounts::VerifyFinal {
             authority,
@@ -120,7 +120,7 @@ pub fn verify_jackpot(authority: Pubkey, work: Pubkey, hash: &[u8; 32], relayer:
             pool: pool_pda(),
             relayer,
         },
-        instruction::VerifyJackpot {},
+        instruction::VerifyJackpot { count },
     )
 }
 
@@ -158,87 +158,117 @@ pub fn close_header(hash: &[u8; 32], relayer: Pubkey) -> Instruction {
 /// Compute-unit budget used to pack steps (each tx asks for 1.4M; keep headroom).
 pub const TX_CU_BUDGET: u64 = 1_300_000;
 
-/// Measured CU (token/tests/lightclient-litesvm, localnet config k=1024 r=32 4x8
-/// tiles, 64 x 64 fallback); used to pack steps into transactions.
+/// Measured CU (token/tests/lightclient-litesvm, localnet config k=2048 r=128 4x8
+/// tiles, after the rank-penalty port); used to pack steps into transactions.
 pub mod cost {
-    // measured (rounded up about 3%) on the 2026-10-17 build
-    pub const PROOF_HASH: u64 = 665_000;
+    // measured (rounded up a few percent) on the 2026-10-17 rank-penalty build
+    pub const PROOF_HASH_PER_CHUNK: u64 = 54_000;
+    /// parse + structure checks in the call that completes the proof hash
+    pub const STRUCTURE: u64 = 30_000;
     pub const GEN_B_PER_BLOCK: u64 = 4_850;
     pub const HASH_BT_PER_CHUNK: u64 = 53_500;
     pub const HASH_A_PER_CHUNK: u64 = 116_000;
-    pub const OPENING_A: u64 = 255_000;
-    pub const OPENING_BT: u64 = 495_000;
-    pub const NOISE_A: u64 = 710_000;
-    pub const NOISE_BT: u64 = 865_000;
-    pub const JACKPOT: u64 = 690_000;
+    pub const OPENING_PER_LEAF: u64 = 62_000;
+    /// per call: seeds, uniform noise rows, strip copy; per row
+    pub const NOISE_CALL_PER_ROW: u64 = 17_000;
+    pub const NOISE_CALL: u64 = 32_000;
+    /// per 8-column block: one permutation hash plus 8 adds per row
+    pub const NOISE_BLOCK: u64 = 4_150;
+    pub const NOISE_BLOCK_PER_ROW: u64 = 290;
+    /// per rank block: h*w dot products of length r
+    pub const JACKPOT_PER_MAC: u64 = 17;
+    pub const JACKPOT_CALL: u64 = 60_000;
     pub const STEP_OVERHEAD: u64 = 15_000;
 }
 
-/// One verify step.
+/// One verify step (counts are units of resumable steps).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    ProofHash,
+    /// 1 KiB chunks of the proof hash (the last call adds the structure checks).
+    ProofHash(u32),
     GenB(u32),
     HashBt(u32),
     HashA(u32),
     Opening(u8),
-    Noise(u8),
-    Jackpot,
+    /// (side, 8-column noise blocks)
+    Noise(u8, u32),
+    /// rank blocks
+    Jackpot(u32),
 }
 
 impl Step {
-    pub fn cost(&self) -> u64 {
-        use cost::*;
-        STEP_OVERHEAD
-            + match *self {
-                Step::ProofHash => PROOF_HASH,
-                Step::GenB(n) => GEN_B_PER_BLOCK * n as u64,
-                Step::HashBt(n) => HASH_BT_PER_CHUNK * n as u64,
-                Step::HashA(n) => HASH_A_PER_CHUNK * n as u64,
-                Step::Opening(0) => OPENING_A,
-                Step::Opening(_) => OPENING_BT,
-                Step::Noise(0) => NOISE_A,
-                Step::Noise(_) => NOISE_BT,
-                Step::Jackpot => JACKPOT,
-            }
-    }
-
     pub fn instruction(&self, authority: Pubkey, work: Pubkey, hash: &[u8; 32], relayer: Pubkey) -> Instruction {
         match *self {
-            Step::ProofHash => verify_proof_hash(authority, work, hash),
+            Step::ProofHash(n) => verify_proof_hash(authority, work, hash, n),
             Step::GenB(n) => fallback_gen_b(authority, work, hash, n),
             Step::HashBt(n) => fallback_hash_bt(authority, work, hash, n),
             Step::HashA(n) => fallback_hash_a(authority, work, hash, n),
             Step::Opening(s) => verify_opening(authority, work, hash, s),
-            Step::Noise(s) => verify_noise(authority, work, hash, s),
-            Step::Jackpot => verify_jackpot(authority, work, hash, relayer),
+            Step::Noise(s, n) => verify_noise(authority, work, hash, s, n),
+            Step::Jackpot(n) => verify_jackpot(authority, work, hash, relayer, n),
         }
+    }
+}
+
+/// What the plan needs about the block being verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    pub fallback: bool,
+    pub fb_m: u32,
+    pub fb_n: u32,
+    pub k: u32,
+    pub r: u32,
+    pub h: u32,
+    pub w: u32,
+    pub proof_len: u32,
+}
+
+impl Shape {
+    /// From the mining config the block is verified against (the fallback config for
+    /// fallback blocks, the job's config for job blocks) and the proof length.
+    pub fn new(fallback: bool, fb_m: u32, fb_n: u32, config: &[u8; 52], proof_len: usize) -> Self {
+        let c = pearl_verify_sbf::config::MiningConfig::from_bytes(config).expect("valid mining config");
+        Self { fallback, fb_m, fb_n, k: c.k, r: c.rank, h: c.h(), w: c.w(), proof_len: proof_len as u32 }
+    }
+    fn dlen(&self) -> u64 {
+        (self.k - self.k % self.r) as u64
     }
 }
 
 /// Steps for one header packed greedily into transactions of at most `budget` CU:
 /// each tx takes as many units of the current step kind as fit, then continues with
-/// the next kind (fallback ranges are split across txs as needed).
-pub fn plan(fallback: bool, fb_m: u32, fb_n: u32, fb_k: u32, budget: u64) -> Vec<Vec<Step>> {
+/// the next kind (resumable kinds are split across txs as needed).
+pub fn plan(s: &Shape, budget: u64) -> Vec<Vec<Step>> {
     use cost::*;
-    // (constructor, units, cost per unit)
-    let mut kinds: Vec<(fn(u32) -> Step, u64, u64)> = vec![(|_| Step::ProofHash, 1, PROOF_HASH)];
-    if fallback {
-        kinds.push((Step::GenB, (fb_k as u64 * fb_n as u64) / 64, GEN_B_PER_BLOCK));
-        kinds.push((Step::HashBt, (fb_k as u64 * fb_n as u64).div_ceil(1024), HASH_BT_PER_CHUNK));
-        kinds.push((Step::HashA, (fb_m as u64 * fb_k as u64).div_ceil(1024), HASH_A_PER_CHUNK));
+    let leaves = |rows: u32| rows as u64 * (s.k as u64).div_ceil(1024);
+    let (dlen, k) = (s.dlen(), s.k as u64);
+    // (constructor, units, cost per unit, fixed cost per call)
+    type Make = Box<dyn Fn(u32) -> Step>;
+    let mut kinds: Vec<(Make, u64, u64, u64)> =
+        vec![(Box::new(Step::ProofHash), (s.proof_len as u64).div_ceil(1024).max(1), PROOF_HASH_PER_CHUNK, STRUCTURE)];
+    if s.fallback {
+        let (m, n) = (s.fb_m as u64, s.fb_n as u64);
+        kinds.push((Box::new(Step::GenB), (k * n) / 64, GEN_B_PER_BLOCK, 0));
+        kinds.push((Box::new(Step::HashBt), (k * n).div_ceil(1024), HASH_BT_PER_CHUNK, 0));
+        kinds.push((Box::new(Step::HashA), (m * k).div_ceil(1024), HASH_A_PER_CHUNK, 0));
     }
-    kinds.push((|_| Step::Opening(0), 1, OPENING_A));
-    kinds.push((|_| Step::Opening(1), 1, OPENING_BT));
-    kinds.push((|_| Step::Noise(0), 1, NOISE_A));
-    kinds.push((|_| Step::Noise(1), 1, NOISE_BT));
-    kinds.push((|_| Step::Jackpot, 1, JACKPOT));
+    kinds.push((Box::new(|_| Step::Opening(0)), 1, OPENING_PER_LEAF * leaves(s.h), 0));
+    kinds.push((Box::new(|_| Step::Opening(1)), 1, OPENING_PER_LEAF * leaves(s.w), 0));
+    for (side, rows) in [(0u8, s.h as u64), (1, s.w as u64)] {
+        kinds.push((
+            Box::new(move |n| Step::Noise(side, n)),
+            dlen / 8,
+            NOISE_BLOCK + NOISE_BLOCK_PER_ROW * rows,
+            NOISE_CALL + NOISE_CALL_PER_ROW * rows,
+        ));
+    }
+    kinds.push((Box::new(Step::Jackpot), dlen / s.r as u64, JACKPOT_PER_MAC * (s.h * s.w * s.r) as u64, JACKPOT_CALL));
     let mut txs: Vec<Vec<Step>> = Vec::new();
     let mut cur: Vec<Step> = Vec::new();
     let mut left = budget;
-    for (make, mut units, per) in kinds {
+    for (make, mut units, per, fixed) in kinds {
         while units > 0 {
-            let fit = left.saturating_sub(STEP_OVERHEAD) / per;
+            let fit = left.saturating_sub(STEP_OVERHEAD + fixed) / per.max(1);
             if fit == 0 {
                 if cur.is_empty() {
                     // a single unit above the budget still goes alone
@@ -252,7 +282,7 @@ pub fn plan(fallback: bool, fb_m: u32, fb_n: u32, fb_k: u32, budget: u64) -> Vec
             }
             let n = fit.min(units);
             cur.push(make(n as u32));
-            left -= STEP_OVERHEAD + n * per;
+            left -= STEP_OVERHEAD + fixed + n * per;
             units -= n;
         }
     }

@@ -287,22 +287,39 @@ fn uniform_row(kw: &Cv, label: &[u8; 32], row: u64, r: usize, out: &mut [i8]) {
     }
 }
 
-/// Noised rows `strip + noise` for one side: `rows x dlen` i8 (values fit: [-127, 127]).
-fn noised_rows(p: &[u8], o: &Opening, pat: &Pattern, t: u32, k: u32, r: usize, dlen: usize, seed: &[u8; 32], label: &[u8; 32]) -> Result<Vec<i8>, Error> {
+/// Noised rows `strip + noise` for one side, columns `[8 b0, 8 b1)` of the
+/// `rows x dlen` i8 matrix `out` (the rest of `out` is left as is). Column block b is
+/// the 8 columns whose sparse noise comes from one permutation hash.
+#[allow(clippy::too_many_arguments)]
+fn noised_rows_range(
+    p: &[u8],
+    o: &Opening,
+    pat: &Pattern,
+    t: u32,
+    k: u32,
+    r: usize,
+    dlen: usize,
+    seed: &[u8; 32],
+    label: &[u8; 32],
+    b0: usize,
+    b1: usize,
+    out: &mut [u8],
+) -> Result<(), Error> {
     let kw = blake3::key_words(seed);
     let h = pat.size() as usize;
+    if out.len() < h * dlen || b0 > b1 || b1 > dlen / 8 {
+        return Err(Error::Dims);
+    }
+    let (c0, c1) = (b0 * 8, b1 * 8);
     let mut u = vec![0i8; h * r];
-    let mut out = vec![0i8; h * dlen];
     for i in 0..h {
         let row = (pat.index(i as u32) + t) as u64;
         uniform_row(&kw, label, row, r, &mut u[i * r..(i + 1) * r]);
-        let dst = &mut out[i * dlen..(i + 1) * dlen];
         // raw strip bytes first
-        let dst_u8: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, dlen) };
-        strip(p, o, row * k as u64, dlen, dst_u8)?;
+        strip(p, o, row * k as u64 + c0 as u64, c1 - c0, &mut out[i * dlen + c0..i * dlen + c1])?;
     }
     let mask = (r - 1) as u32;
-    for blk in 0..dlen / 8 {
+    for blk in b0..b1 {
         let hh = random_hash(&kw, blk as u32, label, 1);
         for j in 0..8 {
             let l = blk * 8 + j;
@@ -313,37 +330,110 @@ fn noised_rows(p: &[u8], o: &Opening, pat: &Pattern, t: u32, k: u32, r: usize, d
                 let ur = &u[row * r..(row + 1) * r];
                 let e = (ur[pi] as i32 - ur[qi] as i32) as i8;
                 let cell = &mut out[row * dlen + l];
-                *cell = (*cell as i32 + e as i32) as i8;
+                *cell = (*cell as i8 as i32 + e as i32) as i8 as u8;
             }
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+/// Number of 8-column noise blocks of one side (`dlen / 8`).
+pub fn noise_blocks(job: &JobParams) -> usize {
+    job.config.dlen() as usize / 8
+}
+
+/// Step 3a in ranges: noise column blocks `[b0, b1)` of one side into `out`
+/// (`rows x dlen` bytes: A has h rows, B^T w rows). Covering `0..noise_blocks` in any
+/// split gives the same bytes as [`noised_side`].
+pub fn noised_side_range(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8; 32], side: Side, b0: usize, b1: usize, out: &mut [u8]) -> Result<(), Error> {
+    let c = &job.config;
+    let (k, r, dlen) = (c.k, c.rank as usize, c.dlen() as usize);
+    let (b_seed, a_seed) = pow_seeds(job, pow_digest);
+    match side {
+        Side::A => noised_rows_range(p, &v.a, &c.rows, v.t_rows, k, r, dlen, &a_seed, &LABEL_A, b0, b1, out),
+        Side::Bt => noised_rows_range(p, &v.bt, &c.cols, v.t_cols, k, r, dlen, &b_seed, &LABEL_B, b0, b1, out),
+    }
 }
 
 /// Step 3a: one side's noised strips, `rows x dlen` i8 (A: h rows, B^T: w rows).
 pub fn noised_side(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8; 32], side: Side) -> Result<Vec<i8>, Error> {
     let c = &job.config;
-    let (k, r, dlen) = (c.k, c.rank as usize, c.dlen() as usize);
-    let (b_seed, a_seed) = pow_seeds(job, pow_digest);
-    match side {
-        Side::A => noised_rows(p, &v.a, &c.rows, v.t_rows, k, r, dlen, &a_seed, &LABEL_A),
-        Side::Bt => noised_rows(p, &v.bt, &c.cols, v.t_cols, k, r, dlen, &b_seed, &LABEL_B),
+    let rows = match side {
+        Side::A => c.h(),
+        Side::Bt => c.w(),
+    } as usize;
+    let mut out = vec![0u8; rows * c.dlen() as usize];
+    noised_side_range(p, v, job, pow_digest, side, 0, noise_blocks(job), &mut out)?;
+    Ok(out.into_iter().map(|x| x as i8).collect())
+}
+
+/// Running state of the tile jackpot between rank blocks (resumable step 3b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JackpotState {
+    /// Rank blocks done.
+    pub next: u32,
+    pub msg: [u32; JACKPOT_SIZE],
+    /// h*w running partial products (h*w <= 256).
+    pub acc: [i32; 256],
+}
+
+impl Default for JackpotState {
+    fn default() -> Self {
+        Self { next: 0, msg: [0; JACKPOT_SIZE], acc: [0; 256] }
     }
 }
 
-/// Step 3b: tile jackpot over noised strips, jackpot hash and the difficulty check.
-pub fn jackpot_noised(a: &[i8], bt: &[i8], job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+impl JackpotState {
+    pub const BYTES: usize = 4 + 4 * JACKPOT_SIZE + 4 * 256;
+
+    pub fn to_bytes(&self, out: &mut [u8]) {
+        out[0..4].copy_from_slice(&self.next.to_le_bytes());
+        for (i, w) in self.msg.iter().enumerate() {
+            out[4 + 4 * i..8 + 4 * i].copy_from_slice(&w.to_le_bytes());
+        }
+        for (i, a) in self.acc.iter().enumerate() {
+            let o = 4 + 4 * JACKPOT_SIZE + 4 * i;
+            out[o..o + 4].copy_from_slice(&a.to_le_bytes());
+        }
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Self {
+        let mut s = Self::default();
+        s.read_from(b);
+        s
+    }
+
+    /// In place (keeps the 1 KiB state off the SBF stack when `self` is boxed).
+    pub fn read_from(&mut self, b: &[u8]) {
+        let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        self.next = u(0);
+        for i in 0..JACKPOT_SIZE {
+            self.msg[i] = u(4 + 4 * i);
+        }
+        for i in 0..256 {
+            self.acc[i] = u(4 + 4 * JACKPOT_SIZE + 4 * i) as i32;
+        }
+    }
+}
+
+/// Number of rank blocks of the jackpot (`dlen / r`).
+pub fn jackpot_blocks(job: &JobParams) -> u32 {
+    job.config.dlen() / job.config.rank
+}
+
+/// Step 3b, part: rank blocks `[st.next, st.next + count)` of the tile jackpot over
+/// the noised strips. Returns true once every block is in.
+pub fn jackpot_step(a: &[i8], bt: &[i8], job: &JobParams, st: &mut JackpotState, count: u32) -> Result<bool, Error> {
     let c = &job.config;
     let (r, dlen) = (c.rank as usize, c.dlen() as usize);
-    let (_, a_seed) = pow_seeds(job, pow_digest);
     let (h, w) = (c.h() as usize, c.w() as usize);
-    if a.len() < h * dlen || bt.len() < w * dlen {
+    if a.len() < h * dlen || bt.len() < w * dlen || h * w > 256 {
         return Err(Error::Dims);
     }
-    let mut acc = [0i32; 256];
-    let mut msg = [0u32; JACKPOT_SIZE];
-    let mut ll = r;
-    while ll <= dlen {
+    let total = jackpot_blocks(job);
+    let end = st.next.saturating_add(count).min(total);
+    while st.next < end {
+        let ll = (st.next as usize + 1) * r;
         for u in 0..h {
             let ar = &a[u * dlen + ll - r..u * dlen + ll];
             for vv in 0..w {
@@ -352,24 +442,40 @@ pub fn jackpot_noised(a: &[i8], bt: &[i8], job: &JobParams, pow_digest: &[u8; 32
                 for l in 0..r {
                     s = s.wrapping_add(ar[l] as i32 * br[l] as i32);
                 }
-                acc[u * w + vv] = acc[u * w + vv].wrapping_add(s);
+                st.acc[u * w + vv] = st.acc[u * w + vv].wrapping_add(s);
             }
         }
-        let x = acc[..h * w].iter().fold(0u32, |a, &x| a ^ x as u32);
+        let x = st.acc[..h * w].iter().fold(0u32, |a, &x| a ^ x as u32);
         let tid = (ll / r - 1) % JACKPOT_SIZE;
-        msg[tid] = msg[tid].rotate_left(13) ^ x;
-        ll += r;
+        st.msg[tid] = st.msg[tid].rotate_left(13) ^ x;
+        st.next += 1;
     }
+    Ok(st.next == total)
+}
+
+/// Step 3b, end: jackpot hash and the rank-penalized difficulty check.
+pub fn jackpot_finish(st: &JackpotState, job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+    if st.next != jackpot_blocks(job) {
+        return Err(Error::Dims);
+    }
+    let (_, a_seed) = pow_seeds(job, pow_digest);
     let mut b = [0u8; 64];
-    for (i, wd) in msg.iter().enumerate() {
+    for (i, wd) in st.msg.iter().enumerate() {
         b[i * 4..i * 4 + 4].copy_from_slice(&wd.to_le_bytes());
     }
     let jh = blake3::keyed_hash(&a_seed, &b);
-    let bound = difficulty_bound(target_bits, c.penalized_factor());
+    let bound = difficulty_bound(target_bits, job.config.penalized_factor());
     if !meets_target(&jh, &bound) {
         return Err(Error::Target);
     }
     Ok(jh)
+}
+
+/// Step 3b: tile jackpot over noised strips, jackpot hash and the difficulty check.
+pub fn jackpot_noised(a: &[i8], bt: &[i8], job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+    let mut st = JackpotState::default();
+    jackpot_step(a, bt, job, &mut st, u32::MAX)?;
+    jackpot_finish(&st, job, pow_digest, target_bits)
 }
 
 /// Step 3 in one call: seeds, noise, jackpot and the difficulty check.

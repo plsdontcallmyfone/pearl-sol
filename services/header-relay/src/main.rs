@@ -219,10 +219,14 @@ impl Relay<'_> {
             None => self.sol.send(&[client::submit_header(self.sol.pk(), hd.bytes)], &[])?,
         }
         let job = if hd.is_fallback() { None } else { Some(hd.job_id()) };
+        // the mining config the block is verified against (sizes the step plan)
+        let mut job_config = None;
         if let Some(j) = job {
-            if self.sol.account(&client::job_addr(&j))?.is_none() {
+            let Some(data) = self.sol.account(&client::job_addr(&j))? else {
                 bail!("job block {} at {} needs job {} registered (posted before the checkpoint?)", hex::encode(hd.hash), hd.height, hex::encode(j));
-            }
+            };
+            let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut data.as_slice())?;
+            job_config = Some(jc.config);
         }
         let (pk, w) = (self.sol.pk(), self.work.pubkey());
         let first = client::FIRST_CHUNK.min(hd.proof.len());
@@ -238,8 +242,8 @@ impl Relay<'_> {
         }
         let c = self.sol.config()?;
         let p = c.params;
-        let k = u32::from_le_bytes(p.fallback_config[0..4].try_into().unwrap());
-        for tx in client::plan(hd.is_fallback(), p.fallback_m, p.fallback_n, k, client::TX_CU_BUDGET) {
+        let shape = client::Shape::new(hd.is_fallback(), p.fallback_m, p.fallback_n, &job_config.unwrap_or(p.fallback_config), hd.proof.len());
+        for tx in client::plan(&shape, client::TX_CU_BUDGET) {
             let ixs: Vec<_> = tx.iter().map(|s: &Step| s.instruction(pk, w, &hd.hash, pk)).collect();
             self.sol.send(&ixs, &[])?;
         }
@@ -393,8 +397,10 @@ fn seed(node: &Node, attester_path: &PathBuf, withdraw_to: Option<String>) -> Re
     // 3. PostJob with real matrices, then mine one block on it.
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
     let (m, n) = (64u32, 64u32);
-    let a: Vec<i8> = (0..m as usize * 1024).map(|_| rng.random_range(-64i8..=64)).collect();
-    let b: Vec<i8> = (0..1024 * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let cfg = pearl_job::MiningConfig::localnet_default();
+    let k = cfg.common_dim;
+    let a: Vec<i8> = (0..m as usize * k as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let b: Vec<i8> = (0..k as usize * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
     let nonce = node.rpc.get_account(&upk)?.nonce;
     let height = chain::num(&node.info()?["height"])?;
     let (w, p, deadline, max_blocks) = (1_000_000_000u64, 1_000_000_000u64, height + 1000, 5u32);
@@ -402,7 +408,7 @@ fn seed(node: &Node, attester_path: &PathBuf, withdraw_to: Option<String>) -> Re
     let mut t = b"pearl-sol:terms:v2".to_vec();
     t.extend_from_slice(&upk);
     t.extend_from_slice(&job_id);
-    for x in [m, n, 1024] {
+    for x in [m, n, k] {
         t.extend_from_slice(&x.to_le_bytes());
     }
     for x in [w, p, deadline] {
@@ -410,11 +416,10 @@ fn seed(node: &Node, attester_path: &PathBuf, withdraw_to: Option<String>) -> Re
     }
     t.extend_from_slice(&max_blocks.to_le_bytes());
     let terms = pv_hash_parts(&[&t]);
-    let cfg = pearl_job::MiningConfig::localnet_default();
     let jh = pearl_job::JobHeader { job_pubkey: job_id, terms_hash: terms, created_slot: 0, target_bits: 0 };
     let prep = pearl_job::PreparedJob::with_computed_commitments(pearl_job::Job { header: jh, config: cfg, m, n, hash_a: [0; 32], hash_b: [0; 32] }, &a, &b)?;
     let mut body = Vec::new();
-    for x in [m, n, 1024] {
+    for x in [m, n, k] {
         body.extend_from_slice(&x.to_le_bytes());
     }
     body.extend_from_slice(&cfg.to_bytes());

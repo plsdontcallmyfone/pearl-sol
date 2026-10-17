@@ -325,3 +325,57 @@ fn rank_penalty_matches_pearl_job() {
         }
     }
 }
+
+/// The resumable pieces the light client runs (proof hash, noise in column ranges,
+/// jackpot in rank-block ranges) give the same results as the one-shot calls.
+#[test]
+fn split_steps_match_one_shot() {
+    for len in [1usize, 1023, 1024, 1025, 4096, 12612, 25000, 25600] {
+        let data: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+        for step in [1u64, 3, 7, 100] {
+            let mut st = fallback::Progress::default();
+            let mut out = None;
+            while out.is_none() {
+                out = fallback::hash_plain(&data, &mut st, step);
+            }
+            assert_eq!(out.unwrap(), *blake3::hash(&data).as_bytes(), "len {len} step {step}");
+        }
+    }
+    let fp = FallbackParams::default();
+    let t = template(7, [0; 32], 0x207fffff);
+    let mined = pow::mine_header(&t, &BlockWork::Fallback(fp), 0..16).unwrap().expect("mined");
+    let hb = mined.header.to_bytes();
+    let h = Header(&hb);
+    let pd = h.pow_digest();
+    let jp = fallback_params(&pd, &fp);
+    let v = proof::parse(&mined.proof).unwrap();
+    let full_a = verify::noised_side(&mined.proof, &v, &jp, &pd, verify::Side::A).unwrap();
+    let full_b = verify::noised_side(&mined.proof, &v, &jp, &pd, verify::Side::Bt).unwrap();
+    let nb = verify::noise_blocks(&jp);
+    assert_eq!(nb, 2048 / 8);
+    for (side, full, rows) in [(verify::Side::A, &full_a, 4usize), (verify::Side::Bt, &full_b, 8)] {
+        for step in [1usize, 37, 100, nb] {
+            let mut out = vec![0u8; rows * 2048];
+            let mut b = 0;
+            while b < nb {
+                let e = (b + step).min(nb);
+                verify::noised_side_range(&mined.proof, &v, &jp, &pd, side, b, e, &mut out).unwrap();
+                b = e;
+            }
+            assert!(out.iter().zip(full.iter()).all(|(x, y)| *x as i8 == *y), "{side:?} step {step}");
+        }
+    }
+    let one = verify::jackpot_noised(&full_a, &full_b, &jp, &pd, 0x207fffff).unwrap();
+    for step in [1u32, 3, 5, 16] {
+        let mut st = verify::JackpotState::default();
+        let mut done = false;
+        while !done {
+            done = verify::jackpot_step(&full_a, &full_b, &jp, &mut st, step).unwrap();
+            let mut buf = vec![0u8; verify::JackpotState::BYTES];
+            st.to_bytes(&mut buf);
+            st = verify::JackpotState::from_bytes(&buf);
+        }
+        assert_eq!(verify::jackpot_finish(&st, &jp, &pd, 0x207fffff).unwrap(), one);
+    }
+    assert_eq!(verify::jackpot_blocks(&jp), 16);
+}

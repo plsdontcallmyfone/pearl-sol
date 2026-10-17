@@ -18,7 +18,33 @@ fn b64(s: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(s).unwrap()
 }
 
+/// The fixture was harvested before the rank-penalty port (2026-10-17): its fallback
+/// config and its job are k=1024, r=32, below Pearl's r >= 128 floor. Its real headers
+/// are now refused, natively and by the light client's params check.
 #[test]
+fn pre_rank_penalty_devnet_headers_are_refused() {
+    let f = fixture();
+    let cfg52: [u8; 52] = hex::decode(f["params"]["fallback_config"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let cfg = pearl_job::MiningConfig::from_bytes(&cfg52).unwrap();
+    assert_eq!((cfg.k(), cfg.r()), (1024, 32));
+    let (m, n) = (f["params"]["fallback_m"].as_u64().unwrap() as u32, f["params"]["fallback_n"].as_u64().unwrap() as u32);
+    assert_eq!(pv::config::MiningConfig::from_bytes(&cfg52).unwrap().check_shape(m, n), Err(pv::Error::Shape));
+    let fp = pearl_job::FallbackParams { m, n, config: cfg };
+    let mut checked = 0;
+    for h in f["headers"].as_array().unwrap().iter().skip(1) {
+        let bytes: [u8; 256] = hex::decode(h["header"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let hd = pearl_job::BlockHeader::from_bytes(&bytes).unwrap();
+        if hd.is_fallback() {
+            let e = pearl_job::verify_block(&hd, None, &b64(h["proof"].as_str().unwrap()), &fp).unwrap_err();
+            assert!(e.to_string().contains("rank must be >= 128"), "{e}");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 10, "{checked}");
+}
+
+#[test]
+#[ignore = "fixtures/devnet.json predates the rank penalty (r=32); re-harvest with `header-relay seed` + `harvest` on a k=2048 r=128 devnet"]
 fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     let f = fixture();
     let fp = &f["params"];

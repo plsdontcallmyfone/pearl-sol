@@ -19,6 +19,16 @@ fn chain(p: &lightclient::Params, g: &Blk, n: usize, dts: &[u64]) -> Vec<Blk> {
     out
 }
 
+/// Proof hash in 8-chunk calls; the result of the last call (the one that checks).
+fn proof_hash_all(env: &mut Env, b: &Blk, len: usize) -> Result<u64, solana_sdk::transaction::TransactionError> {
+    let (pk, w) = (env.payer.pubkey(), env.work.pubkey());
+    let calls = len.div_ceil(1024).div_ceil(8);
+    for _ in 0..calls - 1 {
+        env.send(&[Step::ProofHash(8).instruction(pk, w, &b.hash, pk)], &[])?;
+    }
+    env.send(&[Step::ProofHash(8).instruction(pk, w, &b.hash, pk)], &[])
+}
+
 #[test]
 fn cu_per_step_and_cost_per_header() {
     let p = params(4);
@@ -36,31 +46,60 @@ fn cu_per_step_and_cost_per_header() {
         rows.push((format!("{s:?}"), cu));
         cu
     };
-    one(&mut env, Step::ProofHash);
-    // B: 1024 XOF blocks; B^T: 64 chunks; A: 64 chunks (64 x 64 x 1024 fallback)
+    let chunks = b1.proof.len().div_ceil(1024) as u32;
+    let ph = one(&mut env, Step::ProofHash(8));
+    let mut left = chunks - 8;
+    while left > 0 {
+        one(&mut env, Step::ProofHash(left.min(8)));
+        left = left.saturating_sub(8);
+    }
+    // 64 x 64 x 2048 fallback: B 2048 XOF blocks; B^T 128 chunks; A 128 chunks
     let gen = one(&mut env, Step::GenB(256));
-    for _ in 0..3 {
+    for _ in 0..7 {
         one(&mut env, Step::GenB(256));
     }
     let bt = one(&mut env, Step::HashBt(8));
-    for _ in 0..7 {
+    for _ in 0..15 {
         one(&mut env, Step::HashBt(8));
     }
     let a = one(&mut env, Step::HashA(8));
-    for _ in 0..7 {
+    for _ in 0..15 {
         one(&mut env, Step::HashA(8));
     }
-    one(&mut env, Step::Opening(0));
-    one(&mut env, Step::Opening(1));
-    one(&mut env, Step::Noise(0));
-    one(&mut env, Step::Noise(1));
-    one(&mut env, Step::Jackpot);
+    let oa = one(&mut env, Step::Opening(0));
+    let ob = one(&mut env, Step::Opening(1));
+    // 256 noise blocks per side, 16 rank blocks
+    let na = one(&mut env, Step::Noise(0, 64));
+    let na1 = one(&mut env, Step::Noise(0, 32));
+    for _ in 0..5 {
+        one(&mut env, Step::Noise(0, 32));
+    }
+    let nb = one(&mut env, Step::Noise(1, 64));
+    let nb1 = one(&mut env, Step::Noise(1, 32));
+    for _ in 0..5 {
+        one(&mut env, Step::Noise(1, 32));
+    }
+    let j4 = one(&mut env, Step::Jackpot(4));
+    let j2 = one(&mut env, Step::Jackpot(2));
+    for _ in 0..4 {
+        one(&mut env, Step::Jackpot(2));
+    }
+    let jl = one(&mut env, Step::Jackpot(2));
     assert_eq!(env.status(&b1.hash), lightclient::STATUS_VERIFIED);
-    println!("\nCU per step (fallback block, 64x64x1024, 4x8 tile, proof {} bytes):", b1.proof.len());
+    println!("\nCU per step (fallback block, 64x64x2048 r=128, 4x8 tile, proof {} bytes, {chunks} chunks):", b1.proof.len());
     for (l, c) in &rows {
         println!("  {l:<16} {c:>9}");
     }
     println!("  per GenB block {}  per HashBt chunk {}  per HashA chunk {}", gen / 256, bt / 8, a / 8);
+    println!("  per proof-hash chunk ~{}  opening A {oa} (8 leaves) B^T {ob} (16 leaves)", ph / 8);
+    println!(
+        "  noise A: per block {} fixed {}; B^T: per block {} fixed {}",
+        (na - na1) / 32,
+        na1 - 32 * ((na - na1) / 32),
+        (nb - nb1) / 32,
+        nb1 - 32 * ((nb - nb1) / 32)
+    );
+    println!("  jackpot: per rank block {} fixed {} (last call incl. hash + verify {jl})", (j4 - j2) / 2, j2 - 2 * ((j4 - j2) / 2));
     let fb_total: u64 = rows.iter().filter(|(l, _)| !l.starts_with("submit")).map(|(_, c)| c).sum();
     println!("  fallback verify total {fb_total} CU");
 
@@ -153,7 +192,7 @@ fn bad_pow_is_rejected() {
     let v = pv::proof::parse(&bad.proof).unwrap();
     bad.proof[v.a.data_off + 3] ^= 1;
     env.upload(&bad).unwrap();
-    let e = env.send(&[Step::ProofHash.instruction(pk, w, &good.hash, pk)], &[]).unwrap_err();
+    let e = proof_hash_all(&mut env, &good, bad.proof.len()).unwrap_err();
     assert!(custom(lc_code(LcError::VerifyFailed))(&e));
 
     // 3. the header's nonce changed after mining (proof_hash recomputed): nonce check
@@ -163,12 +202,12 @@ fn bad_pow_is_rejected() {
     moved.hash = moved.h.block_hash();
     env.submit(&moved).unwrap();
     env.upload(&moved).unwrap();
-    let e = env.send(&[Step::ProofHash.instruction(pk, w, &moved.hash, pk)], &[]).unwrap_err();
+    let e = proof_hash_all(&mut env, &moved, moved.proof.len()).unwrap_err();
     assert!(custom(lc_code(LcError::VerifyFailed))(&e));
 
     // 4. steps out of order / jackpot before openings
     env.upload(&good).unwrap();
-    let e = env.send(&[Step::Jackpot.instruction(pk, w, &good.hash, pk)], &[]).unwrap_err();
+    let e = env.send(&[Step::Jackpot(1).instruction(pk, w, &good.hash, pk)], &[]).unwrap_err();
     assert!(custom(lc_code(LcError::BadStep))(&e));
     // ... and the honest proof still verifies after a fresh begin
     env.upload(&good).unwrap();
@@ -273,8 +312,9 @@ fn job_block_needs_its_registered_job() {
     use rand::{Rng, SeedableRng};
     let mut rng = rand::rngs::StdRng::seed_from_u64(5);
     let (m, n) = (64u32, 64u32);
-    let a: Vec<i8> = (0..m as usize * 1024).map(|_| rng.random_range(-64i8..=64)).collect();
-    let b: Vec<i8> = (0..1024 * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let k = LOCAL_K as usize;
+    let a: Vec<i8> = (0..m as usize * k).map(|_| rng.random_range(-64i8..=64)).collect();
+    let b: Vec<i8> = (0..k * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
     let poster = [0x31u8; 32];
     let (job_id, terms) = post_job_ids(&poster, 0, m, n, 5_000, 1_000, 500, 10);
     let cfg = pearl_job::MiningConfig::localnet_default();
