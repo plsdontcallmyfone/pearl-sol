@@ -1126,6 +1126,13 @@ dependencies = [
 [[package]]
 name = "executor"
 version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "futures",
+ "pearl-job",
+ "state",
+ "thiserror",
+]
 
 [[package]]
 name = "ff"

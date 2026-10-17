@@ -1,0 +1,15 @@
+[package]
+name = "executor"
+description = "Deterministic all-or-nothing block execution for the agent chain"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-types.workspace = true
+state.workspace = true
+pearl-job.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
