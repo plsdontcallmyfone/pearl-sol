@@ -2,7 +2,7 @@
 //! vectors (chain/agent-types/vectors). Skipped when the files are not there.
 
 use ed25519_dalek::{Signer, SigningKey};
-use pearl_job::messages::result_message_v2;
+use pearl_job::messages::result_message;
 use pearl_job::spec::parse_key32;
 use pearl_node::tx::{self, Body, Tx};
 use serde_json::Value;
@@ -67,11 +67,15 @@ fn result_message_matches_agent_types() {
         return;
     };
     let r = v.as_array().unwrap().iter().find(|m| m["name"] == "result").expect("result vector");
+    // Raw ed25519 over b"pearl-sol:result:v1" || job_id || deliverer || result_hash (no framing).
     let msg = hex::decode(r["message"].as_str().unwrap()).unwrap();
+    assert_eq!(r["domain"], "pearl-sol:result:v1");
+    let body = &msg[19..];
     let (job, deliverer, rh): ([u8; 32], [u8; 32], [u8; 32]) =
-        (msg[..32].try_into().unwrap(), msg[32..64].try_into().unwrap(), msg[64..96].try_into().unwrap());
-    let framed = result_message_v2(&job, &deliverer, &rh);
-    assert_eq!(hex::encode(&framed), r["framed"].as_str().unwrap());
+        (body[..32].try_into().unwrap(), body[32..64].try_into().unwrap(), body[64..96].try_into().unwrap());
+    let ours = result_message(&job, &deliverer, &rh);
+    assert_eq!(ours, msg);
     let key = SigningKey::from_bytes(&k(&r["seed"]));
-    assert_eq!(hex::encode(key.sign(&framed).to_bytes()), r["sig"].as_str().unwrap());
+    assert_eq!(key.verifying_key().to_bytes(), k(&r["pubkey"]));
+    assert_eq!(hex::encode(key.sign(&ours).to_bytes()), r["sig"].as_str().unwrap());
 }

@@ -21,7 +21,7 @@ use pearl_chain::accounts::JobStatus;
 use pearl_chain::ix::Programs;
 use pearl_chain::{Pubkey, Rpc};
 use pearl_job::freivalds::{freivalds, result_hash};
-use pearl_job::messages::{result_message, result_message_v2, share_message};
+use pearl_job::messages::{result_message, share_message};
 use pearl_job::spec::{parse_key32, parse_pubkey};
 use pearl_node::{JobInfo, NodeApi};
 use pearl_job::{data, JobSpec, PlainProof};
@@ -217,7 +217,7 @@ impl Attester {
         Ok((result_hash(&job.job_key(), &c), t0.elapsed().as_secs_f64() * 1e3))
     }
 
-    /// v2: job from the node. Signs `result_message_v2` (framed), only for a Delivered job, its deliverer, and the
+    /// v2: job from the node. Signs the raw `result_message`, only for a Delivered job, its deliverer, and the
     /// result_hash the chain holds; and only if this attester is one of its evaluators.
     fn handle_result_node(&self, req: &ResultRequest, info: &JobInfo, job_pk: &[u8; 32], deliverer: &[u8; 32]) -> Result<ResultResponse> {
         ensure!(info.is("Delivered"), "job is not Delivered ({})", info.status);
@@ -227,8 +227,8 @@ impl Attester {
         let uri = req.result_uri.clone().or_else(|| Some(info.result_uri.clone()).filter(|u| !u.is_empty()));
         let (rh, ms) = self.check_result(&info.to_spec(), req, &uri)?;
         ensure!(info.result_hash == Some(rh), "on-chain result_hash does not match the delivered C");
-        // The v2 chain checks Commonware-framed signatures (agent-types NS_RESULT).
-        let msg = result_message_v2(job_pk, deliverer, &rh);
+        // Raw ed25519 over the domain-prefixed bytes, as the chain checks (docs/RPC.md).
+        let msg = result_message(job_pk, deliverer, &rh);
         Ok(ResultResponse {
             ok: true,
             job: req.job.clone(),

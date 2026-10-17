@@ -1,10 +1,10 @@
 //! JSON-RPC 2.0 over HTTP POST to the node (`--rpc`, default http://127.0.0.1:10630).
 //!
-//! Methods and params used (keep in sync with docs/RPC.md):
+//! Methods and params used (docs/RPC.md, node agent; checked 2026-10-16):
 //!
 //! | method | params | result |
 //! |---|---|---|
-//! | getBlockTemplate | `{"miner": <base58>}` | template object (`Template::from_json`) |
+//! | getBlockTemplate | `{"miner": <base58>, "job_id"?: "fallback"}` | template object (`Template::from_json`) |
 //! | submitBlock | `{"header": <hex256>, "proof": <base64>, "template_id"?}` | `{"accepted", "block_hash"?, "reason"?}` or a block hash string |
 //! | getJob | `{"job_id": <hex>}` | job object (`JobInfo::from_json`) or null |
 //! | getAccount | `{"account": <base58>}` | `{"balance", "nonce"}` (null = empty account) |
@@ -97,6 +97,15 @@ impl NodeApi for HttpNode {
             if t.job.is_none() {
                 bail!("template names job {} but getJob has none", hex::encode(t.header.job_id));
             }
+        }
+        Ok(t)
+    }
+
+    fn fallback_template(&self, payout: &[u8; 32]) -> Result<Template> {
+        let v = self.call("getBlockTemplate", json!({"miner": b58(payout), "job_id": "fallback"}))?;
+        let t = Template::from_json(&v)?;
+        if !t.header.is_fallback() {
+            bail!("asked for a fallback template, got job {}", hex::encode(t.header.job_id));
         }
         Ok(t)
     }

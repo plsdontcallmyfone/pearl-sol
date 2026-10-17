@@ -128,6 +128,15 @@ impl JobInfo {
             threshold: get("threshold").map(num).transpose()?.unwrap_or(1) as u8,
             deadline_height: get("deadline_height").map(num).transpose()?.unwrap_or(u64::MAX),
         })
+        .and_then(|j: Self| {
+            // The node also reports job_key: catch any job-header rule mismatch here.
+            if let Some(k) = get("job_key") {
+                let want = key32(k)?;
+                let got = j.to_job().job_key();
+                ensure!(want == got, "node job_key {} != computed {} (job header rule differs)", hex::encode(want), hex::encode(got));
+            }
+            Ok(j)
+        })
     }
 
     pub fn to_json(&self) -> Value {
@@ -136,11 +145,12 @@ impl JobInfo {
             "job_id": k(&self.job_id), "poster": bs58::encode(self.poster).into_string(), "terms_hash": k(&self.terms_hash),
             "created_height": self.created_height, "share_target": self.share_target,
             "config": hex::encode(self.config.to_bytes()), "m": self.m, "n": self.n,
-            "hash_a": k(&self.hash_a), "hash_b": k(&self.hash_b), "data_uri": self.data_uri, "status": self.status,
+            "hash_a": k(&self.hash_a), "hash_b": k(&self.hash_b), "data_uri": self.data_uri, "status": self.status.to_lowercase(),
             "deliverer": self.deliverer.map(|d| bs58::encode(d).into_string()),
             "result_hash": self.result_hash.map(|r| hex::encode(r)), "result_uri": self.result_uri,
             "evaluators": self.evaluators.iter().map(|e| bs58::encode(e).into_string()).collect::<Vec<_>>(),
             "threshold": self.threshold, "deadline_height": self.deadline_height,
+            "job_key": hex::encode(self.to_job().job_key()), "job_header": hex::encode(self.job_header().to_bytes()),
         })
     }
 }
@@ -284,6 +294,13 @@ pub enum SubmitOutcome {
 /// What the miner and attester need from a node.
 pub trait NodeApi: Send + Sync {
     fn block_template(&self, payout: &[u8; 32]) -> Result<Template>;
+    /// A fallback-block template (`getBlockTemplate {job_id: "fallback"}`), for when
+    /// the node's chosen job cannot be mined here.
+    fn fallback_template(&self, payout: &[u8; 32]) -> Result<Template> {
+        let t = self.block_template(payout)?;
+        ensure!(t.header.is_fallback(), "node offers no fallback template");
+        Ok(t)
+    }
     fn submit_block(&self, template: &Template, block: &MinedBlock) -> Result<SubmitOutcome>;
     fn get_job(&self, job_id: &[u8; 32]) -> Result<Option<JobInfo>>;
     fn get_account(&self, account: &[u8; 32]) -> Result<Account>;

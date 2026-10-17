@@ -12,7 +12,7 @@ use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::{json, Value};
 
-use pearl_job::messages::result_message_v2;
+use pearl_job::messages::result_message;
 use pearl_job::pow::{block_proof_from_bytes, verify_block, BlockHeader, FallbackParams, MinedBlock};
 
 use crate::tx::{self, Body};
@@ -80,7 +80,7 @@ impl MockState {
             Body::CompleteJob { job_id, sigs } => {
                 let j = self.jobs.iter_mut().find(|j| j.job_id == job_id).ok_or_else(|| anyhow!("no job"))?;
                 ensure!(j.is("Delivered"), "job not Delivered");
-                let msg = result_message_v2(&job_id, &j.deliverer.unwrap(), &j.result_hash.unwrap());
+                let msg = result_message(&job_id, &j.deliverer.unwrap(), &j.result_hash.unwrap());
                 let mut ok = 0;
                 for (pk, sig) in &sigs {
                     if j.evaluators.contains(pk) && VerifyingKey::from_bytes(pk)?.verify(&msg, &Signature::from_bytes(sig)).is_ok() {
@@ -128,11 +128,14 @@ impl MockNode {
         let b64 = base64::engine::general_purpose::STANDARD;
         let r: Result<Value> = (|| match req.get("method").and_then(|m| m.as_str()).unwrap_or("") {
             "getBlockTemplate" => {
-                let t = self.block_template(&key32(&p["miner"])?)?;
-                let mut v = header_fields_json(&t.header);
+                let miner = key32(&p["miner"])?;
+                let t = if p["job_id"] == "fallback" { self.fallback_template(&miner)? } else { self.block_template(&miner)? };
+                let mut v = json!({"header": hex::encode(t.header.to_bytes()), "header_fields": header_fields_json(&t.header),
+                                   "height": t.header.height, "target_bits": t.header.target_bits});
                 v["job"] = t.job.map(|j| j.to_json()).unwrap_or(Value::Null);
                 v["chain_id"] = json!(t.chain_id);
-                v["min_fee"] = json!(t.min_fee);
+                v["min_fee"] = json!(t.min_fee.to_string());
+                v["fallback"] = json!({"m": t.fallback.m, "n": t.fallback.n, "config": hex::encode(t.fallback.config.to_bytes())});
                 v["template_id"] = json!(t.template_id);
                 Ok(v)
             }
@@ -148,7 +151,7 @@ impl MockNode {
             "getJob" => Ok(self.get_job(&key32(&p["job_id"])?)?.map(|j| j.to_json()).unwrap_or(Value::Null)),
             "getAccount" => {
                 let a = self.get_account(&key32(&p["account"])?)?;
-                Ok(json!({"balance": a.balance, "nonce": a.nonce}))
+                Ok(json!({"account": crate::b58(&key32(&p["account"])?), "balance": a.balance.to_string(), "nonce": a.nonce}))
             }
             "sendTx" => Ok(json!({"tx_hash": self.send_tx(&b64.decode(p["tx"].as_str().unwrap_or(""))?)?})),
             m => bail!("method not found: {m}"),
@@ -164,11 +167,11 @@ impl MockNode {
     }
 }
 
-impl NodeApi for MockNode {
-    fn block_template(&self, payout: &[u8; 32]) -> Result<Template> {
+impl MockNode {
+    fn template(&self, payout: &[u8; 32], fallback: bool) -> Result<Template> {
         let mut s = self.state.lock().unwrap();
         let (prev, h) = s.tip();
-        let job = s.next_job().cloned();
+        let job = if fallback { None } else { s.next_job().cloned() };
         let header = BlockHeader {
             version: 1,
             height: h + 1,
@@ -197,6 +200,16 @@ impl NodeApi for MockNode {
             s.fake_block();
         }
         Ok(t)
+    }
+}
+
+impl NodeApi for MockNode {
+    fn block_template(&self, payout: &[u8; 32]) -> Result<Template> {
+        self.template(payout, false)
+    }
+
+    fn fallback_template(&self, payout: &[u8; 32]) -> Result<Template> {
+        self.template(payout, true)
     }
 
     fn submit_block(&self, _t: &Template, b: &MinedBlock) -> Result<SubmitOutcome> {

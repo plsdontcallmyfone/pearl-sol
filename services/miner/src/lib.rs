@@ -256,25 +256,22 @@ impl<'a> Miner<'a> {
     /// when a block was submitted.
     pub fn step(&mut self) -> Result<Option<SubmitOutcome>> {
         let me = self.me();
-        let t = self.node.block_template(&me)?;
+        let mut t = self.node.block_template(&me)?;
+        let skip = |m: &Self, t: &Template| !t.header.is_fallback() && m.bad_jobs.get(&t.header.job_id).is_some_and(|u| Instant::now() < *u);
+        if !skip(self, &t) {
+            if let Err(e) = self.work_for(&t) {
+                self.log(json!({"event": "job_unusable", "job": hex::encode(t.header.job_id), "error": format!("{e:#}")}));
+                self.bad_jobs.insert(t.header.job_id, Instant::now() + Duration::from_secs(60));
+            }
+        }
+        if skip(self, &t) {
+            // The node chose a job whose data we cannot load: ask for a fallback block.
+            t = self.node.fallback_template(&me)?;
+        }
         if t.header.miner != me {
             bail!("template pays {} not {}", b58(&t.header.miner), b58(&me));
         }
-        let prep = if !t.header.is_fallback() && self.bad_jobs.get(&t.header.job_id).is_some_and(|until| Instant::now() < *until) {
-            // The node chose a job whose data we cannot load. Nothing to mine on this
-            // template; wait for the next one (the node may move to a fallback block).
-            std::thread::sleep(self.cfg.refresh.min(Duration::from_millis(500)));
-            return Ok(None);
-        } else {
-            match self.work_for(&t) {
-                Ok(p) => p,
-                Err(e) => {
-                    self.log(json!({"event": "job_unusable", "job": hex::encode(t.header.job_id), "error": format!("{e:#}")}));
-                    self.bad_jobs.insert(t.header.job_id, Instant::now() + Duration::from_secs(60));
-                    return Ok(None);
-                }
-            }
-        };
+        let prep = self.work_for(&t)?;
         let until = Instant::now() + self.cfg.refresh;
         let Some(b) = self.mine_template(&t, prep.as_deref(), until) else { return Ok(None) };
         let out = self.node.submit_block(&t, &b)?;

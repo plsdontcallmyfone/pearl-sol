@@ -187,11 +187,13 @@ fn unusable_job_data_is_skipped() {
     job.hash_a[0] ^= 1; // data no longer matches the commitment
     node.add_job(job);
     let (logs, log) = collecting_log();
-    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 1, false), log);
-    assert!(m.step().unwrap().is_none());
-    assert!(m.step().unwrap().is_none());
+    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 2, false), log);
+    m.run(&|| false).unwrap();
     assert_eq!(events(&logs, "job_unusable"), 1, "retried too early");
-    assert!(node.state.lock().unwrap().blocks.is_empty());
+    // It mined fallback blocks instead of idling.
+    let s = node.state.lock().unwrap();
+    assert_eq!(s.blocks.len(), 2);
+    assert!(s.blocks.iter().all(|b| b.header.is_fallback()));
 }
 
 /// The wrong attester key (not an evaluator) gets no signature; the job stays Delivered.

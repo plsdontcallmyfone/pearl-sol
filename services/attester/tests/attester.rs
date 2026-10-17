@@ -223,8 +223,7 @@ fn node_mode_signs_delivered_result() {
     // Job id as hex, no result_uri: taken from the job.
     let (st, v) = post(&att, "/result", json!({"job": hex::encode(fx.job_pk), "deliverer": b58(&[0x66; 32])}));
     assert_eq!(st, 200, "{v}");
-    let mut expect = vec![19u8];
-    expect.extend_from_slice(b"pearl-sol:result:v1");
+    let mut expect = b"pearl-sol:result:v1".to_vec();
     expect.extend_from_slice(&fx.job_pk);
     expect.extend_from_slice(&[0x66; 32]);
     expect.extend_from_slice(&result_hash(&fx.prep.job_key, &c));
