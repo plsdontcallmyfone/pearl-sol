@@ -242,7 +242,12 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    Wallet Standard with approvals; BTC/STX behind ENABLE_BITCOIN_STACKS (off);
    telemetry off; Leather branding removed (LICENSE kept). Tests: 187 unit, 63 UI
    (mock), 16/16 live on the demo stack. Write-up docs/PEARL-PORT.md. Follow-up agent
-   (2026-10-17): payout lien screen, wide full-page layout, imported-key backup.
+   REVAMP (owner 2026-10-17, supersedes the lien-screen follow-up, which was
+   stopped): Bitcoin/Stacks REMOVED entirely (code + deps, no flag); all our
+   systems wired into Leather's EXISTING screens with minimal UI change (assets,
+   send/receive/activity, swap screen = bridge + storefront, networks, dApp
+   approvals = window.pearl + Solana Wallet Standard; jobs/mining/liens/Agent
+   Credit built from Leather components). Agent running in ~/pearl-wallet.
    Agent Credit (2026-10-17): R1/R2/R5 integrated + pushed (ce5410f..b9c967d);
    owner chose release key = Agent Credit keeper key; follow-up agent builds R7/R8
    here + keeper auto-ClearRoute on repayment there.
