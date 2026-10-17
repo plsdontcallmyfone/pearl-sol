@@ -236,12 +236,16 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    design ~/ideas/agent-credit/PEARL-LAYER.md, AC-D32..42). Owner 2026-10-17:
    pearl lines require a backer stake (AC-D39, agent started in ~/agent-credit);
    pearl-sol built requests R1, R2, R5 (item 9). R3/R4/R6 not requested yet.
-7. AGENT WALLET = LEATHER FORK (owner 2026-10-17): ~/pearl-wallet (Leather 6.73.4,
-   MIT, remote `upstream`, no remote of ours). Our chain is the primary network +
-   Solana token side; ports our extension's byte-tested codecs; Bitcoin/Stacks
-   hidden behind one flag (default off); Leather branding removed. Plan doc
-   ~/pearl-wallet/docs/PEARL-PORT.md. The simpler ~/pearl-sol/extension stays as the
-   reference implementation until the fork matches it.
+7. AGENT WALLET = LEATHER FORK: DONE on ~/pearl-wallet branch `dev` (e07b9a3..ae3dce1,
+   not pushed; no remote of ours). Opens on our chain + Solana side; Leather's
+   phrase derives ed25519 m/44'/501'/i'/0'; base58 import; window.pearl + Solana
+   Wallet Standard with approvals; BTC/STX behind ENABLE_BITCOIN_STACKS (off);
+   telemetry off; Leather branding removed (LICENSE kept). Tests: 187 unit, 63 UI
+   (mock), 16/16 live on the demo stack. Write-up docs/PEARL-PORT.md. Follow-up agent
+   (2026-10-17): payout lien screen, wide full-page layout, imported-key backup.
+   Agent Credit (2026-10-17): R1/R2/R5 integrated + pushed (ce5410f..b9c967d);
+   owner chose release key = Agent Credit keeper key; follow-up agent builds R7/R8
+   here + keeper auto-ClearRoute on repayment there.
 8. REFUND + HISTORICAL PROOFS: DONE (6743aa0..c3d1bc0; SPEC 5.1 "Refunds", 5.3
    "Historical withdrawal proofs"). Owner decision 2026-10-17: refund held-back orders
    on Solana, in tokens.
