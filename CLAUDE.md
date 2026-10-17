@@ -52,4 +52,4 @@ explicitly; never touch `solana config`.
 | Claude subagent (proof crates) | 2026-10-16 | crates/ (pearl-job, pearl-chain, chain-litesvm), services/miner, services/attester, keys/localnet/{attester,miner}-keypair.json (DONE, committed) |
 | Claude subagent (market) | 2026-10-16 | agent/programs/{agents,jobs,mining}, agent/tests/{agents,jobs,mining}*, services/agent-cli (DONE, committed) |
 | Claude subagent (M1 integration) | 2026-10-16 | scripts/demo.sh, scripts/demo/, fixes in any component for the real-validator e2e run (IN PROGRESS) |
-| Research subagent (Commonware) | 2026-10-16 | research/NOTES-commonware.md only (IN PROGRESS, uncommitted) |
+| Research subagent (Commonware) | 2026-10-16 | research/NOTES-commonware.md only (DONE, uncommitted) |

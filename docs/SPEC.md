@@ -1,191 +1,213 @@
-# pearl-sol spec
+# pearl-sol spec v2
 
-Status: v1, 2026-10-16. Sources: research/NOTES-proof.md, research/NOTES-pump.md,
-research/NOTES-chain-bridge.md.
+Status: v2, 2026-10-16. Replaces v1 (SVM agent chain; see git history and branch
+wip/svm-agent-chain). Sources: research/NOTES-proof.md, NOTES-pump.md,
+NOTES-chain-bridge.md, NOTES-commonware.md.
 
 ## 1. Shape
 
-Two chains run side by side.
-
-| | Token chain | Agent chain |
+| | Token chain | Agent chain ("the chain") |
 |---|---|---|
-| What | Solana mainnet | Our own SVM cluster (Agave fork, own genesis) |
-| Token | pump.fun Token-2022 mint, fixed 1B, 6 dp | Native lamports = the bridged token, 9 dp |
-| Holds | Mining reserve, bridge vault | AI job market, mining, agent identity |
-| Localnet | solana-test-validator :10600 with pump cloned | solana-test-validator :10630 |
+| What | Solana | Our own chain: Rust node on Commonware primitives, not a fork |
+| Blocks | Solana | Useful proof of work: miners do Pearl matmul on posted AI jobs |
+| Token | pump.fun Token-2022 mint, fixed 1B, 6 dp | Native coin = the bridged token, 9 dp |
+| Role | Money, buyers, final record | Work |
 
-Supply rule: 1 SPL base unit = 1000 lamports. At genesis the agent chain's entire
-supply (1B x 1e9 = 1e18 lamports, fits u64) sits in the bridge escrow. Bridging in
-releases lamports from the escrow and bridging out locks them back. Nothing is
-minted on either chain. Genesis sets `--inflation none` and
-`--fee-burn-percentage 0`, so lamport supply never changes.
+Solana's four jobs:
+1. Liquidity and distribution (pump.fun curve, then PumpSwap).
+2. Funding: creator fees buy the token back into the mining reserve (built: token/programs/reserve).
+3. Compute storefront (M1): any Solana app or agent buys AI jobs in SOL or USDC; the payment becomes token buy pressure and job pay on the chain; the result commitment lands back on Solana.
+4. Light client (M2): a Solana program follows our PoW headers and verifies the work, so withdrawals and job results are proved, not signed by a committee.
 
-Invariant (checked by the relayer and the indexer):
-`vault SPL on Solana x 1000 == 1e18 - escrow lamports on agent chain`.
+Supply rule: 1 SPL base unit = 1000 base units on the chain. Genesis allocates the
+whole supply (1e18) to the bridge escrow. Nothing is minted or burned on the chain
+(tx fees go to miners). Invariant: `vault SPL x 1000 == 1e18 - escrow balance`
+(relayer adjusts for in-flight transfers).
 
-## 2. Token chain (Solana)
+## 2. Accounts, keys, transactions
 
-### 2.1 Launch
-- `create_v2` + dev buy in one transaction. `creator` = the `reserve` program's
-  data-less, system-owned PDA `["creator"]`, so creator fees accrue to the program.
-- Dev buy size is the owner's call. Reference: 10% of supply is about 3.1 SOL,
-  20% about 7 SOL. Tokens go to the reserve ATA.
+- Accounts are ed25519 public keys (32 bytes): the same keypair works on Solana
+  and on the chain (verified byte for byte, NOTES-commonware Q4). State per
+  account: `balance u64, nonce u64`, plus typed records (agents, jobs).
+- Transaction encoding (fixed little-endian binary, so the wallet extension and
+  the Solana light client can build and parse it without a codec library):
 
-### 2.2 `reserve` program (Anchor)
-- `crank_buyback(max_sol_in, min_tokens_out)`, permissionless:
-  pump `sweep_creator_fee` -> `collect_creator_fee_v2` (curve) or
-  `collect_coin_creator_fee` (PumpSwap, wSOL) -> `buy_exact_quote_in_v3` (curve)
-  or PumpSwap `buy_exact_quote_in_v2` -> tokens into reserve ATA.
-  - Per-call SOL cap (`config.max_buy_per_call`) and a minimum interval between
-    calls, both admin-editable.
-  - `min_tokens_out` is enforced on chain, and the program also rejects the
-    buy if the realised price is worse than `config.max_slippage_bps` from the
-    pre-trade quote it reads from the curve or pool itself.
-- `fund_mining(amount)`, admin or scheduled: moves reserve tokens into the
-  bridge vault with the agent-chain `mining_pool` PDA as recipient. This is the
-  only way reserve tokens reach miners.
-- Risk to state in docs: pump's admin can reassign a coin's creator (community
-  takeover), which would redirect future fees. Tokens already in the reserve are
-  unaffected.
+```
+Tx = version u8 (=1) || chain_id u32 || from [32] || nonce u64 || fee u64
+     || kind u8 || body (kind-specific, below) || sig [64]
+sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol:tx:v1"
+```
+  (this is Commonware's `sign(ns, msg)` framing; a wallet can produce it with a
+  plain ed25519 signMessage over the framed bytes.)
 
-### 2.3 `bridge` program, Solana side (Anchor)
-- `deposit(amount, agent_recipient: Pubkey)`: transfers SPL into the vault ATA,
-  writes a `Deposit { nonce, sender, recipient, amount }` account (nonce from a
-  global counter), emits an event.
-- `release(msg, sigs)`: pays SPL out of the vault for a `Withdrawal` that happened
-  on the agent chain. Needs M-of-N ed25519 signatures from `config.signers`
-  (verified through the ed25519 precompile instruction in the same transaction).
-  A `Processed` PDA per `(source_chain, nonce)` blocks replay.
-- Signer set and threshold are admin-editable. M1: 1-of-1. Later 2-of-3.
-  Production: self-hosted Hyperlane Sealevel (to confirm: the route type and
-  the 6-to-9 decimal scaling).
-
-## 3. Agent chain (own SVM)
-
-### 3.1 `escrow` program (agent-side bridge)
-Mirror of 2.3 with lamports:
-- `unlock(msg, sigs)`: moves `amount x 1000` lamports from the escrow PDA to the
-  recipient for a Solana `Deposit`. Same M-of-N + replay PDA pattern.
-- `lock(amount, solana_recipient)`: user sends lamports into the escrow PDA,
-  writes `Withdrawal { nonce, ... }`. Amount must be a multiple of 1000.
-
-Localnet: solana-test-validator cannot write custom genesis, so the escrow PDA
-is preloaded with `--account` (1e18 lamports) and the faucet balance is
-ignored by the invariant check. Production uses `solana-genesis` from our fork
-with `--primordial-accounts-file`.
-
-### 3.2 `agents` program (identity)
-- `register(name, uri, payout)`: an agent's profile PDA `["agent", authority]`.
-- M2: replace with or bridge to the Solana Agent Registry (ERC-8004 port).
-
-### 3.3 `jobs` program (AI job market, ERC-8183 style)
-A job is a matrix multiply AB that an agent pays for.
-
-`post_job(params)`:
-- `hash_a`, `hash_b`: Pearl-format keyed BLAKE3 commitments to the int7 matrices.
-- `config` (52 bytes, Pearl mining config: k, rank, row/column patterns), `m`,
-  `n`, `k`, data URI (where miners fetch A and B).
-- `worker_pay` W (lamports, escrowed in the job PDA) and `protocol_fee` P
-  (moved to the `mining_pool` PDA at post time, non-refundable).
-- `deadline`, `share_target` (difficulty for shares on this job).
-- The job's 76-byte Pearl header is fixed at post time:
-  `job_pubkey (32) || terms_hash (32) || created_slot (8) || target_bits (4)`.
-  `job_key = blake3(header || config)` is therefore computable by anyone.
-
-Lifecycle: `Open -> Delivered -> Completed | Disputed`, or `Open -> Expired`.
-- `submit_result(result_hash, result_uri)` by the miner who will deliver AB.
-- Evaluator releases W to the deliverer. M1 evaluator = the attester service
-  (runs a Freivalds check off chain on the delivered AB and signs). Poster can also
-  accept directly. If nobody delivers by `deadline`, W returns to the poster.
-
-### 3.4 `mining` program (useful PoW)
-- `submit_share(job, miner, proof)`: a share is a Pearl tile proof on the job's
-  committed matrices at `share_target`. Seed derivation is the miner-bound variant
-  (NOTES-proof Q4): `b_noise_seed = blake3(job_key || miner_pubkey || nonce || hash_b')`,
-  so a proof cannot be stolen and resubmitted by someone else.
-- Nonce range is capped per job (`config.max_nonce`), since repeated passes over
-  the same job redo the multiply but are not new useful work.
-- Accepted shares increment `Shares { job, miner, count }`.
-
-Verification path by milestone:
-- **M1, attested:** the attester service runs Pearl's plain (non-ZK) verifier
-  natively (about 0.36 ms) and signs `(job, miner, nonce, tile)`. `submit_share`
-  checks the attester signature through the ed25519 precompile. 1-of-1 attester.
-- **M2, on chain:** port the plain verifier (no ZK, about 13 KB proof at the
-  smallest tile, about 1.3-1.9M CU) to SBF. Proof uploaded to a buffer account,
-  verify split across 2 instructions with state in the buffer.
-- **M3, native:** a BLAKE3-compression syscall in our Agave fork (estimate
-  300-400k CU per verify), or the whole plain verify as a builtin. Our own chain,
-  so no feature gate is needed. Groth16 wrap only if a proof must ever be checked
-  on Solana mainnet.
-
-### 3.5 Rewards and emission
-The pool is finite (fed only by `fund_mining` and protocol fees), so emission is a
-share of what is there, not a fixed schedule.
-
-- Epoch = `config.epoch_slots` (default 9000 slots, about 1 hour).
-- Epoch budget `E = pool_balance x config.emission_bps / 10_000`
-  (default 42 bps per epoch, about 1% per day, about 63% emitted in 100 days of
-  a fixed pool; fees and buybacks keep topping it up).
-- Per job, the subsidy cap is `S_job = min(E_share, alpha x P)` with
-  `alpha = config.alpha_bps / 10_000 < 1` (default 8000). This is the anti
-  self-dealing rule: posting a fake job and mining it yourself returns W and at
-  most `alpha x P`, so it always loses `(1 - alpha) x P`.
-- `E_share`: E is split across jobs active this epoch in proportion to their P.
-  Within a job, the subsidy is split across miners by share count.
-- `claim(epoch)`: miner pulls their lamports after the epoch closes.
-- All of `epoch_slots`, `emission_bps`, `alpha_bps`, `max_nonce`, caps and
-  signer sets are admin-editable on chain.
-
-### 3.6 x402 and agent payments
-Agents pay each other in native lamports with plain transfers. For x402 (an
-SPL-only scheme on Solana), a wrapped-native mint like wSOL. M2.
-
-## 4. Off-chain services (all on ports 10660-10669)
-
-| Service | Lang | Job |
+| kind | Name | Body |
 |---|---|---|
-| relayer | TS | Watches Deposit/Withdrawal on both chains, signs, submits unlock/release, checks the supply invariant, refuses to sign if it breaks |
-| attester | Rust | Links Pearl's zk-pow plain verifier (forked for the miner-bound seed), signs shares and Freivalds results |
-| miner | Rust | CPU miner: Pearl `try_mine_one` changed to take the job's A and B and the miner-bound seed. Localnet difficulty about 1 s per share |
-| crank | TS | Calls `crank_buyback` and `fund_mining` on a schedule |
-| agent-cli | TS | Register an agent, post a job (generates A, B, commits hashes, uploads data), watch it, accept results |
+| 0 | Transfer | to [32], amount u64 |
+| 1 | RegisterAgent | name_len u8, name, uri_len u16, uri |
+| 2 | PostJob | see 4.1 |
+| 3 | SubmitResult | job_id [32], result_hash [32], uri_len u16, uri |
+| 4 | CompleteJob | job_id [32], evaluator sigs (count u8, (pubkey [32], sig [64])*) |
+| 5 | ExpireJob | job_id [32] |
+| 6 | BridgeUnlock | solana_nonce u64, recipient [32], amount_spl u64, job_order (0 or 1, then PostJob body), attester sigs |
+| 7 | BridgeLock | solana_recipient [32], amount u64 (multiple of 1000) |
+| 8 | AdminConfig | key u8, value bytes (admin key only; every parameter is editable) |
 
-## 5. Milestones
+- Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
-**M1: localnet end to end (attested verify)**
-1. `scripts/localnet.sh` brings up token :10600 with pump programs and accounts
-   cloned (from NOTES-pump), agent :10630 with the escrow preloaded.
-2. Programs: `reserve`, `bridge` (token side), `escrow`, `agents`, `jobs`,
-   `mining` (agent side), Anchor 0.31.1.
-3. Services: relayer, attester, miner, crank, agent-cli.
-4. Demo script `scripts/demo.sh`, which must pass:
-   launch coin with reserve PDA as creator + dev buy -> trades generate creator
-   fees -> crank buys back into the reserve -> `fund_mining` bridges to the pool
-   -> an agent bridges tokens in, registers, posts a job -> miner mines shares,
-   attester signs, shares land on chain -> epoch closes, miner claims lamports
-   -> miner delivers AB, attester Freivalds-checks, W released -> miner bridges
-   lamports back out and receives SPL on the token chain -> invariant holds
-   at every step.
+## 3. Blocks and useful PoW
 
-**M2:** on-chain plain verify (split instruction), agent registry (ERC-8004),
-x402 wrapped native, 2-of-3 signers, indexer + simple web UI (ports 10670+).
+### 3.1 Header (fixed 256 bytes)
 
-**M3:** Agave fork with the BLAKE3 syscall or a verify builtin, real
-multi-validator cluster from our genesis, Hyperlane Sealevel bridge, devnet
-then mainnet.
+```
+version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
+| job_id [32] (zero = fallback block) | miner [32] (payout key)
+| tx_root [32] | state_root [32] | withdraw_root [32] | proof_hash [32] | nonce u64
+```
+- `block_hash = blake3(header)`.
+- `pow_digest = blake3(header with proof_hash zeroed)`. This is what the proof
+  binds to, so the proof cannot be reused for another block, another parent or
+  another payout key.
+- `proof_hash = blake3(proof bytes)`; the proof (about 12.6 KB, crates/pearl-job
+  PROOF-FORMAT.md) travels in the block body. Headers stay fixed-size for the
+  Solana light client.
+- `state_root` = QMDB `current` root after this block; `withdraw_root` = root of
+  the append-only `keyless` withdrawal log (light client proofs for BridgeLock).
 
-## 6. Signed message formats (ed25519, M1)
+### 3.2 Binding the proof to a job and a block
+- A job's Pearl `job_key` comes from its fixed 76-byte job header (built at post
+  time, as in v1: `job_id || terms_hash || created_height u64 || share_target u32`),
+  so the poster precomputes `hash_a`, `hash_b` once.
+- Seed derivation changes one input versus M1 pearl-job: the miner pubkey is
+  replaced by the block's `pow_digest`:
+  `b_noise_seed = blake3(job_key || pow_digest || hash_b')`, `a = blake3(b || hash_a')`.
+- The block's difficulty `target_bits` is the chain target, not the job's.
+- Fallback block (`job_id` zero, no open job or miner choice): matrices are derived
+  from `pow_digest` (Pearl style). Valid, earns fees only, no reserve subsidy.
 
-All little-endian. Signers sign these exact bytes; programs rebuild them and
-check them against the ed25519 precompile instruction in the same transaction.
+### 3.3 Fork choice and finality
+- Heaviest chain by cumulative work, work per block = 2^256 / target.
+- Difficulty: WTEMA per block (Pearl's rule), target block time 60 s
+  (parameter). Proof storage about 6.6 GB per year at 60 s; bodies prunable past
+  finality.
+- Finality depth K = 30 blocks (parameter). Reorgs deeper than K are refused.
+  Coinbase and reserve subsidies mature after K. The bridge only acts on events at
+  least K deep.
 
-- Deposit (Solana -> agent): `b"pearl-sol:deposit:v1" || nonce u64 || recipient [32] || amount_spl u64`
-- Withdrawal (agent -> Solana): `b"pearl-sol:withdraw:v1" || nonce u64 || recipient [32] || amount_spl u64`
-- Share: `b"pearl-sol:share:v1" || job [32] || miner [32] || nonce u64`
-- Result: `b"pearl-sol:result:v1" || job [32] || deliverer [32] || result_hash [32]`
+### 3.4 Rewards
+- Per block: `fees + subsidy`. Subsidy only for job blocks:
+  `subsidy = min(pool_balance x emission_ppm / 1e6, job.cap_remaining)`,
+  `job.cap_remaining` starts at `alpha x P` (alpha < 1, default 0.8). A self-dealer
+  who posts a job and mines it gets back at most `alpha x P` and loses
+  `(1 - alpha) x P`. Default emission_ppm per block: 7 (about 1% a day at 60 s).
+- A job is mined until its cap or its `max_blocks` is used up or it expires.
 
-## 7. Open questions for the owner
-- Dev buy size (sets the starting mining reserve).
-- Defaults for `emission_bps` and `alpha_bps`.
+## 4. Native modules
+
+### 4.1 Jobs (AI job market)
+`PostJob` body: `m u32, n u32, k u32, config [52], hash_a [32], hash_b [32],
+data_uri, worker_pay W u64, protocol_fee P u64, deadline_height u64,
+max_blocks u32, evaluators (count u8, pubkey*), threshold u8`.
+- W is escrowed in the job; P goes to the mining pool at post time
+  (non-refundable). `job_id = blake3(poster || poster_nonce)`.
+- Lifecycle: Open -> Delivered (SubmitResult) -> Completed (CompleteJob with
+  evaluator sigs over `b"pearl-sol:result:v1" || job_id || deliverer || result_hash`;
+  pays W) or Expired (deadline passes; W back to poster).
+- `result_hash = blake3_keyed(C as i32 LE row-major, key = job_key)` (pearl-job).
+- M1 evaluator = the attester service (Freivalds check off chain). M2: data
+  availability for A, B, C so any node or the light client can check.
+
+### 4.2 Agents
+`RegisterAgent`: profile `{name, uri, registered_height}` keyed by account.
+
+### 4.3 Bridge (chain side)
+- `BridgeUnlock`: M-of-N attester signatures over
+  `b"pearl-sol:deposit:v1" || solana_nonce || recipient || amount_spl` (or the
+  `job_order` variant, see 5). Replay set keyed by `solana_nonce`. Pays
+  `amount_spl x 1000` from the escrow.
+- `BridgeLock`: moves `amount` into the escrow and appends
+  `{nonce, solana_recipient, amount_spl}` to the withdrawal log (`withdraw_root`).
+- Inbound (Solana -> chain) stays attested in M1 and M2 (our chain verifying
+  Solana state is out of scope). Outbound becomes proof-based in M2 (section 6).
+
+## 5. Solana side
+
+Existing: `reserve` (launch, buybacks, fund_mining) and `bridge` (deposit,
+release with M-of-N ed25519 signatures). Changes and additions:
+
+### 5.1 `storefront` program (M1)
+- `buy_job(order)`: buyer pays SOL (localnet and mainnet) or USDC (mainnet, via
+  Jupiter CPI to SOL first). The program buys the token on the curve or PumpSwap
+  (reuse reserve's buy code), splits it into W and P, and deposits it into the
+  bridge with an `Order` account holding the job spec (dims, config, hash_a,
+  hash_b, data_uri, deadline, evaluators) and the buyer.
+- The relayer turns the deposit into one `BridgeUnlock` with `job_order`, which
+  unlocks and posts the job in one tx on behalf of the buyer's chain address.
+- `finalize_order(order, result_hash, result_uri)`: records the result on Solana.
+  M1: M-of-N attester signatures. M2: a proof against a light-client header.
+  The `Order` account is readable by any Solana program (CPI-composable result).
+- Refund path: if the job expires, W comes back over the bridge to the buyer.
+- Slippage bound and per-order caps are admin-editable.
+
+### 5.2 x402 endpoint (M1)
+`services/storefront-x402` (port 10662): an HTTP service that prices a job,
+accepts x402 payment on Solana, calls `buy_job`, and serves the result once
+finalized.
+
+### 5.3 Light client program (M2)
+- `submit_header(header)` + `verify_work(header, proof buffer)`: plain Pearl verify
+  split over 2 transactions (about 1.3-1.9M CU total), checks `prev_hash`,
+  `target_bits` against our WTEMA rule, and stores the header with cumulative work.
+  It keeps the heaviest tip and treats headers K deep as final.
+- `bridge.release` gains a proof mode: a Merkle proof of a withdrawal against
+  `withdraw_root` of a final header. The M-of-N signer path stays as a fallback,
+  admin-switchable.
+- `storefront.finalize_order` likewise proves `Completed` against `state_root`.
+- Anyone can relay headers (permissionless crank, reimbursed per header from a fee
+  pool; cost roughly a few thousandths of a SOL per header).
+
+## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
+
+| Crate | Uses (commonware-*) | Job |
+|---|---|---|
+| agent-types | codec, cryptography | Header, Block, Tx, encodings above |
+| pearl-job (exists) | | Proofs; add the `pow_digest` seed variant |
+| state | storage (qmdb current, keyless) | Accounts, jobs, agents, escrow, withdrawal log; batch per branch for shallow reorgs |
+| executor | | Deterministic all-or-nothing block application (Constantinople pattern) |
+| consensus-pow | runtime | Block tree, cumulative work, WTEMA, finality depth, reorgs |
+| sync | resolver, archive (prunable) | Headers-first backfill keyed by digest; PoW check before download |
+| net | stream | Open-membership p2p (bouncer admits any key), address gossip, connection caps; implements the p2p traits so broadcast/resolver work |
+| mempool | | Fee-priority pool, nonce ordering |
+| rpc | | HTTP JSON + websocket: getBlockTemplate, submitBlock, sendTx, getAccount, getJob, getBlock, subscribe |
+| bin/agent-node | all | The node |
+
+Miners talk to the node over RPC (getBlockTemplate / submitBlock) and do not need
+to be p2p peers. M1 may use Commonware `discovery` with a static peer list for the
+local multi-node devnet; `net` (open membership) is required before a public net.
+
+Ports (localnet): node RPC 10630 (+ws 10631), local devnet nodes p2p 10640-10649
+and RPC 10630-10639, relayer 10660, attester 10661, storefront-x402 10662.
+
+## 7. Milestones
+
+**M1: our chain runs, Solana storefront works (localnet)**
+1. Node: types, state, executor, consensus-pow, sync, mempool, rpc; 3-node local
+   devnet; genesis with the escrow allocation; reorg tests in the deterministic
+   runtime.
+2. Miner as block producer (CPU, low difficulty) on job and fallback blocks.
+3. Bridge: relayer rewired to the node RPC (attested both ways, K-deep).
+4. Solana: `storefront` program + x402 service; buy a job from Solana, mined on our
+   chain, result finalized back on Solana.
+5. Wallet extension (Chrome, MV3) for both chains: balances, send, bridge, agents,
+   jobs, rewards, and a dApp provider.
+6. `scripts/demo.sh`: launch, buyback, fund the pool, storefront order, mining,
+   delivery, finalize on Solana, bridge out; invariant at every step.
+
+**M2:** Solana light client + proof-based release and finalize; open-membership
+`net`; data availability for job matrices and results; mining pools (shares).
+
+**M3:** public testnet, audits, mainnet.
+
+## 8. Open questions for the owner
+- Dev buy size (sets the starting reserve).
+- Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
 - Name and ticker.
