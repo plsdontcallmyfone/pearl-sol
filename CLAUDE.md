@@ -55,3 +55,4 @@ explicitly; never touch `solana config`.
 | Research subagent (Commonware) | 2026-10-16 | research/NOTES-commonware.md only (DONE, uncommitted) |
 | Claude subagent (storefront) | 2026-10-16 | token/programs/storefront, token/tests/storefront-litesvm, services/storefront-x402, keys/localnet/storefront-keypair.json, storefront entry in token/Anchor.toml, minimal bridge changes for orders (IN PROGRESS) |
 | Claude subagent (miner v2) | 2026-10-16 | crates/pearl-job (pow module), services/miner (block producer), services/attester (chain RPC) (IN PROGRESS) |
+| Claude subagent (chain node) | 2026-10-16 | chain/ (Cargo workspace: agent-types, state, executor, consensus-pow, sync, net, mempool, rpc, bin/agent-node), docs/RPC.md, scripts/devnet.sh, .devnet/ (IN PROGRESS) |
