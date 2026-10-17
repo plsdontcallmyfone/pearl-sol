@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Two independent local SVM clusters:
-#   token  = Solana stand-in (pump.fun, mining reserve, bridge lock side)
-#   agent  = our agent chain (jobs, mining, bridge mint side)
-# Usage: scripts/localnet.sh up|down|status [token|agent]   (default: both)
+# Local Solana stand-in for the token chain (pump.fun, reserve, bridge, storefront).
+#   token  = the one to use (default)
+#   agent  = SUPERSEDED SVM agent chain (SPEC v1), kept only for reference; the real
+#            agent chain is our own node, started with scripts/devnet.sh
+# Usage: scripts/localnet.sh up|down|status [token|agent]   (default: token)
 # Kills by the PID this script recorded, never by pattern.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,7 +42,7 @@ up() {
   fi
   # our programs at genesis, if built (upgrade authority = localnet payer)
   local payer; payer=$(solana-keygen pubkey "$ROOT/keys/localnet/payer-keypair.json")
-  local progs; [[ $c == token ]] && progs="reserve bridge" || progs="escrow agents jobs mining"
+  local progs; [[ $c == token ]] && progs="reserve bridge storefront" || progs="escrow agents jobs mining"
   for p in $progs; do
     local so="$ROOT/$c/target/deploy/$p.so"
     [[ -f $so ]] || { echo "note: $so not built, skipping" >&2; continue; }
@@ -74,7 +75,7 @@ down() {
 status() { ports "$1"; printf '%s :%s ' "$1" "$RPC"; solana -u "http://127.0.0.1:$RPC" cluster-version 2>/dev/null || echo down; }
 
 cmd=${1:-status}; shift || true
-chains=${1:-"token agent"}; shift || true
+chains=${1:-token}; shift || true
 for c in $chains; do
   case $cmd in
     up) up "$c" "$@" ;;

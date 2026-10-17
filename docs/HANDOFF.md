@@ -193,13 +193,18 @@ once on this Mac), each owning its paths:
    SPEC 5.1; chain-side order rules sent to the node agent. Not done: USDC buys,
    relayer order support, an automatic finalize submitter, a real-validator run.
    Note: sigverify.rs now has 3 copies (bridge, escrow (superseded), storefront).
-4. relayer rewire (started 2026-10-16, services/relayer only): BridgeUnlock incl.
-   storefront orders, K-deep releases, order finalize, invariant via getEscrow.
+4. relayer: DONE (adedade): 24 tests (vectors + LiteSVM with real bridge/storefront
+   .so + in-process fake node with reorgs). Plain and order BridgeUnlock, releases
+   only when final and >= K deep, finalize/expire orders if it holds attester keys
+   (else listed in needsAttester), invariant via getEscrow. Env: NODE_RPC,
+   AGENT_KEY, STATE_FILE (.state/relayer.json). Not run against the real node yet
+   (its RPC was still a stub). One relayer per AGENT_KEY (nonce contention).
 5. wallet extension (started 2026-10-16, extension/ only): MV3 + React, one key for
    both chains, tx encoding parity with chain/agent-types vectors, bridge, agents,
    jobs (post job only if pearl-job parity is exact), storefront buy, rewards,
    Wallet Standard (Solana) + window.pearl (our chain). Headless Chromium only.
-Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet. If a
+scripts/localnet.sh now defaults to the token chain only (+ storefront); the
+agent chain is scripts/devnet.sh. Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet. If a
 session dies, check git log per path.
 
 ## Gotchas
