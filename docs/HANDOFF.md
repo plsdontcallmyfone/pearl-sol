@@ -169,8 +169,14 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    withdraw_root) and storefront.finalize_order if feasible, services/header-relay.
 2. open net: chain/net on commonware-stream (any key admitted under limits, address
    gossip, seeds, caps, ban scores), node `--net open --seeds`, devnet.sh open mode.
-3. pools: services/pool (:10663, shares at a lower target, PPLNS payouts after
-   maturity, restart safe) + miner `--pool` mode.
+3. pools: DONE (810ad1b, 5e91163): services/pool `pearl-pool` (:10663; routes in
+   src/client.rs), PPLNS by share work, fee bps, credits mature after K+1, orphans
+   dropped, payouts signed + persisted before send (no double pay on crash);
+   miner `--pool URL`. 12 new tests. Live: 304 blocks, 0 orphaned, 84 payouts
+   confirmed, on-chain balances equal the pool ledger exactly; restart mid-run OK.
+   Not done: push notifications (about 18% stale shares on the fast devnet),
+   vardiff, signed miner requests, live job-block run, payout history pruning.
+   Devnet fee helper: services/pool/examples/devnet_fees.rs.
 QUEUED after net lands (same chain/ code): 4. data availability (blob store in the
 node: putBlob/getBlob, p2p gossip, `blob:<blake3>` data_uri, retained until the job
 closes) + M1 leftovers: chain minimum protocol fee (P = 0 jobs can never be mined),
