@@ -1,0 +1,29 @@
+[package]
+name = "lightclient-litesvm-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "In-process LiteSVM tests for token/programs/lightclient + proof-mode bridge/storefront, with headers mined by crates/pearl-job and a harvested devnet fixture"
+
+# Standalone: not a member of the token/ Anchor workspace.
+[workspace]
+
+[dependencies]
+litesvm = "0.6.1"
+solana-sdk = "2.2"
+anchor-lang = "0.31.1"
+lightclient = { path = "../../programs/lightclient", features = ["no-entrypoint"] }
+bridge = { path = "../../programs/bridge", features = ["no-entrypoint"] }
+storefront = { path = "../../programs/storefront", features = ["no-entrypoint"] }
+pearl-verify-sbf = { path = "../../../crates/pearl-verify-sbf" }
+pearl-job = { path = "../../../crates/pearl-job" }
+ed25519-dalek = "2.2"
+rand = "0.9"
+serde_json = "1.0"
+hex = "0.4"
+base64 = "0.22"
+sha2 = "0.10"
+blake3 = "1.8"
+
+[profile.test]
+opt-level = 3

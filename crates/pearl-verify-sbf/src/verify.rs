@@ -140,7 +140,7 @@ pub fn opening_root(p: &[u8], o: &Opening, key: &[u8; 32]) -> Result<[u8; 32], E
         cur.push((idx, blake3::chunk_output(&kw, KEYED_HASH, o.leaf(p, i), idx as u64).chaining_value()));
     }
     let mut sib = 0usize;
-    let mut next_sib = |sib: &mut usize| -> Result<Cv, Error> {
+    let next_sib = |sib: &mut usize| -> Result<Cv, Error> {
         if *sib >= o.sib_count {
             return Err(Error::Opening);
         }
@@ -320,15 +320,27 @@ fn noised_rows(p: &[u8], o: &Opening, pat: &Pattern, t: u32, k: u32, r: usize, d
     Ok(out)
 }
 
-/// Step 3: seeds, noise, jackpot and the difficulty check. Returns the jackpot hash.
-pub fn check_jackpot(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+/// Step 3a: one side's noised strips, `rows x dlen` i8 (A: h rows, B^T: w rows).
+pub fn noised_side(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8; 32], side: Side) -> Result<Vec<i8>, Error> {
     let c = &job.config;
     let (k, r, dlen) = (c.k, c.rank as usize, c.dlen() as usize);
     let (b_seed, a_seed) = pow_seeds(job, pow_digest);
-    let a = noised_rows(p, &v.a, &c.rows, v.t_rows, k, r, dlen, &a_seed, &LABEL_A)?;
-    let bt = noised_rows(p, &v.bt, &c.cols, v.t_cols, k, r, dlen, &b_seed, &LABEL_B)?;
+    match side {
+        Side::A => noised_rows(p, &v.a, &c.rows, v.t_rows, k, r, dlen, &a_seed, &LABEL_A),
+        Side::Bt => noised_rows(p, &v.bt, &c.cols, v.t_cols, k, r, dlen, &b_seed, &LABEL_B),
+    }
+}
+
+/// Step 3b: tile jackpot over noised strips, jackpot hash and the difficulty check.
+pub fn jackpot_noised(a: &[i8], bt: &[i8], job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+    let c = &job.config;
+    let (r, dlen) = (c.rank as usize, c.dlen() as usize);
+    let (_, a_seed) = pow_seeds(job, pow_digest);
     let (h, w) = (c.h() as usize, c.w() as usize);
-    let mut acc = vec![0i32; h * w];
+    if a.len() < h * dlen || bt.len() < w * dlen {
+        return Err(Error::Dims);
+    }
+    let mut acc = [0i32; 256];
     let mut msg = [0u32; JACKPOT_SIZE];
     let mut ll = r;
     while ll <= dlen {
@@ -343,7 +355,7 @@ pub fn check_jackpot(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8;
                 acc[u * w + vv] = acc[u * w + vv].wrapping_add(s);
             }
         }
-        let x = acc.iter().fold(0u32, |a, &x| a ^ x as u32);
+        let x = acc[..h * w].iter().fold(0u32, |a, &x| a ^ x as u32);
         let tid = (ll / r - 1) % JACKPOT_SIZE;
         msg[tid] = msg[tid].rotate_left(13) ^ x;
         ll += r;
@@ -358,6 +370,13 @@ pub fn check_jackpot(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8;
         return Err(Error::Target);
     }
     Ok(jh)
+}
+
+/// Step 3 in one call: seeds, noise, jackpot and the difficulty check.
+pub fn check_jackpot(p: &[u8], v: &ProofView, job: &JobParams, pow_digest: &[u8; 32], target_bits: u32) -> Result<[u8; 32], Error> {
+    let a = noised_side(p, v, job, pow_digest, Side::A)?;
+    let bt = noised_side(p, v, job, pow_digest, Side::Bt)?;
+    jackpot_noised(&a, &bt, job, pow_digest, target_bits)
 }
 
 /// All steps in one call (native use and tests).

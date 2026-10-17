@@ -1,0 +1,22 @@
+[package]
+name = "lightclient"
+version = "0.1.0"
+description = "pearl-sol Solana light client for the agent chain (SPEC v2 5.3)"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "lightclient"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.31.1"
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+pearl-verify-sbf = { path = "../../../crates/pearl-verify-sbf" }

@@ -21,51 +21,50 @@ pub const IV: [u32; 8] = [
 
 pub type Cv = [u32; 8];
 
-#[inline(always)]
-fn g(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, x: u32, y: u32) {
-    s[a] = s[a].wrapping_add(s[b]).wrapping_add(x);
-    s[d] = (s[d] ^ s[a]).rotate_right(16);
-    s[c] = s[c].wrapping_add(s[d]);
-    s[b] = (s[b] ^ s[c]).rotate_right(12);
-    s[a] = s[a].wrapping_add(s[b]).wrapping_add(y);
-    s[d] = (s[d] ^ s[a]).rotate_right(8);
-    s[c] = s[c].wrapping_add(s[d]);
-    s[b] = (s[b] ^ s[c]).rotate_right(7);
-}
-
-macro_rules! round {
-    ($s:ident, $m:ident, $i0:literal, $i1:literal, $i2:literal, $i3:literal, $i4:literal, $i5:literal, $i6:literal, $i7:literal,
-     $i8:literal, $i9:literal, $i10:literal, $i11:literal, $i12:literal, $i13:literal, $i14:literal, $i15:literal) => {
-        g(&mut $s, 0, 4, 8, 12, $m[$i0], $m[$i1]);
-        g(&mut $s, 1, 5, 9, 13, $m[$i2], $m[$i3]);
-        g(&mut $s, 2, 6, 10, 14, $m[$i4], $m[$i5]);
-        g(&mut $s, 3, 7, 11, 15, $m[$i6], $m[$i7]);
-        g(&mut $s, 0, 5, 10, 15, $m[$i8], $m[$i9]);
-        g(&mut $s, 1, 6, 11, 12, $m[$i10], $m[$i11]);
-        g(&mut $s, 2, 7, 8, 13, $m[$i12], $m[$i13]);
-        g(&mut $s, 3, 4, 9, 14, $m[$i14], $m[$i15]);
+macro_rules! g {
+    ($a:ident, $b:ident, $c:ident, $d:ident, $x:expr, $y:expr) => {
+        $a = $a.wrapping_add($b).wrapping_add($x);
+        $d = ($d ^ $a).rotate_right(16);
+        $c = $c.wrapping_add($d);
+        $b = ($b ^ $c).rotate_right(12);
+        $a = $a.wrapping_add($b).wrapping_add($y);
+        $d = ($d ^ $a).rotate_right(8);
+        $c = $c.wrapping_add($d);
+        $b = ($b ^ $c).rotate_right(7);
     };
 }
 
-/// The BLAKE3 compression function: full 16-word output.
+/// The BLAKE3 compression function: full 16-word output. State in locals (one
+/// round per macro call, message schedule from the reference MSG_PERMUTATION).
 #[inline(never)]
 pub fn compress(cv: &Cv, m: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> [u32; 16] {
-    let mut s = [
-        cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], cv[6], cv[7], IV[0], IV[1], IV[2], IV[3],
-        counter as u32, (counter >> 32) as u32, block_len, flags,
-    ];
-    round!(s, m, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    round!(s, m, 2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8);
-    round!(s, m, 3, 4, 10, 12, 13, 2, 7, 14, 6, 5, 9, 0, 11, 15, 8, 1);
-    round!(s, m, 10, 7, 12, 9, 14, 3, 13, 15, 4, 0, 11, 2, 5, 8, 1, 6);
-    round!(s, m, 12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4);
-    round!(s, m, 9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7);
-    round!(s, m, 11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13);
-    for i in 0..8 {
-        s[i] ^= s[i + 8];
-        s[i + 8] ^= cv[i];
+    let (mut v0, mut v1, mut v2, mut v3, mut v4, mut v5, mut v6, mut v7) = (cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], cv[6], cv[7]);
+    let (mut v8, mut v9, mut v10, mut v11) = (IV[0], IV[1], IV[2], IV[3]);
+    let (mut v12, mut v13, mut v14, mut v15) = (counter as u32, (counter >> 32) as u32, block_len, flags);
+    macro_rules! round {
+        ($i0:literal, $i1:literal, $i2:literal, $i3:literal, $i4:literal, $i5:literal, $i6:literal, $i7:literal,
+         $i8:literal, $i9:literal, $i10:literal, $i11:literal, $i12:literal, $i13:literal, $i14:literal, $i15:literal) => {
+            g!(v0, v4, v8, v12, m[$i0], m[$i1]);
+            g!(v1, v5, v9, v13, m[$i2], m[$i3]);
+            g!(v2, v6, v10, v14, m[$i4], m[$i5]);
+            g!(v3, v7, v11, v15, m[$i6], m[$i7]);
+            g!(v0, v5, v10, v15, m[$i8], m[$i9]);
+            g!(v1, v6, v11, v12, m[$i10], m[$i11]);
+            g!(v2, v7, v8, v13, m[$i12], m[$i13]);
+            g!(v3, v4, v9, v14, m[$i14], m[$i15]);
+        };
     }
-    s
+    round!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    round!(2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8);
+    round!(3, 4, 10, 12, 13, 2, 7, 14, 6, 5, 9, 0, 11, 15, 8, 1);
+    round!(10, 7, 12, 9, 14, 3, 13, 15, 4, 0, 11, 2, 5, 8, 1, 6);
+    round!(12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4);
+    round!(9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7);
+    round!(11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13);
+    [
+        v0 ^ v8, v1 ^ v9, v2 ^ v10, v3 ^ v11, v4 ^ v12, v5 ^ v13, v6 ^ v14, v7 ^ v15,
+        v8 ^ cv[0], v9 ^ cv[1], v10 ^ cv[2], v11 ^ cv[3], v12 ^ cv[4], v13 ^ cv[5], v14 ^ cv[6], v15 ^ cv[7],
+    ]
 }
 
 #[inline(always)]

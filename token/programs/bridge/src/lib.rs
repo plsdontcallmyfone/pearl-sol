@@ -7,6 +7,12 @@
 //!   chain, once M-of-N configured signers have signed the SPEC section 6
 //!   withdraw message through the ed25519 precompile in the same transaction.
 //!   A `Processed` PDA per (source chain, nonce) blocks replay.
+//! - `release_proof` (M2, SPEC 5.3) pays the same withdrawal from a Commonware MMR
+//!   inclusion proof of its withdrawal-log entry against `withdraw_root` of a FINAL
+//!   light-client header (token/programs/lightclient). Same `Processed` replay guard,
+//!   so a withdrawal is paid once whichever path is used.
+//! - `set_release_modes` (admin) enables the signer path, the proof path or both and
+//!   names the light-client program.
 //! - Signer set, threshold and admin are admin-editable.
 
 use anchor_lang::prelude::*;
@@ -26,6 +32,12 @@ pub const CHAIN_AGENT: u8 = 1;
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const DEPOSIT_SEED: &[u8] = b"deposit";
 pub const PROCESSED_SEED: &[u8] = b"processed";
+
+/// `Config.release_modes` bits.
+pub const MODE_SIGNERS: u8 = 1;
+pub const MODE_PROOF: u8 = 2;
+/// Withdrawal log entry: `nonce u64 || from [32] || solana_recipient [32] || amount_spl u64 || height u64`.
+pub const WITHDRAWAL_ENTRY_LEN: usize = 88;
 
 pub const DEPOSIT_DOMAIN: &[u8] = b"pearl-sol:deposit:v1";
 pub const WITHDRAW_DOMAIN: &[u8] = b"pearl-sol:withdraw:v1";
@@ -65,6 +77,20 @@ pub mod bridge {
         c.threshold = threshold;
         c.bump = ctx.bumps.config;
         c.signers = signers;
+        c.release_modes = MODE_SIGNERS;
+        c.light_client = Pubkey::default();
+        Ok(())
+    }
+
+    /// Which release paths are open (bit 1 signers, bit 2 proof; at least one) and the
+    /// light-client program whose final headers the proof path trusts.
+    pub fn set_release_modes(ctx: Context<AdminOnly>, modes: u8, light_client: Pubkey) -> Result<()> {
+        require!(modes != 0 && modes & !(MODE_SIGNERS | MODE_PROOF) == 0, BridgeError::BadModes);
+        require!(modes & MODE_PROOF == 0 || light_client != Pubkey::default(), BridgeError::BadModes);
+        let c = &mut ctx.accounts.config;
+        c.release_modes = modes;
+        c.light_client = light_client;
+        emit!(ReleaseModesChanged { modes, light_client });
         Ok(())
     }
 
@@ -128,9 +154,68 @@ pub mod bridge {
         require_keys_eq!(ctx.accounts.recipient_token.owner, recipient, BridgeError::WrongRecipient);
 
         let config = &ctx.accounts.config;
+        require!(config.release_modes & MODE_SIGNERS != 0, BridgeError::ModeDisabled);
         let msg = bridge_message(WITHDRAW_DOMAIN, nonce, &recipient, amount);
         let n = sigverify::count_signers(&ctx.accounts.instructions.to_account_info(), &msg, &config.signers)?;
         require!(n >= config.threshold as usize, BridgeError::NotEnoughSignatures);
+
+        let bump = [config.bump];
+        let seeds: &[&[u8]] = &[CONFIG_SEED, &bump];
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.recipient_token.to_account_info(),
+                    authority: ctx.accounts.config.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+            ctx.accounts.mint.decimals,
+        )?;
+
+        let slot = Clock::get()?.slot;
+        let p = &mut ctx.accounts.processed;
+        p.source_chain = CHAIN_AGENT;
+        p.nonce = nonce;
+        p.recipient = recipient;
+        p.amount = amount;
+        p.slot = slot;
+        p.bump = ctx.bumps.processed;
+
+        emit!(ReleaseEvent { nonce, recipient, amount, slot });
+        Ok(())
+    }
+
+    /// Proof mode: pays withdrawal `nonce` given its 88-byte log `entry`, its
+    /// `location` in the withdrawal log and a codec-encoded Commonware MMR proof
+    /// (node RPC `getWithdrawalProof`) against `withdraw_root` of `lc_header`, a
+    /// light-client header marked final. Anyone may submit; funds go to the entry's
+    /// `solana_recipient` only.
+    pub fn release_proof(ctx: Context<ReleaseProof>, nonce: u64, entry: Vec<u8>, location: u64, proof: Vec<u8>) -> Result<()> {
+        let config = &ctx.accounts.config;
+        require!(config.release_modes & MODE_PROOF != 0, BridgeError::ModeDisabled);
+        require_keys_eq!(*ctx.accounts.lc_header.owner, config.light_client, BridgeError::BadHeader);
+        let (_, header) = {
+            let d = ctx.accounts.lc_header.try_borrow_data()?;
+            lightclient::read_final_header(&d).ok_or(error!(BridgeError::BadHeader))?
+        };
+        require!(entry.len() == WITHDRAWAL_ENTRY_LEN, BridgeError::BadProof);
+        let e_nonce = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let recipient = Pubkey::new_from_array(entry[40..72].try_into().unwrap());
+        let amount = u64::from_le_bytes(entry[72..80].try_into().unwrap());
+        require!(e_nonce == nonce, BridgeError::BadProof);
+        require!(amount > 0, BridgeError::ZeroAmount);
+        require_keys_eq!(ctx.accounts.recipient_token.owner, recipient, BridgeError::WrongRecipient);
+        let root: [u8; 32] = pearl_verify_sbf::header::Header(&header).withdraw_root();
+        let mut element = [0u8; 1 + 10 + WITHDRAWAL_ENTRY_LEN];
+        let n = pearl_verify_sbf::mmr::append_element(&entry, &mut element);
+        pearl_verify_sbf::mmr::verify_inclusion(lightclient::sha256, &proof, &element[..n], location, &root).map_err(|e| {
+            msg!("withdrawal proof: {:?}", e);
+            error!(BridgeError::BadProof)
+        })?;
 
         let bump = [config.bump];
         let seeds: &[&[u8]] = &[CONFIG_SEED, &bump];
@@ -244,6 +329,34 @@ pub struct Release<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+#[instruction(nonce: u64)]
+pub struct ReleaseProof<'info> {
+    /// Anyone; pays for the Processed PDA.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = mint, has_one = vault, has_one = token_program)]
+    pub config: Account<'info, Config>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::token_program = token_program)]
+    pub recipient_token: InterfaceAccount<'info, TokenAccount>,
+    /// Same replay guard as `release`.
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + Processed::INIT_SPACE,
+        seeds = [PROCESSED_SEED, &[CHAIN_AGENT], &nonce.to_le_bytes()],
+        bump,
+    )]
+    pub processed: Account<'info, Processed>,
+    /// CHECK: a light-client HeaderRecord; owner and final flag checked in the handler.
+    pub lc_header: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Config {
@@ -257,6 +370,11 @@ pub struct Config {
     pub bump: u8,
     #[max_len(MAX_SIGNERS)]
     pub signers: Vec<Pubkey>,
+    /// Enabled release paths: MODE_SIGNERS | MODE_PROOF (appended in M2; the offsets
+    /// above are unchanged for raw readers).
+    pub release_modes: u8,
+    /// Light-client program whose final headers `release_proof` accepts.
+    pub light_client: Pubkey,
 }
 
 #[account]
@@ -301,6 +419,12 @@ pub struct ReleaseEvent {
 }
 
 #[event]
+pub struct ReleaseModesChanged {
+    pub modes: u8,
+    pub light_client: Pubkey,
+}
+
+#[event]
 pub struct SignersChanged {
     pub signers: Vec<Pubkey>,
     pub threshold: u8,
@@ -322,4 +446,12 @@ pub enum BridgeError {
     WrongRecipient,
     #[msg("not enough valid signer signatures over this message")]
     NotEnoughSignatures,
+    #[msg("release modes must be a non-empty subset of signers|proof (proof needs a light client)")]
+    BadModes,
+    #[msg("this release path is disabled")]
+    ModeDisabled,
+    #[msg("not a final light-client header")]
+    BadHeader,
+    #[msg("withdrawal proof does not verify")]
+    BadProof,
 }

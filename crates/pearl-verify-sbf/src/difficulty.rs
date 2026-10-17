@@ -1,7 +1,7 @@
 //! Compact targets, block work and the WTEMA retarget, ported exactly from
 //! chain/consensus-pow/src/difficulty.rs and crates/pearl-job/src/job.rs.
 
-use primitive_types::{U256, U512};
+use primitive_types::U256;
 
 /// Bitcoin compact `nbits` to a 256-bit target (`pearl_job::job::nbits_to_target`).
 pub fn nbits_to_target(nbits: u32) -> U256 {
@@ -76,20 +76,28 @@ pub fn next_bits(r: &Retarget) -> u32 {
     let limit = nbits_to_target(r.pow_limit_bits);
     let t = r.parent_ts_ms as i128 - gp as i128;
     let d = t - r.target_block_time_ms as i128;
-    let hl = U512::from(r.half_life_ms.max(1));
-    let old5 = U512::from(old);
-    let mag = U512::from(d.unsigned_abs()) * old5;
-    let new5 = if d >= 0 {
-        old5 + mag / hl
+    // The chain computes old + d*old/hl in 512 bits; here the same value exactly:
+    // old*|d|/hl = q*|d| + (r*|d|)/hl with q = old/hl, r = old%hl (r*|d| < 2^128),
+    // and any 256-bit overflow lands on the same clamp as the 512-bit result.
+    let hl = U256::from(r.half_life_ms.max(1));
+    let ad = U256::from(d.unsigned_abs());
+    let (q, rem) = old.div_mod(hl);
+    let rd = rem * ad; // rem < 2^64, |d| < 2^128: fits
+    let mut new = if d >= 0 {
+        match q.checked_mul(ad).and_then(|x| x.checked_add(rd / hl)).and_then(|x| x.checked_add(old)) {
+            Some(v) if v <= limit => v,
+            _ => limit,
+        }
     } else {
-        let q = (mag + hl - 1) / hl;
-        if q >= old5 {
-            U512::zero()
-        } else {
-            old5 - q
+        let ceil = (rd + hl - 1) / hl;
+        match q.checked_mul(ad).and_then(|x| x.checked_add(ceil)) {
+            Some(qq) if qq < old => {
+                let v = old - qq;
+                if v > limit { limit } else { v }
+            }
+            _ => U256::zero(),
         }
     };
-    let mut new = if new5 > U512::from(limit) { limit } else { U256::try_from(new5).unwrap_or(limit) };
     if new.is_zero() {
         new = U256::one();
     }

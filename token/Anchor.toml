@@ -7,6 +7,7 @@ skip-lint = false
 
 [programs.localnet]
 bridge = "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8"
+lightclient = "BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5"
 reserve = "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p"
 storefront = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr"
 

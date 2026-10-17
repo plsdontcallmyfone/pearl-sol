@@ -77,3 +77,51 @@ pub fn count_signers(
     }
     Ok(seen.len())
 }
+
+/// True if an ed25519 precompile instruction of this transaction verified exactly
+/// (`pubkey`, `sig`, `msg`) with all three inside that instruction. Used by the
+/// proof-mode finalize: the signature must be the very one carried in the chain's
+/// CompleteJob tx, so an evaluator cannot sign a second, different result.
+pub fn has_exact_signature(ix_sysvar: &AccountInfo, pubkey: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> Result<bool> {
+    let num_ix = {
+        let data = ix_sysvar.try_borrow_data()?;
+        read_u16(&data, 0).ok_or(ProgramError::InvalidAccountData)? as usize
+    };
+    for i in 0..num_ix {
+        let ix = load_instruction_at_checked(i, ix_sysvar)?;
+        if ix.program_id != ed25519_program::ID {
+            continue;
+        }
+        let d = &ix.data;
+        let n = match d.first() {
+            Some(n) => *n as usize,
+            None => continue,
+        };
+        for s in 0..n {
+            let base = OFFSETS_START + s * OFFSETS_LEN;
+            let (Some(sig_off), Some(sig_ix), Some(pk_off), Some(pk_ix), Some(msg_off), Some(msg_len), Some(msg_ix)) = (
+                read_u16(d, base),
+                read_u16(d, base + 2),
+                read_u16(d, base + 4),
+                read_u16(d, base + 6),
+                read_u16(d, base + 8),
+                read_u16(d, base + 10),
+                read_u16(d, base + 12),
+            ) else {
+                break;
+            };
+            let here = |x: u16| x == u16::MAX || x as usize == i;
+            if !(here(sig_ix) && here(pk_ix) && here(msg_ix)) {
+                continue;
+            }
+            let (sig_off, pk_off, msg_off, msg_len) = (sig_off as usize, pk_off as usize, msg_off as usize, msg_len as usize);
+            if d.get(sig_off..sig_off + 64) == Some(&sig[..])
+                && d.get(pk_off..pk_off + 32) == Some(&pubkey[..])
+                && d.get(msg_off..msg_off + msg_len) == Some(msg)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}

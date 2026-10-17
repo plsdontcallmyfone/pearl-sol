@@ -75,6 +75,18 @@
 //! `buy_exact_quote_in_v3`. The rest of the path (split, deposit, Order) is
 //! shared with `buy_job`.
 //!
+//! ## Proof mode (M2, SPEC 5.3)
+//! - `finalize_order_proof`: the chain's CompleteJob tx for `order.job_id`, proved
+//!   against `tx_root` of a FINAL light-client header (token/programs/lightclient),
+//!   plus the ed25519 precompile over `result_message(job_id, deliverer, result_hash)`
+//!   with one (evaluator, signature) pair taken from that tx. A block executes
+//!   all-or-nothing and CompleteJob checks every carried signature against the job's
+//!   stored deliverer and result_hash, so an included CompleteJob proves the job is
+//!   Completed with exactly that result. No QMDB state proof is needed.
+//! - `expire_order_proof`: the chain's ExpireJob tx for `order.job_id`, same way.
+//! - `set_finalize_modes` (admin): signer path, proof path or both, and the
+//!   light-client program.
+//!
 //! Every limit, the fee split, slippage, caps and the attester set are
 //! admin-editable (`update_config`, `set_attesters`).
 //!
@@ -115,6 +127,10 @@ pub const ORDER_DEPOSIT_DOMAIN: &[u8] = b"pearl-sol:deposit-order:v1";
 pub const STATUS_PENDING: u8 = 1;
 pub const STATUS_FINALIZED: u8 = 2;
 pub const STATUS_EXPIRED: u8 = 3;
+
+/// `Config.finalize_modes` bits.
+pub const MODE_SIGNERS: u8 = 1;
+pub const MODE_PROOF: u8 = 2;
 
 pub const VENUE_CURVE: u8 = 0;
 pub const VENUE_PUMPSWAP: u8 = 1;
@@ -201,6 +217,8 @@ pub mod storefront {
         c.max_deadline_blocks = 100_000;
         c.attesters = attesters;
         c.threshold = threshold;
+        c.finalize_modes = MODE_SIGNERS;
+        c.light_client = Pubkey::default();
         c.apply(params)?;
         let have = ctx.accounts.trader.lamports();
         if have < RENT_MIN {
@@ -209,6 +227,18 @@ pub mod storefront {
                 &[ctx.accounts.admin.to_account_info(), ctx.accounts.trader.to_account_info(), ctx.accounts.system_program.to_account_info()],
             )?;
         }
+        Ok(())
+    }
+
+    /// Which finalize / expire paths are open (bit 1 signers, bit 2 proof) and the
+    /// light-client program whose final headers the proof path trusts.
+    pub fn set_finalize_modes(ctx: Context<AdminOnly>, modes: u8, light_client: Pubkey) -> Result<()> {
+        require!(modes != 0 && modes & !(MODE_SIGNERS | MODE_PROOF) == 0, StorefrontError::BadConfig);
+        require!(modes & MODE_PROOF == 0 || light_client != Pubkey::default(), StorefrontError::BadConfig);
+        let c = &mut ctx.accounts.config;
+        c.finalize_modes = modes;
+        c.light_client = light_client;
+        emit!(ConfigUpdated { config: c.key() });
         Ok(())
     }
 
@@ -456,6 +486,7 @@ pub mod storefront {
         require!(o.status == STATUS_PENDING, StorefrontError::NotPending);
         let msg = result_message(&o.job_id, &deliverer, &result_hash);
         let c = &ctx.accounts.config;
+        require!(c.finalize_modes & MODE_SIGNERS != 0, StorefrontError::ModeDisabled);
         let n = sigverify::count_signers(&ctx.accounts.instructions.to_account_info(), &msg, &c.attesters)?;
         require!(n >= c.threshold as usize, StorefrontError::NotEnoughSignatures);
 
@@ -480,6 +511,7 @@ pub mod storefront {
         require!(o.status == STATUS_PENDING, StorefrontError::NotPending);
         let msg = expired_message(&o.job_id);
         let c = &ctx.accounts.config;
+        require!(c.finalize_modes & MODE_SIGNERS != 0, StorefrontError::ModeDisabled);
         let n = sigverify::count_signers(&ctx.accounts.instructions.to_account_info(), &msg, &c.attesters)?;
         require!(n >= c.threshold as usize, StorefrontError::NotEnoughSignatures);
         let slot = Clock::get()?.slot;
@@ -489,6 +521,76 @@ pub mod storefront {
         emit!(OrderExpired { order: o.key(), nonce: o.deposit_nonce, job_id: o.job_id });
         Ok(())
     }
+
+    /// Proof mode finalize (see the module docs). `tx` is the CompleteJob tx bytes,
+    /// `path` its tx_root path (33-byte entries), `pair` which (evaluator, sig) pair of
+    /// the tx the ed25519 precompile instruction re-verifies. Caller: buyer, admin or
+    /// attester (result_uri is not proved).
+    pub fn finalize_order_proof(
+        ctx: Context<CloseOrderProof>,
+        deliverer: Pubkey,
+        result_hash: [u8; 32],
+        result_uri: String,
+        tx: Vec<u8>,
+        path: Vec<u8>,
+        pair: u8,
+    ) -> Result<()> {
+        require!(result_uri.len() <= MAX_URI, StorefrontError::UriTooLong);
+        ctx.accounts.check_caller()?;
+        let header = ctx.accounts.final_header()?;
+        let o = &ctx.accounts.order;
+        require!(o.status == STATUS_PENDING, StorefrontError::NotPending);
+        let view = proved_tx(&header, &tx, &path)?;
+        let (job_id, off, count) = pearl_verify_sbf::chaintx::complete_job(&view).map_err(|_| error!(StorefrontError::BadProof))?;
+        require!(job_id == o.job_id, StorefrontError::BadProof);
+        require!((pair as usize) < count, StorefrontError::BadProof);
+        let at = off + 96 * pair as usize;
+        let pk: [u8; 32] = tx[at..at + 32].try_into().unwrap();
+        let sig: [u8; 64] = tx[at + 32..at + 96].try_into().unwrap();
+        let ec = o.spec.evaluator_count as usize;
+        require!(o.spec.evaluators[..ec].iter().any(|e| e.to_bytes() == pk), StorefrontError::BadProof);
+        let msg = result_message(&o.job_id, &deliverer, &result_hash);
+        require!(
+            sigverify::has_exact_signature(&ctx.accounts.instructions.to_account_info(), &pk, &sig, &msg)?,
+            StorefrontError::NotEnoughSignatures
+        );
+        let slot = Clock::get()?.slot;
+        let o = &mut ctx.accounts.order;
+        o.status = STATUS_FINALIZED;
+        o.deliverer = deliverer;
+        o.result_hash = result_hash;
+        o.result_uri_len = result_uri.len() as u16;
+        o.result_uri = [0u8; MAX_URI];
+        o.result_uri[..result_uri.len()].copy_from_slice(result_uri.as_bytes());
+        o.closed_slot = slot;
+        emit!(OrderFinalized { order: o.key(), nonce: o.deposit_nonce, job_id: o.job_id, deliverer, result_hash });
+        Ok(())
+    }
+
+    /// Proof mode expire: the chain's ExpireJob tx for `order.job_id` in a final header.
+    pub fn expire_order_proof(ctx: Context<CloseOrderProof>, tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
+        ctx.accounts.check_caller()?;
+        let header = ctx.accounts.final_header()?;
+        let o = &ctx.accounts.order;
+        require!(o.status == STATUS_PENDING, StorefrontError::NotPending);
+        let view = proved_tx(&header, &tx, &path)?;
+        let job_id = pearl_verify_sbf::chaintx::expire_job(&view).map_err(|_| error!(StorefrontError::BadProof))?;
+        require!(job_id == o.job_id, StorefrontError::BadProof);
+        let slot = Clock::get()?.slot;
+        let o = &mut ctx.accounts.order;
+        o.status = STATUS_EXPIRED;
+        o.closed_slot = slot;
+        emit!(OrderExpired { order: o.key(), nonce: o.deposit_nonce, job_id: o.job_id });
+        Ok(())
+    }
+}
+
+/// `tx` is included under `tx_root` of the (final) header bytes `header`.
+fn proved_tx<'a>(header: &[u8; 256], tx: &'a [u8], path: &[u8]) -> Result<pearl_verify_sbf::chaintx::TxView<'a>> {
+    let h = pearl_verify_sbf::header::Header(header);
+    let th = pearl_verify_sbf::chaintx::tx_hash(tx);
+    pearl_verify_sbf::chaintx::verify_tx_path(&th, path, &h.tx_root()).map_err(|_| error!(StorefrontError::BadProof))?;
+    pearl_verify_sbf::chaintx::TxView::any_chain(tx).map_err(|_| error!(StorefrontError::BadProof))
 }
 
 fn check_bridge_nonce(bridge_config: &AccountInfo, bridge_program: &AccountInfo, nonce: u64) -> Result<()> {
@@ -687,6 +789,10 @@ pub struct Config {
     pub total_tokens: u64,
     pub bump: u8,
     pub trader_bump: u8,
+    /// Enabled finalize / expire paths: MODE_SIGNERS | MODE_PROOF (appended in M2).
+    pub finalize_modes: u8,
+    /// Light-client program whose final headers the proof paths accept.
+    pub light_client: Pubkey,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -1106,6 +1212,37 @@ pub struct CloseOrder<'info> {
     pub instructions: UncheckedAccount<'info>,
 }
 
+#[derive(Accounts)]
+pub struct CloseOrderProof<'info> {
+    /// Buyer, admin or an attester.
+    pub caller: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [ORDER_SEED, &order.deposit_nonce.to_le_bytes()], bump = order.bump)]
+    pub order: Box<Account<'info, Order>>,
+    /// CHECK: address-checked instructions sysvar.
+    #[account(address = ix_sysvar::ID)]
+    pub instructions: UncheckedAccount<'info>,
+    /// CHECK: a light-client HeaderRecord; owner and final flag checked in `final_header`.
+    pub lc_header: UncheckedAccount<'info>,
+}
+
+impl<'info> CloseOrderProof<'info> {
+    fn check_caller(&self) -> Result<()> {
+        let k = self.caller.key();
+        require!(k == self.order.buyer || k == self.config.admin || self.config.attesters.contains(&k), StorefrontError::Unauthorized);
+        Ok(())
+    }
+
+    fn final_header(&self) -> Result<[u8; 256]> {
+        require!(self.config.finalize_modes & MODE_PROOF != 0, StorefrontError::ModeDisabled);
+        require_keys_eq!(*self.lc_header.owner, self.config.light_client, StorefrontError::BadProof);
+        let d = self.lc_header.try_borrow_data()?;
+        let (_, h) = lightclient::read_final_header(&d).ok_or(error!(StorefrontError::BadProof))?;
+        Ok(h)
+    }
+}
+
 impl<'info> CloseOrder<'info> {
     fn check_caller(&self) -> Result<()> {
         let k = self.caller.key();
@@ -1191,4 +1328,8 @@ pub enum StorefrontError {
     NotEnoughSignatures,
     #[msg("overflow")]
     Overflow,
+    #[msg("this finalize path is disabled")]
+    ModeDisabled,
+    #[msg("chain proof does not verify")]
+    BadProof,
 }

@@ -6,9 +6,9 @@
 //! - A (m x k row-major) is the XOF stream of `derive_key(CTX_A, pow_digest)`, int7
 //!   mapped; chunk i of A is XOF bytes `[1024 i, 1024 i + 1024)` (clipped to m*k, then
 //!   zero padded), so A needs no scratch space.
-//! - B (k x n row-major) is the CTX_B stream. The commitment is over B^T, whose chunk j
-//!   gathers a column-strided slice of B, so B is generated into scratch space first
-//!   ([`gen_b`]) and then hashed column-major ([`hash_bt`]).
+//! - B (k x n row-major) is the CTX_B stream. The commitment is over B^T, so B is
+//!   generated transposed into scratch space first ([`gen_b`]) and then hashed in
+//!   contiguous chunks ([`hash_bt`]).
 
 use crate::blake3::{self, Cv, Output, Tree, KEYED_HASH};
 
@@ -32,15 +32,30 @@ pub fn xof(ctx: &[u8], pow_digest: &[u8; 32]) -> Output {
     blake3::derive_key_output(&ck, pow_digest)
 }
 
-/// Write XOF blocks `[start, start+count)` of B (int7) into `scratch` (length k*n).
-pub fn gen_b(out: &Output, scratch: &mut [u8], start: u64, count: u64) {
-    let total = (scratch.len() / 64) as u64;
+/// Write XOF blocks `[start, start+count)` of B (k x n row-major, int7) into
+/// `scratch` TRANSPOSED, i.e. as B^T (n x k row-major, length k*n), so the commitment
+/// over B^T can then be hashed from contiguous chunks.
+pub fn gen_b(out: &Output, scratch: &mut [u8], start: u64, count: u64, k: u32, n: u32) {
+    let (k, n) = (k as usize, n as usize);
+    let total = (k * n / 64) as u64;
     let end = (start + count).min(total);
     for blk in start..end {
         let b = out.root_block(blk);
-        let dst = &mut scratch[(blk * 64) as usize..(blk * 64 + 64) as usize];
-        for i in 0..64 {
-            dst[i] = int7(b[i]);
+        let gi = blk as usize * 64;
+        // B byte gi is row l = gi / n, column c = gi % n; it goes to B^T[c][l] = c*k + l.
+        let mut l = gi / n;
+        let mut c = gi % n;
+        let mut off = c * k + l;
+        for &x in b.iter() {
+            scratch[off] = int7(x);
+            c += 1;
+            if c == n {
+                c = 0;
+                l += 1;
+                off = l;
+            } else {
+                off += k;
+            }
         }
     }
 }
@@ -57,26 +72,24 @@ pub struct Progress {
     pub done: u64,
 }
 
-/// Hash chunks of B^T (`n` rows of `k`) from `b` (B row-major, k x n, int7 bytes).
+/// Hash chunks of B^T from `bt` (n x k row-major int7 bytes, as written by [`gen_b`]).
 /// Returns the root once the last chunk is in.
-pub fn hash_bt(key: &[u8; 32], b: &[u8], k: u32, n: u32, st: &mut Progress, count: u64) -> Option<[u8; 32]> {
+pub fn hash_bt(key: &[u8; 32], bt: &[u8], k: u32, n: u32, st: &mut Progress, count: u64) -> Option<[u8; 32]> {
     let kw = blake3::key_words(key);
-    let len = n as u64 * k as u64;
-    let total = chunks(len);
+    let len = n as usize * k as usize;
+    let total = chunks(len as u64);
     let end = (st.done + count).min(total);
     let mut root = None;
     while st.done < end {
         let j = st.done;
-        let o = blake3::chunk_output_with(&kw, KEYED_HASH, 1024, j, |blk, buf| {
-            for (t, slot) in buf.iter_mut().enumerate() {
-                let gi = j * 1024 + blk as u64 * 64 + t as u64;
-                if gi < len {
-                    let c = gi / k as u64;
-                    let l = gi % k as u64;
-                    *slot = b[(l * n as u64 + c) as usize];
-                }
-            }
-        });
+        let s = j as usize * 1024;
+        let o = if s + 1024 <= len {
+            blake3::chunk_output(&kw, KEYED_HASH, &bt[s..s + 1024], j)
+        } else {
+            let mut buf = [0u8; 1024];
+            buf[..len - s].copy_from_slice(&bt[s..len]);
+            blake3::chunk_output(&kw, KEYED_HASH, &buf, j)
+        };
         root = finish_or_push(&kw, st, o, j, total);
         st.done += 1;
     }

@@ -34,6 +34,7 @@ pub fn verify_tx_path(tx_hash: &[u8; 32], path: &[u8], root: &[u8; 32]) -> Resul
 
 pub const KIND_POST_JOB: u8 = 2;
 pub const KIND_COMPLETE_JOB: u8 = 4;
+pub const KIND_EXPIRE_JOB: u8 = 5;
 pub const KIND_BRIDGE_UNLOCK: u8 = 6;
 const BODY: usize = 54;
 
@@ -44,6 +45,13 @@ pub struct TxView<'a> {
 impl<'a> TxView<'a> {
     pub fn new(b: &'a [u8], chain_id: u32) -> Result<Self, Error> {
         if b.len() < BODY + 64 || b[0] != 1 || u32::from_le_bytes(b[1..5].try_into().unwrap()) != chain_id {
+            return Err(Error::Tx);
+        }
+        Ok(Self { b })
+    }
+    /// Any chain id (the caller already proved the tx is in one of our blocks).
+    pub fn any_chain(b: &'a [u8]) -> Result<Self, Error> {
+        if b.len() < BODY + 64 || b[0] != 1 {
             return Err(Error::Tx);
         }
         Ok(Self { b })
@@ -211,4 +219,13 @@ pub fn complete_job(tx: &TxView) -> Result<([u8; 32], usize, usize), Error> {
         return Err(Error::Tx);
     }
     Ok((job_id, BODY + 33, count))
+}
+
+/// ExpireJob: the job id.
+pub fn expire_job(tx: &TxView) -> Result<[u8; 32], Error> {
+    let body = tx.body();
+    if tx.kind() != KIND_EXPIRE_JOB || body.len() != 32 {
+        return Err(Error::Tx);
+    }
+    Ok(body.try_into().unwrap())
 }

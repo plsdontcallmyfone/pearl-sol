@@ -79,9 +79,6 @@ pub fn parse(b: &[u8]) -> Result<MmrProof<'_>, Error> {
     Ok(MmrProof { leaves, inactive, digests: &b[pos..] })
 }
 
-fn leaf_pos(loc: u64) -> u64 {
-    2 * loc - loc.count_ones() as u64
-}
 
 struct Cursor<'a, 'b> {
     p: &'a MmrProof<'b>,

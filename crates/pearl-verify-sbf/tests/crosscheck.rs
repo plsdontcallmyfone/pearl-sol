@@ -95,7 +95,9 @@ fn fallback_params(pd: &[u8; 32], fp: &FallbackParams) -> verify::JobParams {
     let (k, m, n) = (fp.config.common_dim, fp.m, fp.n);
     let mut scratch = vec![0u8; (k * n) as usize];
     let xb = fallback::xof(fallback::CTX_B, pd);
-    fallback::gen_b(&xb, &mut scratch, 0, 1 << 40);
+    for st in (0..(k * n / 64) as u64).step_by(100) {
+        fallback::gen_b(&xb, &mut scratch, st, 100, k, n);
+    }
     // resumable, in uneven ranges
     let mut st = fallback::Progress::default();
     let mut hash_b = None;
@@ -248,5 +250,49 @@ fn tx_root_paths() {
                 assert!(chaintx::verify_tx_path(&hs[(i + 1) % n], &paths[i], &level[0]).is_err());
             }
         }
+    }
+}
+
+/// The U256-only WTEMA equals the chain's U512 formula (reimplemented here with U512).
+#[test]
+fn wtema_matches_u512_reference() {
+    use primitive_types::{U256, U512};
+    use difficulty::*;
+    fn reference(r: &Retarget) -> u32 {
+        let Some(gp) = r.grandparent_ts_ms else { return r.parent_bits };
+        let old = nbits_to_target(r.parent_bits);
+        let limit = nbits_to_target(r.pow_limit_bits);
+        let d = (r.parent_ts_ms as i128 - gp as i128) - r.target_block_time_ms as i128;
+        let hl = U512::from(r.half_life_ms.max(1));
+        let old5 = U512::from(old);
+        let mag = U512::from(d.unsigned_abs()) * old5;
+        let new5 = if d >= 0 { old5 + mag / hl } else {
+            let q = (mag + hl - 1) / hl;
+            if q >= old5 { U512::zero() } else { old5 - q }
+        };
+        let mut new = if new5 > U512::from(limit) { limit } else { U256::try_from(new5).unwrap_or(limit) };
+        if new.is_zero() { new = U256::one(); }
+        if r.min_difficulty_bits != 0 {
+            let h = nbits_to_target(r.min_difficulty_bits);
+            if new < h { new = h; }
+        }
+        target_to_bits(new)
+    }
+    let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+    for i in 0..200_000u32 {
+        let bits = [0x207fffffu32, 0x1e040000, 0x1d00ffff, 0x1f00ffff, 0x03123456, 0x1e100000][(i % 6) as usize];
+        let gp: u64 = rng.random_range(0..1u64 << 50);
+        let dt: i64 = match i % 4 { 0 => rng.random_range(-100_000..100_000), 1 => rng.random_range(0..10_000_000), 2 => rng.random_range(-(1i64 << 40)..(1i64 << 40)), _ => rng.random_range(0..120_000) };
+        let pts = (gp as i64 + dt).max(0) as u64;
+        let r = Retarget {
+            parent_bits: bits,
+            parent_ts_ms: pts,
+            grandparent_ts_ms: if i % 50 == 0 { None } else { Some(gp) },
+            target_block_time_ms: [60_000u64, 10_000, 1_500, 1][(i % 4) as usize],
+            half_life_ms: [3_600_000u64, 600_000, 1, 7][(i / 4 % 4) as usize],
+            pow_limit_bits: [0x207fffffu32, 0x1e080000, 0x1f00ffff][(i % 3) as usize],
+            min_difficulty_bits: if i % 7 == 0 { 0x1d00ffff } else { 0 },
+        };
+        assert_eq!(next_bits(&r), reference(&r), "{r:?}");
     }
 }
