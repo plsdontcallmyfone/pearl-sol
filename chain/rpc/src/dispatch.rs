@@ -6,7 +6,7 @@ use commonware_runtime::Spawner;
 use consensus_pow::{Chain, JobChoice, PowVerifier};
 use serde_json::{json, Value};
 use state::config::{keys, Config};
-use state::schema::{self, Agent, Counters, Deposit, JobRecord, Withdrawal};
+use state::schema::{self, Agent, Counters, Deposit, JobRecord, Route, Withdrawal};
 
 use crate::core::Core;
 
@@ -148,6 +148,31 @@ fn tx_summary(t: &Tx) -> Value {
            "nonce": t.nonce, "fee": t.fee.to_string(), "tx": b64(&t.encode())})
 }
 
+/// A block's coinbase receipt (R1) with its tx_root path (the last leaf).
+fn coinbase_json(b: &Block) -> Value {
+    let Some(c) = &b.coinbase else { return Value::Null };
+    let index = b.txs.len();
+    json!({
+        "record": hex::encode(c.encode()), "receipt_hash": hex::encode(c.hash()),
+        "height": c.height, "miner": b58(&c.miner), "fees": c.fees.to_string(), "subsidy": c.subsidy.to_string(),
+        "reward": (c.fees as u128 + c.subsidy as u128).to_string(), "job_id": hex::encode(c.job_id),
+        "mature_height": c.mature_height, "leaf_index": index,
+        "path": hex::encode(block::leaf_path(&b.txs, Some(c), index)),
+    })
+}
+
+/// A payout lien (R2) as of `height` (the next block's height for "active").
+pub fn route_json(account: &[u8; 32], r: &Route, height: u64) -> Value {
+    json!({
+        "account": b58(account), "solana_recipient": b58(&r.solana_recipient), "route_bps": r.route_bps,
+        "until_height": r.until_height, "cap": r.cap.to_string(),
+        "release_key": if r.release_key == [0; 32] { Value::Null } else { json!(b58(&r.release_key)) },
+        "route_nonce": r.route_nonce, "set_height": r.set_height, "routed": r.routed.to_string(),
+        "pending": r.pending.to_string(), "withdrawn": r.withdrawn.to_string(), "cleared": r.cleared,
+        "active": r.is_active(height), "remaining_cap": (r.cap - r.routed).to_string(),
+    })
+}
+
 fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
     r.map_err(RpcError::server)
 }
@@ -155,6 +180,13 @@ fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
 impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     async fn tip_record(&self, key: &schema::Key) -> Result<Option<Vec<u8>>, RpcError> {
         srv(self.chain.read_tip(key).await)
+    }
+
+    async fn route(&self, a: &[u8; 32]) -> Result<Value, RpcError> {
+        Ok(match self.tip_record(&schema::route_key(a)).await? {
+            Some(b) => route_json(a, &srv(Route::decode(&b))?, self.chain.tip_height() + 1),
+            None => Value::Null,
+        })
     }
 
     async fn counters(&self) -> Result<Counters, RpcError> {
@@ -236,6 +268,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "fallback": {"m": f.m, "n": f.n, "config": hex::encode(f.config.to_bytes())},
                     "tx_count": t.txs.len(), "fees": t.summary.fees.to_string(), "subsidy": t.summary.subsidy.to_string(),
                     "min_fee": t.config.min_fee.to_string(),
+                    "coinbase": hex::encode(t.summary.coinbase.encode()), "mature_height": t.summary.coinbase.mature_height,
                 }))
             }
             "submitBlock" => {
@@ -246,10 +279,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         .map_err(|e| RpcError::params(e.to_string()))?;
                     let header = srv(Header::decode(&hb))?;
                     let proof = p_bytes(p, "proof")?;
-                    let Some(txs) = self.template_txs(&header, p_str(p, &["template_id"])) else {
+                    let Some((txs, coinbase)) = self.template_txs(&header, p_str(p, &["template_id"])) else {
                         return Ok(json!({"accepted": false, "reason": "no template with this parent and tx_root"}));
                     };
-                    Block { header, proof, txs }
+                    Block { header, proof, txs, coinbase: Some(coinbase) }
                 };
                 let r = self.add_block(block, now_ms, true).await;
                 let mut v = json!({"accepted": r.accepted, "block_hash": hex::encode(r.hash), "height": r.height, "tip": r.tip});
@@ -284,7 +317,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getAccount" => {
                 let a = p_key(p, &["account", "address"])?;
                 let acc = srv(self.account(&a).await)?;
-                Ok(json!({"account": b58(&a), "balance": acc.balance.to_string(), "nonce": acc.nonce}))
+                let route = self.route(&a).await?;
+                Ok(json!({"account": b58(&a), "balance": acc.balance.to_string(), "nonce": acc.nonce, "route": route}))
+            }
+            "getRoute" => {
+                let a = p_key(p, &["account", "address"])?;
+                self.route(&a).await
             }
             "getAgent" => {
                 let a = p_key(p, &["account", "address"])?;
@@ -330,7 +368,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getBlock" => {
                 let Some(b) = self.block_by(p).await? else { return Ok(Value::Null) };
                 let mut v = self.block_meta(&b);
-                v["txs"] = Value::Array(b.txs.iter().map(tx_summary).collect());
+                v["txs"] = Value::Array(
+                    b.txs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| {
+                            let mut s = tx_summary(t);
+                            if b.coinbase.is_some() {
+                                s["path"] = json!(hex::encode(block::leaf_path(&b.txs, b.coinbase.as_ref(), i)));
+                            }
+                            s
+                        })
+                        .collect(),
+                );
+                v["coinbase"] = coinbase_json(&b);
                 match srv(self.chain.block_rewards(&b.hash()).await)? {
                     Some(r) => {
                         v["fees"] = json!(r.fees.to_string());

@@ -43,5 +43,14 @@
     "escrow": "2LgtHQrtKdtiDtLn62Vw45QVhnGAwL6qT73eyB9vUuGX",
     "name": "reserved_addresses",
     "pool": "6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v"
+  },
+  {
+    "domain": "pearl-sol:route-clear:v1",
+    "message": "706561726c2d736f6c3a726f7574652d636c6561723a7631010053504d6b79ff5167d30fff5b24c088f8ca9cc543807e16ec80363d88aef63bf2c0700000000000000000",
+    "name": "route_clear",
+    "pubkey": "F3iEMWpCQJ5A2NpeGDZW65aWARS2ME4aXVGw8H1KCxCw",
+    "seed": "19aebdfc4b4ab75ff032b4f6151a890775d06f05afac9cbe36880b187ae9a023",
+    "sig": "ea2555a10094b04f890b1643dfb81b64d3ba2068634fcefb618e48e18ab0a3f0f048790b1267c04c88fc22afb53a863c8e602bfdcfd4372d20d4bcc88e723e00",
+    "signing": "raw ed25519 over message (no framing)"
   }
 ]

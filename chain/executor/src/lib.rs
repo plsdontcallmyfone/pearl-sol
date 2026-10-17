@@ -7,16 +7,25 @@
 //!
 //! Block order: (1) credit coinbase rewards maturing at this height, (2) check the job a
 //! job block mines (parent state), (3) txs, (4) job subsidy from the pool and this
-//! block's coinbase (fees + subsidy) recorded to mature at `height + K`.
+//! block's coinbase (fees + subsidy) recorded to mature at `height + K`, and the coinbase
+//! receipt (agent_types::coinbase, the last tx_root leaf) built from them.
+//!
+//! Payout liens (SetRoute, SPEC 4.4): matured coinbase, CompleteJob W and ExpireJob
+//! refunds credited to an account with an active lien are split: `route_bps` of the
+//! credit (floor, capped by the lien's remaining `cap`) goes to the lien, the rest to
+//! the account. The lien's taken amount moves into the bridge escrow in whole SPL units
+//! as withdrawal-log entries `{nonce, from = account, solana_recipient, amount_spl,
+//! height}` (exactly as a BridgeLock would), and the remainder below 1000 base units
+//! waits in the lien's `pending` for the next credit.
 
 use std::collections::BTreeMap;
 
-use agent_types::tx::{order_message, deposit_message, result_message, verify_plain};
+use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
 use agent_types::{
-    escrow_address, is_reserved, pool_address, Hash, PostJob, Pubkey, Tx, TxBody, TxKind, SPL_SCALE, TOTAL_SUPPLY,
+    escrow_address, is_reserved, pool_address, Coinbase, Hash, PostJob, Pubkey, Tx, TxBody, TxKind, SPL_SCALE, TOTAL_SUPPLY,
 };
 use state::config::{keys, Config};
-use state::schema::{self, Account, Agent, Counters, Deposit, Immature, JobRecord, JobStatus, Key, Withdrawal};
+use state::schema::{self, Account, Agent, Counters, Deposit, Immature, JobRecord, JobStatus, Key, Route, Withdrawal};
 use state::{StateError, StateRead, WriteSet};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -57,7 +66,12 @@ pub struct BlockEnv {
 pub struct BlockSummary {
     pub fees: u64,
     pub subsidy: u64,
+    /// Matured coinbase credited by this block (before any lien split).
     pub matured: u64,
+    /// The block's coinbase receipt (set by `finish`).
+    pub coinbase: Coinbase,
+    /// Income taken by payout liens in this block: `(account, amount)`.
+    pub routed: Vec<(Pubkey, u64)>,
     pub tx_count: usize,
     pub withdrawals: Vec<Withdrawal>,
     pub jobs_created: Vec<Hash>,
@@ -68,7 +82,9 @@ pub struct BlockSummary {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TxOutcome {
     pub job_id: Option<Hash>,
-    pub withdrawal: Option<Withdrawal>,
+    /// Withdrawal-log entries this tx appended (a BridgeLock, or lien splits).
+    pub withdrawals: Vec<Withdrawal>,
+    pub routed: Vec<(Pubkey, u64)>,
 }
 
 /// Read-through layers over a base state.
@@ -143,6 +159,28 @@ impl<'a, S: StateRead> Overlay<'a, S> {
 
     pub fn put_counters(&mut self, c: &Counters) {
         self.put(schema::counters_key(), Some(c.encode()));
+    }
+
+    pub async fn route(&self, a: &Pubkey) -> Result<Option<Route>, StateError> {
+        match self.get(&schema::route_key(a)).await? {
+            None => Ok(None),
+            Some(b) => Route::decode(&b).map(Some).map_err(|e| StateError::Corrupt(format!("route: {e}"))),
+        }
+    }
+
+    pub fn put_route(&mut self, a: &Pubkey, r: &Route) {
+        self.put(schema::route_key(a), Some(r.encode()));
+    }
+
+    /// Append a withdrawal-log entry for `amount` (a positive multiple of 1000) already
+    /// moved into the escrow: next nonce, state record, counters.
+    async fn append_withdrawal(&mut self, from: &Pubkey, solana_recipient: &Pubkey, amount: u64, height: u64) -> Result<Withdrawal, TxError> {
+        let mut c = self.counters().await?;
+        let w = Withdrawal { nonce: c.withdrawal_count, from: *from, solana_recipient: *solana_recipient, amount_spl: amount / SPL_SCALE, height };
+        c.withdrawal_count += 1;
+        self.put_counters(&c);
+        self.put(schema::withdrawal_key(w.nonce), Some(w.encode()));
+        Ok(w)
     }
 
     async fn credit(&mut self, a: &Pubkey, amt: u64) -> Result<(), TxError> {
@@ -290,24 +328,74 @@ pub struct BlockExecutor<'a, S: StateRead> {
 impl<'a, S: StateRead> BlockExecutor<'a, S> {
     /// Start a block on `base` (the parent's post-state).
     pub async fn begin(base: &'a S, env: BlockEnv) -> Result<Self, ExecError> {
-        let mut ov = Overlay::new(base);
+        let ov = Overlay::new(base);
         let cfg = ov.config().await?;
-        let mut summary = BlockSummary::default();
+        let mut ex = Self { ov, env, cfg, summary: BlockSummary::default() };
         let ik = schema::immature_key(env.height);
-        if let Some(b) = ov.get(&ik).await? {
+        if let Some(b) = ex.ov.get(&ik).await? {
             let imm = Immature::decode(&b).map_err(|e| StateError::Corrupt(format!("immature: {e}")))?;
+            let mut ws = Vec::new();
+            let mut routed = Vec::new();
             for (miner, amt, _) in &imm.entries {
-                ov.credit(miner, *amt).await.map_err(|e| ExecError::Block(e.to_string()))?;
-                summary.matured += amt;
+                ex.credit_income(miner, *amt, &mut ws, &mut routed).await.map_err(|e| ExecError::Block(e.to_string()))?;
+                ex.summary.matured += amt;
             }
-            ov.put(ik, None);
+            ex.summary.withdrawals.extend(ws);
+            ex.summary.routed.extend(routed);
+            ex.ov.put(ik, None);
         }
         if let Some(id) = env.job_id {
-            let job = ov.job(&id).await?.ok_or_else(|| ExecError::Block("job block names an unknown job".into()))?;
+            let job = ex.ov.job(&id).await?.ok_or_else(|| ExecError::Block("job block names an unknown job".into()))?;
             check_mineable(&job, env.height).map_err(ExecError::Block)?;
         }
-        ov.commit_tx();
-        Ok(Self { ov, env, cfg, summary })
+        ex.ov.commit_tx();
+        Ok(ex)
+    }
+
+    /// Credit income `amt` to `who`, splitting the share of an active payout lien off
+    /// into withdrawal entries (module doc). Plain credit when no lien is active.
+    async fn credit_income(&mut self, who: &Pubkey, amt: u64, ws: &mut Vec<Withdrawal>, routed: &mut Vec<(Pubkey, u64)>) -> Result<(), TxError> {
+        let h = self.env.height;
+        let Some(mut r) = self.ov.route(who).await? else { return self.ov.credit(who, amt).await };
+        if !r.is_active(h) {
+            // An ended lien sends out what it still holds (if the bridge was paused) and
+            // hands its dust back at the account's next income.
+            if r.pending > 0 {
+                self.flush_route(who, &mut r, ws).await?;
+                self.ov.put_route(who, &r);
+            }
+            return self.ov.credit(who, amt).await;
+        }
+        let share = ((amt as u128 * r.route_bps as u128) / 10_000) as u64;
+        let share = share.min(r.cap - r.routed);
+        r.routed += share;
+        r.pending += share;
+        if share > 0 {
+            routed.push((*who, share));
+        }
+        self.flush_route(who, &mut r, ws).await?;
+        self.ov.put_route(who, &r);
+        self.ov.credit(who, amt - share).await
+    }
+
+    /// Move the lien's pending amount out in whole SPL units (unless the bridge is
+    /// paused); once the lien has ended, the dust left goes back to the account.
+    async fn flush_route(&mut self, who: &Pubkey, r: &mut Route, ws: &mut Vec<Withdrawal>) -> Result<(), TxError> {
+        let h = self.env.height;
+        if !self.cfg.bridge_paused {
+            let out = r.pending / SPL_SCALE * SPL_SCALE;
+            if out > 0 {
+                self.ov.credit(&escrow_address(), out).await?;
+                r.pending -= out;
+                r.withdrawn += out;
+                ws.push(self.ov.append_withdrawal(who, &r.solana_recipient, out, h).await?);
+            }
+        }
+        if !r.is_active(h) && r.pending > 0 && r.pending < SPL_SCALE {
+            let dust = std::mem::take(&mut r.pending);
+            self.ov.credit(who, dust).await?;
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> &Config {
@@ -328,9 +416,8 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if let Some(id) = o.job_id {
                     self.summary.jobs_created.push(id);
                 }
-                if let Some(w) = o.withdrawal {
-                    self.summary.withdrawals.push(w);
-                }
+                self.summary.withdrawals.extend(o.withdrawals.iter().copied());
+                self.summary.routed.extend(o.routed.iter().copied());
                 if let TxBody::BridgeUnlock { solana_nonce, .. } = &tx.body {
                     self.summary.deposits.push(*solana_nonce);
                 }
@@ -423,7 +510,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 let pay = j.worker_pay;
                 let to = j.deliverer;
                 self.ov.put_job(&j);
-                self.ov.credit(&to, pay).await?;
+                self.credit_income(&to, pay, &mut out.withdrawals, &mut out.routed).await?;
             }
             TxBody::ExpireJob { job_id } => {
                 let Some(mut j) = self.ov.job(job_id).await? else { return bad("unknown job") };
@@ -438,7 +525,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 let refund = j.worker_pay;
                 let to = j.poster;
                 self.ov.put_job(&j);
-                self.ov.credit(&to, refund).await?;
+                self.credit_income(&to, refund, &mut out.withdrawals, &mut out.routed).await?;
             }
             TxBody::BridgeUnlock { solana_nonce, recipient, amount_spl, job_order, sigs } => {
                 if self.cfg.bridge_paused {
@@ -483,18 +570,8 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 }
                 self.ov.debit(&tx.from, *amount).await?;
                 self.ov.credit(&escrow_address(), *amount).await?;
-                let mut c = self.ov.counters().await?;
-                let w = Withdrawal {
-                    nonce: c.withdrawal_count,
-                    from: tx.from,
-                    solana_recipient: *solana_recipient,
-                    amount_spl: amount / SPL_SCALE,
-                    height: h,
-                };
-                c.withdrawal_count += 1;
-                self.ov.put_counters(&c);
-                self.ov.put(schema::withdrawal_key(w.nonce), Some(w.encode()));
-                out.withdrawal = Some(w);
+                let w = self.ov.append_withdrawal(&tx.from, solana_recipient, *amount, h).await?;
+                out.withdrawals.push(w);
             }
             TxBody::AdminConfig { key, value } => {
                 if tx.from != self.cfg.admin {
@@ -508,6 +585,85 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 c.validate().map_err(TxError::Invalid)?;
                 self.ov.put(schema::config_key(), Some(c.encode()));
                 self.cfg = c;
+            }
+            TxBody::SetRoute { solana_recipient, route_bps, until_height, cap, release_key } => {
+                if *route_bps == 0 || *route_bps > 10_000 {
+                    return bad("route_bps must be 1..=10000");
+                }
+                if *until_height <= h {
+                    return bad("until_height must be after the current height");
+                }
+                if *cap == 0 {
+                    return bad("cap must be positive");
+                }
+                if *solana_recipient == [0; 32] {
+                    return bad("solana_recipient must be set");
+                }
+                let r = match self.ov.route(&tx.from).await? {
+                    Some(old) if old.is_active(h) => {
+                        // One lien at a time; the account may only strengthen it.
+                        if old.solana_recipient != *solana_recipient || old.release_key != *release_key {
+                            return bad("an active route exists: only an extension with the same recipient and release key is allowed");
+                        }
+                        if *route_bps < old.route_bps || *until_height < old.until_height || *cap < old.cap {
+                            return bad("an active route can only be extended (route_bps, until_height and cap may not decrease)");
+                        }
+                        Route {
+                            route_bps: *route_bps,
+                            until_height: *until_height,
+                            cap: *cap,
+                            route_nonce: old.route_nonce + 1,
+                            set_height: h,
+                            ..old
+                        }
+                    }
+                    old => {
+                        let next = old.map(|o| o.route_nonce + 1).unwrap_or(0);
+                        if let Some(mut o) = old {
+                            // The ended lien's holdings go out to its recipient first.
+                            self.flush_route(&tx.from, &mut o, &mut out.withdrawals).await?;
+                            if o.pending >= SPL_SCALE {
+                                return bad("the previous route still holds funds while the bridge is paused");
+                            }
+                            if o.pending > 0 {
+                                self.ov.credit(&tx.from, o.pending).await?;
+                            }
+                        }
+                        Route {
+                            solana_recipient: *solana_recipient,
+                            route_bps: *route_bps,
+                            until_height: *until_height,
+                            cap: *cap,
+                            release_key: *release_key,
+                            route_nonce: next,
+                            set_height: h,
+                            routed: 0,
+                            pending: 0,
+                            withdrawn: 0,
+                            cleared: false,
+                        }
+                    }
+                };
+                self.ov.put_route(&tx.from, &r);
+            }
+            TxBody::ClearRoute { account, route_nonce, sig } => {
+                let Some(mut r) = self.ov.route(account).await? else { return bad("no route") };
+                if !r.is_active(h) {
+                    return bad("route is not active");
+                }
+                if r.route_nonce != *route_nonce {
+                    return bad("route_nonce does not match the active route");
+                }
+                if r.release_key == [0; 32] {
+                    return bad("this route has no release key");
+                }
+                let msg = route_clear_message(self.env.chain_id, account, *route_nonce);
+                if !verify_plain(&r.release_key, &msg, sig) {
+                    return bad("bad release signature");
+                }
+                r.cleared = true;
+                self.flush_route(account, &mut r, &mut out.withdrawals).await?;
+                self.ov.put_route(account, &r);
             }
         }
         Ok(out)
@@ -577,8 +733,17 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             self.summary.subsidy = s;
         }
         let reward = self.summary.fees + self.summary.subsidy;
+        let mature_height = h + self.cfg.finality_k as u64;
+        self.summary.coinbase = Coinbase {
+            height: h,
+            miner: self.env.miner,
+            fees: self.summary.fees,
+            subsidy: self.summary.subsidy,
+            job_id: self.env.job_id.unwrap_or([0; 32]),
+            mature_height,
+        };
         if reward > 0 {
-            let k = schema::immature_key(h + self.cfg.finality_k as u64);
+            let k = schema::immature_key(mature_height);
             let mut imm = match self.ov.get(&k).await? {
                 Some(b) => Immature::decode(&b).map_err(|e| StateError::Corrupt(e.to_string()))?,
                 None => Immature::default(),
@@ -634,7 +799,7 @@ pub fn genesis_writes(cfg: &Config) -> Result<WriteSet, String> {
 }
 
 /// Supply accounting over a full set of record values: balances (escrow and pool
-/// included) + W held by live jobs + immature coinbase. Must equal [`TOTAL_SUPPLY`].
+/// included) + W held by live jobs + immature coinbase + liens' pending amounts. Must equal [`TOTAL_SUPPLY`].
 pub fn supply_of(values: &[Vec<u8>]) -> Result<u128, String> {
     let mut total: u128 = 0;
     for v in values {
@@ -647,6 +812,7 @@ pub fn supply_of(values: &[Vec<u8>]) -> Result<u128, String> {
                 }
             }
             Some(&schema::tag::IMMATURE) => total += Immature::decode(v).map_err(|e| e.to_string())?.total() as u128,
+            Some(&schema::tag::ROUTE) => total += Route::decode(v).map_err(|e| e.to_string())?.pending as u128,
             _ => {}
         }
     }

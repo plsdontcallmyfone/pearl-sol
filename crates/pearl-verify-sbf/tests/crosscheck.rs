@@ -379,3 +379,108 @@ fn split_steps_match_one_shot() {
     }
     assert_eq!(verify::jackpot_blocks(&jp), 16);
 }
+
+fn vectors(name: &str) -> serde_json::Value {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../chain/agent-types/vectors").join(name);
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+/// R1: the chain's published header + coinbase vector verifies here, every tx path in
+/// it too, and tampering fails.
+#[test]
+fn coinbase_receipt_vector() {
+    let v = vectors("header.json");
+    let hb: [u8; 256] = hex::decode(v["header"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let h = Header(&hb);
+    let cb = &v["coinbase"];
+    let rec = hex::decode(cb["record"].as_str().unwrap()).unwrap();
+    let path = hex::decode(cb["path"].as_str().unwrap()).unwrap();
+    let c = chaintx::verify_coinbase(&h, &rec, &path).unwrap();
+    assert_eq!(c.height, cb["fields"]["height"].as_u64().unwrap());
+    assert_eq!(c.fees.to_string(), cb["fields"]["fees"].as_str().unwrap());
+    assert_eq!(c.subsidy.to_string(), cb["fields"]["subsidy"].as_str().unwrap());
+    assert_eq!(c.mature_height, cb["fields"]["mature_height"].as_u64().unwrap());
+    assert_eq!(hex::encode(chaintx::tx_hash(&rec)), cb["receipt_hash"].as_str().unwrap());
+    for (i, t) in v["block_tx_hashes"].as_array().unwrap().iter().enumerate() {
+        let th: [u8; 32] = hex::decode(t.as_str().unwrap()).unwrap().try_into().unwrap();
+        let p = hex::decode(v["tx_paths"][i].as_str().unwrap()).unwrap();
+        chaintx::verify_tx_path(&th, &p, &h.tx_root()).unwrap();
+    }
+    // tampering: any field, the path, or a header that is not the receipt's block
+    for off in [1usize, 9, 41, 49, 57, 89] {
+        let mut bad = rec.clone();
+        bad[off] ^= 1;
+        assert!(chaintx::verify_coinbase(&h, &bad, &path).is_err(), "byte {off}");
+    }
+    let mut bad_path = path.clone();
+    bad_path[0] ^= 1;
+    assert!(chaintx::verify_coinbase(&h, &rec, &bad_path).is_err());
+    let mut other = hb;
+    other[4] ^= 1; // height
+    assert!(chaintx::verify_coinbase(&Header(&other), &rec, &path).is_err());
+    // every published tx is refused as a receipt (version byte 1, other lengths)
+    for t in vectors("tx.json").as_array().unwrap() {
+        let tx = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+        assert!(chaintx::coinbase(&tx).is_err());
+    }
+    assert!(chaintx::TxView::any_chain(&rec).is_err(), "a receipt is not a tx");
+}
+
+/// R2: SetRoute / ClearRoute parse from the chain's vectors; the release message matches.
+#[test]
+fn route_tx_vectors() {
+    let txs = vectors("tx.json");
+    let find = |n: &str| txs.as_array().unwrap().iter().find(|t| t["name"] == n).unwrap().clone();
+    let t = find("set_route");
+    let b = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+    let view = chaintx::TxView::any_chain(&b).unwrap();
+    let r = chaintx::set_route(&view).unwrap();
+    assert_eq!(r.route_bps, 2500);
+    assert_eq!(r.until_height, 100_000);
+    assert_eq!(r.cap, 1_000_000_000_000);
+    assert_ne!(r.release_key, [0; 32]);
+    let t = find("set_route_irrevocable");
+    let b = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+    assert_eq!(chaintx::set_route(&chaintx::TxView::any_chain(&b).unwrap()).unwrap().release_key, [0; 32]);
+    let t = find("clear_route");
+    let b = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+    let (account, nonce) = chaintx::clear_route(&chaintx::TxView::any_chain(&b).unwrap()).unwrap();
+    assert_eq!(nonce, 0);
+    let msgs = vectors("messages.json");
+    let m = msgs.as_array().unwrap().iter().find(|m| m["name"] == "route_clear").unwrap();
+    let chain_id = t["chain_id"].as_u64().unwrap() as u32;
+    assert_eq!(hex::encode(chaintx::route_clear_message(chain_id, &account, nonce)), m["message"].as_str().unwrap());
+    // other kinds are refused
+    let t = find("transfer");
+    let b = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+    assert!(chaintx::set_route(&chaintx::TxView::any_chain(&b).unwrap()).is_err());
+}
+
+/// R5: accumulator proofs for every leaf of every size up to 70; incremental appends give
+/// the same root; wrong leaf, index or size fail.
+#[test]
+fn final_header_accumulator() {
+    use pearl_verify_sbf::acc;
+    let hs: Vec<[u8; 32]> = (0..70u32).map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes()).collect();
+    let mut slots = [[0u8; 32]; acc::MAX_PEAKS];
+    for n in 1..=hs.len() {
+        acc::append(sha, n as u64 - 1, &mut slots, &hs[n - 1]);
+        let root = acc::root_of_slots(sha, n as u64, &slots);
+        assert_eq!(root, acc::root_of_hashes(sha, &hs[..n]), "n {n}");
+        for i in 0..n as u64 {
+            let p = acc::prove(sha, &hs[..n], i).unwrap();
+            assert_eq!(Some(p.len()), acc::proof_len(n as u64, i));
+            acc::verify(sha, n as u64, i, &hs[i as usize], &p, &root).unwrap();
+            assert!(acc::verify(sha, n as u64, i, &hs[(i as usize + 1) % 70], &p, &root).is_err());
+            if n > 1 {
+                assert!(acc::verify(sha, n as u64, (i + 1) % n as u64, &hs[i as usize], &p, &root).is_err());
+            }
+            if !p.is_empty() {
+                let mut bad = p.clone();
+                bad[0] ^= 1;
+                assert!(acc::verify(sha, n as u64, i, &hs[i as usize], &bad, &root).is_err());
+            }
+        }
+        assert!(acc::verify(sha, n as u64, n as u64, &hs[0], &[], &root).is_err());
+    }
+}

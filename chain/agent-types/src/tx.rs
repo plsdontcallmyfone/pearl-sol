@@ -35,6 +35,8 @@ pub enum TxKind {
     BridgeUnlock = 6,
     BridgeLock = 7,
     AdminConfig = 8,
+    SetRoute = 9,
+    ClearRoute = 10,
 }
 
 impl TxKind {
@@ -49,6 +51,8 @@ impl TxKind {
             6 => Self::BridgeUnlock,
             7 => Self::BridgeLock,
             8 => Self::AdminConfig,
+            9 => Self::SetRoute,
+            10 => Self::ClearRoute,
             k => return Err(DecodeError::Kind(k)),
         })
     }
@@ -63,6 +67,8 @@ impl TxKind {
             Self::BridgeUnlock => "BridgeUnlock",
             Self::BridgeLock => "BridgeLock",
             Self::AdminConfig => "AdminConfig",
+            Self::SetRoute => "SetRoute",
+            Self::ClearRoute => "ClearRoute",
         }
     }
 }
@@ -195,6 +201,14 @@ pub enum TxBody {
     BridgeLock { solana_recipient: Pubkey, amount: u64 },
     /// `key u8, value_len u16, value`
     AdminConfig { key: u8, value: Vec<u8> },
+    /// Payout lien on the sender's income (SPEC 4.4):
+    /// `solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]`
+    /// (release_key all zero = the lien cannot be cleared early).
+    SetRoute { solana_recipient: Pubkey, route_bps: u16, until_height: u64, cap: u64, release_key: Pubkey },
+    /// End `account`'s lien early: `account [32], route_nonce u64, sig [64]`, `sig` a RAW
+    /// ed25519 signature by the lien's release_key over [`route_clear_message`].
+    /// Any account may send it (it pays the fee); the signature is the authority.
+    ClearRoute { account: Pubkey, route_nonce: u64, sig: Sig },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -228,6 +242,8 @@ impl TxBody {
             Self::BridgeUnlock { .. } => TxKind::BridgeUnlock,
             Self::BridgeLock { .. } => TxKind::BridgeLock,
             Self::AdminConfig { .. } => TxKind::AdminConfig,
+            Self::SetRoute { .. } => TxKind::SetRoute,
+            Self::ClearRoute { .. } => TxKind::ClearRoute,
         }
     }
 
@@ -269,6 +285,12 @@ impl TxBody {
             Self::AdminConfig { key, value } => {
                 w.u8(*key).bytes16(value);
             }
+            Self::SetRoute { solana_recipient, route_bps, until_height, cap, release_key } => {
+                w.bytes(solana_recipient).u16(*route_bps).u64(*until_height).u64(*cap).bytes(release_key);
+            }
+            Self::ClearRoute { account, route_nonce, sig } => {
+                w.bytes(account).u64(*route_nonce).bytes(sig);
+            }
         }
     }
 
@@ -306,6 +328,14 @@ impl TxBody {
                 let value = r.bytes16(MAX_ADMIN_VALUE, "admin value")?;
                 Self::AdminConfig { key, value }
             }
+            TxKind::SetRoute => Self::SetRoute {
+                solana_recipient: r.arr()?,
+                route_bps: r.u16()?,
+                until_height: r.u64()?,
+                cap: r.u64()?,
+                release_key: r.arr()?,
+            },
+            TxKind::ClearRoute => Self::ClearRoute { account: r.arr()?, route_nonce: r.u64()?, sig: r.arr()? },
         })
     }
 }
@@ -466,6 +496,14 @@ pub fn order_message(solana_nonce: u64, recipient: &Pubkey, amount_spl: u64, job
 /// Order job id: `sha256(b"pearl-sol:order-job:v1" || nonce u64 LE)`.
 pub fn order_job_id(solana_nonce: u64) -> Hash {
     sha256(&[DOMAIN_ORDER_JOB, &solana_nonce.to_le_bytes()])
+}
+
+/// Message a lien's release key signs to clear it early (ClearRoute):
+/// `b"pearl-sol:route-clear:v1" || chain_id u32 LE || account [32] || route_nonce u64 LE`.
+pub fn route_clear_message(chain_id: u32, account: &Pubkey, route_nonce: u64) -> Vec<u8> {
+    let mut w = W::new();
+    w.bytes(crate::DOMAIN_ROUTE_CLEAR).u32(chain_id).bytes(account).u64(route_nonce);
+    w.into_inner()
 }
 
 /// Message evaluators sign to complete a job: `b"pearl-sol:result:v1" || job_id || deliverer || result_hash`.

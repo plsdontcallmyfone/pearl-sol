@@ -34,7 +34,7 @@ fn seal_mock(t: &Template) -> Block {
     let mut h = t.header;
     let proof = MockVerifier::proof_for(&h);
     h.proof_hash = block::proof_hash(&proof);
-    Block { header: h, proof, txs: t.txs.clone() }
+    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) }
 }
 
 type C<V> = Chain<deterministic::Context, V>;
@@ -163,7 +163,7 @@ fn reorg_within_k_and_double_spend() {
         let bad = mine_on(&c, b_tip, 6, &[], bnow + 1000).await;
         let mut forged = bad.clone();
         forged.txs = vec![to_bob.clone()];
-        forged.header.tx_root = block::tx_root(&forged.txs);
+        forged.header.tx_root = forged.tx_root();
         let proof = MockVerifier::proof_for(&forged.header);
         forged.header.proof_hash = block::proof_hash(&proof);
         forged.proof = proof;
@@ -224,8 +224,28 @@ fn bad_pow_and_bad_roots_rejected() {
         // proof for another header
         let mut b = good.clone();
         b.header.miner = pk(4);
+        let e = c.insert_block(b.clone(), now).await.unwrap_err();
+        assert!(e.to_string().contains("coinbase receipt does not match"), "{e}");
+        b.coinbase.as_mut().unwrap().miner = pk(4);
+        b.header.tx_root = b.tx_root();
         let e = c.insert_block(b, now).await.unwrap_err();
         assert!(e.to_string().contains("proof"), "{e}");
+        // R1: a receipt claiming more than execution produced (resealed: valid PoW, tx_root)
+        let mut b = good.clone();
+        b.coinbase.as_mut().unwrap().fees += 1;
+        b.header.tx_root = b.tx_root();
+        let p = MockVerifier::proof_for(&b.header);
+        b.header.proof_hash = block::proof_hash(&p);
+        b.proof = p;
+        let e = c.insert_block(b, now).await.unwrap_err();
+        assert!(e.to_string().contains("coinbase receipt mismatch"), "{e}");
+        // a body without its receipt, or a receipt the header does not commit to
+        let mut b = good.clone();
+        b.coinbase = None;
+        assert!(c.insert_block(b, now).await.unwrap_err().to_string().contains("missing coinbase"));
+        let mut b = good.clone();
+        b.coinbase.as_mut().unwrap().subsidy = 5;
+        assert!(c.insert_block(b, now).await.unwrap_err().to_string().contains("tx_root"));
         // proof bytes that do not match proof_hash
         let mut b = good.clone();
         b.proof[5] ^= 1;
@@ -257,7 +277,7 @@ fn bad_pow_and_bad_roots_rejected() {
         let tpl = c.build_template(pk(3), JobChoice::Fallback, &[], now).await.unwrap();
         let mut b = seal_mock(&tpl);
         b.txs = vec![t];
-        b.header.tx_root = block::tx_root(&b.txs);
+        b.header.tx_root = b.tx_root();
         let p = MockVerifier::proof_for(&b.header);
         b.header.proof_hash = block::proof_hash(&p);
         b.proof = p;
@@ -304,7 +324,7 @@ fn seal_real(t: &Template, a: &[i8], b: &[i8]) -> Block {
     }
     .expect("easy target wins within 4096 nonces");
     let header = Header::decode(&mined.header.to_bytes()).unwrap();
-    Block { header, proof: mined.proof, txs: t.txs.clone() }
+    Block { header, proof: mined.proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) }
 }
 
 #[test]

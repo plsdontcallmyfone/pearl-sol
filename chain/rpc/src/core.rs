@@ -442,18 +442,18 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         Ok((id, t))
     }
 
-    /// Txs for a mined header: from the named template or any template with the same
-    /// parent and tx_root.
-    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<Vec<Tx>> {
+    /// Txs and coinbase receipt for a mined header: from the named template or any
+    /// template with the same parent and tx_root.
+    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase)> {
         let m = |t: &Template| t.header.prev_hash == header.prev_hash && t.header.tx_root == header.tx_root;
         if let Some(id) = template_id {
             if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
                 if m(t) {
-                    return Some(t.txs.clone());
+                    return Some((t.txs.clone(), t.summary.coinbase));
                 }
             }
         }
-        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| t.txs.clone())
+        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase))
     }
 
     pub fn notify(&mut self, topic: &str, data: Value) {

@@ -2000,6 +2000,7 @@ dependencies = [
  "pearl-job",
  "primitive-types",
  "rand 0.9.5",
+ "serde_json",
  "sha2 0.10.9",
 ]
 

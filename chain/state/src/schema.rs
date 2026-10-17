@@ -18,6 +18,7 @@ pub mod tag {
     pub const COUNTERS: u8 = 7;
     pub const JOB_INDEX: u8 = 8;
     pub const WITHDRAWAL: u8 = 9;
+    pub const ROUTE: u8 = 10;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {
@@ -51,6 +52,10 @@ pub fn job_index_key(i: u64) -> Key {
 }
 pub fn withdrawal_key(nonce: u64) -> Key {
     key(tag::WITHDRAWAL, &nonce.to_le_bytes())
+}
+/// The payout lien (SetRoute) of an account; kept after it ends (route_nonce history).
+pub fn route_key(a: &Pubkey) -> Key {
+    key(tag::ROUTE, a)
 }
 
 fn expect_tag(r: &mut R<'_>, t: u8) -> Result<(), DecodeError> {
@@ -476,5 +481,79 @@ impl Withdrawal {
             return Err(DecodeError::Invalid("record tag"));
         }
         Self::from_log_entry(&b[1..])
+    }
+}
+
+/// Payout lien of one account (SPEC 4.4, Agent Credit R2).
+///
+/// ```text
+/// tag u8 = 10 | solana_recipient [32] | route_bps u16 | until_height u64 | cap u64
+/// | release_key [32] | route_nonce u64 | set_height u64 | routed u64 | pending u64
+/// | withdrawn u64 | cleared u8
+/// ```
+/// `routed`: income taken by the lien so far (counts toward `cap`); `pending`: taken but
+/// not yet in a withdrawal entry (below 1000 base units, or the bridge is paused);
+/// `withdrawn`: sent out in withdrawal entries (chain base units). The record stays after
+/// the lien ends so `route_nonce` keeps increasing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Route {
+    pub solana_recipient: Pubkey,
+    pub route_bps: u16,
+    pub until_height: u64,
+    pub cap: u64,
+    pub release_key: Pubkey,
+    pub route_nonce: u64,
+    pub set_height: u64,
+    pub routed: u64,
+    pub pending: u64,
+    pub withdrawn: u64,
+    pub cleared: bool,
+}
+
+impl Route {
+    /// The lien takes a share of income credited at `height`.
+    pub fn is_active(&self, height: u64) -> bool {
+        !self.cleared && height <= self.until_height && self.routed < self.cap
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = W::new();
+        w.u8(tag::ROUTE)
+            .bytes(&self.solana_recipient)
+            .u16(self.route_bps)
+            .u64(self.until_height)
+            .u64(self.cap)
+            .bytes(&self.release_key)
+            .u64(self.route_nonce)
+            .u64(self.set_height)
+            .u64(self.routed)
+            .u64(self.pending)
+            .u64(self.withdrawn)
+            .u8(self.cleared as u8);
+        w.into_inner()
+    }
+
+    pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = R::new(b);
+        expect_tag(&mut r, tag::ROUTE)?;
+        let x = Self {
+            solana_recipient: r.arr()?,
+            route_bps: r.u16()?,
+            until_height: r.u64()?,
+            cap: r.u64()?,
+            release_key: r.arr()?,
+            route_nonce: r.u64()?,
+            set_height: r.u64()?,
+            routed: r.u64()?,
+            pending: r.u64()?,
+            withdrawn: r.u64()?,
+            cleared: match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(DecodeError::Invalid("cleared flag")),
+            },
+        };
+        r.finish()?;
+        Ok(x)
     }
 }

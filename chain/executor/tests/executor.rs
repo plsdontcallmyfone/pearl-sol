@@ -404,3 +404,272 @@ fn blob_uris_must_be_well_formed() {
     c.block(None, &[t]).unwrap();
     assert_eq!(c.job(&job).result_uri, r);
 }
+
+// ---------------------------------------------------------------- R1 coinbase receipt
+
+#[test]
+fn coinbase_receipt_records_fees_subsidy_and_maturity() {
+    let mut c = Chain::new();
+    c.fund(2, 100_000_000);
+    let t = c.unlock(200, 1, pool_address(), 1_000_000_000);
+    c.block(None, &[t]).unwrap();
+    let t1 = c.tx(2, 1500, TxBody::Transfer { to: pk(3), amount: 1 });
+    let t2 = c.tx(2, 2500, TxBody::Transfer { to: pk(3), amount: 1 });
+    let s = c.block(None, &[t1, t2]).unwrap();
+    let cb = s.coinbase;
+    assert_eq!((cb.height, cb.miner, cb.fees, cb.subsidy, cb.job_id), (c.height, pk(MINER), 4000, 0, [0; 32]));
+    assert_eq!(cb.mature_height, c.height + 3, "height + finality_k");
+    assert_eq!(Coinbase::decode(&cb.encode()).unwrap(), cb);
+    assert_eq!(cb.encode().len(), 97);
+    assert_eq!(cb.encode()[0], 0, "version byte 0 (txs start with 1)");
+    // a job block carries the subsidy and the job id
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], 1_000_000, 1_000_000_000, 100, 10)));
+    let id = c.block(None, &[t]).unwrap().jobs_created[0];
+    let s = c.block(Some(id), &[]).unwrap();
+    assert!(s.coinbase.subsidy > 0);
+    assert_eq!(s.coinbase.subsidy, s.subsidy);
+    assert_eq!(s.coinbase.job_id, id);
+    assert_eq!(s.coinbase.fees, 0);
+    // what the receipt promises is what matures
+    let before = c.bal(&pk(MINER));
+    while c.height < s.coinbase.mature_height {
+        c.block(None, &[]).unwrap();
+    }
+    assert!(c.bal(&pk(MINER)) >= before + s.coinbase.reward());
+    // an empty block still has a receipt (zero reward)
+    let s = c.block(None, &[]).unwrap();
+    assert_eq!((s.coinbase.fees, s.coinbase.subsidy, s.coinbase.height), (0, 0, c.height));
+}
+
+#[test]
+fn coinbase_is_the_last_tx_root_leaf() {
+    let mut c = Chain::new();
+    c.fund(2, 1_000_000);
+    let txs: Vec<Tx> = (0..5).map(|_| c.tx(2, 1000, TxBody::Transfer { to: pk(3), amount: 1 })).collect();
+    let s = c.block(None, &txs).unwrap();
+    let root = block::tx_root_with(&txs, Some(&s.coinbase));
+    assert_ne!(root, block::tx_root(&txs));
+    let hs = block::leaf_hashes(&txs, Some(&s.coinbase));
+    assert_eq!(hs.len(), 6);
+    assert_eq!(*hs.last().unwrap(), s.coinbase.hash());
+    for i in 0..6 {
+        assert!(merkle::verify(&hs[i], &merkle::proof(&hs, i), &root));
+    }
+    // a block with no txs: the receipt is the only leaf
+    let s = c.block(None, &[]).unwrap();
+    assert_eq!(block::tx_root_with(&[], Some(&s.coinbase)), merkle::leaf(&s.coinbase.hash()));
+}
+
+// ---------------------------------------------------------------- R2 payout liens
+
+fn route(c: &Chain, a: &Pubkey) -> Option<schema::Route> {
+    block_on(c.st.get(&schema::route_key(a))).unwrap().map(|b| schema::Route::decode(&b).unwrap())
+}
+
+const LENDER: [u8; 32] = [0x4c; 32];
+
+fn set_route(c: &mut Chain, who: u8, bps: u16, until: u64, cap: u64, release: Pubkey) -> Result<executor::BlockSummary, executor::ExecError> {
+    let t = c.tx(who, 1000, TxBody::SetRoute { solana_recipient: LENDER, route_bps: bps, until_height: until, cap, release_key: release });
+    let r = c.block(None, &[t]);
+    if r.is_err() {
+        *c.nonces.get_mut(&who).unwrap() -= 1;
+    }
+    r
+}
+
+#[test]
+fn route_splits_matured_coinbase_with_carry() {
+    let mut c = Chain::new();
+    c.fund(2, 1_000_000);
+    c.fund(MINER, 1000); // the miner pays the SetRoute fee
+    set_route(&mut c, MINER, 2500, 1000, u64::MAX, [0; 32]).unwrap();
+    // let the fees of earlier blocks (none) mature out of the way
+    for _ in 0..4 {
+        c.block(None, &[]).unwrap();
+    }
+    let esc0 = c.bal(&escrow_address());
+    let bal0 = c.bal(&pk(MINER));
+    // 4 blocks with a 1000 fee each: 250 per block to the lien, carried until 1000
+    let mut matured_withdrawals = vec![];
+    for i in 0..8 {
+        let txs = if i < 4 { vec![c.tx(2, 1000, TxBody::Transfer { to: pk(3), amount: 1 })] } else { vec![] };
+        let s = c.block(None, &txs).unwrap();
+        matured_withdrawals.extend(s.withdrawals);
+    }
+    assert_eq!(matured_withdrawals.len(), 1, "one SPL unit once 4 x 250 carried");
+    let w = matured_withdrawals[0];
+    assert_eq!((w.from, w.solana_recipient, w.amount_spl), (pk(MINER), LENDER, 1));
+    assert_eq!(c.bal(&pk(MINER)), bal0 + 4 * 750);
+    assert_eq!(c.bal(&escrow_address()), esc0 + 1000);
+    let r = route(&c, &pk(MINER)).unwrap();
+    // the SetRoute fee itself matured under the lien too (250 carried before the window)
+    assert_eq!((r.routed, r.pending, r.withdrawn), (1250, 250, 1000));
+}
+
+#[test]
+fn route_takes_job_pay_and_expiry_refunds_until_cap_then_returns_dust() {
+    let mut c = Chain::new();
+    c.fund(2, 100_000_000); // poster
+    c.fund(3, 1000); // worker
+    let w = 5_000_000_000u64;
+    let p = 1_000_000_000u64;
+    // worker lien: 30%, cap 2_000_000_500 base units (cap binds on the first job)
+    set_route(&mut c, 3, 3000, 10_000, 2_000_000_500, [0; 32]).unwrap();
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], w, p, 1000, 10)));
+    let id = c.block(None, &[t]).unwrap().jobs_created[0];
+    let rh = [0x33; 32];
+    let t = c.tx(3, 1000, TxBody::SubmitResult { job_id: id, result_hash: rh, uri: vec![] });
+    c.block(None, &[t]).unwrap();
+    let msg = result_message(&id, &pk(3), &rh);
+    let before = c.bal(&pk(3));
+    let t = c.tx(3, 1000, TxBody::CompleteJob { job_id: id, sigs: vec![AttesterSig { pubkey: pk(60), sig: sign_plain(&seed(60), &msg) }] });
+    let s = c.block(None, &[t]).unwrap();
+    // 30% of 5e9 = 1.5e9 < cap: all taken, 1_500_000 SPL out
+    assert_eq!(s.withdrawals.len(), 1);
+    assert_eq!(s.withdrawals[0].amount_spl, 1_500_000);
+    assert_eq!(s.routed, vec![(pk(3), 1_500_000_000)]);
+    assert_eq!(c.bal(&pk(3)), before + w - 1_500_000_000 - 1000);
+    // second job: only 500_000_500 of cap left -> 500_000 SPL out, 500 dust back, lien ends
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], w, p, 1000, 10)));
+    let id2 = c.block(None, &[t]).unwrap().jobs_created[0];
+    let t = c.tx(3, 1000, TxBody::SubmitResult { job_id: id2, result_hash: rh, uri: vec![] });
+    c.block(None, &[t]).unwrap();
+    let msg = result_message(&id2, &pk(3), &rh);
+    let before = c.bal(&pk(3));
+    let t = c.tx(3, 1000, TxBody::CompleteJob { job_id: id2, sigs: vec![AttesterSig { pubkey: pk(60), sig: sign_plain(&seed(60), &msg) }] });
+    let s = c.block(None, &[t]).unwrap();
+    assert_eq!(s.withdrawals[0].amount_spl, 500_000);
+    assert_eq!(c.bal(&pk(3)), before + w - 500_000_500 + 500 - 1000, "dust below 1000 returned when the cap ends the lien");
+    let r = route(&c, &pk(3)).unwrap();
+    assert_eq!((r.routed, r.pending, r.withdrawn), (2_000_000_500, 0, 2_000_000_000));
+    assert!(!r.is_active(c.height + 1));
+    // poster lien on expiry refunds: 50%
+    set_route(&mut c, 2, 5000, 10_000, u64::MAX, [0; 32]).unwrap();
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], w, p, c.height + 2, 10)));
+    let id3 = c.block(None, &[t]).unwrap().jobs_created[0];
+    c.block(None, &[]).unwrap();
+    c.block(None, &[]).unwrap();
+    let before = c.bal(&pk(2));
+    let t = c.tx(2, 1000, TxBody::ExpireJob { job_id: id3 });
+    let s = c.block(None, &[t]).unwrap();
+    assert_eq!(s.withdrawals.len(), 1);
+    assert_eq!((s.withdrawals[0].from, s.withdrawals[0].amount_spl), (pk(2), 2_500_000));
+    assert_eq!(c.bal(&pk(2)), before + w / 2 - 1000);
+}
+
+#[test]
+fn route_ends_at_until_height_and_plain_transfers_are_not_routed() {
+    let mut c = Chain::new();
+    c.fund(2, 1_000_000);
+    c.fund(3, 1000);
+    let h = c.height;
+    set_route(&mut c, 3, 10_000, h + 2, u64::MAX, [0; 32]).unwrap();
+    // a Transfer to a routed account is not income under the lien
+    let t = c.tx(2, 1000, TxBody::Transfer { to: pk(3), amount: 7000 });
+    let s = c.block(None, &[t]).unwrap();
+    assert!(s.withdrawals.is_empty());
+    // past until_height nothing is taken
+    c.block(None, &[]).unwrap();
+    assert!(!route(&c, &pk(3)).unwrap().is_active(c.height + 1));
+}
+
+#[test]
+fn route_cannot_be_weakened_only_extended_or_cleared_by_release_key() {
+    let mut c = Chain::new();
+    c.fund(3, 1_000_000);
+    let rel = pk(70);
+    set_route(&mut c, 3, 2000, 500, 1_000_000_000, rel).unwrap();
+    assert_eq!(route(&c, &pk(3)).unwrap().route_nonce, 0);
+    // weaker or redirected: refused
+    for (bps, until, cap) in [(1999, 500, 1_000_000_000), (2000, 499, 1_000_000_000), (2000, 500, 999_999_999)] {
+        let e = set_route(&mut c, 3, bps, until, cap, rel).unwrap_err().to_string();
+        assert!(e.contains("extended"), "{e}");
+    }
+    let t = c.tx(3, 1000, TxBody::SetRoute { solana_recipient: [0x99; 32], route_bps: 9000, until_height: 900, cap: u64::MAX, release_key: rel });
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("same recipient"));
+    *c.nonces.get_mut(&3).unwrap() -= 1;
+    assert!(set_route(&mut c, 3, 2000, 500, 1_000_000_000, [0; 32]).is_err(), "dropping the release key is a different lien");
+    // bad parameters
+    assert!(set_route(&mut c, 3, 0, 500, 1, rel).is_err());
+    assert!(set_route(&mut c, 3, 10_001, 500, 1, rel).is_err());
+    assert!(set_route(&mut c, 3, 2000, 500, 0, rel).is_err());
+    // an extension is accepted and bumps the nonce
+    set_route(&mut c, 3, 2500, 600, 2_000_000_000, rel).unwrap();
+    let r = route(&c, &pk(3)).unwrap();
+    assert_eq!((r.route_bps, r.until_height, r.cap, r.route_nonce), (2500, 600, 2_000_000_000, 1));
+    // ClearRoute: anyone may send it; only a release signature over the current nonce works
+    c.fund(4, 1000);
+    let msg_old = agent_types::tx::route_clear_message(CHAIN, &pk(3), 0);
+    let t = c.tx(4, 1000, TxBody::ClearRoute { account: pk(3), route_nonce: 0, sig: sign_plain(&seed(70), &msg_old) });
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("route_nonce"));
+    *c.nonces.get_mut(&4).unwrap() -= 1;
+    let msg = agent_types::tx::route_clear_message(CHAIN, &pk(3), 1);
+    let t = c.tx(4, 1000, TxBody::ClearRoute { account: pk(3), route_nonce: 1, sig: sign_plain(&seed(71), &msg) });
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("release signature"));
+    *c.nonces.get_mut(&4).unwrap() -= 1;
+    let wrong_chain = agent_types::tx::route_clear_message(CHAIN + 1, &pk(3), 1);
+    let t = c.tx(4, 1000, TxBody::ClearRoute { account: pk(3), route_nonce: 1, sig: sign_plain(&seed(70), &wrong_chain) });
+    assert!(c.block(None, &[t]).is_err(), "the chain id is signed");
+    *c.nonces.get_mut(&4).unwrap() -= 1;
+    let t = c.tx(4, 1000, TxBody::ClearRoute { account: pk(3), route_nonce: 1, sig: sign_plain(&seed(70), &msg) });
+    c.block(None, &[t]).unwrap();
+    assert!(route(&c, &pk(3)).unwrap().cleared);
+    // after it ended, a new lien to anyone may be set; its nonce keeps counting
+    set_route(&mut c, 3, 100, 700, 5, [0; 32]).unwrap();
+    assert_eq!(route(&c, &pk(3)).unwrap().route_nonce, 2);
+    // an irrevocable lien cannot be cleared
+    c.fund(5, 1000);
+    let msg = agent_types::tx::route_clear_message(CHAIN, &pk(3), 2);
+    let t = c.tx(5, 1000, TxBody::ClearRoute { account: pk(3), route_nonce: 2, sig: sign_plain(&seed(70), &msg) });
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("no release key"));
+}
+
+#[test]
+fn route_holds_while_bridge_paused_then_flushes() {
+    let mut c = Chain::new();
+    c.fund(2, 1_000_000);
+    c.fund(MINER, 1000);
+    c.fund(ADMIN, 1000);
+    set_route(&mut c, MINER, 10_000, 1000, u64::MAX, [0; 32]).unwrap();
+    for _ in 0..4 {
+        c.block(None, &[]).unwrap();
+    }
+    let t = c.tx(ADMIN, 1000, TxBody::AdminConfig { key: keys::BRIDGE_PAUSED, value: vec![1] });
+    c.block(None, &[t]).unwrap();
+    // the AdminConfig fee (1000) and these fees mature while paused: held in pending
+    for _ in 0..3 {
+        let t = c.tx(2, 1000, TxBody::Transfer { to: pk(3), amount: 1 });
+        let s = c.block(None, &[t]).unwrap();
+        assert!(s.withdrawals.is_empty());
+    }
+    for _ in 0..3 {
+        assert!(c.block(None, &[]).unwrap().withdrawals.is_empty());
+    }
+    let r = route(&c, &pk(MINER)).unwrap();
+    assert_eq!(r.pending, 4000);
+    let t = c.tx(ADMIN, 1000, TxBody::AdminConfig { key: keys::BRIDGE_PAUSED, value: vec![0] });
+    c.block(None, &[t]).unwrap();
+    // next matured income flushes everything held
+    let mut out = 0;
+    for _ in 0..4 {
+        out += c.block(None, &[]).unwrap().withdrawals.iter().map(|w| w.amount_spl).sum::<u64>();
+    }
+    assert_eq!(out, 5, "4000 held + 1000 from the unpause fee");
+    assert_eq!(route(&c, &pk(MINER)).unwrap().pending, 0);
+}
+
+#[test]
+fn route_records_round_trip() {
+    let r = schema::Route { solana_recipient: [1; 32], route_bps: 77, until_height: 9, cap: 10, release_key: [2; 32], route_nonce: 3, set_height: 4, routed: 5, pending: 6, withdrawn: 7, cleared: true };
+    assert_eq!(schema::Route::decode(&r.encode()).unwrap(), r);
+    let set = TxBody::SetRoute { solana_recipient: [1; 32], route_bps: 2500, until_height: 9, cap: 10, release_key: [2; 32] };
+    let t = Tx::signed(&seed(1), CHAIN, 0, 1, set);
+    assert_eq!(Tx::decode(&t.encode()).unwrap(), t);
+    assert_eq!(t.encode().len(), PREFIX_LEN_CHECK + 32 + 2 + 8 + 8 + 32 + 64);
+    let clr = TxBody::ClearRoute { account: [3; 32], route_nonce: 1, sig: [4; 64] };
+    let t = Tx::signed(&seed(1), CHAIN, 0, 1, clr);
+    assert_eq!(Tx::decode(&t.encode()).unwrap(), t);
+    assert_eq!(t.encode().len(), PREFIX_LEN_CHECK + 32 + 8 + 64 + 64);
+}
+
+const PREFIX_LEN_CHECK: usize = agent_types::tx::PREFIX_LEN;

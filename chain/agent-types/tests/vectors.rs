@@ -3,8 +3,8 @@
 //! `UPDATE_VECTORS=1 cargo test -p agent-types --test vectors` rewrites the files;
 //! a plain run checks that the encoder still produces them byte for byte.
 
-use agent_types::block::{encode_header_with_proof, tx_root};
-use agent_types::tx::{deposit_message, order_job_id, order_message, pubkey_from_seed, result_message, sign_plain};
+use agent_types::block::encode_header_with_proof;
+use agent_types::tx::{deposit_message, order_job_id, order_message, pubkey_from_seed, result_message, route_clear_message, sign_plain};
 use agent_types::*;
 use serde_json::{json, Value};
 
@@ -75,6 +75,11 @@ fn body_json(b: &TxBody) -> Value {
             json!({"solana_recipient": b58(solana_recipient), "amount": amount.to_string()})
         }
         TxBody::AdminConfig { key, value } => json!({"key": key, "value": hex::encode(value)}),
+        TxBody::SetRoute { solana_recipient, route_bps, until_height, cap, release_key } => json!({
+            "solana_recipient": b58(solana_recipient), "route_bps": route_bps, "until_height": until_height,
+            "cap": cap.to_string(), "release_key": b58(release_key)}),
+        TxBody::ClearRoute { account, route_nonce, sig } => json!({
+            "account": b58(account), "route_nonce": route_nonce, "sig": hex::encode(sig)}),
     }
 }
 
@@ -186,6 +191,33 @@ fn build() -> Vec<(&'static str, Value)> {
         TxBody::AdminConfig { key: 1, value: 2000u64.to_le_bytes().to_vec() },
     ));
 
+    // Payout lien (R2): alice routes 25% of her income to bob's Solana key until height
+    // 100000 or 1e12 base units, releasable early by seed(40)'s key; the release signature
+    // clears route_nonce 0.
+    let release = pubkey_from_seed(&seed(40));
+    add(tx_vector(
+        "set_route",
+        1,
+        5,
+        1000,
+        TxBody::SetRoute { solana_recipient: bob, route_bps: 2500, until_height: 100_000, cap: 1_000_000_000_000, release_key: release },
+    ));
+    add(tx_vector(
+        "set_route_irrevocable",
+        2,
+        2,
+        1000,
+        TxBody::SetRoute { solana_recipient: alice, route_bps: 10_000, until_height: 5000, cap: 7_000_000, release_key: [0; 32] },
+    ));
+    let cmsg = route_clear_message(CHAIN_ID, &alice, 0);
+    add(tx_vector(
+        "clear_route",
+        3,
+        1,
+        1000,
+        TxBody::ClearRoute { account: alice, route_nonce: 0, sig: sign_plain(&seed(40), &cmsg) },
+    ));
+
     let tx_objs: Vec<Tx> = txs.iter().map(|(_, t)| t.clone()).collect();
     let tx_json: Vec<Value> = txs.into_iter().map(|(v, _)| v).collect();
 
@@ -209,9 +241,12 @@ fn build() -> Vec<(&'static str, Value)> {
         {"name": "job_id", "poster": b58(&alice), "poster_nonce": 3, "job_id": hex::encode(job_id),
          "rule": "blake3(poster || nonce u64 LE)"},
         {"name": "reserved_addresses", "escrow": b58(&escrow_address()), "pool": b58(&pool_address())},
+        msg_v("route_clear", DOMAIN_ROUTE_CLEAR, &cmsg, 40),
     ]);
 
     let proof = b"example proof bytes".to_vec();
+    // Coinbase receipt (R1): the last tx_root leaf. Fees = the two txs' fees.
+    let coinbase = Coinbase { height: 12, miner: bob, fees: 2000, subsidy: 800_000_000, job_id, mature_height: 42 };
     let header = Header {
         version: 1,
         height: 12,
@@ -220,13 +255,14 @@ fn build() -> Vec<(&'static str, Value)> {
         target_bits: 0x207fffff,
         job_id,
         miner: bob,
-        tx_root: tx_root(&tx_objs[..2]),
+        tx_root: block::tx_root_with(&tx_objs[..2], Some(&coinbase)),
         state_root: [0x11; 32],
         withdraw_root: [0x22; 32],
         proof_hash: agent_types::block::proof_hash(&proof),
         nonce: 77,
     };
-    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec() };
+    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec(), coinbase: Some(coinbase) };
+    assert_eq!(block.check_commitments(), Ok(()));
     assert_eq!(Block::decode(&block.encode()).unwrap(), block);
     let header_v = json!({
         "fields": {
@@ -243,6 +279,17 @@ fn build() -> Vec<(&'static str, Value)> {
         "header_with_proof": hex::encode(encode_header_with_proof(&header, &proof)),
         "block": hex::encode(block.encode()),
         "block_tx_hashes": tx_objs[..2].iter().map(|t| hex::encode(t.hash())).collect::<Vec<_>>(),
+        "tx_paths": (0..2).map(|i| hex::encode(block::leaf_path(&tx_objs[..2], Some(&coinbase), i))).collect::<Vec<_>>(),
+        "coinbase": {
+            "fields": {"height": coinbase.height, "miner": b58(&coinbase.miner), "fees": coinbase.fees.to_string(),
+                       "subsidy": coinbase.subsidy.to_string(), "job_id": hex::encode(coinbase.job_id),
+                       "mature_height": coinbase.mature_height},
+            "record": hex::encode(coinbase.encode()),
+            "receipt_hash": hex::encode(coinbase.hash()),
+            "leaf_index": 2,
+            "path": hex::encode(block::leaf_path(&tx_objs[..2], Some(&coinbase), 2)),
+            "rule": "record = 0x00 || height u64 || miner || fees u64 || subsidy u64 || job_id || mature_height u64 (97 bytes); last tx_root leaf = blake3(0x00 || blake3(record))",
+        },
     });
     vec![("tx.json", Value::Array(tx_json)), ("messages.json", messages), ("header.json", header_v)]
 }

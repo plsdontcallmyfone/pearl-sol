@@ -1,10 +1,16 @@
-//! Block = header + proof bytes + transactions.
+//! Block = header + proof bytes + transactions + coinbase receipt.
 //!
 //! ```text
 //! header [256] || proof_len u32 || proof || tx_count u32 || (tx_len u32 || tx)*
+//!   || has_coinbase u8 (0|1) || [coinbase receipt 97 bytes if 1]
 //! ```
+//! Every non-genesis block carries its coinbase receipt (coinbase.rs), committed as the
+//! LAST leaf of `tx_root`; the genesis block carries none (its tx_root commits to the
+//! genesis spec). The receipt travels in the body so `check_commitments` stays
+//! context-free; the chain then checks it equals the receipt execution produces.
 
 use crate::codec::{R, W};
+use crate::coinbase::{Coinbase, COINBASE_LEN};
 use crate::{blake3_hash, merkle, DecodeError, Hash, Header, Tx};
 
 pub const MAX_PROOF_LEN: usize = 4 << 20;
@@ -16,6 +22,8 @@ pub struct Block {
     pub header: Header,
     pub proof: Vec<u8>,
     pub txs: Vec<Tx>,
+    /// `None` only for the genesis block.
+    pub coinbase: Option<Coinbase>,
 }
 
 impl Block {
@@ -27,6 +35,14 @@ impl Block {
         let mut w = W::new();
         w.bytes(&self.header.encode()).u32(self.proof.len() as u32).bytes(&self.proof);
         w.bytes(&encode_txs(&self.txs));
+        match &self.coinbase {
+            None => {
+                w.u8(0);
+            }
+            Some(c) => {
+                w.u8(1).bytes(&c.encode());
+            }
+        }
         w.into_inner()
     }
 
@@ -42,8 +58,13 @@ impl Block {
         }
         let proof = r.take(plen)?.to_vec();
         let txs = read_txs(&mut r)?;
+        let coinbase = match r.u8()? {
+            0 => None,
+            1 => Some(Coinbase::decode(r.take(COINBASE_LEN)?)?),
+            _ => return Err(DecodeError::Invalid("coinbase flag")),
+        };
         r.finish()?;
-        Ok(Self { header, proof, txs })
+        Ok(Self { header, proof, txs, coinbase })
     }
 
     pub fn proof_hash(&self) -> Hash {
@@ -51,13 +72,17 @@ impl Block {
     }
 
     pub fn tx_root(&self) -> Hash {
-        tx_root(&self.txs)
+        tx_root_with(&self.txs, self.coinbase.as_ref())
     }
 
     /// Context-free checks: proof_hash and tx_root match the header.
     pub fn check_commitments(&self) -> Result<(), &'static str> {
         if self.header.proof_hash != self.proof_hash() {
             return Err("proof_hash mismatch");
+        }
+        let Some(cb) = &self.coinbase else { return Err("missing coinbase receipt") };
+        if cb.height != self.header.height || cb.miner != self.header.miner || cb.job_id != self.header.job_id {
+            return Err("coinbase receipt does not match the header");
         }
         if self.header.tx_root != self.tx_root() {
             return Err("tx_root mismatch");
@@ -117,7 +142,34 @@ pub fn proof_hash(proof: &[u8]) -> Hash {
     blake3_hash(&[proof])
 }
 
+/// Root over the txs only (no receipt). Only for pre-R1 data; blocks use [`tx_root_with`].
 pub fn tx_root(txs: &[Tx]) -> Hash {
     let hs: Vec<Hash> = txs.iter().map(Tx::hash).collect();
     merkle::root(&hs)
+}
+
+/// Leaf hashes of a block's tx_root: every tx hash in order, then the receipt hash.
+pub fn leaf_hashes(txs: &[Tx], coinbase: Option<&Coinbase>) -> Vec<Hash> {
+    let mut hs: Vec<Hash> = txs.iter().map(Tx::hash).collect();
+    if let Some(c) = coinbase {
+        hs.push(c.hash());
+    }
+    hs
+}
+
+/// A block's `tx_root`: txs then the coinbase receipt as the last leaf.
+pub fn tx_root_with(txs: &[Tx], coinbase: Option<&Coinbase>) -> Hash {
+    merkle::root(&leaf_hashes(txs, coinbase))
+}
+
+/// tx_root path of leaf `index` (a tx index, or `txs.len()` for the receipt) as the
+/// 33-byte entries the Solana verifier takes (`sibling [32] || sibling_is_left u8`).
+pub fn leaf_path(txs: &[Tx], coinbase: Option<&Coinbase>, index: usize) -> Vec<u8> {
+    let hs = leaf_hashes(txs, coinbase);
+    let mut out = Vec::new();
+    for (sib, left) in merkle::proof(&hs, index) {
+        out.extend_from_slice(&sib);
+        out.push(left as u8);
+    }
+    out
 }

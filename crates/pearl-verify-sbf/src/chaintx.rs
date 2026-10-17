@@ -36,6 +36,9 @@ pub const KIND_POST_JOB: u8 = 2;
 pub const KIND_COMPLETE_JOB: u8 = 4;
 pub const KIND_EXPIRE_JOB: u8 = 5;
 pub const KIND_BRIDGE_UNLOCK: u8 = 6;
+pub const KIND_BRIDGE_LOCK: u8 = 7;
+pub const KIND_SET_ROUTE: u8 = 9;
+pub const KIND_CLEAR_ROUTE: u8 = 10;
 const BODY: usize = 54;
 
 pub struct TxView<'a> {
@@ -228,4 +231,107 @@ pub fn expire_job(tx: &TxView) -> Result<[u8; 32], Error> {
         return Err(Error::Tx);
     }
     Ok(body.try_into().unwrap())
+}
+
+// ------------------------------------------------------------------ R1 coinbase receipt
+
+pub const COINBASE_LEN: usize = 97;
+pub const COINBASE_VERSION: u8 = 0;
+
+/// A block's coinbase receipt (chain/agent-types/src/coinbase.rs): the LAST leaf of the
+/// block's tx_root. `fees + subsidy` are credited to `miner` when the block at
+/// `mature_height` executes (less any payout-lien share, SetRoute).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coinbase {
+    pub height: u64,
+    pub miner: [u8; 32],
+    pub fees: u64,
+    pub subsidy: u64,
+    pub job_id: [u8; 32],
+    pub mature_height: u64,
+}
+
+impl Coinbase {
+    pub fn reward(&self) -> u64 {
+        self.fees.saturating_add(self.subsidy)
+    }
+}
+
+/// Parse a 97-byte receipt: `0x00 || height u64 || miner [32] || fees u64 || subsidy u64
+/// || job_id [32] || mature_height u64`. A tx starts with version 1, so no tx parses here.
+pub fn coinbase(record: &[u8]) -> Result<Coinbase, Error> {
+    if record.len() != COINBASE_LEN || record[0] != COINBASE_VERSION {
+        return Err(Error::Coinbase);
+    }
+    let mut r = Rd { b: record, pos: 1 };
+    Ok(Coinbase {
+        height: r.u64()?,
+        miner: r.arr()?,
+        fees: r.u64()?,
+        subsidy: r.u64()?,
+        job_id: r.arr()?,
+        mature_height: r.u64()?,
+    })
+}
+
+/// The receipt is in the block of `header` (tx_root path, 33-byte entries) and names
+/// that block (height, miner, job_id). A block has exactly one receipt-shaped leaf (the
+/// chain appends one; txs cannot parse as one), so no leaf position is needed.
+pub fn verify_coinbase(header: &crate::header::Header, record: &[u8], path: &[u8]) -> Result<Coinbase, Error> {
+    let c = coinbase(record)?;
+    if c.height != header.height() || c.miner != header.miner() || c.job_id != header.job_id() {
+        return Err(Error::Coinbase);
+    }
+    verify_tx_path(&blake3::hash(record), path, &header.tx_root())?;
+    Ok(c)
+}
+
+// ------------------------------------------------------------------ R2 payout liens
+
+/// SetRoute body (kind 9): `solana_recipient [32], route_bps u16, until_height u64, cap u64,
+/// release_key [32]` (zero = no early release). The lien is on the tx's `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetRoute {
+    pub account: [u8; 32],
+    pub solana_recipient: [u8; 32],
+    pub route_bps: u16,
+    pub until_height: u64,
+    pub cap: u64,
+    pub release_key: [u8; 32],
+}
+
+pub fn set_route(tx: &TxView) -> Result<SetRoute, Error> {
+    let body = tx.body();
+    if tx.kind() != KIND_SET_ROUTE || body.len() != 32 + 2 + 8 + 8 + 32 {
+        return Err(Error::Tx);
+    }
+    let mut r = Rd { b: body, pos: 0 };
+    Ok(SetRoute {
+        account: tx.from(),
+        solana_recipient: r.arr()?,
+        route_bps: r.u16()?,
+        until_height: r.u64()?,
+        cap: r.u64()?,
+        release_key: r.arr()?,
+    })
+}
+
+/// ClearRoute body (kind 10): `(account, route_nonce)`.
+pub fn clear_route(tx: &TxView) -> Result<([u8; 32], u64), Error> {
+    let body = tx.body();
+    if tx.kind() != KIND_CLEAR_ROUTE || body.len() != 32 + 8 + 64 {
+        return Err(Error::Tx);
+    }
+    Ok((body[..32].try_into().unwrap(), u64::from_le_bytes(body[32..40].try_into().unwrap())))
+}
+
+/// `b"pearl-sol:route-clear:v1" || chain_id u32 LE || account || route_nonce u64 LE`: what a
+/// lien's release key signs (raw ed25519) to clear it early.
+pub fn route_clear_message(chain_id: u32, account: &[u8; 32], route_nonce: u64) -> [u8; 24 + 4 + 32 + 8] {
+    let mut m = [0u8; 68];
+    m[..24].copy_from_slice(b"pearl-sol:route-clear:v1");
+    m[24..28].copy_from_slice(&chain_id.to_le_bytes());
+    m[28..60].copy_from_slice(account);
+    m[60..68].copy_from_slice(&route_nonce.to_le_bytes());
+    m
 }

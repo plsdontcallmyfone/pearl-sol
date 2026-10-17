@@ -9,6 +9,7 @@
 
 #![no_std]
 
+pub mod acc;
 pub mod blake3;
 pub mod chaintx;
 pub mod config;
@@ -38,6 +39,10 @@ pub enum Error {
     MmrRoot,
     TxPath,
     Tx,
+    /// Coinbase receipt malformed or not matching its header (R1).
+    Coinbase,
+    /// Final-header accumulator proof malformed or not matching (R5).
+    AccProof,
 }
 
 impl Error {

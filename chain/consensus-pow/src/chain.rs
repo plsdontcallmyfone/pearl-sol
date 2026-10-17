@@ -204,6 +204,7 @@ pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
     match &t.body {
         agent_types::TxBody::Transfer { to, .. } => v.push(*to),
         agent_types::TxBody::BridgeUnlock { recipient, .. } => v.push(*recipient),
+        agent_types::TxBody::ClearRoute { account, .. } => v.push(*account),
         _ => {}
     }
     v.dedup();
@@ -308,7 +309,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 let header = genesis_header(&genesis, snap.state_root, snap.withdraw_root);
                 let hash = header.hash();
                 chain.store.finalize(&snap).await.map_err(internal)?;
-                let block = Block { header, proof: Vec::new(), txs: Vec::new() };
+                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None };
                 chain.archive_put(&block).await?;
                 chain.genesis_hash = hash;
                 chain.install_root(block, snap, U256::zero()).await?;
@@ -871,6 +872,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if snap.withdraw_root != h.withdraw_root {
             return invalid("withdraw_root mismatch");
         }
+        // The body's receipt is committed by tx_root (check_commitments); it must be
+        // the one execution produced.
+        if block.coinbase != Some(summary.coinbase) {
+            return invalid("coinbase receipt mismatch");
+        }
         let config = self.read_config(&snap).await?;
         Ok((snap, summary, config))
     }
@@ -1091,7 +1097,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             target_bits: self.required_bits(&parent),
             job_id: job.as_ref().map(|j| j.job_id).unwrap_or([0; 32]),
             miner,
-            tx_root: agent_types::block::tx_root(&txs),
+            tx_root: agent_types::block::tx_root_with(&txs, Some(&summary.coinbase)),
             state_root: snap.state_root,
             withdraw_root: snap.withdraw_root,
             proof_hash: [0; 32],

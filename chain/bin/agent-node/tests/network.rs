@@ -681,3 +681,87 @@ fn late_joiner_fetches_job_blobs_after_catch_up() {
         assert!(wait_blob(&ctx, &net.apis[1], &id, 30).await, "late joiner fetched the job data");
     });
 }
+
+/// R1 + R2 over the node RPC: every block's getBlock carries its coinbase receipt with a
+/// tx_root path that the light client's verifier accepts (and tx paths); a payout lien
+/// (SetRoute) on the miner's key splits its matured coinbase into withdrawal-log entries
+/// from the miner to the lien's Solana recipient, provable like any BridgeLock; getRoute /
+/// getAccount report it.
+#[test]
+fn coinbase_receipts_and_payout_lien_over_rpc() {
+    runner(11).start(|ctx| async move {
+        let net = setup(&ctx, 1, 3, true).await;
+        let api = &net.apis[0];
+        let b64 = |t: &Tx| base64::engine::general_purpose::STANDARD.encode(t.encode());
+        let msg = deposit_message(9, &pk(3), 5000);
+        let sig = AttesterSig { pubkey: pk(50), sig: sign_plain(&seed(50), &msg) };
+        let fund = Tx::signed(&seed(200), CHAIN, 0, 0, TxBody::BridgeUnlock { solana_nonce: 9, recipient: pk(3), amount_spl: 5000, job_order: None, sigs: vec![sig] });
+        api.call("sendTx", json!({"tx": b64(&fund)})).await;
+        api.mine(4).await;
+        // miner key pk(3) puts a 40% lien on its income, releasable by pk(70)
+        let lender = [0x4c; 32];
+        let set = Tx::signed(&seed(3), CHAIN, 0, 1_000_000, TxBody::SetRoute { solana_recipient: lender, route_bps: 4000, until_height: 1000, cap: u64::MAX, release_key: pk(70) });
+        api.call("sendTx", json!({"tx": b64(&set)})).await;
+        api.mine(3).await;
+        let r = api.call("getRoute", json!({"account": bs58::encode(pk(3)).into_string()})).await;
+        assert_eq!(r["active"], json!(true), "{r}");
+        assert_eq!(r["route_bps"], json!(4000));
+        assert_eq!(r["route_nonce"], json!(0));
+        assert_eq!(r["release_key"], json!(bs58::encode(pk(70)).into_string()));
+        // a big-fee tx mined by pk(3), so its matured coinbase is worth splitting
+        let t = Tx::signed(&seed(3), CHAIN, 1, 2_000_000, TxBody::Transfer { to: pk(5), amount: 1 });
+        api.call("sendTx", json!({"tx": b64(&t)})).await;
+        api.mine(3).await;
+        for _ in 0..6 {
+            api.mine(4).await;
+        }
+        let (_, tip) = api.tip().await;
+        let mut receipts = 0;
+        let mut cb_total = 0u128;
+        for h in 1..=tip {
+            let hdr = api.call("getHeader", json!({"height": h})).await;
+            let blk = api.call("getBlock", json!({"height": h})).await;
+            let hb: [u8; 256] = hex::decode(hdr["header"].as_str().unwrap()).unwrap().try_into().unwrap();
+            let header = pearl_verify_sbf::header::Header(&hb);
+            let cb = &blk["coinbase"];
+            let rec = hex::decode(cb["record"].as_str().unwrap()).unwrap();
+            let path = hex::decode(cb["path"].as_str().unwrap()).unwrap();
+            let c = pearl_verify_sbf::chaintx::verify_coinbase(&header, &rec, &path).expect("receipt proves");
+            assert_eq!(c.fees.to_string(), blk["fees"].as_str().unwrap());
+            assert_eq!(cb["leaf_index"].as_u64().unwrap() as usize, blk["txs"].as_array().unwrap().len());
+            for t in blk["txs"].as_array().unwrap() {
+                let tx = base64::engine::general_purpose::STANDARD.decode(t["tx"].as_str().unwrap()).unwrap();
+                let p = hex::decode(t["path"].as_str().unwrap()).unwrap();
+                pearl_verify_sbf::chaintx::verify_tx_path(&pearl_verify_sbf::chaintx::tx_hash(&tx), &p, &header.tx_root()).unwrap();
+            }
+            if c.miner == pk(3) {
+                cb_total += c.reward() as u128;
+            }
+            receipts += 1;
+        }
+        assert_eq!(receipts, tip);
+        assert_eq!(cb_total, 3_000_000, "pk(3) mined the SetRoute (1e6) and the transfer (2e6) blocks");
+        // both matured under the lien: 40% of 3e6 = 1.2e6 = 1200 SPL out in entries from pk(3)
+        let r = api.call("getAccount", json!({"account": bs58::encode(pk(3)).into_string()})).await;
+        assert_eq!(r["route"]["routed"], json!("1200000"), "{r}");
+        assert_eq!(r["route"]["withdrawn"], json!("1200000"));
+        let ev = api.call("getBridgeEvents", json!({})).await;
+        let ws = ev["withdrawals"].as_array().unwrap();
+        assert_eq!(ws.len(), 2, "{ev}");
+        let total: u64 = ws.iter().map(|w| w["amount_spl"].as_str().unwrap().parse::<u64>().unwrap()).sum();
+        assert_eq!(total, 1200);
+        for w in ws {
+            assert_eq!(w["from"], json!(bs58::encode(pk(3)).into_string()));
+            assert_eq!(w["solana_recipient"], json!(bs58::encode(lender).into_string()));
+        }
+        let p = api.call("getWithdrawalProof", json!({"nonce": 0})).await;
+        assert_eq!(p["withdrawal"]["from"], json!(bs58::encode(pk(3)).into_string()));
+        // the release key clears it; later income is not split
+        let cmsg = agent_types::tx::route_clear_message(CHAIN, &pk(3), 0);
+        let clr = Tx::signed(&seed(3), CHAIN, 2, 10, TxBody::ClearRoute { account: pk(3), route_nonce: 0, sig: sign_plain(&seed(70), &cmsg) });
+        api.send(&clr).await.unwrap();
+        api.mine(4).await;
+        let r = api.call("getRoute", json!({"account": bs58::encode(pk(3)).into_string()})).await;
+        assert_eq!((r["active"].clone(), r["cleared"].clone()), (json!(false), json!(true)));
+    });
+}

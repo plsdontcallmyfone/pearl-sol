@@ -6,12 +6,14 @@
 //! the same bytes so the types travel over Commonware p2p and resolver channels.
 
 pub mod block;
+pub mod coinbase;
 pub mod codec;
 pub mod header;
 pub mod merkle;
 pub mod tx;
 
 pub use block::Block;
+pub use coinbase::Coinbase;
 pub use header::Header;
 pub use tx::{AttesterSig, PostJob, Tx, TxBody, TxKind};
 
@@ -36,6 +38,9 @@ pub const DOMAIN_DEPOSIT: &[u8] = b"pearl-sol:deposit:v1";
 pub const DOMAIN_DEPOSIT_ORDER: &[u8] = b"pearl-sol:deposit-order:v1";
 /// Order job id: `sha256(domain || solana_nonce u64 LE)`.
 pub const DOMAIN_ORDER_JOB: &[u8] = b"pearl-sol:order-job:v1";
+
+/// ClearRoute release signature: `domain || chain_id u32 LE || account || route_nonce u64 LE`.
+pub const DOMAIN_ROUTE_CLEAR: &[u8] = b"pearl-sol:route-clear:v1";
 
 /// Native base units per token (9 decimals).
 pub const UNITS_PER_TOKEN: u64 = 1_000_000_000;
