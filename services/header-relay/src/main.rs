@@ -10,6 +10,7 @@
 //!   header-relay harvest  --node URL --out FILE (headers, proofs, txs, withdrawal proofs)
 
 mod chain;
+mod settle;
 mod sol;
 
 use std::path::PathBuf;
@@ -67,6 +68,11 @@ enum Cmd {
         /// Relay what is there, then exit.
         #[arg(long)]
         once: bool,
+        /// Also settle by proof: bridge release_proof for final withdrawals and storefront
+        /// finalize/expire_order_proof for closed orders, when those programs have proof
+        /// mode on (src/settle.rs).
+        #[arg(long)]
+        settle: bool,
     },
     /// Devnet seeding: BridgeUnlock to a user, BridgeLock back, PostJob, mine a job block.
     Seed {
@@ -76,6 +82,8 @@ enum Cmd {
         #[arg(long)]
         withdraw_to: Option<String>,
     },
+    /// Light-client state as one JSON line (tip, final, floor; initialized false if none).
+    Status,
     /// Devnet: mine N fallback blocks via getBlockTemplate / submitBlock.
     Mine { n: u64 },
     /// Dump a header chain with proofs, txs and final withdrawal proofs as JSON.
@@ -95,13 +103,20 @@ fn main() -> Result<()> {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
-        Cmd::Run { work, poll_ms, once } => {
+        Cmd::Run { work, poll_ms, once, settle } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
             let work = load_or_create_key(&work)?;
             let mut r = Relay { node, sol: &mut s, work, closed_upto: 0 };
             r.ensure_work()?;
+            let mut st = settle::Settle::new();
             loop {
-                match r.step() {
+                let stepped = r.step();
+                if settle {
+                    if let Err(e) = st.tick(&r.node, r.sol) {
+                        eprintln!("settle: {e:#}");
+                    }
+                }
+                match stepped {
                     Ok(n) if n > 0 => continue,
                     Ok(_) => {}
                     Err(e) => eprintln!("relay: {e:#}"),
@@ -113,6 +128,15 @@ fn main() -> Result<()> {
                 }
                 std::thread::sleep(Duration::from_millis(poll_ms));
             }
+        }
+        Cmd::Status => {
+            let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            match s.config() {
+                Ok(c) => println!("{}", json!({"initialized": true, "tip_height": c.tip_height, "tip_hash": hex::encode(c.tip_hash),
+                    "final_height": c.final_height, "final_floor": c.final_floor, "checkpoint_height": c.checkpoint_height})),
+                Err(_) => println!("{}", json!({"initialized": false})),
+            }
+            Ok(())
         }
         Cmd::Seed { attester, withdraw_to } => seed(&node, &attester, withdraw_to),
         Cmd::Mine { n } => {
@@ -202,7 +226,7 @@ impl Relay<'_> {
             let Some(hd) = self.node.header_at(h)? else { break };
             self.ensure_verified(&hd)?;
             relayed += 1;
-            if relayed >= 16 {
+            if relayed >= 4 {
                 break; // yield so finality and closing keep up
             }
         }
@@ -216,7 +240,9 @@ impl Relay<'_> {
         match self.sol.header_state(&hd.hash)? {
             Some((lightclient::STATUS_VERIFIED, _, _)) => return Ok(()),
             Some(_) => {}
-            None => self.sol.send(&[client::submit_header(self.sol.pk(), hd.bytes)], &[])?,
+            None => {
+                self.sol.send(&[client::submit_header(self.sol.pk(), hd.bytes)], &[])?;
+            }
         }
         let job = if hd.is_fallback() { None } else { Some(hd.job_id()) };
         // the mining config the block is verified against (sizes the step plan)
@@ -235,11 +261,13 @@ impl Relay<'_> {
             &[],
         )?;
         let mut off = first;
+        let mut chunks = vec![];
         while off < hd.proof.len() {
             let n = client::WRITE_CHUNK.min(hd.proof.len() - off);
-            self.sol.send(&[client::write_proof(pk, w, off as u32, hd.proof[off..off + n].to_vec())], &[])?;
+            chunks.push(vec![client::write_proof(pk, w, off as u32, hd.proof[off..off + n].to_vec())]);
             off += n;
         }
+        self.sol.send_batch(&chunks)?; // disjoint ranges: sent back to back, confirmed together
         let c = self.sol.config()?;
         let p = c.params;
         let shape = client::Shape::new(hd.is_fallback(), p.fallback_m, p.fallback_n, &job_config.unwrap_or(p.fallback_config), hd.proof.len());

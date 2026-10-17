@@ -31,7 +31,10 @@ impl Sol {
         self.payer.pubkey()
     }
 
-    pub fn send(&mut self, ixs: &[Instruction], extra: &[&Keypair]) -> Result<()> {
+    /// Sends one transaction and waits until it is confirmed; returns its signature.
+    /// Polls every 50 ms (RpcClient::send_and_confirm_transaction sleeps 500 ms between
+    /// status checks, which made one header cost tens of seconds on a local validator).
+    pub fn send(&mut self, ixs: &[Instruction], extra: &[&Keypair]) -> Result<String> {
         let mut all = vec![ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)];
         if self.cu_price > 0 {
             all.push(ComputeBudgetInstruction::set_compute_unit_price(self.cu_price));
@@ -43,10 +46,10 @@ impl Sol {
         for _ in 0..3 {
             let bh = self.rpc.get_latest_blockhash()?;
             let tx = Transaction::new_signed_with_payer(&all, Some(&self.payer.pubkey()), &signers, bh);
-            match self.rpc.send_and_confirm_transaction(&tx) {
-                Ok(_) => {
+            match self.send_confirm(&tx, &bh) {
+                Ok(sig) => {
                     self.txs += 1;
-                    return Ok(());
+                    return Ok(sig);
                 }
                 Err(e) => {
                     let s = e.to_string();
@@ -59,6 +62,67 @@ impl Sol {
             }
         }
         Err(anyhow!("send failed: {}", last.unwrap_or_default()))
+    }
+
+    /// Sends independent transactions (no ordering between them) back to back, then
+    /// waits until all are confirmed. Used for the proof chunk uploads, which write
+    /// disjoint ranges of the work account.
+    pub fn send_batch(&mut self, txs: &[Vec<Instruction>]) -> Result<()> {
+        if txs.is_empty() {
+            return Ok(());
+        }
+        let bh = self.rpc.get_latest_blockhash()?;
+        let mut sigs = Vec::with_capacity(txs.len());
+        for ixs in txs {
+            let mut all = vec![ComputeBudgetInstruction::set_compute_unit_limit(200_000)];
+            if self.cu_price > 0 {
+                all.push(ComputeBudgetInstruction::set_compute_unit_price(self.cu_price));
+            }
+            all.extend_from_slice(ixs);
+            let tx = Transaction::new_signed_with_payer(&all, Some(&self.payer.pubkey()), &[&self.payer], bh);
+            sigs.push(self.rpc.send_transaction(&tx)?);
+        }
+        let t0 = std::time::Instant::now();
+        let mut left: Vec<_> = sigs.clone();
+        while !left.is_empty() {
+            let st = self.rpc.get_signature_statuses(&left)?.value;
+            let mut next = vec![];
+            for (sig, s) in left.iter().zip(st) {
+                match s {
+                    Some(s) if s.err.is_some() => bail!("batch tx {sig} failed: {:?}", s.err),
+                    Some(s) if s.satisfies_commitment(CommitmentConfig::confirmed()) => {}
+                    _ => next.push(*sig),
+                }
+            }
+            left = next;
+            if !left.is_empty() {
+                if t0.elapsed() > std::time::Duration::from_secs(60) {
+                    bail!("{} batch txs unconfirmed after 60 s", left.len());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        self.txs += txs.len() as u64;
+        Ok(())
+    }
+
+    fn send_confirm(&self, tx: &Transaction, bh: &solana_sdk::hash::Hash) -> Result<String> {
+        let sig = self.rpc.send_transaction(tx)?;
+        let t0 = std::time::Instant::now();
+        loop {
+            let st = self.rpc.get_signature_statuses(&[sig])?.value.into_iter().next().flatten();
+            if let Some(st) = st {
+                if let Some(e) = st.err {
+                    bail!("transaction {sig} failed: Error processing Instruction: {e}");
+                }
+                if st.satisfies_commitment(CommitmentConfig::confirmed()) {
+                    return Ok(sig.to_string());
+                }
+            } else if t0.elapsed() > std::time::Duration::from_secs(5) && !self.rpc.is_blockhash_valid(bh, CommitmentConfig::processed())? {
+                bail!("transaction {sig} expired unconfirmed");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     pub fn account(&self, k: &Pubkey) -> Result<Option<Vec<u8>>> {

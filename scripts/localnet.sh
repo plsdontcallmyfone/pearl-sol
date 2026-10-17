@@ -42,7 +42,7 @@ up() {
   fi
   # our programs at genesis, if built (upgrade authority = localnet payer)
   local payer; payer=$(solana-keygen pubkey "$ROOT/keys/localnet/payer-keypair.json")
-  local progs; [[ $c == token ]] && progs="reserve bridge storefront" || progs="escrow agents jobs mining"
+  local progs; [[ $c == token ]] && progs="reserve bridge storefront lightclient" || progs="escrow agents jobs mining"
   for p in $progs; do
     local so="$ROOT/$c/target/deploy/$p.so"
     [[ -f $so ]] || { echo "note: $so not built, skipping" >&2; continue; }

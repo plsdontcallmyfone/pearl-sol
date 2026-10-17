@@ -25,6 +25,7 @@ rand = "0.9"
 ed25519-dalek = "2.2"
 solana-client = "2.2"
 solana-sdk = "2.2"
+solana-account-decoder-client-types = "2.2"
 anchor-lang = "0.31.1"
 lightclient = { path = "../../token/programs/lightclient", features = ["no-entrypoint"] }
 pearl-verify-sbf = { path = "../../crates/pearl-verify-sbf" }

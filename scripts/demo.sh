@@ -2,13 +2,14 @@
 # M1 end to end demo (SPEC 7 M1 item 6) on real local processes:
 #   token chain  scripts/localnet.sh up token        (:10600, pump fixtures + reserve + bridge + storefront)
 #   agent chain  scripts/devnet.sh with DEVNET_DIR=.demo/devnet (3 nodes, RPC 10630/10632/10634)
-#   services     relayer :10660, attester :10661, miner (--deliver), crank, storefront-x402 :10662
+#   services     relayer :10660, attester :10661, miner (--deliver), crank, storefront-x402 :10662,
+#                header-relay (light client relay + proof-mode settlement, no port)
 # Steps, PASS/FAIL each, supply invariant after each: scripts/demo/run.ts.
 #
 #   scripts/demo.sh          build if needed, run all steps, tear everything down (exit 1 on any FAIL)
 #   scripts/demo.sh down     stop whatever a previous run left (DEMO_KEEP_UP=1), by recorded PIDs
 #
-# Env: DEMO_KEEP_UP=1 (leave the stack running), DEMO_K (finality depth, default 6),
+# Env: DEMO_TICKS_PER_SLOT (token validator, default 8 = 50 ms slots), DEMO_KEEP_UP=1 (leave the stack running), DEMO_K (finality depth, default 6),
 #      DEMO_BLOCK_MS (target block time, default 1500), DEMO_MINER_THREADS (default 4).
 # Kills by PID only (never by pattern). Never touches `solana config`.
 set -euo pipefail
@@ -22,7 +23,7 @@ down() {
     [[ -f $f ]] || continue
     pid="$(cat "$f")"
     # only our own processes: check what the PID is now before killing it
-    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|src/main.ts"; then
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|header-relay|src/main.ts"; then
       kill "$pid" && echo "stopped $(basename "$f" .pid) ($pid)"
     fi
     rm -f "$f"
@@ -54,11 +55,13 @@ echo "building agent-node (chain/, pinned toolchain)..."
 (cd "$ROOT/chain" && cargo build --release -q -p agent-node)
 echo "building pearl-job, pearl-miner, pearl-attester (crates/)..."
 (cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester)
+echo "building header-relay (services/header-relay)..."
+(cd "$ROOT/services/header-relay" && cargo build --release -q)
 for d in relayer crank storefront-x402; do
   [[ -d "$ROOT/services/$d/node_modules" ]] || (cd "$ROOT/services/$d" && npm ci --silent)
 done
 echo "builds ready in $(( $(date +%s) - t )) s"
-for so in reserve bridge storefront; do
+for so in reserve bridge storefront lightclient; do
   [[ -f "$ROOT/token/target/deploy/$so.so" ]] || { echo "missing token/target/deploy/$so.so: cd token && anchor build" >&2; exit 1; }
 done
 

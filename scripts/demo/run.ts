@@ -37,6 +37,11 @@ const GENESIS_PARAMS = {
   min_fee: 1000,
 };
 const MINER_THREADS = process.env.DEMO_MINER_THREADS ?? "4";
+// M2 light client: the token validator runs 8 ticks per slot (50 ms slots) so the
+// header relay (about 37 Solana txs per agent-chain header) keeps pace with 1.5 s blocks.
+const TICKS_PER_SLOT = process.env.DEMO_TICKS_PER_SLOT ?? "8";
+const LIGHTCLIENT_ID = new PublicKey("BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5");
+const MODE_PROOF = 2;
 const DEV_BUY = 1_000_000_000n; // 1 SOL dev buy into the reserve
 const FUND_SPL = 10_000_000_000_000n; // 10M tokens (6 dp) from the reserve to the mining pool
 // k 2048, r 128: the localnet config after the rank penalty (r >= 128, k >= 16r; 2026-10-17)
@@ -65,7 +70,9 @@ const BIN = {
   miner: resolve(ROOT, "crates/target/release/pearl-miner"),
   attester: resolve(ROOT, "crates/target/release/pearl-attester"),
   job: resolve(ROOT, "crates/target/release/pearl-job"),
+  headerRelay: resolve(ROOT, "services/header-relay/target/release/header-relay"),
 };
+const HR_ARGS = ["--node", NODE_RPC, "--solana", TOKEN_RPC, "--payer", resolve(ROOT, KEYS.payer)];
 const CRANK = resolve(ROOT, "services/crank");
 const RELAYER = resolve(ROOT, "services/relayer");
 const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS) };
@@ -195,11 +202,38 @@ async function bridgeNonce(): Promise<bigint> {
   return decodeBridgeConfig(a!.data).depositNonce;
 }
 
+/** Admin `set_release_modes` (bridge) / `set_finalize_modes` (storefront): proof path only. */
+async function setProofMode(program: PublicKey, ix: string, config: PublicKey): Promise<void> {
+  await send([new TransactionInstruction({ programId: program, keys: [m(payer.publicKey, true, true), m(config, true)],
+    data: Buffer.concat([disc(ix), Buffer.from([MODE_PROOF]), LIGHTCLIENT_ID.toBuffer()]) })], [payer]);
+}
+
+/** The instruction (by Anchor name) of `program` in the newest tx touching `addr`. */
+async function lastIxName(addr: PublicKey, program: PublicKey, names: string[]): Promise<string | null> {
+  const [sig] = await conn.getSignaturesForAddress(addr, { limit: 1 });
+  if (!sig) return null;
+  const tx = await conn.getTransaction(sig.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  if (!tx) return null;
+  const keys = tx.transaction.message.staticAccountKeys;
+  for (const ci of tx.transaction.message.compiledInstructions) {
+    if (!keys[ci.programIdIndex].equals(program)) continue;
+    const d = Buffer.from(ci.data).subarray(0, 8);
+    for (const n of names) if (d.equals(disc(n))) return `${n} (${sig.signature.slice(0, 16)}...)`;
+  }
+  return null;
+}
+
+/** Light-client tip / final height from its Config account. */
+async function lcHeights(): Promise<{ tip: number; final: number } | null> {
+  const r = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "status"]).trim().split("\n").pop()!);
+  return r.initialized ? { tip: r.tip_height, final: r.final_height } : null;
+}
+
 // ------------------------------------------------------------ steps
 
 async function step1(): Promise<string> {
   // token chain
-  console.log(run("bash", ["scripts/localnet.sh", "up", "token"]).trim());
+  console.log(run("bash", ["scripts/localnet.sh", "up", "token", "--ticks-per-slot", TICKS_PER_SLOT]).trim());
   for (const k of [payer.publicKey, trader.kp.publicKey, user.kp.publicKey, buyer.kp.publicKey, sfWallet.kp.publicKey]) await airdrop(k, 100);
   // agent chain: 3-node devnet from a fresh genesis
   console.log(run("bash", ["scripts/devnet.sh", "init"], { env: DEVNET_ENV }).trim());
@@ -312,6 +346,21 @@ async function step3(): Promise<string> {
     `RegisterAgent ${reg.slice(0, 16)} (agent "${agent.name}" at ${agent.registered_height}); miner payout funded with ${fund}`;
 }
 
+async function stepLightClient(): Promise<string> {
+  // checkpoint = the node's current final header (before the order is posted, so its
+  // job can be registered from its posting tx); then relay + settle by proof
+  const out = run(BIN.headerRelay, [...HR_ARGS, "init"]).trim();
+  console.log(out);
+  start("header-relay", BIN.headerRelay, [...HR_ARGS, "run", "--settle", "--poll-ms", "1000", "--work", resolve(DEMO, "header-relay-work.json")]);
+  await setProofMode(STOREFRONT_PROGRAM_ID, "set_finalize_modes", storefrontConfigPda());
+  const lc0 = (await lcHeights())!;
+  const h = await waitFor("light client follows the chain", async () => {
+    const x = await lcHeights();
+    return x && x.tip >= lc0.tip + 3 ? x : null;
+  }, 120_000);
+  return `${out}; header-relay running (--settle); storefront finalize mode = proof only; light client tip ${h.tip} final ${h.final}`;
+}
+
 let order: { nonce: bigint; jobId: string; P: bigint; W: bigint; postedHeight: number } | null = null;
 
 async function step4(): Promise<string> {
@@ -408,6 +457,8 @@ async function step5(): Promise<string> {
     const a = await conn.getAccountInfo(pda_);
     return a && a.data[ORDER_LAYOUT.STATUS] === ORDER_STATUS_FINALIZED ? a : null;
   }, 300_000);
+  const how = await lastIxName(pda_, STOREFRONT_PROGRAM_ID, ["finalize_order_proof", "finalize_order"]);
+  if (!how?.startsWith("finalize_order_proof")) throw new Error(`Order finalized by ${how}, not by light-client proof`);
   const rh = Buffer.from(acc.data.subarray(ORDER_LAYOUT.RESULT_HASH, ORDER_LAYOUT.RESULT_HASH + 32)).toString("hex");
   const deliverer = new PublicKey(acc.data.subarray(ORDER_LAYOUT.DELIVERER, ORDER_LAYOUT.DELIVERER + 32)).toBase58();
   if (rh !== job.result_hash || deliverer !== job.deliverer) throw new Error(`Order on Solana: result_hash ${rh} deliverer ${deliverer}`);
@@ -415,7 +466,7 @@ async function step5(): Promise<string> {
   const heightNow = (await node.getChainInfo()).height;
   return `${job.blocks_mined} job block(s) at ${jobBlocks.join(",")}, subsidy ${subsidy} = cap alpha x P ${cap} ` +
     `(pool x emission per block now ${uncapped}), ${fallbackBefore} fallback blocks before / ${fallbackAfter} after; completed at ${job.closed_height}, ` +
-    `finalized on Solana by height ${heightNow} (K=${FINALITY_K}); Order ${pda_.toBase58()} result_hash ${rh} (GET /jobs/${order.nonce}: ${svc.body?.status ?? svc.status})`;
+    `finalized on Solana by ${how} by chain height ${heightNow} (K=${FINALITY_K}); Order ${pda_.toBase58()} result_hash ${rh} (GET /jobs/${order.nonce}: ${svc.body?.status ?? svc.status})`;
 }
 
 async function step6(): Promise<string> {
@@ -426,6 +477,7 @@ async function step6(): Promise<string> {
   const bal = await chainBalance(miner.publicKey);
   const lockAmount = ((bal / 2n) / 1000n) * 1000n;
   if (lockAmount === 0n) throw new Error(`miner balance ${bal}`);
+  await setProofMode(BRIDGE_PROGRAM_ID, "set_release_modes", bridgeConfigPda());
   const to = miner.publicKey; // same ed25519 key on Solana
   const splBefore = await splBalance(to);
   const out = relayerCli(["lock", lockAmount.toString(), to.toBase58(), resolve(ROOT, KEYS.miner)]).trim();
@@ -436,11 +488,19 @@ async function step6(): Promise<string> {
   const got = await waitFor("SPL released on Solana", async () => {
     const b = await splBalance(to);
     return b > splBefore ? b : null;
-  }, 300_000);
+  }, 600_000);
   const heightAtRelease = (await node.getChainInfo()).height;
+  const ev = await nodeCall("getBridgeEvents", { from_nonce: 0, limit: 100 });
+  const wd = (ev.withdrawals as any[]).find((x) => x.solana_recipient === to.toBase58() && BigInt(x.amount_spl) === lockAmount / 1000n);
+  if (!wd) throw new Error(`withdrawal for ${to.toBase58()} not in getBridgeEvents`);
+  const wNonce = BigInt(wd.nonce);
+  const processed = PublicKey.findProgramAddressSync([Buffer.from("processed"), Buffer.from([1]), u64le(wNonce)], BRIDGE_PROGRAM_ID)[0];
+  const how = await lastIxName(processed, BRIDGE_PROGRAM_ID, ["release_proof", "release"]);
+  if (!how?.startsWith("release_proof")) throw new Error(`withdrawal ${wNonce} released by ${how}, not by light-client proof`);
+  const lc = await lcHeights();
   if (got - splBefore !== lockAmount / 1000n) throw new Error(`released ${got - splBefore}, want ${lockAmount / 1000n}`);
   return `miner balance ${bal}, BridgeLock ${lockAmount} at height ${lockHeight}, released ${lockAmount / 1000n} SPL to ${to.toBase58()} ` +
-    `(ATA ${ata(to, MINT).toBase58()}) by chain height ${heightAtRelease}`;
+    `(ATA ${ata(to, MINT).toBase58()}) by ${how} (bridge release mode = proof only) by chain height ${heightAtRelease}; light client tip ${lc?.tip} final ${lc?.final}`;
 }
 
 // ------------------------------------------------------------ teardown
@@ -495,9 +555,10 @@ try {
   await step("1. bring up, init reserve + launch, bridge, storefront, genesis signers", step1);
   await step("2. trades, buyback crank, fund_mining -> pool unlock", step2);
   await step("3. plain bridge-in + RegisterAgent", step3);
-  await step("4. storefront order over x402 -> job on the chain", step4);
-  await step("5. job + fallback mining, delivery, CompleteJob, finalize_order on Solana", step5);
-  await step("6. rewards mature, BridgeLock -> SPL release on Solana", step6);
+  await step("4. light client: init from the devnet checkpoint, header-relay, storefront finalize -> proof mode", stepLightClient);
+  await step("5. storefront order over x402 -> job on the chain", step4);
+  await step("6. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
+  await step("7. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
@@ -507,12 +568,12 @@ if (!keepUp) {
   const s = Date.now();
   try {
     const d = await teardown();
-    results.push({ step: "7. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
-    console.log(`\n== 7. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+    results.push({ step: "8. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 8. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
   } catch (e) {
     failed = true;
-    results.push({ step: "7. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
-    console.log(`\n== 7. teardown\n   FAIL: ${(e as Error).message}`);
+    results.push({ step: "8. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 8. teardown\n   FAIL: ${(e as Error).message}`);
   }
 } else {
   console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);
