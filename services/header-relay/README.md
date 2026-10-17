@@ -26,3 +26,23 @@ Devnet helpers (1-node devnet, own data dir; check `lsof -ti :10630` first):
 
 Live run 2026-10-17 (solana-test-validator :10600, 1-node devnet, K = 6): 18 headers
 incl. one job block relayed, 583 txs, resumed after a restart.
+
+Proof-mode settlement (`run --settle`, src/settle.rs): when the bridge has
+`release_modes` proof on, it calls `bridge.release_proof` for each final withdrawal not
+yet Processed, with the node's MMR proof against a FINAL light-client header whose
+`withdraw_root` equals the proof's root; when the storefront has `finalize_modes` proof
+on, it calls `finalize_order_proof` (CompleteJob tx + tx_root path + ed25519 precompile
+of the evaluator signature) or `expire_order_proof` for Pending orders whose chain job
+closed in a final light-client header. The payer must be the order's buyer, the
+storefront admin or an attester. `status` prints the light client's tip / final as JSON.
+
+Speed: confirmations are polled every 50 ms and proof chunks go out as one batch. On a
+`--ticks-per-slot 8` validator (50 ms slots, what scripts/demo.sh uses) a fallback header
+takes about 1.4 s (37 txs); at the default 400 ms slots about 20 s before these changes.
+4 ticks per slot was slower (about 14 s per header; confirmations lag).
+
+Gap: getWithdrawalProof only proves against the node's CURRENT final withdraw_root. That
+root changes only in blocks with withdrawals, so any later final header carries it; if
+withdrawals land every block the light client must sit exactly at the node's final tip.
+A node RPC for a historical proof at a given height (Commonware keyless
+`historical_proof` at that block's log size) would remove this.

@@ -162,21 +162,20 @@ allows running as many agents as needed.
 
 ## Next step
 
-M1 COMPLETE (2026-10-17). M2 STARTED 2026-10-17 (owner "start m2"). Agents, each
+M1 COMPLETE (2026-10-17). M2 COMPLETE (2026-10-17, wrap-up item 5 below; all tests
+and the demo pass). Agents, each
 owning its paths, max 3 heavy builds at once (all local; claude-host is destroyed):
 1. light client: DONE (f5caf0f..50bf84c). See SPEC 5.3 "As built". Tests: verifier 7,
    LiteSVM 9, real devnet fixture 1 (15 real headers incl. the first live job
    block + a real withdrawal released by MMR proof); bridge 10/10 and storefront
-   13/13 re-run. header-relay ran live (18 headers, resume OK). Not wired into
-   scripts/demo.sh or alongside services/relayer yet; reorgs capped at about 30
-   headers per tx; fixture predates the 4x8 fallback default.
+   13/13 re-run. header-relay ran live (18 headers, resume OK). Now in scripts/demo.sh
+   (item 5); reorgs capped at about 30 headers per tx.
    SECURITY: resolved (82e002f..1d4dc89). Pearl's rank penalty ported everywhere
    (pearl-job, chain via verify_block, pearl-verify-sbf + lightclient); r >= 128,
    default config now k=2048, r=128, 4x8. Zero/low-rank matrices only give a 1.22x
    edge (attack = 0.82x honest work), same as Pearl mainnet; SPEC 2/3.2 + 8.
    Light-client cost doubled with k: job header 7.25M CU / 34 txs, 4x8 fallback
-   10.2M / 37 txs. Light-client real-devnet fixture needs re-harvest at k=2048
-   (replay test ignored until then). Still on the OLD config (refused by the
+   10.2M / 37 txs. Real-devnet fixture re-harvested at k=2048 (item 5). Still on the OLD config (refused by the
    chain now): extension LOCALNET_CONFIG_HEX + mock-rpc + solana.test,
    services/agent-cli:422, token/tests/storefront test:102 (sent to the DA agent).
 2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
@@ -208,18 +207,48 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    Tests: chain 66, crates 67, extension 58 + 47 UI, storefront 13; demo 7/7 PASS
    (74.6 s) with job data as a blob. Live 5-node open devnet: cross-node blob fetch,
    late node catch-up (bug fixed ba4b0ce), pruning. Existing .devnet dirs need reset.
-5. WRAP-UP (started 2026-10-17): relayer refuses order unlocks below
-   min_protocol_fee_effective (refund path instead); re-harvest the light-client
-   devnet fixture at k2048/r128 + un-ignore the replay test; add lightclient +
-   header-relay + proof-mode release to scripts/demo.sh; retune pool share target
-   for 4x8 fallback.
+5. WRAP-UP: DONE (42e7958..). Tests: relayer 28 (+4), pool 9 (+1), light-client
+   LiteSVM 9 + devnet fixture 2 (0 ignored), miner 13 unchanged; demo 8/8 PASS.
+   - relayer: before an order BridgeUnlock it compares the order's P with
+     getParams.min_protocol_fee_effective; below it nothing is signed, the deposit is
+     held in state.needsRefund (reason, buyer, recipient, P, floor), logged once,
+     shown in tick `needsRefund` and `cli.ts status`, re-checked every tick (lowering
+     the floor unlocks it). Orders no longer Pending on Solana are held the same way.
+     REFUND GAP (not invented): such a deposit has no way back. Tokens stay in the
+     bridge vault (invariant counts them in flight); storefront expire_order only sets
+     status Expired (moves nothing); expire_order_proof needs a chain ExpireJob that
+     cannot exist (the job was never posted); the bridge has no instruction returning
+     a vault deposit on Solana. Options for the owner: a bridge `refund_deposit`
+     (signers over nonce + buyer) or a plain BridgeUnlock of W + P to the recipient.
+     Relayer also reads bridge release_modes / storefront finalize_modes and leaves
+     final withdrawals / order results to the proof path when signers are off
+     (`proofMode`).
+   - light client: fixture re-harvested from a 1-node devnet at k2048/r128, 4x8, K 6
+     (17 headers, 1 job block, 2 withdrawals; withdrawal 0 released by proof, 21.6k CU);
+     replay test un-ignored; old fixture kept as devnet-pre-rank-penalty.json for the
+     rejection test. Bug fixed: header-relay `seed` posted `blob:seed`, refused by the
+     node; it now putBlobs the PSD1 data.
+   - header-relay: `run --settle` (src/settle.rs) submits bridge release_proof and
+     storefront finalize/expire_order_proof; `status` subcommand; 50 ms confirmation
+     polling + batched proof chunks: about 1.4 s per header on 50 ms slots (was about
+     20 s). GAP: getWithdrawalProof proves only against the node's current final
+     withdraw_root, so the light client needs a final header carrying that root (any
+     header after the last withdrawal block); with withdrawals every block it must sit
+     at the node's final tip. Fix: a historical-proof RPC (Commonware keyless
+     historical_proof at the block's log size).
+   - demo: light client + proof mode (see Demo); scripts/localnet.sh loads
+     lightclient.so; demo token validator runs --ticks-per-slot 8.
+   - pool: default share factor 16 -> 11 (pearl_pool::DEFAULT_SHARE_FACTOR). Live:
+     64x64 era 13.6 pool shares per chain block; 4x8 at 16: 14.6-16.9; at 11: 13.4.
+     Test: 4000 nonces at 4x8 give 11.1 shares per block.
 6. AGENT CREDIT LAYER (owner 2026-10-17, started): wire pearl-sol's verified work into
    ~/agent-credit ("Tab", Solana adaptation of priors.trade): verified jobs/mining
    feed the credit passport, loans fund jobs, mining-backed lines. Work happens in
    ~/agent-credit (design ~/ideas/agent-credit/PEARL-LAYER.md); pearl-sol only
    receives precise change requests. Priors itself (Robinhood Chain) is NOT
    targeted (third-party; would need a new RH Chain bridge).
-Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
+Not done in M2 (later): order refund path (gap above), historical withdrawal proofs,
+chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
 (mirrors the superseded agent/ terms_hash vector; never submitted).
@@ -283,7 +312,10 @@ Topology: token chain `scripts/localnet.sh up token` (:10600); agent chain
 `scripts/devnet.sh` with `DEVNET_DIR=.demo/devnet` (3 nodes, RPC 10630/10632/10634, p2p
 10640-10642); attester :10661 (node mode), miner (`--deliver`, 4 threads, payout
 keys/localnet/miner), relayer :10660 (SIGNER_KEYS = attester, AGENT_KEY = TOKEN_PAYER =
-payer, POLL_MS 1000), storefront-x402 :10662 (wallet = a demo key), crank CLI.
+payer, POLL_MS 1000), storefront-x402 :10662 (wallet = a demo key), crank CLI,
+header-relay (`run --settle`, payer = keys/localnet/payer = storefront + bridge admin).
+The token validator runs `--ticks-per-slot 8` (DEMO_TICKS_PER_SLOT) so the relay keeps
+pace with the agent chain.
 One key (keys/localnet/attester) is the chain attester (genesis, 1 of 1), the bridge
 signer (1 of 1), the storefront attester (1 of 1) and the job evaluator.
 
@@ -292,27 +324,27 @@ wtema_half_life_ms 15000, emission_ppm 10000, min_fee 1000, target 0x207fffff (t
 easiest; WTEMA hardens it within about 200 blocks). emission is high on purpose so one
 job block pays exactly alpha x P (cap binds). Production values stay K 30 / 60 s / 7 ppm.
 
-Steps and last run (2026-10-16, all PASS, 205 s without builds):
-1. up + init (40 s): reserve init (min_interval 1 s, min_buy 1e5, bridge + mining pool
-   = getEscrow.pool), launch with a 1 SOL dev buy (34.2M tokens), bridge init (mint,
-   attester 1 of 1), storefront init + trader PDA pump/PumpSwap volume accumulators,
-   genesis attester checked.
-2. (48 s) trader 3 SOL + 2 SOL round trips: 0.0306 SOL creator fee; crank once: +847.9k
-   tokens buyback; crank fund 10M tokens: deposit 0 unlocked to the pool (1e16 units).
-3. (38 s) user buys, deposits 8.69M tokens, unlocked; RegisterAgent; 5 tokens Transfer
-   to the miner payout (fees for SubmitResult/CompleteJob).
-4. (18 s) `pearl-job gen` 64x64x1024, commitments against the order header
-   (buyer || order_terms), POST /jobs -> 402 -> x402 native SOL payment -> 201; relayer
-   BridgeUnlock with job_order; getJob matches hash_a/hash_b/job_key.
-5. (9 s) 1 job block, subsidy 45.56e12 = alpha x P exactly (pool x emission was 100e12),
-   fallback blocks before and after, SubmitResult, attester sig, CompleteJob (W to the
-   miner), relayer finalize_order after K; Order on Solana read back: status finalized,
-   result_hash = the chain's.
-6. (15 s) after K, miner BridgeLocks half its balance (136.69M tokens) to its own key on
-   Solana; relayer releases after K; SPL balance checked.
-7. (37 s) teardown by PID, ports 10600-10662 free.
-Final invariant: vault 18,836,332,079,710 SPL x 1000 = 1e18 - escrow =
-18,836,332,079,710,000, nothing in flight, delta 0.
+Steps and last run (2026-10-17, all 8 PASS, 122.8 s without builds; was 74.6 s before the
+light client):
+1. (13.3 s) up + init: reserve init, launch (1 SOL dev buy), bridge init (attester 1 of 1),
+   storefront init + trader volume accumulators, genesis attester checked.
+2. (15.6 s) trades: 0.0306 SOL creator fee; crank buyback +847.9k tokens; fund 10M tokens
+   unlocked to the pool.
+3. (16.3 s) user deposit 8.69M tokens unlocked; RegisterAgent; miner payout funded.
+4. (6.9 s) light client: `header-relay init` at the node's final header (height 217),
+   `header-relay run --settle` started, storefront `set_finalize_modes` proof only;
+   light client follows (tip 220).
+5. (8.7 s) `pearl-job gen` 64x64x2048 r128, job data blob on node 1, x402 order -> relayer
+   BridgeUnlock(job_order); getJob matches the buyer's commitments.
+6. (24.2 s) 1 job block (subsidy = alpha x P), CompleteJob at 230; Order finalized on
+   Solana by `finalize_order_proof` (asserted from the tx) against final light-client
+   header 230; result_hash = the chain's.
+7. (33.5 s) bridge `set_release_modes` proof only; miner BridgeLocks half its balance at
+   251; `release_proof` against final header 251 (asserted from the Processed PDA's tx);
+   SPL checked; relayer signed nothing (reported proofMode).
+8. (4.2 s) teardown by PID incl. header-relay, ports 10600-10662 free.
+Final invariant: vault 18,836,394,149,842 SPL x 1000 = 1e18 - escrow, nothing in flight,
+delta 0. header-relay verified 40 headers in the run.
 
 Bugs fixed by the integration run (each with a test):
 - Storefront orders were unmineable: the Pearl job header (job_id || terms_hash with W,
@@ -324,7 +356,8 @@ Bugs fixed by the integration run (each with a test):
   pearl-node JobInfo gained header_id; miner delivered under the wrong id; the miner
   stalled the chain retrying a job whose mining errors (now skipped 60 s).
 
-Not covered by the demo: PumpSwap (graduated) path, expire/refund path, USDC, reorgs
+Not covered by the demo: PumpSwap (graduated) path, expire/refund path (and the
+below-floor refund gap), USDC, reorgs
 across real nodes, restarts mid-flow, more than one relayer/attester.
 
 ## Gotchas
