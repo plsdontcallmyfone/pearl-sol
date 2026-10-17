@@ -249,6 +249,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if !removed.is_empty() {
             info!(count = removed.len(), "pruned blobs");
         }
+        // Safety net (restarts, missed pushes, failed fetches): fetch every blob a job still
+        // needs that this node lacks.
+        let missing: Vec<BlobId> = refs
+            .iter()
+            .filter(|(id, until)| until.saturating_add(grace) >= tip && store.has(id).is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in missing {
+            self.want_blob(id);
+        }
         let stale: Vec<BlobId> = self
             .blob_wanted
             .iter()
@@ -340,6 +350,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                                 self.mempool.remove(&t.hash());
                             }
                             refs.extend(Self::block_blob_refs(&n.txs));
+                        } else if let Ok(Some(b)) = self.chain.get_block(c).await {
+                            // connected and already finalized in the same insert (catch-up)
+                            for t in &b.txs {
+                                self.mempool.remove(&t.hash());
+                            }
+                            refs.extend(Self::block_blob_refs(&b.txs));
                         }
                     }
                     for id in refs {

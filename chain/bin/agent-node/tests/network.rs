@@ -577,3 +577,25 @@ fn blobs_pruned_after_job_closes_plus_grace() {
         assert_eq!(s["count"], json!(0));
     });
 }
+
+/// A node that was offline when the blob was pushed and catches up past finality (the job's
+/// block connects and finalizes in one insert) still fetches the job data.
+#[test]
+fn late_joiner_fetches_job_blobs_after_catch_up() {
+    runner(23).start(|ctx| async move {
+        let net = setup(&ctx, 2, 3, false).await;
+        let api = &net.apis[0];
+        api.send(&unlock_tx(0, 1, pk(2), 100_000)).await.unwrap();
+        api.mine(9).await;
+        let id = api.call("putBlob", json!({"data": b64e(b"late joiner data")})).await["blob_id"].as_str().unwrap().to_string();
+        api.send(&post_job(2, 0, &format!("blob:{id}"), 5_000_000, 1000)).await.unwrap();
+        api.mine(9).await;
+        for _ in 0..12 {
+            api.mine(9).await;
+        }
+        assert!(!has_blob(&net.apis[1], &id).await);
+        net.link(0, 1).await;
+        wait_tips_equal(&ctx, &net.apis, 60).await;
+        assert!(wait_blob(&ctx, &net.apis[1], &id, 30).await, "late joiner fetched the job data");
+    });
+}
