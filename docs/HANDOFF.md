@@ -160,19 +160,19 @@ allows running as many agents as needed.
 - All four M1 workstreams DONE; the v2 end to end demo passes (see Demo).
 - Validators run locally (owner OK, see CLAUDE.md), not on claude-host.
 
-- [ ] Chrome extension wallet (owner request 2026-10-16): build agent started,
-      scope extension/ only. MV3 + React; one ed25519 key for both chains (base58
-      or mnemonic import, encrypted at rest); balances, send, bridge in/out with
-      pending tracking; agent register, browse/post jobs (in-browser Pearl
-      commitments must byte-match pearl-job, else browse-only), mining claim;
-      Wallet Standard provider for dApps with approval popups. Geist, no mono,
-      no logo, name in one APP_NAME constant ("Pearl Wallet" placeholder). UI
-      checks in headless Chromium only.
-
 ## Next step
 
-SPEC v2 written (28a685f). Build agents started 2026-10-16 (max 3 heavy builds at
-once on this Mac), each owning its paths:
+M1 is COMPLETE (2026-10-17). Next is M2 (SPEC 7): Solana light-client program +
+proof-based bridge.release / storefront finalize; open-membership `net` crate;
+data availability for job matrices and results; mining pools (shares). Also
+pending from M1: chain-side minimum protocol fee (a P = 0 job can never earn
+subsidy, so miners skip it), getBlock subsidy field, history-by-address RPC,
+USDC storefront path, demo coverage of PumpSwap/expiry/reorgs/restarts.
+Owner decisions still open: dev buy size, chain params (block time, K, alpha,
+emission), name and ticker.
+
+## M1 components (SPEC v2, all DONE)
+
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
    pinned. 34 tests (incl. deterministic multi-node: fork race, partition/heal,
    refusal beyond K, late joiner sync, withdrawal proof). 3-node devnet via
@@ -204,16 +204,14 @@ once on this Mac), each owning its paths:
    (else listed in needsAttester), invariant via getEscrow. Env: NODE_RPC,
    AGENT_KEY, STATE_FILE (.state/relayer.json). Not run against the real node yet
    (its RPC was still a stub). One relayer per AGENT_KEY (nonce contention).
-5. wallet extension: DONE (00b6d73, 4850a39, 73d5f40): extension/, 51 unit tests (tx
-   bytes equal all 9 chain vectors, job commitments equal the pearl-job CLI, Solana
-   ixs equal Anchor's coder) + 25 headless-Chromium UI checks against a mock RPC
-   (scripts/mock-rpc.mjs, ports 10671-10673). Screenshots in extension/screenshots/
-   (gitignored). Load unpacked per extension/README.md. Not run live yet. TODO:
-   storefront Buy form takes hash_a/hash_b as hex (needs the order_terms RPC to
-   compute them); mining view shows fees only (getBlock has no subsidy field);
-   chain activity is the wallet's own log (no history-by-address RPC); the token
-   is labelled PEARL (placeholder, like APP_NAME); bottom tab bar overlaps the
-   last home-screen row (cosmetic).
+5. wallet extension: DONE (00b6d73..75b2fee): extension/, 56 unit tests + 45 headless
+   UI checks (mock), and LIVE on the demo stack: 37/37 read-only smoke + 9/9 writes
+   (bridge-in, PostJob, storefront buy; both jobs mined with wallet-computed
+   commitments). Storefront Buy computes hash_a/hash_b itself (order_terms; vector
+   chain/state/vectors/order_terms.json). Load unpacked per extension/README.md;
+   live writes: extension/scripts/live-writes.mjs. Remaining: mining view shows
+   fees only (getBlock has no subsidy field); chain activity is the wallet's own log;
+   token label PEARL and APP_NAME are placeholders.
 6. M1 demo: DONE. `scripts/demo.sh` passes end to end on real local processes
    (all 7 steps PASS, about 3.5 min plus builds; details in "Demo" below).
 
