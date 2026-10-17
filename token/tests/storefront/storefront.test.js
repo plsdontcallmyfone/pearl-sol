@@ -38,6 +38,7 @@ const BCFG = pda(['config'], BRIDGE);
 const svm = new LiteSVM();
 const admin = Keypair.generate(), buyer = Keypair.generate(), trader = Keypair.generate(), creator = Keypair.generate(), mintKp = Keypair.generate();
 const attesters = [Keypair.generate(), Keypair.generate(), Keypair.generate()];
+const bridgeSigner = Keypair.generate();
 const MINT = mintKp.publicKey;
 const provider = new anchor.AnchorProvider(new Connection('http://127.0.0.1:1'), new anchor.Wallet(admin), {});
 const sf = new anchor.Program(sfIdl, provider);
@@ -195,7 +196,7 @@ test('setup: fixtures, coin on pump, bridge, storefront config, trader volume ac
   global = sdk.PUMP_SDK.decodeGlobal(info(pda(['global'], PUMP)));
   BUYBACK = global.buybackFeeRecipients[0];
   ok([await sdk.PUMP_SDK.createV2Instruction({ mint: MINT, name: 'Pearl Test', symbol: 'PRLT', uri: 'https://example.com/p.json', creator: creator.publicKey, user: creator.publicKey, mayhemMode: false })], [creator, mintKp], 'create_v2');
-  ok([await br.methods.initialize([Keypair.generate().publicKey], 1).accountsStrict({ admin: admin.publicKey, config: BCFG, mint: MINT, vault: VAULT, tokenProgram: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId }).instruction()], [admin], 'bridge initialize');
+  ok([await br.methods.initialize([bridgeSigner.publicKey], 1).accountsStrict({ admin: admin.publicKey, config: BCFG, mint: MINT, vault: VAULT, tokenProgram: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId }).instruction()], [admin], 'bridge initialize');
   ok([await sf.methods.initialize(params({ mint: MINT, bridgeProgram: BRIDGE, minSolIn: bn(LAMPORTS_PER_SOL / 100), maxSolIn: bn(5 * LAMPORTS_PER_SOL) }), attesters.map((k) => k.publicKey), 2)
     .accountsStrict({ admin: admin.publicKey, config: CONFIG, trader: TRADER, systemProgram: SystemProgram.programId }).instruction()], [admin], 'storefront initialize');
   const c = config();
@@ -424,6 +425,70 @@ test('admin rotates the attester set; old attesters no longer count', async () =
   fails([edIx(attesters[0], msg), edIx(attesters[1], msg), await finalizeIx(n, d, rh, '')], [buyer], /NotEnoughSignatures/, 'old set');
   ok([edIx(fresh[0], msg), edIx(fresh[1], msg), await finalizeIx(n, d, rh, '')], [buyer], 'new set');
   ok([await sf.methods.setAttesters(attesters.map((k) => k.publicKey), 2).accountsStrict({ admin: admin.publicKey, config: CONFIG }).instruction()], [admin], 'restore');
+});
+
+// Refund (owner decision 2026-10-17): a held-back order's deposit goes back to the buyer
+// through bridge refund_deposit (bridge signers over pearl-sol:refund:v1), then anyone
+// marks the Order Refunded from the bridge's refund record (no CPI).
+const refundMsg = (n, who, amount) => Buffer.concat([Buffer.from('pearl-sol:refund:v1'), le64(n), who.toBuffer(), le64(amount)]);
+const refundRecord = (n) => pda(['processed', Buffer.from([0]), le64(n)], BRIDGE);
+const refundIx = (n, who, whoToken) => br.methods.refundDeposit(bn(n), who).accountsStrict({
+  payer: buyer.publicKey, config: BCFG, mint: MINT, vault: VAULT, deposit: pda(['deposit', le64(n)], BRIDGE), buyerToken: whoToken,
+  refund: refundRecord(n), instructions: SYSVAR_INSTRUCTIONS_PUBKEY, tokenProgram: T22, systemProgram: SystemProgram.programId,
+}).instruction();
+const markIx = (n, rec = refundRecord(n)) => sf.methods.markRefunded().accountsStrict({ config: CONFIG, order: orderPda(n), refundRecord: rec }).instruction();
+
+test('refund: bridge refund_deposit returns the order tokens to the buyer; mark_refunded closes the Order', async () => {
+  const { ix: open, draft } = await openIx();
+  ok([open], [buyer], 'open');
+  const n = bridgeNonce();
+  ok([await buyIx(draft, n, LAMPORTS_PER_SOL / 10)], [buyer], 'buy');
+  const o = order(n);
+  const tokens = BigInt(o.tokens.toString());
+  const bAta = ata(buyer.publicKey, MINT, T22);
+  ok([spl.createAssociatedTokenAccountIdempotentInstruction(buyer.publicKey, bAta, buyer.publicKey, MINT, T22)], [buyer], 'buyer ata');
+  const b0 = tokenAmount(bAta), v0 = tokenAmount(VAULT);
+  // not refunded yet: mark_refunded has no record to read
+  fails([await markIx(n)], [buyer], /BadAccount/, 'mark without a refund record');
+  // refund signatures must be the bridge signers' over the exact message
+  fails([edIx(attesters[0], refundMsg(n, buyer.publicKey, tokens)), await refundIx(n, buyer.publicKey, bAta)], [buyer], /NotEnoughSignatures/, 'storefront attester is not a bridge signer');
+  fails([edIx(bridgeSigner, refundMsg(n, buyer.publicKey, tokens - 1n)), await refundIx(n, buyer.publicKey, bAta)], [buyer], /NotEnoughSignatures/, 'wrong amount');
+  const r = ok([edIx(bridgeSigner, refundMsg(n, buyer.publicKey, tokens)), await refundIx(n, buyer.publicKey, bAta)], [buyer], 'refund_deposit');
+  CU.refund_deposit = r.cu;
+  assert.equal(tokenAmount(bAta) - b0, tokens, 'buyer got the order tokens back');
+  assert.equal(v0 - tokenAmount(VAULT), tokens, 'vault paid exactly the deposit');
+  // a record for ANOTHER deposit does not mark this order
+  const prev = n - 1n;
+  fails([await markIx(n, refundRecord(prev))], [buyer], /BadAccount|ConstraintSeeds|AccountNotInitialized/, 'record of another nonce');
+  // anyone can mark it (a stranger pays only the fee)
+  const stranger = Keypair.generate();
+  svm.airdrop(stranger.publicKey, BigInt(LAMPORTS_PER_SOL));
+  const m = ok([await markIx(n)], [stranger], 'mark_refunded');
+  CU.mark_refunded = m.cu;
+  console.log(`  refund_deposit CU ${r.cu}, mark_refunded CU ${m.cu}`);
+  assert.equal(order(n).status, 4);
+  assert.equal(readOrderRaw(orderRaw(n)).status, 4);
+  assert.ok(BigInt(order(n).closedSlot.toString()) > 0n);
+  fails([await markIx(n)], [buyer], /NotPending/, 'mark twice');
+  const d = Keypair.generate().publicKey, rh = sha256(Buffer.from('late'));
+  const msg = resultMsg(jobId(n), d, rh);
+  fails([edIx(attesters[0], msg), edIx(attesters[1], msg), await finalizeIx(n, d, rh, '')], [buyer], /NotPending/, 'finalize after refund');
+  fails([edIx(attesters[0], expiredMsg(jobId(n))), edIx(attesters[1], expiredMsg(jobId(n))), await expireIx(n)], [buyer], /NotPending/, 'expire after refund');
+  // a second refund of the same deposit is refused by the record
+  fails([edIx(bridgeSigner, refundMsg(n, buyer.publicKey, tokens)), await refundIx(n, buyer.publicKey, bAta)], [buyer], /already in use|custom program error: 0x0/, 'refund twice');
+});
+
+test('refund: an Expired order can be refunded too; a refund to someone else is not a refund of the order', async () => {
+  const n2 = nonce0 + 1n; // expired above
+  assert.equal(order(n2).status, 3);
+  const tokens = BigInt(order(n2).tokens.toString());
+  const other = Keypair.generate().publicKey;
+  const oAta = ata(other, MINT, T22);
+  ok([spl.createAssociatedTokenAccountIdempotentInstruction(buyer.publicKey, oAta, other, MINT, T22)], [buyer], 'other ata');
+  // the bridge pays whoever the signers named; the storefront only accepts its own buyer
+  ok([edIx(bridgeSigner, refundMsg(n2, other, tokens)), await refundIx(n2, other, oAta)], [buyer], 'refund to other');
+  fails([await markIx(n2)], [buyer], /BadAccount/, 'record names another buyer');
+  assert.equal(order(n2).status, 3);
 });
 
 let graduated = false;

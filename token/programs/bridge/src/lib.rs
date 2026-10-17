@@ -11,6 +11,14 @@
 //!   inclusion proof of its withdrawal-log entry against `withdraw_root` of a FINAL
 //!   light-client header (token/programs/lightclient). Same `Processed` replay guard,
 //!   so a withdrawal is paid once whichever path is used.
+//! - `refund_deposit` (owner decision 2026-10-17) returns a Deposit's tokens from the
+//!   vault to the original buyer when the agent chain will never unlock it (a held-back
+//!   storefront order). M-of-N configured signers sign `b"pearl-sol:refund:v1" ||
+//!   nonce || buyer || amount_spl` through the ed25519 precompile. It writes a
+//!   `Processed` PDA `["processed", [CHAIN_TOKEN], deposit nonce]` (the refund record):
+//!   a deposit is refunded at most once, and relayers never unlock a deposit that has
+//!   one. The chain cannot see Solana, so "never both unlocked and refunded" rests on
+//!   the signers signing at most one of the two messages per nonce (SPEC 5.1).
 //! - `set_release_modes` (admin) enables the signer path, the proof path or both and
 //!   names the light-client program.
 //! - Signer set, threshold and admin are admin-editable.
@@ -41,6 +49,13 @@ pub const WITHDRAWAL_ENTRY_LEN: usize = 88;
 
 pub const DEPOSIT_DOMAIN: &[u8] = b"pearl-sol:deposit:v1";
 pub const WITHDRAW_DOMAIN: &[u8] = b"pearl-sol:withdraw:v1";
+/// `refund_deposit`: `domain || deposit nonce u64 LE || buyer [32] || amount_spl u64 LE`.
+pub const REFUND_DOMAIN: &[u8] = b"pearl-sol:refund:v1";
+
+/// Refund record of Solana deposit `nonce`: `Processed ["processed", [CHAIN_TOKEN], nonce]`.
+pub fn refund_record_address(nonce: u64) -> Pubkey {
+    Pubkey::find_program_address(&[PROCESSED_SEED, &[CHAIN_TOKEN], &nonce.to_le_bytes()], &ID).0
+}
 
 /// `domain || nonce u64 LE || recipient [32] || amount_spl u64 LE` (SPEC 6).
 pub fn bridge_message(domain: &[u8], nonce: u64, recipient: &Pubkey, amount_spl: u64) -> Vec<u8> {
@@ -189,6 +204,55 @@ pub mod bridge {
         Ok(())
     }
 
+    /// Returns Solana deposit `nonce` (its full amount) from the vault to `buyer`, who
+    /// must own `buyer_token`. The transaction must carry ed25519 precompile
+    /// instruction(s) with at least `threshold` configured signers over
+    /// `bridge_message(REFUND_DOMAIN, nonce, buyer, deposit.amount)`. Open whatever
+    /// `release_modes` says (inbound stays attested in M2). The refund record PDA is
+    /// the replay guard; signers must never sign this for a nonce they signed an
+    /// unlock for (and vice versa).
+    pub fn refund_deposit(ctx: Context<RefundDeposit>, nonce: u64, buyer: Pubkey) -> Result<()> {
+        let d = &ctx.accounts.deposit;
+        require!(d.nonce == nonce, BridgeError::WrongDeposit);
+        let amount = d.amount;
+        require!(amount > 0, BridgeError::ZeroAmount);
+        require_keys_eq!(ctx.accounts.buyer_token.owner, buyer, BridgeError::WrongRecipient);
+
+        let config = &ctx.accounts.config;
+        let msg = bridge_message(REFUND_DOMAIN, nonce, &buyer, amount);
+        let n = sigverify::count_signers(&ctx.accounts.instructions.to_account_info(), &msg, &config.signers)?;
+        require!(n >= config.threshold as usize, BridgeError::NotEnoughSignatures);
+
+        let bump = [config.bump];
+        let seeds: &[&[u8]] = &[CONFIG_SEED, &bump];
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.buyer_token.to_account_info(),
+                    authority: ctx.accounts.config.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+            ctx.accounts.mint.decimals,
+        )?;
+
+        let slot = Clock::get()?.slot;
+        let p = &mut ctx.accounts.refund;
+        p.source_chain = CHAIN_TOKEN;
+        p.nonce = nonce;
+        p.recipient = buyer;
+        p.amount = amount;
+        p.slot = slot;
+        p.bump = ctx.bumps.refund;
+
+        emit!(RefundEvent { nonce, buyer, amount, slot });
+        Ok(())
+    }
+
     /// Proof mode: pays withdrawal `nonce` given its 88-byte log `entry`, its
     /// `location` in the withdrawal log and a codec-encoded Commonware MMR proof
     /// (node RPC `getWithdrawalProof`) against `withdraw_root` of `lc_header`, a
@@ -331,6 +395,37 @@ pub struct Release<'info> {
 
 #[derive(Accounts)]
 #[instruction(nonce: u64)]
+pub struct RefundDeposit<'info> {
+    /// Relayer (or anyone holding the signatures); pays for the refund record.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = mint, has_one = vault, has_one = token_program)]
+    pub config: Account<'info, Config>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+    #[account(seeds = [DEPOSIT_SEED, &nonce.to_le_bytes()], bump = deposit.bump)]
+    pub deposit: Account<'info, Deposit>,
+    #[account(mut, token::mint = mint, token::token_program = token_program)]
+    pub buyer_token: InterfaceAccount<'info, TokenAccount>,
+    /// Refund record; `init` fails on a second refund of the same deposit.
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + Processed::INIT_SPACE,
+        seeds = [PROCESSED_SEED, &[CHAIN_TOKEN], &nonce.to_le_bytes()],
+        bump,
+    )]
+    pub refund: Account<'info, Processed>,
+    /// CHECK: address-checked instructions sysvar.
+    #[account(address = ix_sysvar::ID)]
+    pub instructions: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(nonce: u64)]
 pub struct ReleaseProof<'info> {
     /// Anyone; pays for the Processed PDA.
     #[account(mut)]
@@ -419,6 +514,14 @@ pub struct ReleaseEvent {
 }
 
 #[event]
+pub struct RefundEvent {
+    pub nonce: u64,
+    pub buyer: Pubkey,
+    pub amount: u64,
+    pub slot: u64,
+}
+
+#[event]
 pub struct ReleaseModesChanged {
     pub modes: u8,
     pub light_client: Pubkey,
@@ -454,4 +557,6 @@ pub enum BridgeError {
     BadHeader,
     #[msg("withdrawal proof does not verify")]
     BadProof,
+    #[msg("deposit record does not match the nonce")]
+    WrongDeposit,
 }

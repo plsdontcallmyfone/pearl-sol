@@ -61,7 +61,14 @@
 //!   job_id`. Record only: W comes back on the chain to the poster (= the
 //!   order's recipient) and returns to Solana by a normal BridgeLock +
 //!   bridge `release` to the buyer. P is non-refundable (SPEC 4.1).
-//! - Once Finalized or Expired an Order is closed for good (replay guard).
+//! - `mark_refunded()` (permissionless, CPI-free): when the bridge holds a refund
+//!   record for the order's deposit (bridge `refund_deposit`, PDA `["processed",
+//!   [0], deposit_nonce]` of `config.bridge_program`) paying `order.tokens` to
+//!   `order.buyer`, a Pending or Expired Order becomes Refunded. Refunds are for
+//!   orders the chain never unlocked (held back by the relayer, e.g. P below the
+//!   chain's min protocol fee); the buyer gets the tokens back, not SOL.
+//! - Once Finalized, Expired-and-unlocked or Refunded an Order is closed for good
+//!   (replay guard).
 //!
 //! ## USDC (mainnet)
 //! TODO(usdc): `buy_job_usdc` is designed but NOT implemented (localnet is
@@ -127,6 +134,12 @@ pub const ORDER_DEPOSIT_DOMAIN: &[u8] = b"pearl-sol:deposit-order:v1";
 pub const STATUS_PENDING: u8 = 1;
 pub const STATUS_FINALIZED: u8 = 2;
 pub const STATUS_EXPIRED: u8 = 3;
+pub const STATUS_REFUNDED: u8 = 4;
+
+/// Bridge `Processed` account (refund record): disc 8, source_chain u8, nonce u64,
+/// recipient [32], amount u64, slot u64, bump u8. Source chain 0 = a Solana deposit.
+const REFUND_SOURCE_TOKEN: u8 = 0;
+const REFUND_RECORD_LEN: usize = 8 + 1 + 8 + 32 + 8 + 8 + 1;
 
 /// `Config.finalize_modes` bits.
 pub const MODE_SIGNERS: u8 = 1;
@@ -522,6 +535,35 @@ pub mod storefront {
         Ok(())
     }
 
+    /// Marks a Pending (or Expired) Order Refunded once the bridge has refunded its
+    /// deposit to `order.buyer` (bridge `refund_deposit`). Anyone may call; the only
+    /// input is the bridge's refund record, checked by owner, address and content.
+    pub fn mark_refunded(ctx: Context<MarkRefunded>) -> Result<()> {
+        let o = &ctx.accounts.order;
+        require!(o.status == STATUS_PENDING || o.status == STATUS_EXPIRED, StorefrontError::NotPending);
+        let bridge = ctx.accounts.config.bridge_program;
+        let rec = &ctx.accounts.refund_record;
+        require_keys_eq!(*rec.owner, bridge, StorefrontError::BadAccount);
+        let (want, _) = Pubkey::find_program_address(&[b"processed", &[REFUND_SOURCE_TOKEN], &o.deposit_nonce.to_le_bytes()], &bridge);
+        require_keys_eq!(rec.key(), want, StorefrontError::BadAccount);
+        {
+            let d = rec.try_borrow_data()?;
+            require!(d.len() >= REFUND_RECORD_LEN, StorefrontError::BadAccount);
+            let nonce = u64::from_le_bytes(d[9..17].try_into().unwrap());
+            let to = Pubkey::new_from_array(d[17..49].try_into().unwrap());
+            let amount = u64::from_le_bytes(d[49..57].try_into().unwrap());
+            require!(d[8] == REFUND_SOURCE_TOKEN && nonce == o.deposit_nonce, StorefrontError::BadAccount);
+            require_keys_eq!(to, o.buyer, StorefrontError::BadAccount);
+            require!(amount == o.tokens, StorefrontError::BadAccount);
+        }
+        let slot = Clock::get()?.slot;
+        let o = &mut ctx.accounts.order;
+        o.status = STATUS_REFUNDED;
+        o.closed_slot = slot;
+        emit!(OrderRefunded { order: o.key(), nonce: o.deposit_nonce, buyer: o.buyer, tokens: o.tokens });
+        Ok(())
+    }
+
     /// Proof mode finalize (see the module docs). `tx` is the CompleteJob tx bytes,
     /// `path` its tx_root path (33-byte entries), `pair` which (evaluator, sig) pair of
     /// the tx the ed25519 precompile instruction re-verifies. Caller: buyer, admin or
@@ -901,7 +943,7 @@ pub struct OrderDraft {
 }
 
 /// One storefront order, readable by any program: fixed size, every field at
-/// a fixed offset (`layout`). Status 1 Pending, 2 Finalized, 3 Expired.
+/// a fixed offset (`layout`). Status 1 Pending, 2 Finalized, 3 Expired, 4 Refunded.
 #[account]
 #[derive(InitSpace)]
 pub struct Order {
@@ -1213,6 +1255,16 @@ pub struct CloseOrder<'info> {
 }
 
 #[derive(Accounts)]
+pub struct MarkRefunded<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [ORDER_SEED, &order.deposit_nonce.to_le_bytes()], bump = order.bump)]
+    pub order: Box<Account<'info, Order>>,
+    /// CHECK: the bridge's refund record; owner, address and content checked in the handler.
+    pub refund_record: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
 pub struct CloseOrderProof<'info> {
     /// Buyer, admin or an attester.
     pub caller: Signer<'info>,
@@ -1286,6 +1338,14 @@ pub struct OrderExpired {
     pub order: Pubkey,
     pub nonce: u64,
     pub job_id: [u8; 32],
+}
+
+#[event]
+pub struct OrderRefunded {
+    pub order: Pubkey,
+    pub nonce: u64,
+    pub buyer: Pubkey,
+    pub tokens: u64,
 }
 
 #[error_code]
