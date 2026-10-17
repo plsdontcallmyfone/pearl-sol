@@ -164,8 +164,9 @@ pub fn verify_block_proof(job: &Job, proof: &PlainProof, pow_digest: &Hash256, t
 
 // ---------------------------------------------------------------- fallback blocks
 
-/// Shape of a fallback block's matrices (a chain parameter; default 64 x 64 on the
-/// localnet config).
+/// Shape of a fallback block's matrices (chain parameters `fallback_m`, `fallback_n`,
+/// `fallback_config`; default 4 x 8, one 4x8 tile of the localnet config, owner
+/// decision 2026-10-17: small enough for the Solana light client, k stays 1024).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FallbackParams {
     pub m: u32,
@@ -175,7 +176,7 @@ pub struct FallbackParams {
 
 impl Default for FallbackParams {
     fn default() -> Self {
-        Self { m: 64, n: 64, config: MiningConfig::localnet_default() }
+        Self { m: 4, n: 8, config: MiningConfig::localnet_default() }
     }
 }
 
@@ -321,7 +322,8 @@ mod tests {
         let (a1, b1) = fallback_matrices(&[9; 32], &p);
         let (a2, b2) = fallback_matrices(&[9; 32], &p);
         assert_eq!((a1.clone(), b1.clone()), (a2, b2));
-        assert_eq!(a1.len(), 64 * 1024);
+        assert_eq!(a1.len(), 4 * 1024);
+        assert_eq!(b1.len(), 1024 * 8);
         assert!(a1.iter().chain(&b1).all(|&x| (-64..=63).contains(&x)));
         let (a3, _) = fallback_matrices(&[8; 32], &p);
         assert_ne!(a1, a3);

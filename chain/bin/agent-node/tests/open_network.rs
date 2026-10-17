@@ -116,7 +116,12 @@ async fn spawn_node(ctx: &deterministic::Context, i: usize, k: u32, mut cfg: Ope
     let (tx, rx) = mpsc::channel(256);
     let (o1, o2) = (oracle.clone(), oracle.clone());
     let count = oracle.clone();
-    let acfg = ActorConfig { tip_interval: Duration::from_millis(500), peer_count: Some(PeerCount(Arc::new(move || count.connected_count()))) };
+    let info = oracle.clone();
+    let acfg = ActorConfig {
+        tip_interval: Duration::from_millis(500),
+        peer_count: Some(PeerCount(Arc::new(move || count.connected_count()))),
+        peer_info: Some(Arc::new(move || agent_node::node::open_peers_json(&info))),
+    };
     ctx.child("node").with_attribute("node", i).spawn(move |c| async move {
         run(c, core, me, o1, o2, started.channels, rx, acfg).await;
     });
@@ -181,6 +186,14 @@ fn nodes_join_knowing_only_a_seed_and_converge() {
         // getChainInfo reports live connections
         let info = n4.api.call("getChainInfo", json!({})).await;
         assert_eq!(info["peers"].as_u64().unwrap() as usize, n4.oracle.connected_count());
+        // getPeers lists each live connection with its direction and addresses
+        let gp = n4.api.call("getPeers", json!({})).await;
+        assert_eq!(gp["mode"], json!("open"));
+        assert_eq!(gp["count"].as_u64().unwrap() as usize, n4.oracle.connected_count());
+        let peers = gp["peers"].as_array().unwrap();
+        assert_eq!(peers.len(), n4.oracle.connected_count());
+        assert!(peers.iter().all(|p| p["key"].is_string() && p["remote"].is_string()));
+        assert!(peers.iter().any(|p| p["direction"] == json!("outbound")));
         // a tx sent to node 3 reaches node 1's mempool through gossip and is mined there
         let msg = deposit_message(1, &pk(2), 77);
         let sig = AttesterSig { pubkey: pk(50), sig: sign_plain(&seed(50), &msg) };

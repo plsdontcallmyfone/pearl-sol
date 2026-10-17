@@ -11,6 +11,7 @@ state.workspace = true
 executor.workspace = true
 consensus-pow.workspace = true
 mempool.workspace = true
+blobs.workspace = true
 pearl-job.workspace = true
 primitive-types.workspace = true
 commonware-runtime.workspace = true

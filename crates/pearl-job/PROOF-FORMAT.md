@@ -217,8 +217,11 @@ the job named by `header.job_id`. The verifier checks `job_id` against that job.
 
 ### 7.4 Fallback blocks (`job_id` zero)
 
-Everything is derived from `pow_digest`, with chain parameters `m`, `n` and a
-config (default `FallbackParams`: m = n = 64, the localnet config of section 2):
+Everything is derived from `pow_digest`, with chain parameters `fallback_m`,
+`fallback_n` and `fallback_config` (genesis `params`, editable by AdminConfig keys 12,
+13, 14; `getParams` and `getBlockTemplate.fallback` report them). Default
+`FallbackParams` (owner decision 2026-10-17): **m = 4, n = 8**, the localnet config of
+section 2 (k = 1024, one 4x8 tile). Until 2026-10-17 the default was m = n = 64.
 
 ```
 job header76  = 0^32 || pow_digest || 0 u64 || 0 u32
@@ -228,8 +231,19 @@ B (k x n)     = int7(XOF(blake3_derive_key("pearl-sol 2026-10-16 fallback matrix
 int7(x)       = (x & 0x7f) - 64                                     (values in [-64, 63])
 hash_a, hash_b = section 1 commitments of A and B^T under job_key
 ```
-then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (128 KiB
-of XOF and keyed hashing at the default size; fallback verify measured 0.55-0.7 ms vs about 0.1 ms for a job block, M4 under load) before the usual check.
+then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (m*k + k*n
+bytes of XOF and keyed hashing: 12 KiB at 4 x 8, 128 KiB at 64 x 64) before the usual
+check. A node verifies with the parameters in force at the block's parent; changing
+them by AdminConfig applies from the next block on.
+
+Fallback verify time (`cargo run --release -p pearl-job --example fallback_verify -- m n`,
+M4 laptop with other builds running, 2026-10-17):
+
+| m x n | verify per block | proof bytes |
+|---|---|---|
+| 64 x 64 (old default) | 1.3 to 1.7 ms | 12612 |
+| 16 x 16 | 0.37 ms | 12484 |
+| 4 x 8 (default) | 0.18 to 0.25 ms | 12388 |
 
 ### 7.5 Pinned vectors (`tests/pow.rs::pinned_vectors`)
 
@@ -237,7 +251,10 @@ of XOF and keyed hashing at the default size; fallback verify measured 0.55-0.7 
   `hash_b = 0xBB*32`, m = 192, n = 320:
   `b = e8f7d72728f2143cdb331ee04fd00792ebf1a07d9ef60367a8640ed8e78bbcac`,
   `a = 3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c05fd2`.
-- Fallback job for `pow_digest = 0x09*32`, default params:
+- Fallback job for `pow_digest = 0x09*32`, default params (m = 4, n = 8):
+  `hash_a = 8e192020e50ab1ce7d29a4d5b8294650fb782a41a0dc11c912ec791bcd726ec4`,
+  `hash_b = 0fad28125cae2afdecc42b89699dca662ca5028c7c43dd4b24a96c354b5e5575`.
+- Same `pow_digest`, m = n = 64 (the pre-2026-10-17 default):
   `hash_a = f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a`,
   `hash_b = 5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347`.
 - Header `version 1, height 5, prev 0xab*32, timestamp_ms 1760000000000,

@@ -189,9 +189,13 @@ fn pinned_vectors() {
     bd.extend_from_slice(&hb_salted);
     assert_eq!(b, *blake3::hash(&bd).as_bytes(), "b = blake3(job_key || pow_digest || hash_b')");
     println!("powbound b={} a={}", hex::encode(b), hex::encode(a));
-    // Fallback job for pow_digest = 0x09 * 32 on the default params.
+    // Fallback job for pow_digest = 0x09 * 32 on the default params (4 x 8) and on 64 x 64.
+    assert_eq!((fb().m, fb().n), (4, 8));
     let fj = fallback_job(&[9; 32], &fb()).unwrap();
-    println!("fallback hash_a={} hash_b={}", hex::encode(fj.job.hash_a), hex::encode(fj.job.hash_b));
+    println!("fallback 4x8 hash_a={} hash_b={}", hex::encode(fj.job.hash_a), hex::encode(fj.job.hash_b));
+    let fj64 = fallback_job(&[9; 32], &FallbackParams { m: 64, n: 64, ..fb() }).unwrap();
+    assert_eq!(hex::encode(fj64.job.hash_a), FB64_HASH_A);
+    assert_eq!(hex::encode(fj64.job.hash_b), FB64_HASH_B);
     // Header digests of the test template.
     let h = template(JOB_ID);
     println!("template pow_digest={} block_hash={}", hex::encode(h.pow_digest()), hex::encode(h.block_hash()));
@@ -204,8 +208,10 @@ fn pinned_vectors() {
 
 const POW_B: &str = "e8f7d72728f2143cdb331ee04fd00792ebf1a07d9ef60367a8640ed8e78bbcac";
 const POW_A: &str = "3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c05fd2";
-const FB_HASH_A: &str = "f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a";
-const FB_HASH_B: &str = "5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347";
+const FB_HASH_A: &str = "8e192020e50ab1ce7d29a4d5b8294650fb782a41a0dc11c912ec791bcd726ec4";
+const FB_HASH_B: &str = "0fad28125cae2afdecc42b89699dca662ca5028c7c43dd4b24a96c354b5e5575";
+const FB64_HASH_A: &str = "f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a";
+const FB64_HASH_B: &str = "5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347";
 const TEMPLATE_POW_DIGEST: &str = "de30bddaa1209116cffbf120dc3da81512c11e574fa098c1edb8cf3451bf3cee";
 
 /// Storefront orders: the job's Pearl header id (the poster) is not the chain job id in the

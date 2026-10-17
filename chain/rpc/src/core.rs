@@ -4,8 +4,10 @@
 //! deliveries. Side effects for the network are queued in [`Core::outbox`].
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
-use agent_types::{Block, Hash, Pubkey, Tx};
+use agent_types::{Block, Hash, Pubkey, Tx, TxBody};
+use blobs::{BlobId, BlobStore, PutError};
 use commonware_runtime::Spawner;
 use consensus_pow::{Accept, Chain, ChainError, ChainEvent, JobChoice, PowVerifier, Template};
 use mempool::Mempool;
@@ -21,7 +23,23 @@ pub enum Outbound {
     /// Ask the sync layer for this header (headers-first backfill).
     FetchHeader(Hash),
     FetchBody(Hash),
+    /// Push a blob (raw bytes) to every peer (one hop, only for blobs put over RPC).
+    Blob(Vec<u8>),
+    /// Fetch a blob by id through the blob resolver.
+    FetchBlob(BlobId),
+    /// Stop fetching a blob nobody needs any more.
+    CancelBlob(BlobId),
 }
+
+/// Live peer list for getPeers (open net); returns the JSON result.
+pub type PeerInfoFn = Arc<dyn Fn() -> Value + Send + Sync>;
+
+/// How often (in tip blocks) the blob store is pruned.
+pub const BLOB_PRUNE_EVERY: u64 = 10;
+/// Jobs scanned (newest first) for blob references when pruning.
+pub const BLOB_SCAN_JOBS: u64 = 100_000;
+/// At most this many blob fetches in flight.
+pub const MAX_WANTED_BLOBS: usize = 1024;
 
 /// WebSocket subscriber: topics and a channel of JSON notification strings.
 pub struct Subscriber {
@@ -40,6 +58,15 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// Counters for throughput reporting.
     pub blocks_accepted: u64,
     pub txs_accepted: u64,
+    /// Data availability: job data and results by blob id (None: no blob support).
+    pub blobs: Option<BlobStore<E>>,
+    /// Blobs being fetched from peers, with the tip height when first wanted.
+    pub blob_wanted: HashMap<BlobId, u64>,
+    pub last_blob_prune: u64,
+    /// getPeers in open mode.
+    pub peer_info: Option<PeerInfoFn>,
+    /// getPeers in static mode: keys (base58) of the peers heard from.
+    pub static_peers: Vec<String>,
 }
 
 pub const MAX_TEMPLATES: usize = 64;
@@ -66,7 +93,176 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             syncing: false,
             blocks_accepted: 0,
             txs_accepted: 0,
+            blobs: None,
+            blob_wanted: HashMap::new(),
+            last_blob_prune: 0,
+            peer_info: None,
+            static_peers: Vec::new(),
         }
+    }
+
+    pub fn with_blobs(mut self, store: BlobStore<E>) -> Self {
+        self.blobs = Some(store);
+        self
+    }
+
+    /// Is the data a job's blocks need held here? Non-blob URIs are not checked.
+    pub fn job_data_available(&self, j: &schema::JobRecord) -> bool {
+        match blobs::parse_uri(&j.data_uri) {
+            Some(id) => self.blobs.as_ref().is_some_and(|b| b.has(&id).is_some()),
+            None => true,
+        }
+    }
+
+    /// Start fetching a blob we do not hold (bounded).
+    pub fn want_blob(&mut self, id: BlobId) {
+        let Some(store) = &self.blobs else { return };
+        if store.has(&id).is_some() || self.blob_wanted.contains_key(&id) || self.blob_wanted.len() >= MAX_WANTED_BLOBS {
+            return;
+        }
+        self.blob_wanted.insert(id, self.chain.tip_height());
+        self.outbox.push(Outbound::FetchBlob(id));
+    }
+
+    /// putBlob: rate limit, store, push to peers.
+    pub async fn put_blob(&mut self, data: &[u8], now_ms: u64) -> Result<(BlobId, bool), PutError> {
+        let height = self.chain.tip_height();
+        let Some(store) = self.blobs.as_mut() else { return Err(PutError::Storage("this node has no blob store".into())) };
+        let id = blobs::blob_id(data);
+        if store.has(&id).is_some() {
+            return Ok((id, false));
+        }
+        store.check(data.len())?;
+        if !store.take_rpc(data.len(), now_ms) {
+            return Err(PutError::RateLimited);
+        }
+        let r = store.put(data, height).await?;
+        self.blob_wanted.remove(&id);
+        self.outbox.push(Outbound::Blob(data.to_vec()));
+        Ok(r)
+    }
+
+    /// A blob pushed by `peer` (not relayed further). Returns false if the peer
+    /// misbehaved (oversized).
+    pub async fn receive_blob(&mut self, peer: &[u8], data: &[u8], now_ms: u64) -> bool {
+        let height = self.chain.tip_height();
+        let Some(store) = self.blobs.as_mut() else { return true };
+        if data.len() > store.config().max_blob_bytes {
+            return false;
+        }
+        let id = blobs::blob_id(data);
+        if store.has(&id).is_some() {
+            return true;
+        }
+        if !store.take_peer(peer, data.len(), now_ms) {
+            debug!("blob push over the peer budget: dropped");
+            return true;
+        }
+        match store.put(data, height).await {
+            Ok(_) => {
+                if self.blob_wanted.remove(&id).is_some() {
+                    self.outbox.push(Outbound::CancelBlob(id));
+                }
+            }
+            Err(e) => debug!("pushed blob not stored: {e}"),
+        }
+        true
+    }
+
+    /// A blob we fetched arrived: verdict (false = the peer sent bad data).
+    pub async fn deliver_blob(&mut self, id: BlobId, data: &[u8]) -> bool {
+        let height = self.chain.tip_height();
+        let Some(store) = self.blobs.as_mut() else { return true };
+        if data.len() > store.config().max_blob_bytes || blobs::blob_id(data) != id {
+            return false;
+        }
+        self.blob_wanted.remove(&id);
+        if let Err(e) = store.put(data, height).await {
+            debug!("fetched blob not stored: {e}");
+        }
+        true
+    }
+
+    pub async fn serve_blob(&mut self, id: &BlobId) -> Option<Vec<u8>> {
+        self.blobs.as_mut()?.get(id).await.ok().flatten()
+    }
+
+    /// Blob ids referenced by txs of a block (job data and results).
+    fn block_blob_refs(txs: &[Tx]) -> Vec<BlobId> {
+        let mut v = Vec::new();
+        for t in txs {
+            match &t.body {
+                TxBody::PostJob(p) => v.extend(blobs::parse_uri(&p.data_uri)),
+                TxBody::BridgeUnlock { job_order: Some(p), .. } => v.extend(blobs::parse_uri(&p.data_uri)),
+                TxBody::SubmitResult { uri, .. } => v.extend(blobs::parse_uri(uri)),
+                _ => {}
+            }
+        }
+        v
+    }
+
+    /// Last height each referenced blob is needed at, from the jobs in the tip state:
+    /// open jobs until their deadline, delivered jobs until they close, closed jobs
+    /// until their close height (the grace period is added by [`blobs::keep`]).
+    pub async fn blob_refs(&self) -> Result<HashMap<BlobId, u64>, ChainError> {
+        let mut refs: HashMap<BlobId, u64> = HashMap::new();
+        let c = match self.chain.read_tip(&schema::counters_key()).await? {
+            Some(b) => schema::Counters::decode(&b).map_err(|e| ChainError::Internal(e.to_string()))?,
+            None => return Ok(refs),
+        };
+        for i in c.job_count.saturating_sub(BLOB_SCAN_JOBS)..c.job_count {
+            let Some(b) = self.chain.read_tip(&schema::job_index_key(i)).await? else { continue };
+            let id = schema::decode_job_index(&b).map_err(|e| ChainError::Internal(e.to_string()))?;
+            let Some(v) = self.chain.read_tip(&schema::job_key(&id)).await? else { continue };
+            let j = schema::JobRecord::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))?;
+            let until = match j.status {
+                schema::JobStatus::Open => j.deadline_height,
+                schema::JobStatus::Delivered => u64::MAX,
+                _ => j.closed_height,
+            };
+            for b in [blobs::parse_uri(&j.data_uri), blobs::parse_uri(&j.result_uri)].into_iter().flatten() {
+                let e = refs.entry(b).or_insert(0);
+                *e = (*e).max(until);
+            }
+        }
+        Ok(refs)
+    }
+
+    /// Drop blobs no job needs any more (after the grace period) and stop fetches for
+    /// blobs nobody references. Returns the removed ids.
+    pub async fn prune_blobs(&mut self) -> Vec<BlobId> {
+        if self.blobs.is_none() {
+            return Vec::new();
+        }
+        let tip = self.chain.tip_height();
+        self.last_blob_prune = tip;
+        let refs = match self.blob_refs().await {
+            Ok(r) => r,
+            Err(e) => {
+                debug!("blob prune skipped: {e}");
+                return Vec::new();
+            }
+        };
+        let store = self.blobs.as_mut().unwrap();
+        let grace = store.config().grace_blocks;
+        let removed = store.prune(|id, m| blobs::keep(m, refs.get(id).copied(), tip, grace)).await;
+        if !removed.is_empty() {
+            info!(count = removed.len(), "pruned blobs");
+        }
+        let stale: Vec<BlobId> = self
+            .blob_wanted
+            .iter()
+            .filter(|(id, since)| {
+                let meta = blobs::Meta { size: 0, stored_height: **since };
+                !blobs::keep(&meta, refs.get(*id).copied(), tip, grace)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.blob_wanted.remove(&id);
+            self.outbox.push(Outbound::CancelBlob(id));
+        }
+        removed
     }
 
     pub async fn account(&self, a: &Pubkey) -> Result<Account, ChainError> {
@@ -80,6 +276,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     pub async fn add_tx(&mut self, tx: Tx, relay: bool) -> Result<Hash, String> {
         let acc = self.account(&tx.from).await.map_err(|e| e.to_string())?;
         let min_fee = self.chain.tip().config.min_fee;
+        // Fail fast on job bodies the executor would refuse (min protocol fee, URIs), so
+        // they do not sit in the mempool forever.
+        let job = match &tx.body {
+            TxBody::PostJob(p) => Some(p),
+            TxBody::BridgeUnlock { job_order: Some(p), .. } => Some(p),
+            _ => None,
+        };
+        if let Some(p) = job {
+            executor::precheck_post_job(p, &self.chain.tip().config)?;
+        }
         let bytes = tx.encode();
         let h = self.mempool.insert(tx, acc.nonce, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;
@@ -127,12 +333,17 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                             }
                         }
                     }
+                    let mut refs = Vec::new();
                     for c in &connected {
                         if let Some(n) = self.chain.live_node(c) {
                             for t in n.txs.iter() {
                                 self.mempool.remove(&t.hash());
                             }
+                            refs.extend(Self::block_blob_refs(&n.txs));
                         }
+                    }
+                    for id in refs {
+                        self.want_blob(id);
                     }
                     let (job_id, miner, tx_count) = match self.chain.live_node(&hash) {
                         Some(n) => (n.header.job_id, n.header.miner, n.txs.len()),
@@ -157,6 +368,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     self.notify("withdrawals", v);
                 }
             }
+        }
+        if tip_moved && self.chain.tip_height() >= self.last_blob_prune + BLOB_PRUNE_EVERY {
+            self.prune_blobs().await;
         }
         if tip_moved {
             self.prune_mempool().await;
@@ -188,7 +402,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     pub async fn template(&mut self, miner: Pubkey, choice: JobChoice, now_ms: u64) -> Result<(String, Template), ChainError> {
         let txs = self.candidate_txs().await;
-        let t = self.chain.build_template(miner, choice, &txs, now_ms).await?;
+        let tip = self.chain.tip().hash;
+        let t = {
+            let avail = |j: &schema::JobRecord| self.job_data_available(j);
+            self.chain.build_template_filtered(tip, miner, choice, &txs, now_ms, &avail).await
+        };
+        if let (Err(_), JobChoice::Job(id)) = (&t, choice) {
+            // a named job whose data we lack: start fetching it so a retry can succeed
+            if let Ok(Some(v)) = self.chain.read_tip(&schema::job_key(&id)).await {
+                if let Some(b) = schema::JobRecord::decode(&v).ok().and_then(|j| blobs::parse_uri(&j.data_uri)) {
+                    self.want_blob(b);
+                }
+            }
+        }
+        let t = t?;
         let id = template_id(&t);
         if !self.templates.iter().any(|(i, _)| *i == id) {
             self.templates.push_back((id.clone(), t.clone()));

@@ -27,6 +27,10 @@ pub const CH_TXS: u64 = 1;
 pub const CH_TIPS: u64 = 2;
 pub const CH_HEADERS: u64 = 3;
 pub const CH_BODIES: u64 = 4;
+/// Blob pushes (`id [32] || bytes`) from the node that took the putBlob (one hop).
+pub const CH_BLOBS: u64 = 5;
+/// Blob fetch on demand (resolver keyed by blob id).
+pub const CH_BLOB_FETCH: u64 = 6;
 
 pub const NAMESPACE: &[u8] = b"pearl-sol:p2p:v1";
 pub const MAX_MESSAGE: u32 = 8 << 20;
@@ -38,6 +42,8 @@ pub struct Channels<S, R> {
     pub tips: (S, R),
     pub headers: (S, R),
     pub bodies: (S, R),
+    pub blobs: (S, R),
+    pub blob_fetch: (S, R),
 }
 
 pub fn quota() -> Quota {
@@ -87,6 +93,8 @@ where
         tips: network.register(CH_TIPS, quota()),
         headers: network.register(CH_HEADERS, quota()),
         bodies: network.register(CH_BODIES, quota()),
+        blobs: network.register(CH_BLOBS, quota()),
+        blob_fetch: network.register(CH_BLOB_FETCH, quota()),
     };
     let handle = network.start();
     Started { oracle, channels, handle }
@@ -123,6 +131,8 @@ where
         tips: network.register(CH_TIPS, quota(), backlog),
         headers: network.register(CH_HEADERS, quota(), backlog),
         bodies: network.register(CH_BODIES, quota(), backlog),
+        blobs: network.register(CH_BLOBS, quota(), backlog),
+        blob_fetch: network.register(CH_BLOB_FETCH, quota(), backlog),
     };
     let handle = network.start();
     StartedOpen { oracle, channels, handle }

@@ -9,7 +9,9 @@ version.workspace = true
 agent-types.workspace = true
 state.workspace = true
 pearl-job.workspace = true
+blobs.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+blobs.workspace = true

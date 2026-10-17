@@ -330,6 +330,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let Some(b) = self.block_by(p).await? else { return Ok(Value::Null) };
                 let mut v = self.block_meta(&b);
                 v["txs"] = Value::Array(b.txs.iter().map(tx_summary).collect());
+                match srv(self.chain.block_rewards(&b.hash()).await)? {
+                    Some(r) => {
+                        v["fees"] = json!(r.fees.to_string());
+                        v["subsidy"] = json!(r.subsidy.to_string());
+                        v["reward"] = json!((r.fees as u128 + r.subsidy as u128).to_string());
+                        v["matured"] = json!(r.matured.to_string());
+                    }
+                    None => {
+                        let fees: u128 = b.txs.iter().map(|t| t.fee as u128).sum();
+                        v["fees"] = json!(fees.to_string());
+                        v["subsidy"] = Value::Null;
+                        v["reward"] = Value::Null;
+                        v["matured"] = Value::Null;
+                    }
+                }
                 if p.get("raw").and_then(|r| r.as_bool()) == Some(true) {
                     v["block"] = json!(b64(&b.encode()));
                 }
@@ -393,6 +408,78 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     }
                 }
             }
+            "putBlob" => {
+                let data = p_bytes(p, "data")?;
+                let (id, new) = self.put_blob(&data, now_ms).await.map_err(RpcError::server)?;
+                Ok(json!({"blob_id": hex::encode(id), "uri": blobs::blob_uri(&id), "size": data.len(), "new": new}))
+            }
+            "getBlob" | "hasBlob" => {
+                let s = p_str(p, &["blob_id", "id", "uri"]).ok_or_else(|| RpcError::params("missing blob_id"))?;
+                let id = blobs::parse_id(s).ok_or_else(|| RpcError::params("blob_id must be 64 hex or blob:<64 hex>"))?;
+                if self.blobs.is_none() {
+                    return Err(RpcError::server("this node has no blob store"));
+                }
+                let meta = self.blobs.as_ref().unwrap().has(&id);
+                if method == "hasBlob" {
+                    return Ok(json!({"blob_id": hex::encode(id), "present": meta.is_some(),
+                                     "size": meta.map(|m| m.size), "fetching": self.blob_wanted.contains_key(&id)}));
+                }
+                match self.serve_blob(&id).await {
+                    Some(d) => Ok(json!({"blob_id": hex::encode(id), "uri": blobs::blob_uri(&id), "size": d.len(), "data": b64(&d)})),
+                    None => {
+                        // not here: fetch it from peers if a job on the chain references it
+                        let refs = srv(self.blob_refs().await)?;
+                        if refs.contains_key(&id) {
+                            self.want_blob(id);
+                        }
+                        Ok(Value::Null)
+                    }
+                }
+            }
+            "getBlobStats" => {
+                let Some(b) = self.blobs.as_ref() else { return Err(RpcError::server("this node has no blob store")) };
+                let c = b.config();
+                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(),
+                          "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
+                          "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune}))
+            }
+            "getAccountTxs" => {
+                let a = p_key(p, &["account", "address"])?;
+                let limit = p_u64(p, "limit").unwrap_or(50).clamp(1, 200) as usize;
+                let before = match p_str(p, &["before", "cursor"]) {
+                    None | Some("") => None,
+                    Some(c) => {
+                        let (h, i) = c.split_once(':').ok_or_else(|| RpcError::params("cursor is height:index"))?;
+                        Some((h.parse().map_err(|_| RpcError::params("cursor height"))?, i.parse().map_err(|_| RpcError::params("cursor index"))?))
+                    }
+                };
+                let (entries, more) = self.chain.account_txs(&a, before, limit);
+                let mut out = Vec::with_capacity(entries.len());
+                let mut cache: Option<Block> = None;
+                for e in &entries {
+                    if cache.as_ref().map(|b| b.hash()) != Some(e.block_hash) {
+                        cache = srv(self.chain.get_block(&e.block_hash).await)?;
+                    }
+                    let Some(b) = &cache else { continue };
+                    let Some(t) = b.txs.get(e.index as usize) else { continue };
+                    let mut v = tx_summary(t);
+                    v["block_hash"] = json!(hex::encode(e.block_hash));
+                    v["height"] = json!(e.height);
+                    v["index"] = json!(e.index);
+                    v["role"] = json!(if t.from == a { "sender" } else { "recipient" });
+                    v["confirmations"] = json!(self.chain.confirmations(&e.block_hash, e.height));
+                    v["final"] = json!(self.chain.is_final(&e.block_hash, e.height));
+                    out.push(v);
+                }
+                let next = if more { entries.last().map(|e| format!("{}:{}", e.height, e.index)) } else { None };
+                Ok(json!({"account": b58(&a), "txs": out, "next": next, "tip_height": self.chain.tip_height(),
+                          "finalized_height": self.chain.finalized().header.height}))
+            }
+            "getPeers" => match &self.peer_info {
+                Some(f) => Ok(f()),
+                None => Ok(json!({"mode": "static", "count": self.static_peers.len(),
+                                  "peers": self.static_peers.iter().map(|k| json!({"key": k})).collect::<Vec<_>>()})),
+            },
             "getMempool" => Ok(json!({"size": self.mempool.len(), "txs": self.mempool.hashes().iter().map(hex::encode).collect::<Vec<_>>()})),
             "subscribe" => Err(RpcError::server("subscribe is only available over the WebSocket endpoint")),
             m => Err(RpcError::method(m)),

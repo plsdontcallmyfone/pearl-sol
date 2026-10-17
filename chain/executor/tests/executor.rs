@@ -343,3 +343,63 @@ fn randomized_supply_invariant() {
         assert_eq!(supply_of(&c.st.values()).unwrap(), TOTAL_SUPPLY as u128);
     }
 }
+
+#[test]
+fn min_protocol_fee_rejects_post_job_and_order_unlock() {
+    let mut c = Chain::new();
+    c.fund(2, 100_000);
+    c.fund(ADMIN, 1000);
+    // alpha = 0.8: P = 1 rounds the cap to 0, so it is refused even with min_protocol_fee 0
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], 1000, 1, 100, 5)));
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("alpha x P rounds to 0"));
+    c.nonces.insert(2, 0);
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], 1000, 2, 100, 5)));
+    c.block(None, &[t]).unwrap();
+    // the admin raises the floor; P below it is refused, P at it is accepted
+    let t = c.tx(ADMIN, 1000, TxBody::AdminConfig { key: keys::MIN_PROTOCOL_FEE, value: 1_000_000u64.to_le_bytes().to_vec() });
+    c.block(None, &[t]).unwrap();
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], 1000, 999_999, 100, 5)));
+    let e = c.block(None, &[t]).unwrap_err().to_string();
+    assert!(e.contains("below min_protocol_fee 1000000"), "{e}");
+    c.nonces.insert(2, 1);
+    let t = c.tx(2, 1000, TxBody::PostJob(job_body(&[60], 1000, 1_000_000, 100, 5)));
+    c.block(None, &[t]).unwrap();
+    // an order unlock whose P is below the floor fails as a whole: no unlock, no job
+    let body = job_body(&[60], 4_000_000, 999_000, 50, 5);
+    let amount_spl = (4_000_000 + 999_000) / SPL_SCALE;
+    let msg = order_message(90, &pk(5), amount_spl, &body);
+    let sigs = ATT[1..].iter().map(|i| AttesterSig { pubkey: pk(*i), sig: sign_plain(&seed(*i), &msg) }).collect();
+    let t = c.tx(200, 0, TxBody::BridgeUnlock { solana_nonce: 90, recipient: pk(5), amount_spl, job_order: Some(body.clone()), sigs });
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("below min_protocol_fee"));
+    assert_eq!(c.bal(&pk(5)), 0);
+    // stateless precheck (sendTx) agrees
+    let cfg = block_on(async { executor::Overlay::new(&c.st).config().await.unwrap() });
+    assert_eq!(executor::effective_min_protocol_fee(&cfg), 1_000_000);
+    assert!(executor::precheck_post_job(&body, &cfg).is_err());
+    assert!(executor::precheck_post_job(&job_body(&[60], 1, 1_000_000, 50, 5), &cfg).is_ok());
+}
+
+#[test]
+fn blob_uris_must_be_well_formed() {
+    let mut c = Chain::new();
+    c.fund(2, 100_000);
+    let mut b = job_body(&[60], 1000, 1_000_000, 100, 5);
+    b.data_uri = b"blob:1234".to_vec();
+    let t = c.tx(2, 1000, TxBody::PostJob(b.clone()));
+    assert!(c.block(None, &[t]).unwrap_err().to_string().contains("malformed blob URI"));
+    c.nonces.insert(2, 0);
+    let id = blobs::blob_id(b"job data");
+    b.data_uri = blobs::blob_uri(&id).into_bytes();
+    let t = c.tx(2, 1000, TxBody::PostJob(b));
+    let s = c.block(None, &[t]).unwrap();
+    let job = s.jobs_created[0];
+    assert_eq!(blobs::parse_uri(&c.job(&job).data_uri), Some(id));
+    // results: malformed blob uri refused, well-formed accepted
+    let t = c.tx(2, 1000, TxBody::SubmitResult { job_id: job, result_hash: [3; 32], uri: b"blob:xyz".to_vec() });
+    assert!(c.block(None, &[t]).is_err());
+    c.nonces.insert(2, 1);
+    let r = blobs::blob_uri(&blobs::blob_id(b"C")).into_bytes();
+    let t = c.tx(2, 1000, TxBody::SubmitResult { job_id: job, result_hash: [3; 32], uri: r.clone() });
+    c.block(None, &[t]).unwrap();
+    assert_eq!(c.job(&job).result_uri, r);
+}

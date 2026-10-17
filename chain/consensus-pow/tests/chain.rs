@@ -385,3 +385,166 @@ fn real_pearl_fallback_and_job_blocks() {
         assert_eq!(j.blocks_mined, 2);
     });
 }
+
+// ---------------------------------------------------------------- M2: rewards, history, DA, fallback size
+
+fn transfer(from: u8, nonce: u64, to: Pubkey, amount: u64) -> Tx {
+    Tx::signed(&seed(from), CHAIN, nonce, 10, TxBody::Transfer { to, amount })
+}
+
+fn hist<V: PowVerifier>(c: &C<V>, who: &Pubkey, before: Option<(u64, u32)>, limit: usize) -> (Vec<(u64, u32)>, bool) {
+    let (v, more) = c.account_txs(who, before, limit);
+    (v.iter().map(|e| (e.height, e.index)).collect(), more)
+}
+
+#[test]
+fn rewards_and_history_across_reorg_and_restart() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(5), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let fund = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 1000)], now).await;
+        let fork = fund.hash();
+        add(&mut c, fund, now).await;
+        // A: alice pays bob twice (heights 2 and 3)
+        now += 1000;
+        let a1 = mine_on(&c, fork, 5, &[transfer(2, 0, pk(3), 1000)], now).await;
+        add(&mut c, a1.clone(), now).await;
+        now += 1000;
+        let a2 = mine_on(&c, a1.hash(), 5, &[transfer(2, 1, pk(3), 1000)], now).await;
+        add(&mut c, a2.clone(), now).await;
+        assert_eq!(hist(&c, &pk(2), None, 10), (vec![(3, 0), (2, 0), (1, 0)], false));
+        assert_eq!(hist(&c, &pk(3), None, 10).0, vec![(3, 0), (2, 0)]);
+        // B: alice pays carol, two txs in one block, and B gets heavier (reorg depth 2)
+        let mut bnow = T0 + 2000;
+        let b1 = mine_on(&c, fork, 6, &[transfer(2, 0, pk(4), 1000), transfer(2, 1, pk(4), 2000)], bnow).await;
+        add(&mut c, b1.clone(), bnow).await;
+        let b_tip = extend(&mut c, b1.hash(), 2, 6, &mut bnow).await;
+        assert_eq!(c.tip().hash, b_tip);
+        assert!(hist(&c, &pk(3), None, 10).0.is_empty(), "bob's reorged-out payments leave his history");
+        assert_eq!(hist(&c, &pk(4), None, 10).0, vec![(2, 1), (2, 0)]);
+        // pagination: newest first, cursor = last (height, index), strictly before it
+        assert_eq!(hist(&c, &pk(2), None, 2), (vec![(2, 1), (2, 0)], true));
+        assert_eq!(hist(&c, &pk(2), Some((2, 0)), 2), (vec![(1, 0)], false));
+        assert_eq!(hist(&c, &pk(2), Some((2, 1)), 1), (vec![(2, 0)], true));
+        // per-block rewards: fees of both branches are kept by hash, subsidy 0 on fallback
+        let r = c.block_rewards(&b1.hash()).await.unwrap().unwrap();
+        assert_eq!((r.fees, r.subsidy), (20, 0));
+        let r = c.block_rewards(&a2.hash()).await.unwrap().unwrap();
+        assert_eq!((r.fees, r.subsidy), (10, 0), "side-branch block still reports its rewards");
+        assert_eq!(c.block_rewards(&g).await.unwrap().unwrap().fees, 0);
+        // finalize everything up to b1 and beyond; the final index gives the same answers
+        let tip = extend(&mut c, b_tip, 6, 6, &mut bnow).await;
+        assert!(c.finalized().header.height >= 4);
+        assert_eq!(hist(&c, &pk(2), None, 10), (vec![(2, 1), (2, 0), (1, 0)], false));
+        assert_eq!(hist(&c, &pk(2), Some((2, 1)), 10).0, vec![(2, 0), (1, 0)]);
+        assert!(hist(&c, &pk(3), None, 10).0.is_empty());
+        // matured coinbase shows up in a later block's rewards
+        let mut matured = 0;
+        for h in 1..=c.tip_height() {
+            let hh = c.canonical_hash(h).unwrap();
+            matured += c.block_rewards(&hh).await.unwrap().unwrap().matured;
+        }
+        assert!(matured >= 20, "the fees of b1 matured after K ({matured})");
+        let fin = c.canonical_hash(2).unwrap();
+        assert_eq!(c.block_rewards(&fin).await.unwrap().unwrap().fees, 20, "final block rewards read from the index");
+        drop(c);
+        // restart: history rebuilt from the stored canonical chain
+        let c2 = C::open(ctx.child("b"), "n", genesis(5), MockVerifier).await.unwrap();
+        assert_eq!(c2.tip().hash, tip);
+        assert_eq!(hist(&c2, &pk(2), None, 10), (vec![(2, 1), (2, 0), (1, 0)], false));
+        assert_eq!(hist(&c2, &pk(4), None, 1), (vec![(2, 1)], true));
+        assert!(hist(&c2, &pk(3), None, 10).0.is_empty());
+        assert_eq!(c2.block_rewards(&b1.hash()).await.unwrap().unwrap().fees, 20);
+    });
+}
+
+fn mock_job_body(data_uri: &[u8], p: u64) -> PostJob {
+    PostJob {
+        m: 64,
+        n: 64,
+        k: 1024,
+        config: pearl_job::MiningConfig::localnet_default().to_bytes(),
+        hash_a: [1; 32],
+        hash_b: [2; 32],
+        data_uri: data_uri.to_vec(),
+        worker_pay: 1000,
+        protocol_fee: p,
+        deadline_height: 100,
+        max_blocks: 10,
+        evaluators: vec![pk(60)],
+        threshold: 1,
+    }
+}
+
+#[test]
+fn template_skips_jobs_whose_data_is_unavailable() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(5), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let b = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 1_000_000)], now).await;
+        add(&mut c, b, now).await;
+        now += 1000;
+        let post = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::PostJob(mock_job_body(format!("blob:{}", "ab".repeat(32)).as_bytes(), 5_000_000)));
+        let job_id = schema::job_id_for_post(&pk(2), 0);
+        let b = mine_on(&c, c.tip().hash, 9, &[post], now).await;
+        add(&mut c, b, now).await;
+        now += 1000;
+        let tip = c.tip().hash;
+        let none = |_: &schema::JobRecord| false;
+        let all = |_: &schema::JobRecord| true;
+        // Auto with the data missing: a fallback template
+        let t = c.build_template_filtered(tip, pk(9), JobChoice::Auto, &[], now, &none).await.unwrap();
+        assert!(t.job.is_none() && t.header.job_id == [0; 32]);
+        // naming the job: refused with a reason
+        let e = c.build_template_filtered(tip, pk(9), JobChoice::Job(job_id), &[], now, &none).await.unwrap_err();
+        assert!(e.to_string().contains("not available"), "{e}");
+        // data present: the job is offered and its block is valid for every node
+        let t = c.build_template_filtered(tip, pk(9), JobChoice::Auto, &[], now, &all).await.unwrap();
+        assert_eq!(t.header.job_id, job_id);
+        assert!(t.summary.subsidy > 0);
+        let jb = seal_mock(&t);
+        let h = jb.hash();
+        add(&mut c, jb, now).await;
+        let r = c.block_rewards(&h).await.unwrap().unwrap();
+        assert_eq!((r.fees, r.subsidy), (0, t.summary.subsidy));
+    });
+}
+
+#[test]
+fn fallback_size_is_a_chain_parameter() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(3), PearlVerifier).await.unwrap();
+        let mut now = T0 + 1000;
+        // default 4 x 8, k unchanged
+        let t = c.build_template(pk(9), JobChoice::Fallback, &[unlock(200, 0, 1, pk(1), 1000)], now).await.unwrap();
+        assert_eq!((t.fallback.m, t.fallback.n, t.fallback.config.k()), (4, 8, 1024));
+        let b = seal_real(&t, &[], &[]);
+        add(&mut c, b, now).await;
+        // the admin changes the shape to 8 x 16
+        let set = |nonce: u64, key: u8, v: u32| Tx::signed(&seed(1), CHAIN, nonce, 10, TxBody::AdminConfig { key, value: v.to_le_bytes().to_vec() });
+        now += 1000;
+        let t = c
+            .build_template(pk(9), JobChoice::Fallback, &[set(0, state::config::keys::FALLBACK_M, 8), set(1, state::config::keys::FALLBACK_N, 16)], now)
+            .await
+            .unwrap();
+        assert_eq!(t.txs.len(), 2);
+        assert_eq!((t.fallback.m, t.fallback.n), (4, 8), "this block is still verified with the parent's params");
+        add(&mut c, seal_real(&t, &[], &[]), now).await;
+        now += 1000;
+        let t = c.build_template(pk(9), JobChoice::Fallback, &[], now).await.unwrap();
+        assert_eq!((t.fallback.m, t.fallback.n), (8, 16));
+        // a proof built with the old shape no longer verifies
+        let mut old = t.clone();
+        old.fallback = pearl_job::FallbackParams::default();
+        let bad = seal_real(&old, &[], &[]);
+        assert!(c.insert_block(bad, now).await.unwrap_err().to_string().contains("proof of work"));
+        add(&mut c, seal_real(&t, &[], &[]), now).await;
+        assert_eq!(c.tip_height(), 3);
+        // a shape the config cannot tile is refused by AdminConfig
+        now += 1000;
+        let t = c.build_template(pk(9), JobChoice::Fallback, &[set(2, state::config::keys::FALLBACK_M, 6)], now).await.unwrap();
+        assert!(t.txs.is_empty(), "m = 6 is not a multiple of the 4-row tile");
+    });
+}

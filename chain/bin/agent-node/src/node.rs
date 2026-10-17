@@ -7,7 +7,8 @@
 //! - txs: encoded txs accepted into the mempool.
 //! - tips: `tip hash [32] || height u64` every `tip_interval`, so nodes that missed
 //!   blocks (partitions, restarts) start a headers-first backfill.
-//! Headers and bodies are fetched through the two resolvers in the `sync` crate.
+//! - blobs: raw blob bytes, pushed one hop by the node that took the putBlob.
+//! Headers, bodies and blobs (by id) are fetched through resolvers in the `sync` crate.
 
 use std::collections::HashSet;
 use std::time::{Duration, UNIX_EPOCH};
@@ -28,17 +29,25 @@ use rpc::{ApiRequest, Core, Outbound, Subscriber};
 use sync::{Kind, SyncEvent, SyncMailbox};
 use tracing::{debug, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ActorConfig {
     pub tip_interval: Duration,
     /// Live connected-peer count for getChainInfo `peers` (open net). None: count the
     /// distinct peers heard from (static net).
     pub peer_count: Option<PeerCount>,
+    /// getPeers result (open net). None: list the peers heard from (static net).
+    pub peer_info: Option<rpc::core::PeerInfoFn>,
+}
+
+impl std::fmt::Debug for ActorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorConfig").field("tip_interval", &self.tip_interval).finish_non_exhaustive()
+    }
 }
 
 impl Default for ActorConfig {
     fn default() -> Self {
-        Self { tip_interval: Duration::from_secs(2), peer_count: None }
+        Self { tip_interval: Duration::from_secs(2), peer_count: None, peer_info: None }
     }
 }
 
@@ -66,8 +75,10 @@ struct Net<S> {
     blocks: S,
     txs: S,
     tips: S,
+    blobs: S,
     headers: SyncMailbox,
     bodies: SyncMailbox,
+    blob_fetch: SyncMailbox,
 }
 
 impl<S: Sender<PublicKey = PublicKey>> Net<S> {
@@ -85,6 +96,16 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                 }
                 Outbound::FetchBody(h) => {
                     let _ = self.bodies.fetch(sync::key(&h));
+                }
+                Outbound::Blob(b) => {
+                    let _ = self.blobs.send(Recipients::All, IoBuf::from(b), false);
+                }
+                Outbound::FetchBlob(h) => {
+                    let _ = self.blob_fetch.fetch(sync::key(&h));
+                }
+                Outbound::CancelBlob(h) => {
+                    let k = sync::key(&h);
+                    let _ = self.blob_fetch.retain(move |key, _| *key != k);
                 }
             }
         }
@@ -114,11 +135,14 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let (sync_tx, mut sync_rx) = commonware_utils::channel::mpsc::unbounded_channel::<SyncEvent>();
     let mut gossip_blocker = blocker.clone();
     let headers = sync::start(context.child("headers"), Kind::Header, me.clone(), provider.clone(), blocker.clone(), channels.headers, sync_tx.clone());
-    let bodies = sync::start(context.child("bodies"), Kind::Body, me.clone(), provider, blocker, channels.bodies, sync_tx);
+    let bodies = sync::start(context.child("bodies"), Kind::Body, me.clone(), provider.clone(), blocker.clone(), channels.bodies, sync_tx.clone());
+    let blob_fetch = sync::start(context.child("blob_fetch"), Kind::Blob, me.clone(), provider, blocker, channels.blob_fetch, sync_tx);
     let (blocks_s, mut blocks_r) = channels.blocks;
     let (txs_s, mut txs_r) = channels.txs;
     let (tips_s, mut tips_r) = channels.tips;
-    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, headers, bodies };
+    let (blobs_s, mut blobs_r) = channels.blobs;
+    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch };
+    core.peer_info = cfg.peer_info.clone();
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
     let mut next_tip = context.current() + cfg.tip_interval;
 
@@ -165,6 +189,15 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     let _ = core.add_tx(t, false).await;
                 }
             },
+            msg = blobs_r.recv() => {
+                let Ok((peer, buf)) = msg else { break };
+                seen_peers.insert(peer.clone());
+                let key = commonware_codec::Encode::encode(&peer);
+                if !core.receive_blob(key.as_ref(), buf.as_ref(), now_ms(&context)).await {
+                    warn!(?peer, "oversized blob push from peer: blocking it");
+                    let _ = gossip_blocker.block(peer);
+                }
+            },
             msg = tips_r.recv() => {
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer);
@@ -191,6 +224,10 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     Some(f) => (f.0)(),
                     None => seen_peers.len(),
                 };
+                if cfg.peer_info.is_none() {
+                    core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
+                    core.static_peers.sort();
+                }
             },
         }
         let outs = core.take_outbox();
@@ -233,10 +270,15 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             };
             let _ = verdict.send(ok);
         }
+        SyncEvent::Delivered { kind: Kind::Blob, key, value, verdict } => {
+            let ok = core.deliver_blob(key, &value).await;
+            let _ = verdict.send(ok);
+        }
         SyncEvent::Serve { kind, key, reply } => {
             let data = match kind {
                 Kind::Header => core.chain.header_with_proof(&key).await.ok().flatten(),
                 Kind::Body => core.chain.get_block(&key).await.ok().flatten().map(|b| b.encode()),
+                Kind::Blob => core.serve_blob(&key).await,
             };
             if let Some(d) = data {
                 let _ = reply.send(Bytes::from(d));
@@ -248,4 +290,37 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
 /// Header + proof bytes for a block (sync payload).
 pub fn header_payload(b: &Block) -> Vec<u8> {
     encode_header_with_proof(&b.header, &b.proof)
+}
+
+/// getPeers result for an open-membership node: one entry per connected peer, plus
+/// the net counters (`net::open::Oracle::stats`).
+pub fn open_peers_json(o: &net::open::Oracle) -> serde_json::Value {
+    use commonware_codec::Encode as _;
+    let mut peers: Vec<serde_json::Value> = o
+        .peers()
+        .into_iter()
+        .map(|p| {
+            serde_json::json!({
+                "key": bs58::encode(p.key.encode()).into_string(),
+                "direction": if p.inbound { "inbound" } else { "outbound" },
+                "remote": p.remote.to_string(),
+                "listen": p.listen.map(|a| a.to_string()),
+                "score": o.score(&p.key),
+            })
+        })
+        .collect();
+    peers.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
+    let s = o.stats();
+    serde_json::json!({
+        "mode": "open",
+        "me": bs58::encode(o.me().encode()).into_string(),
+        "count": peers.len(),
+        "peers": peers,
+        "stats": {
+            "inbound": s.inbound, "outbound": s.outbound, "book_new": s.book_new, "book_tried": s.book_tried,
+            "banned": s.banned, "bans_total": s.bans_total, "inbound_full": s.inbound_full,
+            "inbound_refused": s.inbound_refused, "dials": s.dials, "dial_failures": s.dial_failures,
+            "rate_dropped": s.rate_dropped,
+        },
+    })
 }

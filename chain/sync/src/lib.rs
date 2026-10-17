@@ -25,6 +25,8 @@ pub type SyncMailbox = Mailbox<Key, PublicKey, ()>;
 pub enum Kind {
     Header,
     Body,
+    /// Blob store content keyed by blob id (blake3 of the bytes).
+    Blob,
 }
 
 pub enum SyncEvent {

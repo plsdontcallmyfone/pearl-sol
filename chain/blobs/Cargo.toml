@@ -1,0 +1,16 @@
+[package]
+name = "blobs"
+description = "Content-addressed blob store for job data and results (data availability, M2)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+commonware-runtime.workspace = true
+blake3.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+commonware-macros.workspace = true

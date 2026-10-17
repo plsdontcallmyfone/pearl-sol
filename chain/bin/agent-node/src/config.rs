@@ -114,6 +114,40 @@ pub struct NodeFile {
     pub verifier: String,
     #[serde(default = "default_tip_ms")]
     pub tip_interval_ms: u64,
+    /// Blob store (data availability) limits, all optional (docs/NODE.md).
+    #[serde(default)]
+    pub blobs: BlobsFile,
+}
+
+/// Optional overrides of `blobs::BlobConfig`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BlobsFile {
+    /// false: no blob store (putBlob/getBlob fail, every job counts as available).
+    pub enabled: Option<bool>,
+    pub max_blob_bytes: Option<usize>,
+    pub max_total_bytes: Option<u64>,
+    pub grace_blocks: Option<u64>,
+    pub put_rate_bytes_per_s: Option<u64>,
+    pub put_burst_bytes: Option<u64>,
+    pub peer_rate_bytes_per_s: Option<u64>,
+    pub peer_burst_bytes: Option<u64>,
+}
+
+impl BlobsFile {
+    pub fn config(&self) -> Result<Option<blobs::BlobConfig>> {
+        if self.enabled == Some(false) {
+            return Ok(None);
+        }
+        let mut c = blobs::BlobConfig::default();
+        macro_rules! set {
+            ($($f:ident),*) => { $( if let Some(v) = self.$f { c.$f = v; } )* };
+        }
+        set!(max_blob_bytes, max_total_bytes, grace_blocks, put_rate_bytes_per_s, put_burst_bytes, peer_rate_bytes_per_s, peer_burst_bytes);
+        if c.max_blob_bytes == 0 || c.max_blob_bytes > blobs::MAX_BLOB_BYTES_LIMIT {
+            bail!("blobs.max_blob_bytes must be 1..={} (below the p2p message limit)", blobs::MAX_BLOB_BYTES_LIMIT);
+        }
+        Ok(Some(c))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -162,9 +162,9 @@ enum Cmd {
 /// Fallback block matrix shape (chain parameter).
 #[derive(Args, Clone)]
 struct FallbackArgs {
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 4)]
     fallback_m: u32,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 8)]
     fallback_n: u32,
 }
 

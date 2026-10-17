@@ -156,12 +156,13 @@ fn run_node(
     let cfg = cw_tokio::Config::new().with_storage_directory(&nf.data_dir);
     let runner = cw_tokio::Runner::new(cfg);
     let use_mock = nf.verifier == "mock";
+    let blob_cfg = nf.blobs.config()?;
     let tip_interval = Duration::from_millis(nf.tip_interval_ms);
     runner.start(|context| async move {
         let res = if use_mock {
-            start(context, genesis, MockVerifier, signer, me, listen, mode, rpc_addr, ws_addr, tip_interval).await
+            start(context, genesis, MockVerifier, signer, me, listen, mode, rpc_addr, ws_addr, tip_interval, blob_cfg).await
         } else {
-            start(context, genesis, PearlVerifier, signer, me, listen, mode, rpc_addr, ws_addr, tip_interval).await
+            start(context, genesis, PearlVerifier, signer, me, listen, mode, rpc_addr, ws_addr, tip_interval, blob_cfg).await
         };
         if let Err(e) = res {
             eprintln!("node failed: {e:#}");
@@ -183,11 +184,18 @@ async fn start<V: PowVerifier>(
     rpc_addr: SocketAddr,
     ws_addr: SocketAddr,
     tip_interval: Duration,
+    blob_cfg: Option<blobs::BlobConfig>,
 ) -> Result<()> {
     let chain = Chain::open(context.child("chain"), "node", genesis, verifier).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let genesis_hash = chain.genesis_hash();
     tracing::info!(genesis = %hex::encode(genesis_hash), height = chain.tip_height(), "chain open");
-    let core = rpc::Core::new(chain);
+    let height = chain.tip_height();
+    let mut core = rpc::Core::new(chain);
+    if let Some(bc) = blob_cfg {
+        let store = blobs::BlobStore::open(context.child("blobs"), "node-blobs", bc, height).await.map_err(|e| anyhow::anyhow!("blob store: {e}"))?;
+        tracing::info!(count = store.len(), bytes = store.total_bytes(), "blob store open");
+        core = core.with_blobs(store);
+    }
     let (tx, rx) = futures::channel::mpsc::channel(1024);
     let http = tokio::spawn(rpc::server::serve_http(rpc_addr, tx.clone()));
     let ws = tokio::spawn(rpc::server::serve_ws(ws_addr, tx));
@@ -208,7 +216,12 @@ async fn start<V: PowVerifier>(
             let started = net::start_open(context.child("p2p"), context.child("transport"), ocfg);
             let oracle = started.oracle;
             let o2 = oracle.clone();
-            let cfg = ActorConfig { tip_interval, peer_count: Some(PeerCount(std::sync::Arc::new(move || o2.connected_count()))) };
+            let o4 = oracle.clone();
+            let cfg = ActorConfig {
+                tip_interval,
+                peer_count: Some(PeerCount(std::sync::Arc::new(move || o2.connected_count()))),
+                peer_info: Some(std::sync::Arc::new(move || agent_node::node::open_peers_json(&o4))),
+            };
             let o3 = oracle.clone();
             let saver = tokio::spawn(async move {
                 loop {

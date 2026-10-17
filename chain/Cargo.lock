@@ -20,6 +20,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "blake3",
+ "blobs",
  "bs58",
  "bytes",
  "clap",
@@ -319,6 +320,18 @@ dependencies = [
  "constant_time_eq",
  "cpufeatures 0.3.1",
  "zeroize",
+]
+
+[[package]]
+name = "blobs"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "commonware-macros",
+ "commonware-runtime",
+ "hex",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1277,6 +1290,7 @@ name = "executor"
 version = "0.1.0"
 dependencies = [
  "agent-types",
+ "blobs",
  "futures",
  "pearl-job",
  "state",
@@ -2741,6 +2755,7 @@ dependencies = [
  "agent-types",
  "axum",
  "base64 0.22.1",
+ "blobs",
  "bs58",
  "commonware-runtime",
  "commonware-storage",

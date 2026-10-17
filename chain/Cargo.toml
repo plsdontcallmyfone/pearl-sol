@@ -10,6 +10,7 @@ members = [
     "net",
     "mempool",
     "rpc",
+    "blobs",
     "bin/agent-node",
 ]
 
@@ -39,6 +40,7 @@ sync = { path = "sync" }
 net = { path = "net" }
 mempool = { path = "mempool" }
 rpc = { path = "rpc" }
+blobs = { path = "blobs" }
 
 anyhow = "1.0"
 thiserror = "2"

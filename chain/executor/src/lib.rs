@@ -194,8 +194,12 @@ fn check_post_job(p: &PostJob, cfg: &Config, height: u64, relative_deadline: boo
         return bad(format!("job shape: {e}"));
     }
     if p.protocol_fee < cfg.min_protocol_fee {
-        return bad("protocol fee below min_protocol_fee");
+        return bad(format!("protocol fee {} below min_protocol_fee {}", p.protocol_fee, cfg.min_protocol_fee));
     }
+    if mul_ppm(p.protocol_fee, cfg.alpha_ppm) == 0 {
+        return bad("protocol fee too small: alpha x P rounds to 0, so the job could never be mined");
+    }
+    check_uri(&p.data_uri, "data_uri")?;
     if p.max_blocks == 0 || p.max_blocks > cfg.max_job_blocks {
         return bad("max_blocks out of range");
     }
@@ -223,6 +227,35 @@ fn check_post_job(p: &PostJob, cfg: &Config, height: u64, relative_deadline: boo
         return bad("deadline must be after the current height");
     }
     Ok(deadline)
+}
+
+/// A `blob:` URI must be well formed (`blob:` + 64 hex). Other schemes are opaque.
+/// Blob availability is never checked here: consensus must not depend on local data.
+fn check_uri(uri: &[u8], what: &str) -> Result<(), TxError> {
+    if blobs::is_blob_uri(uri) && blobs::parse_uri(uri).is_none() {
+        return bad(format!("{what}: malformed blob URI (expected blob:<64 hex>)"));
+    }
+    Ok(())
+}
+
+/// Smallest protocol fee a job may carry under `cfg`: `min_protocol_fee`, and at least
+/// enough that `alpha x P` (the job's subsidy cap) is not 0.
+pub fn effective_min_protocol_fee(cfg: &Config) -> u64 {
+    let by_alpha = if cfg.alpha_ppm == 0 { u64::MAX } else { 1_000_000u64.div_ceil(cfg.alpha_ppm) };
+    cfg.min_protocol_fee.max(by_alpha)
+}
+
+/// Stateless checks of a PostJob body that sendTx can run before the mempool (the
+/// executor repeats them): protocol fee floor and URI shape.
+pub fn precheck_post_job(p: &PostJob, cfg: &Config) -> Result<(), String> {
+    let min = effective_min_protocol_fee(cfg);
+    if p.protocol_fee < min {
+        return Err(format!(
+            "protocol fee {} below the chain minimum {} (min_protocol_fee {}, alpha_ppm {})",
+            p.protocol_fee, min, cfg.min_protocol_fee, cfg.alpha_ppm
+        ));
+    }
+    check_uri(&p.data_uri, "data_uri").map_err(|e| e.to_string())
 }
 
 /// Count valid, distinct signatures from `set` over `msg` (raw ed25519). Any signature
@@ -371,6 +404,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if h > j.deadline_height {
                     return bad("job deadline passed");
                 }
+                check_uri(uri, "result uri")?;
                 j.status = JobStatus::Delivered;
                 j.deliverer = tx.from;
                 j.result_hash = *result_hash;

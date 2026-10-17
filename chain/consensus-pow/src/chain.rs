@@ -151,6 +151,59 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     too_deep: HashSet<Hash>,
     tx_index: HashMap<Hash, (Hash, u32)>,
     withdraw_loc: BTreeMap<u64, u64>,
+    /// Per-block rewards (`fees u64 || subsidy u64 || matured u64`), every connected
+    /// block on any branch, keyed by hash (node-local index, not consensus state).
+    rewards: Option<BlockArchive<E>>,
+    /// Account history over FINAL canonical blocks: `(height, tx index)` ascending.
+    /// Extended when blocks finalize (they never reorg); the non-final part of a
+    /// query is read from the live canonical chain, so reorgs need no undo.
+    history: HashMap<Pubkey, Vec<(u64, u32)>>,
+}
+
+/// Fees, subsidy and matured coinbase of one block (getBlock).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rewards {
+    pub fees: u64,
+    pub subsidy: u64,
+    pub matured: u64,
+}
+
+impl Rewards {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(24);
+        v.extend_from_slice(&self.fees.to_le_bytes());
+        v.extend_from_slice(&self.subsidy.to_le_bytes());
+        v.extend_from_slice(&self.matured.to_le_bytes());
+        v
+    }
+    pub fn decode(b: &[u8]) -> Option<Self> {
+        if b.len() != 24 {
+            return None;
+        }
+        let u = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        Some(Self { fees: u(0), subsidy: u(8), matured: u(16) })
+    }
+}
+
+/// One account-history entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub block_hash: Hash,
+    pub height: u64,
+    pub index: u32,
+}
+
+/// Accounts a tx touches, as far as the tx bytes say: the sender, a Transfer's
+/// recipient, a BridgeUnlock's recipient (job payouts and coinbase are not listed).
+pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
+    let mut v = vec![t.from];
+    match &t.body {
+        agent_types::TxBody::Transfer { to, .. } => v.push(*to),
+        agent_types::TxBody::BridgeUnlock { recipient, .. } => v.push(*recipient),
+        _ => {}
+    }
+    v.dedup();
+    v
 }
 
 fn genesis_header(g: &Genesis, state_root: Hash, withdraw_root: Hash) -> Header {
@@ -203,6 +256,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             replay_buffer: NonZeroUsize::new(1 << 20).unwrap(),
         };
         let archive = BlockArchive::init(context.child("blocks"), archive_cfg).await.map_err(internal)?;
+        let rewards_cfg = prunable::Config {
+            translator: EightCap,
+            metadata_partition: format!("{prefix}-rewards-meta"),
+            key_partition: format!("{prefix}-rewards-key"),
+            key_page_cache: CacheRef::from_pooler(&context, NonZeroU16::new(4096).unwrap(), NonZeroUsize::new(16).unwrap()),
+            value_partition: format!("{prefix}-rewards-value"),
+            compression: None,
+            codec_config: (RangeCfg::from(0..=64usize), ()),
+            items_per_section: NonZeroU64::new(4096).unwrap(),
+            key_write_buffer: NonZeroUsize::new(1 << 12).unwrap(),
+            value_write_buffer: NonZeroUsize::new(1 << 12).unwrap(),
+            replay_buffer: NonZeroUsize::new(1 << 16).unwrap(),
+        };
+        let rewards = BlockArchive::init(context.child("rewards"), rewards_cfg).await.map_err(internal)?;
         let committed_height = store.committed_height().await.map_err(internal)?;
 
         // The genesis hash is a pure function of the genesis spec.
@@ -226,6 +293,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             too_deep: HashSet::new(),
             tx_index: HashMap::new(),
             withdraw_loc: BTreeMap::new(),
+            rewards: Some(rewards),
+            history: HashMap::new(),
         };
 
         match committed_height {
@@ -325,6 +394,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             self.canon.push(CanonEntry { hash: *h, timestamp_ms: b.header.timestamp_ms, target_bits: b.header.target_bits, cum_work: cw });
             for (j, t) in b.txs.iter().enumerate() {
                 self.tx_index.insert(t.hash(), (*h, j as u32));
+                for a in tx_accounts(t) {
+                    self.history.entry(a).or_default().push((b.header.height, j as u32));
+                }
             }
         }
         let fb = by_hash[&f_hash].clone();
@@ -361,6 +433,65 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let a = if present { a } else { a.put_multi_sync(b.header.height, key, b.encode()).await.map_err(internal)? };
         self.archive = Some(a);
         Ok(())
+    }
+
+    async fn rewards_put(&mut self, hash: &Hash, height: u64, r: &Rewards) -> Result<(), ChainError> {
+        let a = self.rewards.take().unwrap();
+        let key = B3(*hash);
+        let present = a.has_at(height, &key).await.map_err(internal)?;
+        let a = if present { a } else { a.put_multi_sync(height, key, r.encode()).await.map_err(internal)? };
+        self.rewards = Some(a);
+        Ok(())
+    }
+
+    /// Rewards of any block this node connected (`None` for blocks stored before the
+    /// rewards index existed). Genesis has none.
+    pub async fn block_rewards(&self, h: &Hash) -> Result<Option<Rewards>, ChainError> {
+        if *h == self.genesis_hash {
+            return Ok(Some(Rewards::default()));
+        }
+        if let Some(n) = self.live.get(h) {
+            if n.header.height > 0 && *h != self.finalized {
+                return Ok(Some(Rewards { fees: n.summary.fees, subsidy: n.summary.subsidy, matured: n.summary.matured }));
+            }
+        }
+        let a = self.rewards.as_ref().unwrap();
+        Ok(a.get(Identifier::Key(&B3(*h))).await.map_err(internal)?.and_then(|v| Rewards::decode(&v)))
+    }
+
+    /// Txs touching `account` on the canonical chain, newest first, strictly before the
+    /// cursor `before = (height, index)` when given. Returns up to `limit` entries and
+    /// whether more exist.
+    pub fn account_txs(&self, account: &Pubkey, before: Option<(u64, u32)>, limit: usize) -> (Vec<HistoryEntry>, bool) {
+        let mut out = Vec::new();
+        let ok = |pos: (u64, u32)| before.is_none_or(|b| pos < b);
+        let f = self.finalized().header.height;
+        // Live (non-final) canonical part, read from the current branch.
+        for height in (f + 1..=self.tip_height()).rev() {
+            let Some(c) = self.canon.get(height as usize) else { continue };
+            let Some(n) = self.live.get(&c.hash) else { continue };
+            for (i, t) in n.txs.iter().enumerate().rev() {
+                if ok((height, i as u32)) && tx_accounts(t).contains(account) {
+                    if out.len() == limit {
+                        return (out, true);
+                    }
+                    out.push(HistoryEntry { block_hash: c.hash, height, index: i as u32 });
+                }
+            }
+        }
+        if let Some(hist) = self.history.get(account) {
+            for &(height, index) in hist.iter().rev() {
+                if !ok((height, index)) {
+                    continue;
+                }
+                if out.len() == limit {
+                    return (out, true);
+                }
+                let Some(c) = self.canon.get(height as usize) else { continue };
+                out.push(HistoryEntry { block_hash: c.hash, height, index });
+            }
+        }
+        (out, false)
     }
 
     async fn read_config(&self, snap: &Snapshot) -> Result<Config, ChainError> {
@@ -666,6 +797,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let cum_work = parent.cum_work.saturating_add(work(h.target_bits));
         let log_base = parent.snapshot.log_size;
         self.archive_put(&block).await?;
+        self.rewards_put(&hash, h.height, &Rewards { fees: summary.fees, subsidy: summary.subsidy, matured: summary.matured }).await?;
         self.headers_only.remove(&hash);
         self.live.insert(
             hash,
@@ -806,6 +938,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.withdraw_loc.insert(w.nonce, n.log_base + i as u64);
                 events.push(ChainEvent::WithdrawalFinal(*w));
             }
+            for (i, t) in n.txs.iter().enumerate() {
+                for a in tx_accounts(t) {
+                    self.history.entry(a).or_default().push((height, i as u32));
+                }
+            }
             events.push(ChainEvent::Finalized { hash: hh, height });
         }
         self.finalized = new_f;
@@ -878,6 +1015,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         candidates: &[Tx],
         now_ms: u64,
     ) -> Result<Template, ChainError> {
+        self.build_template_filtered(parent, miner, choice, candidates, now_ms, &|_| true).await
+    }
+
+    /// Template on `parent`, offering only jobs for which `available` holds (the node
+    /// uses it to skip jobs whose data it does not hold; consensus does not care). A
+    /// named job that is not available is an error.
+    pub async fn build_template_filtered(
+        &self,
+        parent: Hash,
+        miner: Pubkey,
+        choice: JobChoice,
+        candidates: &[Tx],
+        now_ms: u64,
+        available: &(dyn Fn(&JobRecord) -> bool + Sync),
+    ) -> Result<Template, ChainError> {
         let tip = self.live.get(&parent).ok_or_else(|| ChainError::Invalid("parent is not a live block".into()))?;
         let height = tip.header.height + 1;
         let job = match choice {
@@ -886,10 +1038,17 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 let v = self.read_at(&parent, &schema::job_key(&id)).await?.ok_or_else(|| ChainError::Invalid("unknown job".into()))?;
                 let j = JobRecord::decode(&v).map_err(internal)?;
                 executor::check_mineable(&j, height).map_err(ChainError::Invalid)?;
+                if !available(&j) {
+                    return Err(ChainError::Invalid(format!(
+                        "job data {} is not available on this node yet",
+                        String::from_utf8_lossy(&j.data_uri)
+                    )));
+                }
                 Some(j)
             }
             JobChoice::Auto => {
                 let mut jobs = self.mineable_jobs_at(&parent, 512).await?;
+                jobs.retain(|j| available(j));
                 jobs.sort_by(|a, b| b.cap_remaining.cmp(&a.cap_remaining).then(a.index.cmp(&b.index)));
                 jobs.into_iter().next()
             }
