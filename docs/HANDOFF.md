@@ -247,7 +247,14 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    systems wired into Leather's EXISTING screens with minimal UI change (assets,
    send/receive/activity, swap screen = bridge + storefront, networks, dApp
    approvals = window.pearl + Solana Wallet Standard; jobs/mining/liens/Agent
-   Credit built from Leather components). Agent running in ~/pearl-wallet.
+   Credit built from Leather components). DONE (dev 2627b50..4f1c4b5, not pushed):
+   src 65k -> 19k lines, deps 133 -> 50, dist 21 -> 10 MB; old vaults still unlock
+   (cipher reimplemented byte for byte). Unit 103, UI 56/56, live 21/21. Gaps:
+   Agent Credit page only tested against a mock (ac_pearl not deployed, its API not
+   in the demo), no fiat prices, chain activity grouped by height, no password
+   change, Leather CI workflows still in repo, Firefox untested.
+   R7/R8 DONE (0a61d4d); Agent Credit keeper auto-release DONE (pushed
+   b9c967d..255715c).
    Agent Credit (2026-10-17): R1/R2/R5 integrated + pushed (ce5410f..b9c967d);
    owner chose release key = Agent Credit keeper key; follow-up agent builds R7/R8
    here + keeper auto-ClearRoute on repayment there.
