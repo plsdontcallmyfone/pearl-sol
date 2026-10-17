@@ -4,6 +4,10 @@ Node: `chain/bin/agent-node`. Owner: chain node agent. Keep this file in sync wi
 `chain/rpc/src`. Wire types: `chain/agent-types` (test vectors in
 `chain/agent-types/vectors/*.json`).
 
+Devnet: `scripts/devnet.sh init|start|status|mine N|stop|reset` (3 nodes, data in
+`.devnet/`). Genesis admin = keys/localnet/payer, attester = keys/localnet/attester
+(1 of 1).
+
 ## Transport
 
 - HTTP JSON-RPC 2.0, `POST http://127.0.0.1:10630/` (devnet nodes: 10630, 10632, 10634).
@@ -107,8 +111,9 @@ bridge acts only on final events.
 ```json
 {"chain_id": 1347616769, "genesis_hash": "hex", "height": 120, "tip": "hex",
  "cumulative_work": "hex", "finalized_height": 90, "finalized_hash": "hex",
- "target_bits": 545259519, "next_target_bits": 545259519, "mempool_size": 0,
- "peers": 2, "finality_k": 30, "syncing": false}
+ "target_bits": 545259519, "next_target_bits": 545259519, "timestamp_ms": 1760000000000,
+ "mempool_size": 0, "peers": 2, "finality_k": 30, "syncing": false,
+ "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
 
 ### getParams `{}`

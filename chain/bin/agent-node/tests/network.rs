@@ -324,3 +324,41 @@ fn late_joiner_syncs_headers_first() {
         assert_eq!(info["finalized_height"], json!(8));
     });
 }
+
+#[test]
+fn withdrawal_becomes_final_with_proof() {
+    runner(6).start(|ctx| async move {
+        let net = setup(&ctx, 2, 3, true).await;
+        ctx.sleep(Duration::from_secs(1)).await;
+        let b64 = |t: &Tx| base64::engine::general_purpose::STANDARD.encode(t.encode());
+        let msg = deposit_message(9, &pk(2), 5000);
+        let sig = AttesterSig { pubkey: pk(50), sig: sign_plain(&seed(50), &msg) };
+        let fund = Tx::signed(&seed(200), CHAIN, 0, 0, TxBody::BridgeUnlock { solana_nonce: 9, recipient: pk(2), amount_spl: 5000, job_order: None, sigs: vec![sig] });
+        net.apis[0].call("sendTx", json!({"tx": b64(&fund)})).await;
+        net.apis[0].mine(3).await;
+        let lock = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::BridgeLock { solana_recipient: [9; 32], amount: 2_000_000 });
+        net.apis[1].call("sendTx", json!({"tx": b64(&lock)})).await;
+        ctx.sleep(Duration::from_millis(500)).await;
+        net.apis[0].mine(3).await;
+        let p = net.apis[0].call("getWithdrawalProof", json!({"nonce": 0})).await;
+        assert_eq!(p["final"], json!(false));
+        assert_eq!(p["withdrawal"]["amount_spl"], json!("2000"));
+        for _ in 0..3 {
+            ctx.sleep(Duration::from_millis(1000)).await;
+            net.apis[0].mine(3).await;
+        }
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        for api in &net.apis {
+            let p = api.call("getWithdrawalProof", json!({"nonce": 0})).await;
+            assert_eq!(p["final"], json!(true), "{p}");
+            assert!(p["proof"].as_str().unwrap().len() > 10);
+            let root_block = api.call("getHeader", json!({"hash": p["root_block_hash"]})).await;
+            assert_eq!(root_block["header_fields"]["withdraw_root"], p["withdraw_root"]);
+            let ev = api.call("getBridgeEvents", json!({})).await;
+            assert_eq!(ev["withdrawal_count"], json!(1));
+            assert_eq!(ev["withdrawals"][0]["final"], json!(true));
+        }
+        let esc = net.apis[1].call("getEscrow", json!({})).await;
+        assert_eq!(esc["outside_escrow"], json!((5_000_000u64 - 2_000_000).to_string()));
+    });
+}
