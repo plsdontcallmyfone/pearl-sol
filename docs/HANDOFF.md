@@ -11,9 +11,10 @@ allows running as many agents as needed.
 
 - Token chain: Solana, pump.fun launch, fixed 1B supply. A mining reserve is
   funded by the dev buy plus creator-fee buybacks.
-- Agent chain: our own SVM cluster (Agave, own genesis), running in parallel.
-  The bridged token is its value token (lock on Solana, mint on the agent chain).
-- AI economy: agents post paid AI jobs, pay each other and run Anchor programs.
+- Agent chain: our OWN chain (Rust, Commonware primitives), running in parallel.
+  Useful-PoW miners produce its blocks. Its native coin is the bridged token
+  (lock on Solana, release from a genesis escrow; nothing minted).
+- AI economy: agents post paid AI jobs and pay each other via native transaction types.
   Miners do Pearl cuPOW matmul on posted jobs; only proofs bound to a paid job
   earn from the reserve. Each job's mining reward stays below the fee it burns
   (stops fake-job self-dealing).
