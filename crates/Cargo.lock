@@ -614,6 +614,7 @@ dependencies = [
  "pearl-attester",
  "pearl-job",
  "pearl-node",
+ "pearl-pool",
  "serde_json",
  "tiny_http",
  "ureq",
@@ -632,6 +633,26 @@ dependencies = [
  "pearl-job",
  "serde",
  "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "pearl-pool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "blake3",
+ "bs58",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "pearl-job",
+ "pearl-node",
+ "primitive-types",
+ "serde",
+ "serde_json",
+ "tiny_http",
  "ureq",
 ]
 

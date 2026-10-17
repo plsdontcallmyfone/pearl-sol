@@ -22,6 +22,7 @@ ed25519-dalek.workspace = true
 ureq.workspace = true
 pearl-job.workspace = true
 pearl-node.workspace = true
+pearl-pool.workspace = true
 
 [dev-dependencies]
 pearl-attester = { path = "../attester" }

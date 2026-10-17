@@ -1,0 +1,32 @@
+[package]
+name = "pearl-pool"
+description = "Mining pool for the agent chain: shares = block proofs at a lower target, PPLNS payouts after maturity, restart safe"
+edition = "2021"
+license = "ISC"
+version = "0.1.0"
+workspace = "../../crates"
+
+[lib]
+name = "pearl_pool"
+
+[[bin]]
+name = "pearl-pool"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+base64.workspace = true
+blake3.workspace = true
+clap.workspace = true
+ed25519-dalek.workspace = true
+ureq.workspace = true
+tiny_http.workspace = true
+primitive-types.workspace = true
+pearl-job.workspace = true
+pearl-node.workspace = true
+
+[dev-dependencies]

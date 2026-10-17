@@ -9,6 +9,8 @@
 //! SubmitResult, wait until the job is Delivered to us, ask the attester for the
 //! Result signature (SPEC 4.1), send CompleteJob.
 
+pub mod pool;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

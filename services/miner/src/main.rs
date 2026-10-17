@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 
+use pearl_miner::pool::{PoolMiner, PoolMinerConfig};
 use pearl_miner::{HttpAttester, Miner, MinerConfig, ResultAttester};
+use pearl_pool::client::HttpPool;
 use pearl_node::{read_key_file, HttpNode, DEFAULT_RPC};
 
 #[derive(Parser)]
@@ -44,11 +46,29 @@ struct Args {
     /// Exit after this many accepted blocks (and their deliveries).
     #[arg(long)]
     blocks: Option<u64>,
+    /// Pool mode: get work from a pearl-pool (e.g. http://127.0.0.1:10663) and submit
+    /// shares there; --payout is the key the pool pays. Without it: solo mode.
+    #[arg(long)]
+    pool: Option<String>,
+    /// Pool mode: exit after this many accepted shares.
+    #[arg(long)]
+    shares: Option<u64>,
 }
 
 fn main() -> Result<()> {
     let a = Args::parse();
     let key = read_key_file(&a.payout)?;
+    if let Some(url) = &a.pool {
+        let pool = HttpPool::new(url);
+        let cfg = PoolMinerConfig {
+            threads: a.threads.max(1),
+            refresh: Duration::from_millis(a.refresh_ms.max(50)),
+            stats_every: Duration::from_secs(a.stats_secs.max(1)),
+            max_shares: a.shares,
+        };
+        let mut m = PoolMiner::new(&pool, key.verifying_key().to_bytes(), cfg, Box::new(|v| println!("{v}")));
+        return m.run(&|| false);
+    }
     let node = HttpNode::new(&a.rpc);
     let attester = HttpAttester::new(&a.attester);
     let cfg = MinerConfig {

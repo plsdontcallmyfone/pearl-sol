@@ -7,6 +7,7 @@ members = [
     "pearl-node",
     "../services/miner",
     "../services/attester",
+    "../services/pool",
 ]
 # Standalone (own [workspace]): pulls solana-sdk + LiteSVM, so it stays out of the main build.
 exclude = ["chain-litesvm"]
@@ -35,6 +36,7 @@ tiny_http = "0.12"
 pearl-job = { path = "pearl-job" }
 pearl-chain = { path = "pearl-chain" }
 pearl-node = { path = "pearl-node" }
+pearl-pool = { path = "../services/pool" }
 
 # Naive int matmul is slow unoptimised; tests run at localnet difficulty.
 [profile.dev]
