@@ -118,9 +118,9 @@ fn fallback_block_verifies_and_matches_pearl_job() {
     let fp = FallbackParams::default();
     // pinned vector (PROOF-FORMAT 7.5)
     let p = fallback_params(&[9u8; 32], &fp);
-    assert_eq!(hex::encode(p.hash_a), "f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a");
-    assert_eq!(hex::encode(p.hash_b), "5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347");
-    let bits = 0x1e100000; // about 1 win in 32 nonces
+    assert_eq!(hex::encode(p.hash_a), "0e68c8d3bae3e18efe30f78e02f313921ce6dc7adcd6d496e3605fd7d445ee62");
+    assert_eq!(hex::encode(p.hash_b), "33e22b577f66feb98851fcb1f4ff628dcd6c42857b8b7e24f37f08bd542f1ae6");
+    let bits = 0x1e080000; // about 1 win in 32 nonces (h*w*(dlen/r)*128 = 2^16)
     let t = template(5, [0; 32], bits);
     let mined = pow::mine_header(&t, &BlockWork::Fallback(fp), 0..10_000).unwrap().expect("mined");
     let hb = mined.header.to_bytes();
@@ -131,12 +131,13 @@ fn fallback_block_verifies_and_matches_pearl_job() {
     pow::verify_block(&mined.header, None, &mined.proof, &fp).unwrap();
     let pd = h.pow_digest();
     let jp = fallback_params(&pd, &fp);
-    verify::verify_block_proof(&mined.proof, &jp, &pd, bits, h.nonce()).unwrap();
+    let jh = verify::verify_block_proof(&mined.proof, &jp, &pd, bits, h.nonce()).unwrap();
     // wrong nonce, wrong digest, harder target, flipped leaf byte
     assert!(verify::verify_block_proof(&mined.proof, &jp, &pd, bits, h.nonce() + 1).is_err());
     let mut pd2 = pd;
     pd2[0] ^= 1;
-    assert!(verify::verify_block_proof(&mined.proof, &jp, &pd2, bits, h.nonce()).is_err());
+    // a different digest gives a different jackpot (it may still meet an easy target)
+    assert_ne!(verify::verify_block_proof(&mined.proof, &jp, &pd2, 0x207fffff, h.nonce()), Ok(jh));
     assert_eq!(verify::verify_block_proof(&mined.proof, &jp, &pd, 0x1d00ffff, h.nonce()), Err(pearl_verify_sbf::Error::Target));
     let mut bad = mined.proof.clone();
     let v = proof::parse(&bad).unwrap();
@@ -294,5 +295,33 @@ fn wtema_matches_u512_reference() {
             min_difficulty_bits: if i % 7 == 0 { 0x1d00ffff } else { 0 },
         };
         assert_eq!(next_bits(&r), reference(&r), "{r:?}");
+    }
+}
+
+/// Rank penalty mirrored from pearl-job: same floor, same penalized bound.
+#[test]
+fn rank_penalty_matches_pearl_job() {
+    use pearl_job::pattern::PeriodicPattern;
+    let pats = [
+        (PeriodicPattern::from_list(&[0, 1, 2, 3]).unwrap(), PeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7]).unwrap()),
+        (PeriodicPattern::from_list(&[0, 8, 64, 72]).unwrap(), PeriodicPattern::from_list(&[0, 1, 8, 9, 32, 33, 40, 41]).unwrap()),
+    ];
+    for (rows_pattern, cols_pattern) in pats {
+        for (r, k) in [(32u16, 1024u32), (64, 4096), (128, 2048), (128, 4096), (256, 4096), (512, 65536), (1024, 65536)] {
+            let pc = pearl_job::MiningConfig { common_dim: k, rank: r, rows_pattern, cols_pattern };
+            let sc = MiningConfig::from_bytes(&pc.to_bytes()).unwrap();
+            let (m, n) = (128, 128);
+            assert_eq!(sc.check_shape(m, n).is_ok(), pearl_job::job::check_shape(&pc, m as usize, n as usize).is_ok(), "r={r} k={k}");
+            assert_eq!(sc.check_shape(m, n).is_ok(), r >= 128, "r={r} k={k}");
+            assert_eq!(sc.penalized_factor() as usize, pearl_job::job::penalized_adjustment_factor(&pc));
+            for bits in [0x1d00ffffu32, 0x1e040000, 0x207fffff] {
+                let ours = difficulty::difficulty_bound(bits, sc.penalized_factor());
+                assert_eq!(ours, U256::from_little_endian(&{
+                    let mut b = [0u8; 32];
+                    pearl_job::job::difficulty_bound(bits, &pc).to_little_endian(&mut b);
+                    b
+                }));
+            }
+        }
     }
 }

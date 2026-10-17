@@ -110,10 +110,11 @@ pub fn next_bits(r: &Retarget) -> u32 {
     target_to_bits(new)
 }
 
-/// `pearl_job::job::difficulty_bound`: `target * h*w*dlen`, saturating.
-pub fn difficulty_bound(nbits: u32, hw_dlen: u64) -> U256 {
+/// `pearl_job::job::difficulty_bound`: `target * factor`, saturating, where `factor`
+/// is the rank-penalized `MiningConfig::penalized_factor` (`h*w*(dlen/r)*128`).
+pub fn difficulty_bound(nbits: u32, factor: u64) -> U256 {
     let t = nbits_to_target(nbits);
-    let f = U256::from(hw_dlen);
+    let f = U256::from(factor.max(1));
     if t > U256::MAX / f {
         U256::MAX
     } else {

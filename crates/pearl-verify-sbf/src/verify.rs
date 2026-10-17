@@ -365,7 +365,7 @@ pub fn jackpot_noised(a: &[i8], bt: &[i8], job: &JobParams, pow_digest: &[u8; 32
         b[i * 4..i * 4 + 4].copy_from_slice(&wd.to_le_bytes());
     }
     let jh = blake3::keyed_hash(&a_seed, &b);
-    let bound = difficulty_bound(target_bits, (h * w * dlen) as u64);
+    let bound = difficulty_bound(target_bits, c.penalized_factor());
     if !meets_target(&jh, &bound) {
         return Err(Error::Target);
     }

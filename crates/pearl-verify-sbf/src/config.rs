@@ -3,6 +3,9 @@
 
 use crate::Error;
 
+/// Pearl rank-penalty floor and normalization (`pearl_job::job::PENALTY_BASE_RANK`).
+pub const PENALTY_BASE_RANK: u32 = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pattern {
     /// (stride, length) per dimension.
@@ -110,12 +113,18 @@ impl MiningConfig {
         self.k - self.k % self.rank
     }
 
-    /// `job::check_shape`.
+    /// Pearl `penalized_adjustment_factor` (`pearl_job::job`): `h*w*(dlen/r)*128`.
+    pub fn penalized_factor(&self) -> u64 {
+        self.h() as u64 * self.w() as u64 * (self.dlen() / self.rank) as u64 * PENALTY_BASE_RANK as u64
+    }
+
+    /// `job::check_shape` (incl. the rank-penalty floor r >= 128).
     pub fn check_shape(&self, m: u32, n: u32) -> Result<(), Error> {
         let (k, r, h, w) = (self.k as u64, self.rank as u64, self.h() as u64, self.w() as u64);
         let dlen = self.dlen() as u64;
         let ok = r.is_power_of_two()
             && (32..=1024).contains(&r)
+            && r >= PENALTY_BASE_RANK as u64
             && r % 16 == 0
             && k <= 1 << 16
             && k % 64 == 0
