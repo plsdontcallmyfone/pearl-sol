@@ -174,11 +174,16 @@ allows running as many agents as needed.
 
 SPEC v2 written (28a685f). Build agents started 2026-10-16 (max 3 heavy builds at
 once on this Mac), each owning its paths:
-1. node: chain/ workspace (agent-types, state, executor, consensus-pow, sync, net,
-   mempool, rpc, bin/agent-node), chain/rust-toolchain.toml (Rust >= 1.95,
-   Commonware 2026.9.0 pinned), docs/RPC.md (written early: miner, relayer and
-   wallet build against it), scripts/devnet.sh (3 nodes, RPC 10630/10632/10634,
-   p2p 10640-10649). Tx/header test vectors in chain/agent-types/vectors.
+1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
+   pinned. 34 tests (incl. deterministic multi-node: fork race, partition/heal,
+   refusal beyond K, late joiner sync, withdrawal proof). 3-node devnet via
+   scripts/devnet.sh (init/start/stop/status/mine/reset), RPC 10630/10632/10634, WS
+   = RPC+1. Measured: 51 blocks/s at easy target, about 480 tx/s end to end; live
+   pearl-miner 3/3 blocks accepted. Deviations: chain job header =
+   job_id||terms_hash||0||0; genesis tx_root = genesis spec digest; BridgeUnlock fee
+   may be 0; work = 2^256/(target+1); withdrawal proofs = Commonware MMR (SHA-256),
+   final only. Not done: open-membership net, body pruning, restart loads all
+   blocks in memory, no job block mined live yet (needs a job with real data_uri).
 2. miner: DONE (13f27ae..8e7cdc7): pearl-job `pow` (verify_block = the node's full
    check; fallback derivation in PROOF-FORMAT.md section 7), new crates/pearl-node
    (JSON-RPC client per docs/RPC.md, own tx encoding byte-checked against
@@ -204,7 +209,8 @@ once on this Mac), each owning its paths:
    jobs (post job only if pearl-job parity is exact), storefront buy, rewards,
    Wallet Standard (Solana) + window.pearl (our chain). Headless Chromium only.
 scripts/localnet.sh now defaults to the token chain only (+ storefront); the
-agent chain is scripts/devnet.sh. Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet. If a
+agent chain is scripts/devnet.sh. Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet:
+integration agent started 2026-10-16. If a
 session dies, check git log per path.
 
 ## Gotchas
