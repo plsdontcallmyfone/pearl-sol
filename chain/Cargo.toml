@@ -1,0 +1,67 @@
+# pearl-sol agent chain: our own useful-PoW chain on Commonware primitives (SPEC v2).
+[workspace]
+resolver = "2"
+members = [
+    "agent-types",
+    "state",
+    "executor",
+    "consensus-pow",
+    "sync",
+    "net",
+    "mempool",
+    "rpc",
+    "bin/agent-node",
+]
+
+[workspace.package]
+edition = "2024"
+license = "ISC"
+version = "0.1.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# Commonware, pinned exactly (ALPHA storage formats change between releases).
+commonware-codec = "=2026.9.0"
+commonware-cryptography = "=2026.9.0"
+commonware-runtime = "=2026.9.0"
+commonware-storage = "=2026.9.0"
+commonware-p2p = "=2026.9.0"
+commonware-resolver = "=2026.9.0"
+commonware-utils = "=2026.9.0"
+commonware-macros = "=2026.9.0"
+
+pearl-job = { path = "../crates/pearl-job" }
+agent-types = { path = "agent-types" }
+state = { path = "state" }
+executor = { path = "executor" }
+consensus-pow = { path = "consensus-pow" }
+sync = { path = "sync" }
+net = { path = "net" }
+mempool = { path = "mempool" }
+rpc = { path = "rpc" }
+
+anyhow = "1.0"
+thiserror = "2"
+blake3 = "1.8"
+primitive-types = { version = "0.12", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+bs58 = "0.5"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+
+# Naive int matmul in pearl-job is slow unoptimised.
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+[profile.test]
+opt-level = 1
+[profile.release]
+opt-level = 3

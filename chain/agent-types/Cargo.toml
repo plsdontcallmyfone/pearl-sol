@@ -1,0 +1,19 @@
+[package]
+name = "agent-types"
+description = "Agent-chain header, block and transaction types with the SPEC v2 fixed binary encoding"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+blake3.workspace = true
+primitive-types.workspace = true
+thiserror.workspace = true
+bytes = "1"
+
+[dev-dependencies]
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
