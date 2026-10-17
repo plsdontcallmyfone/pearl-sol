@@ -368,6 +368,7 @@ pub struct Pool {
     pub cfg: PoolConfig,
     maturity: u64,
     inner: Mutex<Inner>,
+    submit_lock: Mutex<()>,
     log: Logger,
 }
 
@@ -416,6 +417,7 @@ impl Pool {
                 chain_id: None,
                 sent_at: HashMap::new(),
             }),
+            submit_lock: Mutex::new(()),
             log,
         };
         pool.log(json!({"event": "open", "pool": pool_key, "maturity": maturity, "fee_bps": pool.cfg.fee_bps,
@@ -538,10 +540,12 @@ impl Pool {
         let t = self.node.block_template(&self.pool_key())?;
         let w = self.make_work(t)?;
         let mut g = self.inner.lock().unwrap();
+        // The template's parent is the tip we follow (the node may have moved since `tip`).
+        let (prev, height) = (w.template.header.prev_hash, w.template.header.height);
+        let changed = g.tip != (prev, height.saturating_sub(1));
         if changed {
-            g.tip = tip;
+            g.tip = (prev, height.saturating_sub(1));
             g.current_fallback = None;
-            let (prev, height) = (w.template.header.prev_hash, w.template.header.height);
             g.works.retain(|_, x| x.template.header.prev_hash == prev);
             // Dedup sets live as long as work at that height can still be submitted (also
             // across a restart, when the same template comes back under the same work id).
@@ -689,6 +693,14 @@ impl Pool {
         // 4. A block: submit, then fix its PPLNS split.
         header.proof_hash = proof_hash(proof);
         let mined = MinedBlock { header, proof: proof.to_vec() };
+        // One block submission at a time, and only on the current tip: two shares on the
+        // same work that both meet the block target would otherwise make sibling blocks
+        // (the node accepts the second as a side branch; it would be orphaned).
+        let _submitting = self.submit_lock.lock().unwrap();
+        if self.inner.lock().unwrap().tip.0 != header.prev_hash {
+            self.log(json!({"event": "block_share_superseded", "height": header.height, "miner": pk}));
+            return Ok(ShareOutcome::Accepted { block: None });
+        }
         let out = self.node.submit_block(&work.template, &mined)?;
         let hash = match &out {
             SubmitOutcome::Accepted { block_hash } => *block_hash,
@@ -702,6 +714,11 @@ impl Pool {
         let split = pplns_split(work.reward, self.cfg.fee_bps, &window);
         {
             let mut g = self.inner.lock().unwrap();
+            // Our block is the new tip: work on its parent is stale from now on.
+            g.tip = (hash, header.height);
+            g.works.retain(|_, x| x.template.header.prev_hash == hash);
+            g.current = None;
+            g.current_fallback = None;
             for (id, c) in &split.credits {
                 if let Some(m) = g.st.miner_by_id(*id) {
                     m.immature += c;
@@ -728,6 +745,7 @@ impl Pool {
         self.log(json!({"event": "block_found", "height": header.height, "hash": hex::encode(hash), "finder": pk,
                         "reward": work.reward.to_string(), "fee": split.fee.to_string(), "remainder": split.remainder.to_string(),
                         "window": window.len(), "miners_credited": split.credits.len()}));
+        drop(_submitting);
         if let Err(e) = self.refresh() {
             self.log(json!({"event": "refresh_failed", "error": format!("{e:#}")}));
         }

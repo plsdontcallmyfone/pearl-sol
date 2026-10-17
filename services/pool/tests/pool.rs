@@ -321,6 +321,11 @@ fn orphaned_block_drops_its_credits() {
     let ShareOutcome::Accepted { block: Some(b) } = o else { panic!("{o:?}") };
     assert!(b.accepted);
     assert!(pool.state().miners[&b58(&a)].immature > 0);
+    // Our own block moves the tip at once: another share on the same work is stale (no
+    // sibling block is submitted).
+    let (n2, p2) = find_share(&w.template.header, &w, EASY, w.nonce_start + 1);
+    assert!(matches!(PoolApi::submit_share(&pool, &a, &w.work_id, n2, &p2).unwrap(), ShareOutcome::Rejected { stale: true, .. }));
+    assert_eq!(node.mock.height(), b.height);
     node.reorg_at(b.height);
     node.advance(K + 1);
     pool.tick().unwrap();
