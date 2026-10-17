@@ -171,7 +171,9 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    scripts/demo.sh or alongside services/relayer yet; reorgs capped at about 30
    headers per tx; fixture predates the 4x8 fallback default.
    SECURITY (open): low-rank/zero job matrices make job-block PoW cheap; see SPEC
-   section 8. Must fix before any public network.
+   section 8. Owner chose Pearl's rank penalty (2026-10-17); agent started: port it
+   to pearl-job, chain consensus-pow verify, pearl-verify-sbf + lightclient;
+   analysis in research/NOTES-rank-penalty.md.
 2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
    commonware-stream (any key admitted under limits; plaintext key banner then
    encrypted handshake; genesis-bound namespace; `key@host:port` pins a seed),
