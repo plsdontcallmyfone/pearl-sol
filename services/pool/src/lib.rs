@@ -49,6 +49,13 @@ use pearl_node::{b58, header_fields_json, SubmitOutcome, Template};
 pub use node::PoolNode;
 
 pub const DEFAULT_PORT: u16 = 10663;
+/// Share target = block target x this. Retuned 16 -> 11 on 2026-10-17 for the 4 x 8
+/// fallback default (one tile, so one jackpot attempt, per nonce). At 64 x 64 a nonce had
+/// 128 tiles but counts as at most one share, which capped factor 16 at about 11 shares
+/// per block found (live run: 13.6 pool shares per chain block incl. stale); at 4 x 8
+/// every share is its own nonce, so factor 16 gave the full 16 (live: 14.6-16.9) and 11
+/// brings it back (live: 13.4; tests/pool.rs `default_share_factor_on_4x8_fallback`).
+pub const DEFAULT_SHARE_FACTOR: u64 = 11;
 /// The easiest target the chain allows (devnet genesis).
 pub const POW_LIMIT_BITS: u32 = 0x207fffff;
 const STATE_VERSION: u32 = 1;
@@ -116,6 +123,7 @@ pub struct PoolConfig {
     pub maturity: Option<u64>,
     /// Fixed share target (compact). None = block target x `share_factor`.
     pub share_bits: Option<u32>,
+    /// Default [`DEFAULT_SHARE_FACTOR`].
     pub share_factor: u64,
     /// Smallest payout (after the tx fee).
     pub min_payout: u64,
@@ -141,7 +149,7 @@ impl Default for PoolConfig {
             pplns_n: 1000,
             maturity: None,
             share_bits: None,
-            share_factor: 16,
+            share_factor: DEFAULT_SHARE_FACTOR,
             min_payout: 1_000_000,
             payout_fee: None,
             max_batch: 32,

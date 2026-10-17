@@ -14,7 +14,7 @@ use pearl_job::pow::{block_proof_to_bytes, fallback_job, BlockHeader};
 use pearl_node::b58;
 use pearl_pool::client::{PoolApi, PoolWork};
 use pearl_pool::testing::RewardNode;
-use pearl_pool::{pplns_split, share_bits_for, target_to_nbits, work_of, BlockStatus, PayoutStatus, Pool, PoolConfig, ShareOutcome, ShareRec};
+use pearl_pool::{pplns_split, share_bits_for, DEFAULT_SHARE_FACTOR, target_to_nbits, work_of, BlockStatus, PayoutStatus, Pool, PoolConfig, ShareOutcome, ShareRec};
 
 const CHAIN: u32 = 4242;
 /// About 0.6 wins per nonce on 64 x 64 fallback matrices.
@@ -471,4 +471,34 @@ fn http_routes() {
     assert_eq!(c, 404);
     let (c, e) = pearl_pool::http::route(&pool, "POST", "/share", b"{}");
     assert_eq!(c, 400, "{e}");
+}
+
+/// The default share factor on the default 4 x 8 fallback work (one tile per nonce): about
+/// DEFAULT_SHARE_FACTOR shares per block, every block is also a share. Block target set so a
+/// nonce wins a block about 1 in 40 (bound = target x 65536 at k 2048, r 128).
+#[test]
+fn default_share_factor_on_4x8_fallback() {
+    let fb = pearl_job::pow::FallbackParams::default();
+    assert_eq!((fb.m, fb.n, fb.config.k(), fb.config.r()), (4, 8, 2048, 128));
+    assert_eq!(PoolConfig::default().share_factor, DEFAULT_SHARE_FACTOR);
+    let block_bits = 0x1e066666;
+    let share_bits = share_bits_for(block_bits, None, DEFAULT_SHARE_FACTOR);
+    let mut h = BlockHeader::from_bytes(&[0u8; 256]).unwrap();
+    h.version = 1;
+    h.height = 7;
+    h.target_bits = block_bits;
+    let (mut shares, mut blocks) = (0u32, 0u32);
+    for n in 0..4000u64 {
+        h.nonce = n;
+        let pd = h.pow_digest();
+        let fj = fallback_job(&pd, &fb).unwrap();
+        let share = fj.mine_block(&pd, share_bits, n).is_some();
+        let block = fj.mine_block(&pd, block_bits, n).is_some();
+        assert!(!block || share, "a block is always a share");
+        shares += share as u32;
+        blocks += block as u32;
+    }
+    let ratio = shares as f64 / blocks as f64;
+    println!("4x8 fallback, factor {DEFAULT_SHARE_FACTOR}: {shares} shares, {blocks} blocks in 4000 nonces, {ratio:.2} shares per block");
+    assert!(blocks >= 60 && (8.0..=14.0).contains(&ratio), "{shares} shares / {blocks} blocks");
 }

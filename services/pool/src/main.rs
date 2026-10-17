@@ -43,7 +43,8 @@ struct Args {
     /// Fixed share target, compact (e.g. 0x1e040000). Default: block target x --share-factor.
     #[arg(long, value_parser = parse_bits)]
     share_bits: Option<u32>,
-    #[arg(long, default_value_t = 16)]
+    /// Share target = block target x this (see pearl_pool::DEFAULT_SHARE_FACTOR).
+    #[arg(long, default_value_t = pearl_pool::DEFAULT_SHARE_FACTOR)]
     share_factor: u64,
     /// Smallest payout amount (base units, after the tx fee).
     #[arg(long, default_value_t = 1_000_000)]
