@@ -131,10 +131,11 @@ export interface BlockInfo {
   canonical: boolean;
   confirmations: number;
   final: boolean;
-  /** not in docs/RPC.md; used only when a node reports it */
-  reward?: string;
-  subsidy?: string;
-  fees?: string;
+  /** docs/RPC.md getBlock (2026-10-17); null for blocks a node stored before it recorded them */
+  reward?: string | null;
+  subsidy?: string | null;
+  fees?: string | null;
+  matured?: string | null;
 }
 
 export class ChainRpc {

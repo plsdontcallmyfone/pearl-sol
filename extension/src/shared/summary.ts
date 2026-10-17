@@ -5,7 +5,7 @@ import { UnsignedTx } from "../chain/tx";
 import { RESERVED } from "../chain/messages";
 import { ParsedMessage, COMPUTE_BUDGET, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, ATA_PROGRAM, isWritableIndex } from "../solana/tx";
 import { disc } from "../solana/programs";
-import { NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, short } from "./constants";
+import { NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, short, uriView } from "./constants";
 
 export interface Row {
   label: string;
@@ -60,14 +60,14 @@ export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: num
         { label: "Deadline height", value: b.deadlineHeight.toString() },
         { label: "Max blocks", value: b.maxBlocks.toString() },
         { label: "Evaluators", value: `${b.threshold} of ${b.evaluators.length}` },
-        { label: "Data", value: b.dataUri || "none" },
+        { label: "Data", ...uriView(b.dataUri) },
         { label: "hash_a", value: short(hex(b.hashA), 8), full: hex(b.hashA) },
         { label: "hash_b", value: short(hex(b.hashB), 8), full: hex(b.hashB) },
       );
       break;
     case "SubmitResult":
       headline = "Deliver a job result";
-      rows.push({ label: "Job", value: short(hex(b.jobId), 8), full: hex(b.jobId) }, { label: "Result hash", value: short(hex(b.resultHash), 8) }, { label: "URI", value: b.uri });
+      rows.push({ label: "Job", value: short(hex(b.jobId), 8), full: hex(b.jobId) }, { label: "Result hash", value: short(hex(b.resultHash), 8) }, { label: "URI", ...uriView(b.uri) });
       break;
     case "CompleteJob":
       headline = "Complete a job";

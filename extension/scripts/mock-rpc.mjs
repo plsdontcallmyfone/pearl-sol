@@ -152,7 +152,7 @@ function job(i) {
   return {
     job_id: id, poster, status: st, mineable: st === "open",
     m: 64 * (1 + (i % 3)), n: 64, k: 1024, config, hash_a: hex(blake3(Buffer.from(`a${i}`))), hash_b: hex(blake3(Buffer.from(`b${i}`))),
-    data_uri: `ipfs://bafy-mock-${i}`, worker_pay: String(BigInt(1 + i * 3) * 1_000_000_000n), protocol_fee: String(BigInt(1 + i) * 250_000_000n),
+    data_uri: i % 2 === 0 ? `blob:${hex(blake3(Buffer.from(`data-${i}`)))}` : `ipfs://bafy-mock-${i}`, worker_pay: String(BigInt(1 + i * 3) * 1_000_000_000n), protocol_fee: String(BigInt(1 + i) * 250_000_000n),
     deadline_height: 1400 + i * 20, max_blocks: 10 + i, blocks_mined: Math.min(10 + i, i * 2), cap_remaining: String(BigInt(1 + i) * 150_000_000n), subsidy_paid: String(BigInt(i) * 7_000_000n),
     evaluators: [base58.encode(blake3(Buffer.from("attester")))], threshold: 1, terms_hash: hex(terms), job_key: hex(blake3(Buffer.concat([header, Buffer.from(config, "hex")]))), job_header: hex(header), header_id: hex(headerId),
     created_height: 0, share_target: 0, posted_height: 1000 + i * 9, deliverer: st === "delivered" || st === "completed" ? base58.encode(blake3(Buffer.from("worker"))) : null,
@@ -220,6 +220,7 @@ function chain(method, p) {
       return {
         hash: hex(blake3(u64(h))), header: "", header_fields: { height: h, miner: mine && ME ? ME : base58.encode(blake3(Buffer.from("other-miner"))), job_id: h % 2 ? hex(blake3(Buffer.from("job-0"))) : "00".repeat(32), timestamp_ms: Date.now() },
         proof_len: 12600, txs: mine ? [{ tx_hash: "aa", kind: "Transfer", from: "x", nonce: 0, fee: "1000" }, { tx_hash: "bb", kind: "Transfer", from: "y", nonce: 0, fee: "2500" }] : [], canonical: true, confirmations: state.height - h, final: state.height - h >= 30,
+        fees: mine ? "3500" : "0", subsidy: h % 2 ? "7000000" : "0", reward: String((mine ? 3500n : 0n) + (h % 2 ? 7000000n : 0n)), matured: "0",
       };
     }
     case "getEscrow": return { escrow: "", escrow_balance: "0", pool: "", pool_balance: "0", total_supply: "1000000000000000000", outside_escrow: "0", outside_escrow_spl: "0", height: state.height };

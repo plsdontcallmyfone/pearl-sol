@@ -184,6 +184,8 @@ try {
     await page.waitForSelector("[data-testid=header-check]", { timeout: 8000 }).catch(() => {});
     const hc = await page.textContent("[data-testid=header-check]").catch(() => "");
     check("job detail recomputes job_key from header_id", hc === "job_key verified", hc);
+    const du = (await page.textContent("[data-testid=job-data-uri]").catch(() => "")) ?? "";
+    check("job detail shows its data URI (blob: shortened)", /^(blob \S+ \(chain blob store\)|\w+:\/\/.+)$/.test(du), du);
     await shot("10-job-detail");
     await page.click("[aria-label=Back]");
   }
@@ -215,6 +217,10 @@ try {
   await page.waitForSelector("[data-testid=rewards] .hero-amount:not(:has(.skel))", { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(1500);
   check("mining rewards scan", /blocks/.test(await page.textContent("[data-testid=rewards]")));
+  if (!live) {
+    const split = (await page.locator("[data-testid=block-split]").first().textContent().catch(() => "")) ?? "";
+    check("mining view shows getBlock subsidy + fees per block", /^subsidy .+ \+ fees /.test(split), split);
+  }
   await shot("14-mining");
 
   // ---------------- activity + settings

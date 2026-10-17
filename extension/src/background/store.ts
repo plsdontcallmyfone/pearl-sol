@@ -18,7 +18,7 @@ export interface LocalState {
   permissions?: Record<string, Permission>;
   activity?: ActivityItem[];
   pending?: PendingTransfer[];
-  rewardCache?: Record<string, { network: string; scannedTo: number; scannedFrom: number; blocks: { height: number; hash: string; fees: string; reward?: string; jobBlock: boolean }[] }>;
+  rewardCache?: Record<string, { network: string; scannedTo: number; scannedFrom: number; blocks: { height: number; hash: string; fees: string; subsidy?: string; reward?: string; jobBlock: boolean }[] }>;
   chainNonces?: Record<string, { nonce: number; at: number }>;
 }
 

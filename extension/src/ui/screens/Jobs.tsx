@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Job } from "../../chain/rpc";
 import { LOCALNET_CONFIG_HEX } from "../../chain/job";
-import { CHAIN_NAME, NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, parseUnits, short } from "../../shared/constants";
+import { CHAIN_NAME, NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, parseUnits, short, uriView } from "../../shared/constants";
 import type { WalletState } from "../../shared/types";
 import { call } from "../api";
 import { Btn, CopyBtn, Empty, Field, Icon, KV, Notice, Seg, Sub, usePoll } from "../kit";
@@ -199,7 +199,7 @@ function JobDetail({ id, back, me }: { id: string; back: () => void; me: string 
               <KV k="Deadline height" v={j.deadline_height.toLocaleString("en-US")} />
               <KV k="Posted at height" v={j.posted_height.toLocaleString("en-US")} />
               <KV k="Evaluators" v={`${j.threshold} of ${j.evaluators.length}`} />
-              <KV k="Data" v={j.data_uri || "none"} />
+              <KV k="Data" v={<span data-testid="job-data-uri">{uriView(j.data_uri).value}</span>} title={uriView(j.data_uri).full} />
             </div>
             <div className="section-title"><span className="eyebrow">Mining</span></div>
             <div className="card divided">
@@ -214,7 +214,7 @@ function JobDetail({ id, back, me }: { id: string; back: () => void; me: string 
             <div className="card divided">
               <KV k="Deliverer" v={j.deliverer ? short(j.deliverer, 6) : "none yet"} title={j.deliverer ?? ""} />
               <KV k="Result hash" v={j.result_hash ? short(j.result_hash, 8) : "none yet"} title={j.result_hash ?? ""} />
-              {j.result_uri && <KV k="Result URI" v={j.result_uri} />}
+              {j.result_uri && <KV k="Result URI" v={uriView(j.result_uri).value} title={uriView(j.result_uri).full} />}
             </div>
           </>
         )}
@@ -305,7 +305,7 @@ function PostJob({ st, toast, onPosted }: { st: WalletState; toast: (m: string) 
         <Field label="Mining config (52 bytes hex)" hint="Default: localnet k 1024, rank 32, 4 x 8 tile (m multiple of 4, n of 8).">
           <input className="input" value={config} onChange={(e) => setConfig(e.target.value)} spellCheck={false} />
         </Field>
-        <Field label="Data URI"><input className="input" value={dataUri} onChange={(e) => setDataUri(e.target.value)} placeholder="file:///.../manifest.json or ipfs://..." spellCheck={false} data-testid="job-uri" /></Field>
+        <Field label="Data URI"><input className="input" value={dataUri} onChange={(e) => setDataUri(e.target.value)} placeholder="blob:<hex> (putBlob), file:///... or ipfs://..." spellCheck={false} data-testid="job-uri" /></Field>
       </div>
       <div className="card card-body">
         <div className="title" style={{ fontSize: 13.5 }}>Terms</div>
@@ -500,7 +500,7 @@ interface RewardsView {
   scanned: { from: number; to: number };
   rewardReported: boolean;
   totals: { blocks: number; maturedBlocks: number; immatureBlocks: number; jobBlocks: number; maturedFees: string; immatureFees: string; maturedReward: string; immatureReward: string };
-  blocks: { height: number; hash: string; fees: string; reward?: string; jobBlock: boolean; confirmations: number; matured: boolean }[];
+  blocks: { height: number; hash: string; fees: string; subsidy?: string; reward?: string; jobBlock: boolean; confirmations: number; matured: boolean }[];
 }
 
 function Rewards({ st }: { st: WalletState }) {
@@ -547,6 +547,7 @@ function Rewards({ st }: { st: WalletState }) {
               <div className="grow">
                 <div style={{ fontWeight: 600 }} className="num">#{b.height.toLocaleString("en-US")}</div>
                 <div className="small faint num">{b.jobBlock ? "job block" : "fallback"} · {b.confirmations} confirmations</div>
+                {b.subsidy !== undefined && <div className="tiny faint num" data-testid="block-split">subsidy {nat(b.subsidy)} + fees {natFee(b.fees)}</div>}
               </div>
               <div className="right">
                 <div className="num small">{b.reward ? nat(b.reward) : `fees ${formatUnits(b.fees, NATIVE_DECIMALS, 9)}`}</div>

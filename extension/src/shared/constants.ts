@@ -44,3 +44,14 @@ export function parseUnits(s: string, decimals: number): bigint {
 }
 
 export const short = (s: string, n = 4) => (s.length > 2 * n + 3 ? `${s.slice(0, n)}...${s.slice(-n)}` : s);
+
+/** `blob:<64 hex>`: content in the agent chain's blob store (docs/RPC.md "Blobs"). */
+export const BLOB_URI = /^blob:[0-9a-fA-F]{64}$/;
+
+/** Display form of a data / result URI: blob store URIs shortened, with the full URI kept. */
+export function uriView(u: string): { value: string; full?: string; blob: boolean } {
+  if (!u) return { value: "none", blob: false };
+  if (BLOB_URI.test(u)) return { value: `blob ${short(u.slice(5), 6)} (chain blob store)`, full: u, blob: true };
+  if (u.startsWith("blob:")) return { value: `${u} (malformed blob URI)`, full: u, blob: false };
+  return { value: u, blob: false };
+}

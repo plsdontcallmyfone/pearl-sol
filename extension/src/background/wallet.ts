@@ -578,10 +578,11 @@ export async function miningRewards(address: string, force = false) {
     const got = await Promise.all(heights.slice(i, i + batch).map((h) => c.chain.block(h).catch(() => null)));
     for (const b of got) {
       if (!b || b.header_fields.miner !== address) continue;
-      const fees = b.txs.reduce((s, t) => s + BigInt(t.fee), 0n);
+      const fees = b.fees != null ? BigInt(b.fees) : b.txs.reduce((s, t) => s + BigInt(t.fee), 0n);
       const jobBlock = !/^0+$/.test(b.header_fields.job_id);
-      b.reward ??= b.subsidy !== undefined ? (BigInt(b.subsidy) + fees).toString() : undefined;
-      cache.blocks.push({ height: b.header_fields.height, hash: b.hash, fees: fees.toString(), reward: b.reward, jobBlock });
+      const subsidy = b.subsidy != null ? b.subsidy : undefined;
+      const reward = b.reward != null ? b.reward : subsidy !== undefined ? (BigInt(subsidy) + fees).toString() : undefined;
+      cache.blocks.push({ height: b.header_fields.height, hash: b.hash, fees: fees.toString(), subsidy, reward, jobBlock });
     }
   }
   cache.scannedFrom = floor;
