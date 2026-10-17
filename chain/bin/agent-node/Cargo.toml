@@ -1,0 +1,51 @@
+[package]
+name = "agent-node"
+description = "The pearl-sol agent-chain node"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "agent_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-node"
+path = "src/main.rs"
+
+[dependencies]
+agent-types.workspace = true
+state.workspace = true
+executor.workspace = true
+consensus-pow.workspace = true
+mempool.workspace = true
+rpc.workspace = true
+sync.workspace = true
+net.workspace = true
+pearl-job.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-p2p.workspace = true
+commonware-resolver.workspace = true
+commonware-utils.workspace = true
+commonware-macros.workspace = true
+rand_core = "0.10"
+bytes = "1"
+futures.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+base64 = "0.22"
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ureq = { version = "2", default-features = false, features = ["json"] }
+blake3.workspace = true
+
+[dev-dependencies]
+commonware-p2p = { version = "=2026.9.0" }

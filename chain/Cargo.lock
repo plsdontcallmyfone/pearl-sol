@@ -15,6 +15,40 @@ dependencies = [
 [[package]]
 name = "agent-node"
 version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "bs58",
+ "bytes",
+ "clap",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-macros",
+ "commonware-p2p",
+ "commonware-resolver",
+ "commonware-runtime",
+ "commonware-storage",
+ "commonware-utils",
+ "consensus-pow",
+ "executor",
+ "futures",
+ "hex",
+ "mempool",
+ "net",
+ "pearl-job",
+ "rand_core 0.10.1",
+ "rpc",
+ "serde",
+ "serde_json",
+ "state",
+ "sync",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+]
 
 [[package]]
 name = "agent-types"
@@ -3475,6 +3509,20 @@ name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64 0.22.1",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "url"
