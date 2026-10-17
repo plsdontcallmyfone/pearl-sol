@@ -5,10 +5,13 @@
 //! registered here, so the node code only sees `commonware_p2p::{Sender, Receiver,
 //! Provider, Blocker}` and runs unchanged on the simulated network in tests.
 //!
-//! Seam for open membership (SPEC 6, required before a public net): a crate built on
-//! `commonware-stream` with an accept-any bouncer, an address book with gossip, and
-//! connection caps, that implements the same four traits and returns the same
-//! [`Channels`] shape. Swap [`start_discovery`] for it; nothing above changes.
+//! M2: [`open`] is open-membership p2p on `commonware-stream` (any key admitted under
+//! limits, address gossip, seeds, caps, ban scores). It implements the same four traits
+//! and [`start_open`] returns the same [`Channels`] shape, so the node, broadcast and
+//! resolver code run unchanged on either. The static mode stays for tests and the M1
+//! devnet.
+
+pub mod open;
 
 use std::net::SocketAddr;
 
@@ -87,4 +90,48 @@ where
     };
     let handle = network.start();
     Started { oracle, channels, handle }
+}
+
+pub type OpenSender<E> = open::Sender<E>;
+pub type OpenReceiver = open::Receiver;
+
+pub struct StartedOpen<E: commonware_runtime::Clock> {
+    pub oracle: open::Oracle,
+    pub channels: Channels<OpenSender<E>, OpenReceiver>,
+    pub handle: commonware_runtime::Handle<()>,
+}
+
+/// Start the open network with the node's channels. `net` is the transport (the
+/// runtime context in production).
+pub fn start_open<E, N>(context: E, net: N, cfg: open::Config) -> StartedOpen<E>
+where
+    E: Spawner
+        + commonware_runtime::Clock
+        + commonware_runtime::Metrics
+        + commonware_runtime::BufferPooler
+        + rand_core::CryptoRng
+        + Send
+        + Sync
+        + 'static,
+    N: commonware_runtime::Network + Send + Sync + 'static,
+{
+    let (mut network, oracle) = open::Network::new(context, net, cfg);
+    let backlog = 4096;
+    let channels = Channels {
+        blocks: network.register(CH_BLOCKS, quota(), backlog),
+        txs: network.register(CH_TXS, quota(), backlog),
+        tips: network.register(CH_TIPS, quota(), backlog),
+        headers: network.register(CH_HEADERS, quota(), backlog),
+        bodies: network.register(CH_BODIES, quota(), backlog),
+    };
+    let handle = network.start();
+    StartedOpen { oracle, channels, handle }
+}
+
+/// Handshake namespace for the open network of one chain (genesis hash mixed in, so
+/// nodes of different chains fail the handshake instead of exchanging garbage).
+pub fn open_namespace(genesis_hash: &[u8; 32]) -> Vec<u8> {
+    let mut v = b"pearl-sol:p2p:open:v1:".to_vec();
+    v.extend_from_slice(genesis_hash);
+    v
 }

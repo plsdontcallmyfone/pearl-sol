@@ -1,6 +1,6 @@
 [package]
 name = "net"
-description = "Agent-chain p2p: M1 = Commonware discovery with a static peer set (seam for open membership)"
+description = "Agent-chain p2p: open membership on commonware-stream (M2), or Commonware discovery with a static peer set"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -10,4 +10,14 @@ commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime.workspace = true
 commonware-utils.workspace = true
+commonware-codec.workspace = true
+commonware-macros.workspace = true
+commonware-stream = "=2026.9.0"
+commonware-actor = "=2026.9.0"
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 rand_core = "0.10"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

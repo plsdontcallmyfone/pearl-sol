@@ -1965,11 +1965,19 @@ dependencies = [
 name = "net"
 version = "0.1.0"
 dependencies = [
+ "commonware-actor",
+ "commonware-codec",
  "commonware-cryptography",
+ "commonware-macros",
  "commonware-p2p",
  "commonware-runtime",
+ "commonware-stream",
  "commonware-utils",
+ "futures",
  "rand_core 0.10.1",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
