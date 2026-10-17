@@ -164,16 +164,14 @@ allows running as many agents as needed.
 
 M1 COMPLETE (2026-10-17). M2 STARTED 2026-10-17 (owner "start m2"). Agents, each
 owning its paths, max 3 heavy builds at once (all local; claude-host is destroyed):
-1. light client: IN PROGRESS (resumed 2026-10-17 after the disk filled). Verifier
-   crate committed (f5caf0f: no_std BLAKE3, PSJ1 steps, WTEMA in U256, Commonware
-   MMR). Program token/programs/lightclient (ID BUDUW2bG...MHK5), bridge
-   release_proof + set_release_modes, storefront finalize/expire_order_proof
-   (proves the CompleteJob/ExpireJob tx in tx_root, not a state proof): 8/8
-   LiteSVM tests, being committed. Cost: job block about 3.5M CU / 19 txs / about
-   0.0001 SOL; fallback block about 18.9M CU / 32 txs; header rent 0.0042 SOL,
-   refunded on close. Next: services/header-relay, devnet real-fixture test.
-   Owner decision (2026-10-17): shrink fallback matrices (chain params
-   fallback_m/n, default 4x8), DA agent adds them in chain/, light client mirrors.
+1. light client: DONE (f5caf0f..50bf84c). See SPEC 5.3 "As built". Tests: verifier 7,
+   LiteSVM 9, real devnet fixture 1 (15 real headers incl. the first live job
+   block + a real withdrawal released by MMR proof); bridge 10/10 and storefront
+   13/13 re-run. header-relay ran live (18 headers, resume OK). Not wired into
+   scripts/demo.sh or alongside services/relayer yet; reorgs capped at about 30
+   headers per tx; fixture predates the 4x8 fallback default.
+   SECURITY (open): low-rank/zero job matrices make job-block PoW cheap; see SPEC
+   section 8. Must fix before any public network.
 2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
    commonware-stream (any key admitted under limits; plaintext key banner then
    encrypted handshake; genesis-bound namespace; `key@host:port` pins a seed),

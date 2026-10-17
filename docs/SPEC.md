@@ -192,6 +192,27 @@ finalized.
 - Anyone can relay headers (permissionless crank, reimbursed per header from a fee
   pool; cost roughly a few thousandths of a SOL per header).
 
+
+As built (f5caf0f..50bf84c, token/programs/lightclient, ID
+BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5; verifier crates/pearl-verify-sbf;
+relay services/header-relay):
+- Verification is split into many steps (proof upload in chunks, then proof hash,
+  fallback rebuild for fallback blocks, openings, noise, jackpot). Measured: job
+  block about 3.5M CU / 19 txs; fallback block about 5.1M CU / 20 txs at the 4x8
+  fallback default (18.9M at 64x64). About 0.0001 SOL in fees per header plus
+  0.0042 SOL rent, refunded on close_header. Relayers can be paid from a pool.
+- Job commitments: `register_job` proves the job's posting tx (PostJob or order
+  BridgeUnlock) by tx_root inclusion in a verified canonical header below the job
+  block. No state proof needed (blocks are all-or-nothing).
+- `bridge.release_proof`: Commonware MMR proof of the withdrawal entry against
+  withdraw_root of a final header; `set_release_modes` = signers, proof or both.
+- `storefront.finalize_order_proof` / `expire_order_proof`: inclusion of the
+  CompleteJob / ExpireJob tx under a final header's tx_root, plus one ed25519
+  precompile re-verify of an (evaluator, signature) pair from that tx. Replaces
+  the QMDB state proof.
+- Light-client params (incl. fallback m/n, K, WTEMA) mirror the chain's
+  AdminConfig at init and via `set_params`; any chain AdminConfig change must be
+  mirrored. Reorgs are limited to about 30 headers per tx (path accounts).
 ## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
 
 | Crate | Uses (commonware-*) | Job |
@@ -234,7 +255,17 @@ and RPC 10630-10639, relayer 10660, attester 10661, storefront-x402 10662.
 
 **M3:** public testnet, audits, mainnet.
 
-## 8. Open questions for the owner
+## 8. Known security issue (open, 2026-10-17)
+
+Low-rank job matrices: a poster can post zero or low-rank matrices for the price
+of P. The noised product is then itself low rank and can be computed far cheaper
+than a real multiply, so job blocks on such jobs are cheap PoW. Pearl mainnet has
+a rank-penalty rule for this; we dropped it in M1. Must be fixed before any
+public network (options: Pearl's rank penalty on the difficulty bound; requiring
+job matrices to pass a randomized rank/entropy check by the evaluators before the
+job is minable; or binding job blocks to a higher target than fallback blocks).
+
+## 9. Open questions for the owner
 - Dev buy size (sets the starting reserve).
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
 - Name and ticker.
