@@ -137,7 +137,8 @@ pub fn config_json(c: &Config) -> Value {
         "attesters": c.attesters.iter().map(|a| b58(a)).collect::<Vec<_>>(),
         "attester_threshold": c.attester_threshold, "max_block_txs": c.max_block_txs, "max_future_ms": c.max_future_ms,
         "fallback_m": c.fallback_m, "fallback_n": c.fallback_n, "fallback_config": hex::encode(c.fallback_config),
-        "min_protocol_fee": c.min_protocol_fee.to_string(), "bridge_paused": c.bridge_paused,
+        "min_protocol_fee": c.min_protocol_fee.to_string(),
+        "min_protocol_fee_effective": executor::effective_min_protocol_fee(c).to_string(), "bridge_paused": c.bridge_paused,
         "max_job_blocks": c.max_job_blocks, "min_difficulty_bits": c.min_difficulty_bits, "keys": keymap,
     })
 }
