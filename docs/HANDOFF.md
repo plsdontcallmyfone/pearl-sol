@@ -170,10 +170,15 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    13/13 re-run. header-relay ran live (18 headers, resume OK). Not wired into
    scripts/demo.sh or alongside services/relayer yet; reorgs capped at about 30
    headers per tx; fixture predates the 4x8 fallback default.
-   SECURITY (open): low-rank/zero job matrices make job-block PoW cheap; see SPEC
-   section 8. Owner chose Pearl's rank penalty (2026-10-17); agent started: port it
-   to pearl-job, chain consensus-pow verify, pearl-verify-sbf + lightclient;
-   analysis in research/NOTES-rank-penalty.md.
+   SECURITY: resolved (82e002f..1d4dc89). Pearl's rank penalty ported everywhere
+   (pearl-job, chain via verify_block, pearl-verify-sbf + lightclient); r >= 128,
+   default config now k=2048, r=128, 4x8. Zero/low-rank matrices only give a 1.22x
+   edge (attack = 0.82x honest work), same as Pearl mainnet; SPEC 2/3.2 + 8.
+   Light-client cost doubled with k: job header 7.25M CU / 34 txs, 4x8 fallback
+   10.2M / 37 txs. Light-client real-devnet fixture needs re-harvest at k=2048
+   (replay test ignored until then). Still on the OLD config (refused by the
+   chain now): extension LOCALNET_CONFIG_HEX + mock-rpc + solana.test,
+   services/agent-cli:422, token/tests/storefront test:102 (sent to the DA agent).
 2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
    commonware-stream (any key admitted under limits; plaintext key banner then
    encrypted handshake; genesis-bound namespace; `key@host:port` pins a seed),

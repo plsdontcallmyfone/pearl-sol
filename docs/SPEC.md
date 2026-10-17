@@ -81,6 +81,10 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   replaced by the block's `pow_digest`:
   `b_noise_seed = blake3(job_key || pow_digest || hash_b')`, `a = blake3(b || hash_a')`.
 - The block's difficulty `target_bits` is the chain target, not the job's.
+- Rank penalty (Pearl mainnet rule, from genesis): every mining config has noise
+  rank r >= 128; the jackpot bound is `target * h*w*(dlen/r)*128` (=
+  `target*h*w*dlen` at r = 128). Localnet/fallback config: k = 2048, r = 128,
+  4x8 tile.
 - Fallback block (`job_id` zero, no open job or miner choice): matrices are derived
   from `pow_digest` (Pearl style). Valid, earns fees only, no reserve subsidy.
 
@@ -255,15 +259,14 @@ and RPC 10630-10639, relayer 10660, attester 10661, storefront-x402 10662.
 
 **M3:** public testnet, audits, mainnet.
 
-## 8. Known security issue (open, 2026-10-17)
+## 8. Low-rank job matrices (analysed 2026-10-17)
 
-Low-rank job matrices: a poster can post zero or low-rank matrices for the price
-of P. The noised product is then itself low rank and can be computed far cheaper
-than a real multiply, so job blocks on such jobs are cheap PoW. Pearl mainnet has
-a rank-penalty rule for this; we dropped it in M1. Must be fixed before any
-public network (options: Pearl's rank penalty on the difficulty bound; requiring
-job matrices to pass a randomized rank/entropy check by the evaluators before the
-job is minable; or binding job blocks to a higher target than fallback blocks).
+See research/NOTES-rank-penalty.md. Because the jackpot hashes every rank-block
+checkpoint, zero or low-rank A, B do not make job blocks cheap: the best known
+attack costs 0.82x an honest job (rank bound 0.818), the same edge Pearl mainnet
+miners have. Pearl's rank penalty is ported (noise rank >= 128, penalized bound).
+No consensus check on A, B. Optional evaluator policy: refuse jobs that fail a
+randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
 
 ## 9. Open questions for the owner
 - Dev buy size (sets the starting reserve).
