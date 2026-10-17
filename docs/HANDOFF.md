@@ -241,12 +241,13 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    - pool: default share factor 16 -> 11 (pearl_pool::DEFAULT_SHARE_FACTOR). Live:
      64x64 era 13.6 pool shares per chain block; 4x8 at 16: 14.6-16.9; at 11: 13.4.
      Test: 4000 nonces at 4x8 give 11.1 shares per block.
-6. AGENT CREDIT LAYER (owner 2026-10-17, started): wire pearl-sol's verified work into
-   ~/agent-credit ("Tab", Solana adaptation of priors.trade): verified jobs/mining
-   feed the credit passport, loans fund jobs, mining-backed lines. Work happens in
-   ~/agent-credit (design ~/ideas/agent-credit/PEARL-LAYER.md); pearl-sol only
-   receives precise change requests. Priors itself (Robinhood Chain) is NOT
-   targeted (third-party; would need a new RH Chain bridge).
+6. AGENT CREDIT LAYER: built + pushed in ~/agent-credit (ac_pearl, 4a179dc..32f3b67;
+   design ~/ideas/agent-credit/PEARL-LAYER.md, AC-D32..42). Owner 2026-10-17:
+   pearl lines require a backer stake (AC-D39, agent started in ~/agent-credit);
+   pearl-sol builds requests R1 (coinbase receipt as last tx_root leaf), R2
+   (SetRoute payout lien, kind 9, chain routes income to a Solana repay vault) and
+   R5 (light-client final-header accumulator): agent started in ~/pearl-sol.
+   R3/R4/R6 not requested yet.
 7. AGENT WALLET = LEATHER FORK (owner 2026-10-17): ~/pearl-wallet (Leather 6.73.4,
    MIT, remote `upstream`, no remote of ours). Our chain is the primary network +
    Solana token side; ports our extension's byte-tested codecs; Bitcoin/Stacks
