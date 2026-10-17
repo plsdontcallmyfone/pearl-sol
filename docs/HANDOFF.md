@@ -145,6 +145,15 @@ allows running as many agents as needed.
 - All four M1 workstreams DONE. Left: the real-validator end to end run.
 - Validators run locally (owner OK, see CLAUDE.md), not on claude-host.
 
+- [ ] Chrome extension wallet (owner request 2026-10-16): build agent started,
+      scope extension/ only. MV3 + React; one ed25519 key for both chains (base58
+      or mnemonic import, encrypted at rest); balances, send, bridge in/out with
+      pending tracking; agent register, browse/post jobs (in-browser Pearl
+      commitments must byte-match pearl-job, else browse-only), mining claim;
+      Wallet Standard provider for dApps with approval popups. Geist, no mono,
+      no logo, name in one APP_NAME constant ("Pearl Wallet" placeholder). UI
+      checks in headless Chromium only.
+
 ## Next step
 
 Integration agent (started 2026-10-16) writes scripts/demo.sh and runs the full
