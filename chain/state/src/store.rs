@@ -10,6 +10,16 @@
 //! shallow reorgs are free). When a block becomes final, [`Store::finalize`] applies its
 //! batches (which include every unapplied ancestor) and commits both databases; sibling
 //! branches become stale and the caller drops them.
+//!
+//! Keep-alive: a Commonware merkleized batch holds only a `Weak` reference to its parent
+//! batch, and node / value lookups walk that chain. If an UNCOMMITTED ancestor batch is
+//! dropped while a descendant lives, the descendant silently loses that ancestor's nodes
+//! and the next build or read fails ("left child missing" panic in merkle/batch.rs, or
+//! "journal error: item out of range" on a value read). The chain keeps every non-final
+//! block's snapshot in `live`, so it never hit this, but a caller that holds only the
+//! tip snapshot (a test, a fast-sync or replay loop) did. Each [`Snapshot`] therefore
+//! keeps strong references to its uncommitted ancestors (`keep`, at most the blocks
+//! above the committed height, so about K entries), pruned as finality advances.
 
 use std::collections::BTreeMap;
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
@@ -50,6 +60,17 @@ pub struct Snapshot {
     pub log_size: u64,
     pub state_root: [u8; 32],
     pub withdraw_root: [u8; 32],
+    /// Block height of this snapshot (the committed height for a committed snapshot).
+    pub height: u64,
+    /// Strong references to the uncommitted ancestors' batches (see the module doc).
+    keep: Arc<Vec<Ancestor>>,
+}
+
+/// An ancestor's batches, kept alive by its descendants until it is committed.
+struct Ancestor {
+    height: u64,
+    _state: Arc<StateBatch>,
+    _log: Arc<LogBatch>,
 }
 
 /// Output of executing a block, ready to merkleize.
@@ -113,12 +134,16 @@ impl<E: commonware_storage::Context + Spawner> Store<E> {
             log: journal(prefix, "withdrawals", (RangeCfg::from(0..=4096usize), ()), &page_cache),
         };
         let log = LogDb::init(context.child("withdrawals"), log_cfg).await.map_err(StateError::db)?;
+        let meta = state.get_metadata().await.map_err(StateError::db)?;
+        let height = meta.and_then(|v| v.get(..8).map(|b| u64::from_le_bytes(b.try_into().unwrap()))).unwrap_or(0);
         let committed = Snapshot {
             state: state.to_batch(),
             log: log.to_batch(),
             log_size: *log.bounds().end,
             state_root: d32(&state.root()),
             withdraw_root: d32(&log.root()),
+            height,
+            keep: Arc::new(Vec::new()),
         };
         Ok(Self { state: Some(state), log: Some(log), committed })
     }
@@ -166,12 +191,24 @@ impl<E: commonware_storage::Context + Spawner> Store<E> {
             let floor = self.ldb().inactivity_floor_loc();
             (lb.merkleize(self.ldb(), None, floor).await, size)
         };
+        // Keep the parent and its uncommitted ancestors alive (module doc, keep-alive).
+        let floor = self.committed.height;
+        let parent_committed = Arc::ptr_eq(&parent.state, &self.committed.state);
+        let mut keep: Vec<Ancestor> = Vec::with_capacity(parent.keep.len() + 1);
+        for a in parent.keep.iter().filter(|a| a.height > floor) {
+            keep.push(Ancestor { height: a.height, _state: a._state.clone(), _log: a._log.clone() });
+        }
+        if !parent_committed && parent.height > floor {
+            keep.push(Ancestor { height: parent.height, _state: parent.state.clone(), _log: parent.log.clone() });
+        }
         Ok(Snapshot {
             state_root: d32(&state.root()),
             withdraw_root: d32(&log.root()),
             state,
             log,
             log_size,
+            height,
+            keep: Arc::new(keep),
         })
     }
 
@@ -187,7 +224,9 @@ impl<E: commonware_storage::Context + Spawner> Store<E> {
             let log = log.commit().await.map_err(StateError::db)?;
             self.log = Some(log);
         }
-        self.committed = snap.clone();
+        let mut c = snap.clone();
+        c.keep = Arc::new(Vec::new());
+        self.committed = c;
         Ok(())
     }
 

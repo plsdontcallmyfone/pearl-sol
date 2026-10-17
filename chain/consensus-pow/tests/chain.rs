@@ -595,3 +595,61 @@ fn historical_withdrawal_proofs_survive_restart() {
         }
     });
 }
+
+/// Finality jumps several blocks in one insert (AdminConfig lowers K from 6 to 1), then
+/// blocks keep being built on top, with withdrawals before and after; historical proofs
+/// at every final height; restart and extend.
+#[test]
+fn finality_jump_then_build_on_top() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(6), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let b = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 1000), unlock(200, 1, 2, pk(1), 1000)], now).await;
+        add(&mut c, b, now).await;
+        let mut n2 = 0u64;
+        let mut lock = |c2: &mut u64| { let t = Tx::signed(&seed(2), CHAIN, *c2, 10, TxBody::BridgeLock { solana_recipient: [9; 32], amount: 1000 }); *c2 += 1; t };
+        for _ in 0..4 {
+            now += 1000;
+            let tip = c.tip().hash;
+            let txs = vec![lock(&mut n2), lock(&mut n2)];
+            let b = mine_on(&c, tip, 9, &txs, now).await;
+            add(&mut c, b, now).await;
+        }
+        let f0 = c.finalized().header.height;
+        now += 1000;
+        let tip = c.tip().hash;
+        let admin = Tx::signed(&seed(1), CHAIN, 0, 10, TxBody::AdminConfig { key: state::config::keys::FINALITY_K, value: 1u32.to_le_bytes().to_vec() });
+        let b = mine_on(&c, tip, 9, &[admin, lock(&mut n2)], now).await;
+        add(&mut c, b, now).await;
+        // the next block sees K = 1 in its parent config
+        let tip = c.tip().hash;
+        let tip = extend(&mut c, tip, 1, 9, &mut now).await;
+        let f1 = c.finalized().header.height;
+        assert!(f1 >= f0 + 2, "finality jumped");
+        let mut tip = tip;
+        for _ in 0..4 {
+            now += 1000;
+            let txs = vec![lock(&mut n2)];
+            let b = mine_on(&c, tip, 9, &txs, now).await;
+            tip = b.hash();
+            add(&mut c, b, now).await;
+        }
+        let f = c.finalized().header.height;
+        let mut ok = 0;
+        for nonce in 0..n2 {
+            for at in 1..=f {
+                match c.withdrawal_proof_at(nonce, at).await {
+                    Ok(Some(_)) => ok += 1,
+                    Ok(None) => {}
+                    Err(e) => { let s = e.to_string(); assert!(s.contains("later block") || s.contains("not final"), "nonce {nonce} at {at}: {s}"); }
+                }
+            }
+        }
+        assert!(ok > 30, "{ok} historical proofs");
+        drop(c);
+        let mut c = C::open(ctx.child("b"), "n", genesis(6), MockVerifier).await.unwrap();
+        let tip = c.tip().hash;
+        extend(&mut c, tip, 3, 9, &mut now).await;
+    });
+}
