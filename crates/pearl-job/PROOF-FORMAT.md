@@ -166,3 +166,91 @@ Work per verify: 12 chunks (about 192 compressions) + parents, about 2 + 2*k/8 +
 this crate in both modes, and harder targets rejected by both (checked 2026-10-16
 with a scratch crate linking `research/pearlrepo/zk-pow`). Pearl's pinned seed vectors
 are unit tests in `src/job.rs`.
+
+## 7. v2 block proofs (SPEC v2 section 3, `src/pow.rs`)
+
+On the v2 chain a block's work is one PSJ1 proof with **seed mode 3** (pow-bound).
+The byte layout of section 3 is unchanged except byte 5 = 3. `nonce` (bytes 20..28)
+must equal the header nonce. Mode 2 proofs are not block proofs and mode 3 proofs
+are not v1 shares (each parser accepts exactly one mode).
+
+### 7.1 Header (256 bytes, all integers little-endian)
+
+```
+off  size  field
+0    4     version u32
+4    8     height u64
+12   32    prev_hash
+44   8     timestamp_ms u64
+52   4     target_bits u32   chain target (Bitcoin compact), the block's difficulty
+56   32    job_id            zero = fallback block
+88   32    miner             payout key
+120  32    tx_root
+152  32    state_root
+184  32    withdraw_root
+216  32    proof_hash        blake3(proof bytes)
+248  8     nonce u64
+```
+
+```
+block_hash = blake3(header)
+pow_digest = blake3(header with bytes 216..248 zeroed)
+proof_hash = blake3(proof bytes)
+```
+
+### 7.2 Seeds (replaces section 4 step 5 for block proofs)
+
+```
+hash_a', hash_b' as in section 4 step 5 (V3 salting with m, n)
+b_seed = blake3(job_key || pow_digest || hash_b')     (96-byte input)
+a_seed = blake3(b_seed || hash_a')
+```
+`pow_digest` commits to the parent, height, payout key, roots, timestamp, target and
+nonce, so a proof cannot be moved to another header. Steps 6 to 9 are unchanged,
+with `share_target` replaced by the header's `target_bits`.
+
+### 7.3 Job blocks
+
+`job_key` is the posted job's (section 1: `job_id || terms_hash || created_height u64
+|| share_target u32`, then the config). `hash_a`, `hash_b`, `m`, `n`, config come from
+the job named by `header.job_id`. The verifier checks `job_id` against that job.
+
+### 7.4 Fallback blocks (`job_id` zero)
+
+Everything is derived from `pow_digest`, with chain parameters `m`, `n` and a
+config (default `FallbackParams`: m = n = 64, the localnet config of section 2):
+
+```
+job header76  = 0^32 || pow_digest || 0 u64 || 0 u32
+job_key       = blake3(job header76 || config52)                   (as section 1)
+A (m x k)     = int7(XOF(blake3_derive_key("pearl-sol 2026-10-16 fallback matrix A v1", pow_digest)), m*k bytes), row-major
+B (k x n)     = int7(XOF(blake3_derive_key("pearl-sol 2026-10-16 fallback matrix B v1", pow_digest)), k*n bytes), row-major
+int7(x)       = (x & 0x7f) - 64                                     (values in [-64, 63])
+hash_a, hash_b = section 1 commitments of A and B^T under job_key
+```
+then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (128 KiB
+of XOF and keyed hashing at the default size, about 0.3 ms) before the usual check.
+
+### 7.5 Pinned vectors (`tests/pow.rs::pinned_vectors`)
+
+- PowBound seeds, `job_key = 0x11*32`, `pow_digest = 0x22*32`, `hash_a = 0xAA*32`,
+  `hash_b = 0xBB*32`, m = 192, n = 320:
+  `b = e8f7d72728f2143cdb331ee04fd00792ebf1a07d9ef60367a8640ed8e78bbcac`,
+  `a = 3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c05fd2`.
+- Fallback job for `pow_digest = 0x09*32`, default params:
+  `hash_a = f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a`,
+  `hash_b = 5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347`.
+- Header `version 1, height 5, prev 0xab*32, timestamp_ms 1760000000000,
+  target 0x1e040000, job_id 0x07*32, miner 0x4d*32, tx_root 0x01*32,
+  state_root 0x02*32, withdraw_root 0x03*32, proof_hash 0, nonce 0`:
+  `pow_digest = de30bddaa1209116cffbf120dc3da81512c11e574fa098c1edb8cf3451bf3cee`.
+
+### 7.6 API
+
+`pow::BlockHeader` (`to_bytes`, `from_bytes`, `pow_digest`, `block_hash`),
+`pow::proof_hash`, `PreparedJob::mine_block(pow_digest, target_bits, nonce)`,
+`pow::mine_block_proof(a, b, job, pow_digest, target_bits, nonce)`,
+`pow::verify_block_proof(job, proof, pow_digest, target_bits, nonce)`,
+`pow::fallback_job(pow_digest, params)`, `pow::mine_header_nonce(template, work, nonce)`
+and `pow::verify_block(header, job, proof_bytes, fallback_params)` (the full check a
+node runs: proof_hash, mode, job binding, seed, target).

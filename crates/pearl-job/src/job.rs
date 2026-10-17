@@ -216,6 +216,10 @@ pub enum SeedDerivation {
     /// `hash_b'`), then `b = blake3(job_key || miner || nonce_le || hash_b')`,
     /// `a = blake3(b || hash_a')`.
     MinerBound { miner: [u8; 32], nonce: u64 },
+    /// pearl-sol v2 block proofs (SPEC v2 3.2): roots salted as in V3, then
+    /// `b = blake3(job_key || pow_digest || hash_b')`, `a = blake3(b || hash_a')`.
+    /// `pow_digest` already commits to the header nonce, miner and parent.
+    PowBound { pow_digest: [u8; 32] },
 }
 
 /// Returns `(b_noise_seed, a_noise_seed)`; `a_noise_seed` also keys the jackpot hash.
@@ -238,6 +242,13 @@ pub fn derive_seeds(
             d[32..64].copy_from_slice(&miner);
             d[64..72].copy_from_slice(&nonce.to_le_bytes());
             d[72..104].copy_from_slice(&hb);
+            blake3_digest(&d, None)
+        }
+        SeedDerivation::PowBound { pow_digest } => {
+            let mut d = [0u8; 96];
+            d[0..32].copy_from_slice(job_key);
+            d[32..64].copy_from_slice(&pow_digest);
+            d[64..96].copy_from_slice(&hb);
             blake3_digest(&d, None)
         }
         _ => blake3_digest(&[&job_key[..], &hb[..]].concat(), None),

@@ -43,6 +43,16 @@ pub fn parse_hash(s: &str) -> Result<[u8; 32]> {
     Ok(v.try_into().unwrap())
 }
 
+/// A 32-byte value as 64 hex characters (optional 0x) or base58.
+pub fn parse_key32(s: &str) -> Result<[u8; 32]> {
+    let t = s.trim_start_matches("0x");
+    if t.len() == 64 && t.bytes().all(|c| c.is_ascii_hexdigit()) {
+        parse_hash(t)
+    } else {
+        parse_pubkey(s)
+    }
+}
+
 /// Decimal or 0x-prefixed hex.
 pub fn parse_u32(s: &str) -> Result<u32> {
     Ok(match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -54,7 +64,7 @@ pub fn parse_u32(s: &str) -> Result<u32> {
 impl JobSpec {
     pub fn header(&self) -> Result<JobHeader> {
         Ok(JobHeader {
-            job_pubkey: parse_pubkey(&self.job)?,
+            job_pubkey: parse_key32(&self.job)?,
             terms_hash: parse_hash(&self.terms_hash)?,
             created_slot: self.created_slot,
             target_bits: self.target_bits,

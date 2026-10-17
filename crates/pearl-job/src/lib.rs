@@ -6,6 +6,7 @@
 //! - CPU share mining on the job's own A, B; native plain-proof verify
 //! - Freivalds check of a delivered C = AB
 //! - SPEC section 6 signed message bytes
+//! - v2 block proofs (`pow`): 256-byte header, pow_digest-bound seed, fallback blocks
 //!
 //! Large parts are ported from Pearl (github.com/pearl-research-labs/pearl @ 837c69c,
 //! crates `zk-pow` and `pearl-blake3`), ISC licensed. See NOTICE.
@@ -18,6 +19,7 @@ pub mod messages;
 pub mod mine;
 pub mod noise;
 pub mod pattern;
+pub mod pow;
 pub mod proof;
 pub mod spec;
 pub mod verify;
@@ -28,6 +30,7 @@ use anyhow::Result;
 
 pub use job::{commit_a, commit_b, job_key, Job, JobHeader, MiningConfig, SeedDerivation};
 pub use mine::PreparedJob;
+pub use pow::{verify_block, verify_block_proof, BlockHeader, BlockWork, FallbackParams, MinedBlock};
 pub use proof::PlainProof;
 pub use spec::JobSpec;
 pub use verify::{verify_share, verify_share_with_target, verify_with_seed_mode, VerifiedShare};

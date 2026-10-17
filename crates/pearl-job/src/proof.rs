@@ -8,6 +8,8 @@ pub const MAGIC: [u8; 4] = *b"PSJ1";
 pub const VERSION: u8 = 1;
 /// Seed mode byte: 2 = miner-bound (the only mode the chain accepts).
 pub const SEED_MODE_MINER_BOUND: u8 = 2;
+/// Seed mode byte: 3 = pow-bound (v2 block proofs, `pow::BlockProof`).
+pub const SEED_MODE_POW_BOUND: u8 = 3;
 /// Upper bound on a serialised proof, so a parser never allocates unboundedly.
 pub const MAX_PROOF_LEN: usize = 4 << 20;
 
@@ -85,11 +87,17 @@ impl<'a> Reader<'a> {
 }
 
 impl PlainProof {
+    /// PSJ1 bytes with seed mode 2 (miner-bound share).
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_with_mode(SEED_MODE_MINER_BOUND)
+    }
+
+    /// PSJ1 bytes with an explicit seed mode byte.
+    pub fn to_bytes_with_mode(&self, mode: u8) -> Vec<u8> {
         let mut out = Vec::with_capacity(64 + (self.a.leaf_data.len() + self.bt.leaf_data.len()) * (CHUNK_LEN + 4));
         out.extend_from_slice(&MAGIC);
         out.push(VERSION);
-        out.push(SEED_MODE_MINER_BOUND);
+        out.push(mode);
         out.extend_from_slice(&self.m.to_le_bytes());
         out.extend_from_slice(&self.n.to_le_bytes());
         out.extend_from_slice(&self.k.to_le_bytes());
@@ -102,14 +110,20 @@ impl PlainProof {
         out
     }
 
+    /// Parse a seed-mode-2 (miner-bound share) proof.
     pub fn from_bytes(b: &[u8]) -> Result<Self> {
+        Self::from_bytes_with_mode(b, SEED_MODE_MINER_BOUND)
+    }
+
+    /// Parse a proof whose seed mode byte must equal `want_mode`.
+    pub fn from_bytes_with_mode(b: &[u8], want_mode: u8) -> Result<Self> {
         ensure!(b.len() <= MAX_PROOF_LEN, "proof too large: {} bytes", b.len());
         let mut r = Reader { b, pos: 0 };
         ensure!(r.take(4)? == MAGIC, "bad proof magic");
         let v = r.take(1)?[0];
         ensure!(v == VERSION, "unsupported proof version {v}");
         let mode = r.take(1)?[0];
-        if mode != SEED_MODE_MINER_BOUND {
+        if mode != want_mode {
             bail!("unsupported seed mode {mode}");
         }
         let p = PlainProof {

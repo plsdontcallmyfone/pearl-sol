@@ -62,7 +62,8 @@ pub fn verify_share_with_target(job: &Job, proof: &PlainProof, miner: &[u8; 32],
     verify_with_seed_mode(job, proof, mode, share_target)
 }
 
-/// Verify under any seed derivation. Only `MinerBound` is accepted on chain; the other
+/// Verify under any seed derivation. `MinerBound` (v1 shares) and `PowBound` (v2
+/// blocks, via `pow::verify_block_proof`) are the chain modes; the other
 /// modes exist to cross-check this port against Pearl's own verifier.
 pub fn verify_with_seed_mode(job: &Job, proof: &PlainProof, mode: SeedDerivation, share_target: u32) -> Result<VerifiedShare> {
     job.sanity_check()?;

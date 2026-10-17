@@ -93,6 +93,30 @@ Freivalds over GF(2^61 - 1); a wrong C passes a round with probability <= 2^-61.
 OS randomness unless `--seed` (tests only). Also checks the data against the given
 hashes. `{ok, valid, rounds, elapsed_ms, result_hash, hash_a, hash_b}`.
 
+## v2 block subcommands (SPEC v2 section 3, PROOF-FORMAT.md section 7)
+
+32-byte header fields take hex (64 chars) or base58. `--job` also accepts hex now.
+Header flags (shared): `--header <hex256>` as the base, then overrides
+`--version` (default 1), `--height`, `--prev-hash`, `--timestamp-ms`,
+`--block-target` (chain target, compact), `--job-id` (zero/omitted = fallback),
+`--payout` (miner field), `--tx-root`, `--state-root`, `--withdraw-root`,
+`--proof-hash`, `--header-nonce`. Fallback shape: `--fallback-m 64 --fallback-n 64`.
+
+### `block-header <header flags>`
+`{ok, header, pow_digest, block_hash, height, nonce, target_bits, fallback}`.
+
+### `block-mine <header flags> [<job args> --data URI] [--nonce-start 0] [--nonce-end 1] [--out PATH]`
+Iterates the header nonce in `[start, end)` (each nonce is a new `pow_digest`, a full
+noised GEMM). With job args and `--data` it mines a job block (a zero `--job-id` is
+filled from the job); without them, a fallback block. On a win the header carries
+the nonce and `proof_hash`.
+`{ok, found, nonces_tried, elapsed_ms, ms_per_nonce[, header, pow_digest, block_hash, height, nonce, target_bits, fallback, proof_len, proof_path | proof_b64]}`.
+
+### `block-verify <header flags> [<job args with --m --n --hash-a --hash-b>] (--proof FILE | --proof-b64 B64)`
+Full block-work check (`pow::verify_block`). Job args are ignored for fallback headers.
+`{ok, valid: true, nonce, t_rows, t_cols, jackpot_hash, block_hash, proof_len, verify_us}` or
+`{ok, valid: false, reason, proof_len, verify_us}`.
+
 ## Choosing a share target
 
 Expected MACs per share is `2^256 / target`; on one Apple M4 core the noised GEMM

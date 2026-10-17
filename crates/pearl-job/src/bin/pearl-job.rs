@@ -14,7 +14,8 @@ use pearl_job::data;
 use pearl_job::freivalds::{freivalds, matmul, result_hash};
 use pearl_job::job::MiningConfig;
 use pearl_job::pattern::PeriodicPattern;
-use pearl_job::spec::{parse_pubkey, parse_u32, JobSpec};
+use pearl_job::pow::{self, BlockHeader, BlockWork, FallbackParams};
+use pearl_job::spec::{parse_key32, parse_pubkey, parse_u32, JobSpec};
 use pearl_job::{commit, PlainProof, PreparedJob};
 
 #[derive(Parser)]
@@ -121,6 +122,135 @@ enum Cmd {
         #[arg(long)]
         seed: Option<u64>,
     },
+    /// Build a 256-byte v2 block header; prints it with pow_digest and block_hash.
+    BlockHeader(HeaderArgs),
+    /// Mine a v2 block: iterate the header nonce on a job (job args + --data) or a fallback block.
+    BlockMine {
+        #[command(flatten)]
+        header: HeaderArgs,
+        #[command(flatten)]
+        job: JobArgs,
+        /// Job data; omit for a fallback block (header job_id zero).
+        #[arg(long)]
+        data: Option<String>,
+        #[command(flatten)]
+        fallback: FallbackArgs,
+        #[arg(long, default_value_t = 0)]
+        nonce_start: u64,
+        #[arg(long, default_value_t = 1)]
+        nonce_end: u64,
+        /// Write the proof here instead of printing proof_b64.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Verify a v2 block's work (proof_hash, pow-bound seed, header target).
+    BlockVerify {
+        #[command(flatten)]
+        header: HeaderArgs,
+        /// Job args (with --hash-a, --hash-b, --m, --n); omit for fallback blocks.
+        #[command(flatten)]
+        job: JobArgs,
+        #[command(flatten)]
+        fallback: FallbackArgs,
+        #[arg(long, conflicts_with = "proof_b64")]
+        proof: Option<PathBuf>,
+        #[arg(long)]
+        proof_b64: Option<String>,
+    },
+}
+
+/// Fallback block matrix shape (chain parameter).
+#[derive(Args, Clone)]
+struct FallbackArgs {
+    #[arg(long, default_value_t = 64)]
+    fallback_m: u32,
+    #[arg(long, default_value_t = 64)]
+    fallback_n: u32,
+}
+
+impl FallbackArgs {
+    fn params(&self) -> FallbackParams {
+        FallbackParams { m: self.fallback_m, n: self.fallback_n, ..FallbackParams::default() }
+    }
+}
+
+/// A block header: `--header <hex256>` as the base, then per-field overrides.
+/// 32-byte fields take hex or base58.
+#[derive(Args, Clone, Default)]
+struct HeaderArgs {
+    #[arg(long)]
+    header: Option<String>,
+    #[arg(long)]
+    version: Option<u32>,
+    #[arg(long)]
+    height: Option<u64>,
+    #[arg(long)]
+    prev_hash: Option<String>,
+    #[arg(long)]
+    timestamp_ms: Option<u64>,
+    /// Chain target (compact), decimal or 0x hex.
+    #[arg(long)]
+    block_target: Option<String>,
+    /// Zero (or omitted) = fallback block.
+    #[arg(long)]
+    job_id: Option<String>,
+    /// Payout key.
+    #[arg(long)]
+    payout: Option<String>,
+    #[arg(long)]
+    tx_root: Option<String>,
+    #[arg(long)]
+    state_root: Option<String>,
+    #[arg(long)]
+    withdraw_root: Option<String>,
+    #[arg(long)]
+    proof_hash: Option<String>,
+    #[arg(long)]
+    header_nonce: Option<u64>,
+}
+
+impl HeaderArgs {
+    fn build(&self) -> Result<BlockHeader> {
+        let mut h = match &self.header {
+            Some(x) => BlockHeader::from_bytes(&hex::decode(x.trim_start_matches("0x")).context("header hex")?)?,
+            None => BlockHeader { version: 1, ..Default::default() },
+        };
+        let k = |o: &Option<String>, f: &mut [u8; 32]| -> Result<()> {
+            if let Some(v) = o {
+                *f = parse_key32(v)?;
+            }
+            Ok(())
+        };
+        if let Some(v) = self.version {
+            h.version = v;
+        }
+        if let Some(v) = self.height {
+            h.height = v;
+        }
+        if let Some(v) = self.timestamp_ms {
+            h.timestamp_ms = v;
+        }
+        if let Some(v) = &self.block_target {
+            h.target_bits = parse_u32(v)?;
+        }
+        if let Some(v) = self.header_nonce {
+            h.nonce = v;
+        }
+        k(&self.prev_hash, &mut h.prev_hash)?;
+        k(&self.job_id, &mut h.job_id)?;
+        k(&self.payout, &mut h.miner)?;
+        k(&self.tx_root, &mut h.tx_root)?;
+        k(&self.state_root, &mut h.state_root)?;
+        k(&self.withdraw_root, &mut h.withdraw_root)?;
+        k(&self.proof_hash, &mut h.proof_hash)?;
+        Ok(h)
+    }
+}
+
+fn header_json(h: &BlockHeader) -> Value {
+    json!({"header": hex::encode(h.to_bytes()), "pow_digest": hex::encode(h.pow_digest()),
+           "block_hash": hex::encode(h.block_hash()), "height": h.height, "nonce": h.nonce,
+           "target_bits": h.target_bits, "fallback": h.is_fallback()})
 }
 
 /// A job, either from `--job-file` (JobSpec JSON) or from flags. Flags override the file.
@@ -152,6 +282,10 @@ struct JobArgs {
 }
 
 impl JobArgs {
+    fn given(&self) -> bool {
+        self.job_file.is_some() || self.job.is_some()
+    }
+
     fn spec(&self) -> Result<JobSpec> {
         let mut s = match &self.job_file {
             Some(p) => serde_json::from_slice::<JobSpec>(&std::fs::read(p).with_context(|| format!("read {}", p.display()))?)
@@ -368,6 +502,85 @@ fn run(cli: Cli) -> Result<Value> {
             json!({"ok": true, "valid": ok, "rounds": rounds, "elapsed_ms": t0.elapsed().as_secs_f64() * 1e3,
                    "result_hash": hex::encode(result_hash(&s.job_key()?, &cm)),
                    "hash_a": s.hash_a, "hash_b": s.hash_b})
+        }
+        Cmd::BlockHeader(ha) => {
+            let mut v = header_json(&ha.build()?);
+            v["ok"] = json!(true);
+            v
+        }
+        Cmd::BlockMine { header, job, data: uri, fallback, nonce_start, nonce_end, out } => {
+            let mut t = header.build()?;
+            let prep = match &uri {
+                Some(u) => {
+                    let d = data::load(u)?;
+                    let s = job.spec_with_data(&d)?;
+                    let prep = PreparedJob::new(s.to_job()?, &d.a, &d.b)?;
+                    if t.is_fallback() {
+                        t.job_id = prep.job.header.job_pubkey;
+                    }
+                    Some(prep)
+                }
+                None => {
+                    if job.given() {
+                        bail!("job blocks need --data");
+                    }
+                    if !t.is_fallback() {
+                        bail!("header has a job_id but no --data was given");
+                    }
+                    None
+                }
+            };
+            let work = match &prep {
+                Some(p) => BlockWork::Job(p),
+                None => BlockWork::Fallback(fallback.params()),
+            };
+            let t0 = Instant::now();
+            let mut tried = 0u64;
+            let mut found = None;
+            for nonce in nonce_start..nonce_end {
+                tried += 1;
+                if let Some(b) = pow::mine_header_nonce(&t, &work, nonce)? {
+                    found = Some(b);
+                    break;
+                }
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            let mut v = json!({"ok": true, "found": found.is_some(), "nonces_tried": tried, "elapsed_ms": ms,
+                               "ms_per_nonce": if tried > 0 { ms / tried as f64 } else { 0.0 }});
+            if let Some(b) = found {
+                let hj = header_json(&b.header);
+                for (key, val) in hj.as_object().unwrap() {
+                    v[key] = val.clone();
+                }
+                v["proof_len"] = json!(b.proof.len());
+                match &out {
+                    Some(p) => {
+                        std::fs::write(p, &b.proof)?;
+                        v["proof_path"] = json!(p.display().to_string());
+                    }
+                    None => v["proof_b64"] = json!(b64(&b.proof)),
+                }
+            }
+            v
+        }
+        Cmd::BlockVerify { header, job, fallback, proof, proof_b64 } => {
+            let h = header.build()?;
+            let bytes = match (proof, proof_b64) {
+                (Some(p), _) => std::fs::read(&p).with_context(|| format!("read {}", p.display()))?,
+                (None, Some(b)) => base64::engine::general_purpose::STANDARD.decode(b.trim())?,
+                _ => bail!("need --proof or --proof-b64"),
+            };
+            let job = if job.given() && !h.is_fallback() { Some(job.spec()?.to_job()?) } else { None };
+            let t0 = Instant::now();
+            let res = pow::verify_block(&h, job.as_ref(), &bytes, &fallback.params());
+            let us = t0.elapsed().as_secs_f64() * 1e6;
+            match res {
+                Ok(v) => json!({"ok": true, "valid": true, "nonce": v.nonce, "t_rows": v.t_rows, "t_cols": v.t_cols,
+                                "jackpot_hash": hex::encode(v.jackpot_hash), "block_hash": hex::encode(h.block_hash()),
+                                "proof_len": bytes.len(), "verify_us": us}),
+                Err(e) => json!({"ok": true, "valid": false, "reason": format!("{e:#}"), "proof_len": bytes.len(),
+                                 "verify_us": us}),
+            }
         }
     })
 }
