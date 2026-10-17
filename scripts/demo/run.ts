@@ -39,7 +39,8 @@ const GENESIS_PARAMS = {
 const MINER_THREADS = process.env.DEMO_MINER_THREADS ?? "4";
 const DEV_BUY = 1_000_000_000n; // 1 SOL dev buy into the reserve
 const FUND_SPL = 10_000_000_000_000n; // 10M tokens (6 dp) from the reserve to the mining pool
-const JOB = { m: 64, n: 64, k: 1024, maxBlocks: 5, deadlineBlocks: 400 };
+// k 2048, r 128: the localnet config after the rank penalty (r >= 128, k >= 16r; 2026-10-17)
+const JOB = { m: 64, n: 64, k: 2048, rank: 128, maxBlocks: 5, deadlineBlocks: 400 };
 
 const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
@@ -56,6 +57,8 @@ const mintKey = demoKey("mint");
 const MINT = mintKey.kp.publicKey;
 const RESERVE_ID = loadKp("keys/localnet/reserve-keypair.json").publicKey;
 const node = NodeRpc.http(NODE_RPC);
+/** Devnet node 1: takes the job data putBlob (the miner and attester use node 0). */
+const DA_RPC = "http://127.0.0.1:10632";
 
 const BIN = {
   node: resolve(ROOT, "chain/target/release/agent-node"),
@@ -313,11 +316,18 @@ let order: { nonce: bigint; jobId: string; P: bigint; W: bigint; postedHeight: n
 
 async function step4(): Promise<string> {
   const g = lastJson(run(BIN.job, ["gen", "--m", String(JOB.m), "--n", String(JOB.n), "--k", String(JOB.k), "--out-dir", resolve(DEMO, "job"), "--seed", "7"]));
-  const cfg = lastJson(run(BIN.job, ["config", "--k", String(JOB.k)])).config as string;
+  // M2 data availability: the job data goes into the chain's blob store on devnet node 1
+  // (10632); the miner and attester talk to node 0 and fetch it with getBlob (p2p push).
+  const put = await nodeCall("putBlob", { data: readFileSync(g.blob_file).toString("base64") }, DA_RPC);
+  if (put.uri !== g.blob_uri) throw new Error(`putBlob uri ${put.uri} != pearl-job's ${g.blob_uri}`);
+  await waitFor("job blob on the miner's node", async () => ((await nodeCall("hasBlob", { blob_id: put.blob_id })).present ? true : null), 20_000);
+  const dataUri: string = put.uri;
+  info("job data blob", { uri: put.uri, size: put.size, put_on: DA_RPC });
+  const cfg = lastJson(run(BIN.job, ["config", "--k", String(JOB.k), "--rank", String(JOB.rank)])).config as string;
   const recipient = buyer.kp.publicKey;
   const terms = orderTermsHash(recipient, JOB.m, JOB.n, JOB.k, JOB.maxBlocks, BigInt(JOB.deadlineBlocks));
   const c = lastJson(run(BIN.job, ["commit", "--job", recipient.toBase58(), "--terms-hash", terms.toString("hex"), "--config", cfg, "--data", g.data_uri]));
-  const body = { spec: { m: JOB.m, n: JOB.n, k: JOB.k, config: cfg, hash_a: c.hash_a, hash_b: c.hash_b, data_uri: g.data_uri,
+  const body = { spec: { m: JOB.m, n: JOB.n, k: JOB.k, config: cfg, hash_a: c.hash_a, hash_b: c.hash_b, data_uri: dataUri,
     deadline_blocks: JOB.deadlineBlocks, max_blocks: JOB.maxBlocks } };
   const quote = await httpJson(`${STOREFRONT_URL}/quote?m=${JOB.m}&n=${JOB.n}&k=${JOB.k}&max_blocks=${JOB.maxBlocks}`);
   info("quote", { price_lamports: quote.body.price_lamports, venue: quote.body.venue, tokens_spl: quote.body.estimate?.tokens_spl });
@@ -351,7 +361,7 @@ async function step4(): Promise<string> {
   writeFileSync(resolve(DEMO, "order.json"), JSON.stringify({ ...order, nonce: nonce.toString(), P: order.P.toString(), W: order.W.toString() }));
   return `order ${nonce} (Solana Order ${orderPda(nonce).toBase58()}, ${o.tokens} SPL bought) unlocked at height ${d.height}: ` +
     `job ${job.job_id.slice(0, 16)} ${job.status} W=${job.worker_pay} P=${job.protocol_fee} cap=${job.cap_remaining} ` +
-    `deadline ${job.deadline_height} data ${g.data_uri}`;
+    `deadline ${job.deadline_height} data ${job.data_uri} (blob put on node 1)`;
 }
 
 async function step5(): Promise<string> {
@@ -384,6 +394,14 @@ async function step5(): Promise<string> {
   info("cap check", { pool_now: poolNow.toString(), pool_x_emission_per_block: uncapped.toString(), cap: cap.toString() });
   if (fallbackBefore === 0) throw new Error("no fallback blocks seen");
   if (job.deliverer !== miner.publicKey.toBase58()) throw new Error(`deliverer ${job.deliverer}`);
+  // M2: the miner delivered C as a blob (putBlob) and getBlock reports each job block's subsidy
+  if (!/^blob:[0-9a-f]{64}$/.test(job.result_uri)) throw new Error(`result_uri ${job.result_uri} is not a blob: URI`);
+  const cBlob = await nodeCall("hasBlob", { blob_id: job.result_uri }, DA_RPC);
+  if (!cBlob.present) throw new Error(`result blob not on node 1: ${JSON.stringify(cBlob)}`);
+  let blockSubsidy = 0n;
+  for (const h of jobBlocks) blockSubsidy += BigInt((await nodeCall("getBlock", { height: h })).subsidy);
+  if (blockSubsidy !== subsidy) throw new Error(`getBlock subsidy sum ${blockSubsidy} != job subsidy_paid ${subsidy}`);
+  info("data availability", { data_uri: job.data_uri, result_uri: job.result_uri, result_blob_size: cBlob.size, getBlock_subsidy_sum: blockSubsidy.toString() });
   // relayer finalizes the order on Solana once the completion is K deep
   const pda_ = orderPda(order.nonce);
   const acc = await waitFor("finalize_order on Solana", async () => {
