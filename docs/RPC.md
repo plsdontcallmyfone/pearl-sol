@@ -47,6 +47,7 @@ Reserved addresses (no key; cannot send):
   - plain deposit: `"pearl-sol:deposit:v1" || solana_nonce u64 LE || recipient [32] || amount_spl u64 LE`
   - storefront order: `"pearl-sol:deposit-order:v1" || solana_nonce u64 LE || recipient [32] || amount_spl u64 LE || sha256(PostJob body)`
   - job result (CompleteJob): `"pearl-sol:result:v1" || job_id [32] || deliverer [32] || result_hash [32]`
+  - payout-lien release (ClearRoute, by the lien's release key): `"pearl-sol:route-clear:v1" || chain_id u32 LE || account [32] || route_nonce u64 LE`
 
   (Change 2026-10-16: an earlier draft of this node framed these messages too. The
   attester must sign them raw.)
@@ -154,8 +155,12 @@ accepts a valid block for that job. A miner may name a job or ask for a fallback
 {"template_id": "hex", "header": "hex (256 B, nonce 0, proof_hash 0)",
  "header_fields": {...}, "height": 121, "target_bits": 545259519, "chain_id": 1347616769,
  "job": Job | null, "fallback": {"m": 4, "n": 8, "config": "hex"},
- "tx_count": 3, "fees": "3000", "subsidy": "700", "min_fee": "1000"}
+ "tx_count": 3, "fees": "3000", "subsidy": "700", "min_fee": "1000",
+ "coinbase": "hex (97 B receipt, the last tx_root leaf)", "mature_height": 151}
 ```
+The header's `tx_root` already commits to the coinbase receipt (SPEC 3.4): txs, then the
+receipt as the last leaf. A miner only sets `nonce` / `proof_hash` (and may change
+`timestamp_ms`); it never rebuilds tx_root.
 Mining: set `nonce`, compute `pow_digest = blake3(header with proof_hash zeroed)`, find a
 proof (`pearl_job::pow::mine_header_nonce`), set `proof_hash = blake3(proof)`. The miner
 may also update `timestamp_ms` (it is not covered by the state root). Templates are kept
@@ -178,8 +183,23 @@ gossips. Result `{"tx_hash": "hex"}`.
 "confirmations"?, "tx": "base64", "kind": "Transfer", "from": "base58", "nonce": n, "fee": "1000"}` or null.
 
 ### getAccount `{"account": "base58"}`
-`{"account": "base58", "balance": "0", "nonce": 0}` (always an object; empty accounts are zero).
+`{"account": "base58", "balance": "0", "nonce": 0, "route": Route | null}` (always an object;
+empty accounts are zero; `route` is the account's payout lien, as getRoute).
 `"address"` is accepted as an alias for `"account"`.
+
+### getRoute `{"account": "base58"}` -> Route or null
+The account's payout lien (SetRoute, SPEC 4.4), as of the tip (`active` is for the next
+block's height). The record stays after the lien ends (`route_nonce` keeps counting).
+```json
+{"account": "base58", "solana_recipient": "base58", "route_bps": 5000, "until_height": 10279,
+ "cap": "1000000000000000", "release_key": "base58 | null", "route_nonce": 0, "set_height": 279,
+ "routed": "1000000500", "pending": "500", "withdrawn": "1000000000", "cleared": false,
+ "active": true, "remaining_cap": "999998999999500"}
+```
+`routed` = income the lien took (counts toward `cap`), `withdrawn` = what went out as
+withdrawal entries (chain units), `pending` = taken, below 1000 units (or the bridge is
+paused), waiting for the next credit. Lien entries appear in getBridgeEvents /
+getWithdrawalProof like any BridgeLock (`from` = the account).
 
 ### getAgent `{"account": "base58"}`
 `{"account", "name", "uri", "registered_height", "updated_height"}` or null.
@@ -192,11 +212,20 @@ gossips. Result `{"tx_hash": "hex"}`.
 ### getBlock `{"hash": "hex"}` or `{"height": n}`, optional `"raw": true`
 ```json
 {"hash": "hex", "header": "hex", "header_fields": {...}, "proof_len": 12600,
- "txs": [{"tx_hash": "hex", "kind": "Transfer", "from": "base58", "nonce": 0, "fee": "1000", "tx": "base64"}],
+ "txs": [{"tx_hash": "hex", "kind": "Transfer", "from": "base58", "nonce": 0, "fee": "1000", "tx": "base64",
+          "path": "hex (tx_root path, 33-byte entries)"}],
+ "coinbase": {"record": "hex (97 B)", "receipt_hash": "hex", "height": 121, "miner": "base58",
+              "fees": "3000", "subsidy": "45000000", "reward": "45003000", "job_id": "hex",
+              "mature_height": 151, "leaf_index": 1, "path": "hex (33-byte entries)"},
  "cumulative_work": "hex", "canonical": true, "confirmations": 3, "final": false,
  "fees": "3000", "subsidy": "45000000", "reward": "45003000", "matured": "0",
  "block": "base64 (only with raw)"}
 ```
+`coinbase` is the block's coinbase receipt (R1, SPEC 3.4; null for genesis) with its
+tx_root path: the last leaf, `leaf_index = tx count`. `path` entries are `sibling [32] ||
+sibling_is_left u8`, bottom-up, the format `pearl_verify_sbf::chaintx::verify_tx_path` /
+`verify_coinbase` take on Solana. The raw `block` encoding ends with `has_coinbase u8 ||
+receipt [97]`.
 By height means the canonical chain. `fees` = sum of the block's tx fees, `subsidy` = the
 reserve subsidy it earned (0 for fallback blocks; `min(pool x emission_ppm / 1e6,
 cap_remaining)` for job blocks), `reward = fees + subsidy` (credited to `miner` after
@@ -367,6 +396,8 @@ Result `{"subscribed": [...]}`. Notifications:
 | 6 BridgeUnlock | `solana_nonce u64, recipient [32], amount_spl u64, job_order u8 (0/1), [PostJob body], count u8, (pubkey [32], sig [64])*` |
 | 7 BridgeLock | `solana_recipient [32], amount u64` (positive multiple of 1000) |
 | 8 AdminConfig | `key u8, value_len u16, value` |
+| 9 SetRoute | `solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]` (zero key = no early release) |
+| 10 ClearRoute | `account [32], route_nonce u64, sig [64]` (raw ed25519 by the lien's release key over the route-clear message) |
 
 Rules worth knowing:
 - `fee >= min_fee`, except BridgeUnlock (fee may be 0, so a relayer needs no balance).
@@ -376,3 +407,10 @@ Rules worth knowing:
 - Fees and job subsidies are paid to the block's miner after `finality_k` blocks.
 - Job block subsidy = `min(pool x emission_ppm / 1e6, job.cap_remaining)`; a job's cap
   starts at `alpha x P`. Fallback blocks earn fees only.
+- Every block's tx_root ends with its coinbase receipt (97 bytes, version byte 0):
+  `0x00 || height u64 || miner [32] || fees u64 || subsidy u64 || job_id [32] || mature_height u64`,
+  leaf `blake3(0x00 || blake3(record))` (SPEC 3.4).
+- Payout liens (SPEC 4.4): while active, `route_bps` of the account's matured coinbase,
+  CompleteJob W and ExpireJob refunds goes out as withdrawal entries to `solana_recipient`.
+  One lien per account; while active, SetRoute only extends it (same recipient and
+  release key, nothing lower); ClearRoute needs the release key.

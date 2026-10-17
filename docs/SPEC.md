@@ -51,6 +51,8 @@ sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol
 | 6 | BridgeUnlock | solana_nonce u64, recipient [32], amount_spl u64, job_order (0 or 1, then PostJob body), attester sigs |
 | 7 | BridgeLock | solana_recipient [32], amount u64 (multiple of 1000) |
 | 8 | AdminConfig | key u8, value bytes (admin key only; every parameter is editable) |
+| 9 | SetRoute | solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32] (payout lien on the sender, 4.4) |
+| 10 | ClearRoute | account [32], route_nonce u64, sig [64] (ends a lien early; sig by its release key, 4.4) |
 
 - Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
@@ -105,6 +107,36 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   `(1 - alpha) x P`. Default emission_ppm per block: 7 (about 1% a day at 60 s).
 - A job is mined until its cap or its `max_blocks` is used up or it expires.
 
+Coinbase receipt (Agent Credit R1, 2026-10-17): the LAST leaf of every non-genesis
+block's `tx_root` is the block's reward record, so a reward is provable on Solana by
+tx_root inclusion under a final light-client header (no state proof):
+
+```
+record (97 bytes) = 0x00 (version) || height u64 || miner [32] || fees u64 || subsidy u64
+                    || job_id [32] || mature_height u64
+leaf              = blake3(0x00 || blake3(record))      (the tx leaf rule, merkle.rs)
+tx_root           = merkle root over (tx hashes in block order, then blake3(record))
+```
+- `fees` = the block's tx fees, `subsidy` = its reserve subsidy (0 for a fallback block),
+  `mature_height = height + finality_k` (K in force at the end of the block): the block
+  executing at that height credits `fees + subsidy` to `miner` (less a payout lien's
+  share, 4.4). `height`, `miner`, `job_id` repeat the header so a verifier ties the
+  record to the header it holds. Every block has one receipt, even with zero reward.
+- 97 bytes, not the 99 the request's field list adds up to: the 2 reserved bytes were
+  dropped (a later layout would be a new length and version, not reserved space).
+  Version 0 can never parse as a tx (txs start with 0x01 and are
+  longer than 97 bytes), and a tx can never parse as a receipt, so any receipt-shaped
+  leaf under a tx_root IS the block's receipt: a proof needs no leaf position.
+- The receipt travels in the block body (`has_coinbase u8 || record`), so tx_root stays a
+  context-free check (`Block::check_commitments`: receipt height/miner/job_id = header,
+  tx_root over txs + receipt); after execution the node requires the body's receipt to
+  equal the one execution produced ("coinbase receipt mismatch" rejects the block). The
+  genesis block carries none (its tx_root commits to the genesis spec).
+- Miners and pools are unaffected: getBlockTemplate's header already commits to it.
+- Solana: `pearl_verify_sbf::chaintx::verify_coinbase(header, record, path)` (path = the
+  33-byte tx_root path entries; getBlock returns it) parses the record, checks the header
+  fields and the inclusion.
+
 ## 4. Native modules
 
 ### 4.1 Jobs (AI job market)
@@ -132,6 +164,64 @@ max_blocks u32, evaluators (count u8, pubkey*), threshold u8`.
   `{nonce, solana_recipient, amount_spl}` to the withdrawal log (`withdraw_root`).
 - Inbound (Solana -> chain) stays attested in M1 and M2 (our chain verifying
   Solana state is out of scope). Outbound becomes proof-based in M2 (section 6).
+
+### 4.4 Payout liens (Agent Credit R2, 2026-10-17)
+A lien makes the chain itself repay a loan from an account's on-chain income: while it is
+active, the executor splits a share of every income credit to the account into
+withdrawal-log entries to a Solana recipient (Agent Credit's repay authority), which the
+light-client path (bridge `release_proof`, header-relay `--settle`) releases on Solana.
+
+`SetRoute` (kind 9), sent and signed by the account:
+`solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]`.
+- `route_bps` 1..=10000, `until_height` > current height, `cap` > 0 (chain base units,
+  lifetime total the lien may take), recipient non-zero. `release_key` all zero = the
+  lien cannot be cleared early (it ends only at `until_height` or `cap`).
+- ONE lien per account. While one is active, SetRoute is accepted only as an extension:
+  same recipient and release key, and `route_bps`, `until_height`, `cap` each >= the
+  current value (`routed`, `pending` carry over). So the account can never shorten,
+  weaken, redirect or cancel an active lien, and a second lender cannot dilute the first.
+  After a lien ended (expired, cap reached, cleared), a new SetRoute starts a fresh one.
+- Every SetRoute (new or extension) gets `route_nonce` = previous + 1 (first 0), so an
+  old release signature cannot clear a later lien.
+
+Income that is split ("credit" = what the chain credits to the account), and only this:
+1. matured coinbase (fees + subsidy credited at `mature_height`, 3.4), for the payout key;
+2. CompleteJob worker pay W, for the deliverer;
+3. ExpireJob refunds of W, for the poster.
+Transfers, BridgeUnlock deposits and pool payouts (off chain, R4) are not split.
+
+Split of a credit `amt` at height h, when `!cleared && h <= until_height && routed < cap`:
+- `share = min(floor(amt x route_bps / 10000), cap - routed)`; the account is credited
+  `amt - share`; `routed += share`; `pending += share`.
+- Unless the bridge is paused: `out = floor(pending / 1000) x 1000` moves into the escrow
+  and appends the withdrawal entry `{nonce, from = account, solana_recipient, amount_spl =
+  out / 1000, height}` to the existing log (same nonce counter and record as BridgeLock;
+  `withdrawn += out`). The remainder (< 1000 units, i.e. < 1 SPL base unit) stays in
+  `pending` for the next credit, so the routed fraction is exact over time.
+- While the bridge is paused, `pending` just accumulates and goes out at the first
+  credit after the unpause.
+- When the lien ends (cap reached in this credit, or cleared), its dust (< 1000) goes
+  back to the account at once; after it ended by height, at the account's next income
+  credit, or at the next SetRoute (which also first sends out any whole units left).
+- Supply: `pending` counts in the supply invariant (executor `supply_of`); the escrow
+  receives exactly the SPL the entries promise.
+
+`ClearRoute` (kind 10), sent by anyone (the sender pays the fee):
+`account [32], route_nonce u64, sig [64]`, `sig` = RAW ed25519 by the lien's `release_key`
+over `"pearl-sol:route-clear:v1" || chain_id u32 LE || account [32] || route_nonce u64 LE`
+(chain id added to the request's draft so a signature cannot be replayed on another
+network). Refused when the lien is not active, `route_nonce` is not the current one, or
+the lien has no release key. Effect: `cleared`, pending whole units go out, dust back.
+
+Interaction with BridgeLock: none beyond sharing the log. The account can still
+BridgeLock or Transfer its own (unrouted) balance anywhere; the lien takes its share of
+income before the account ever holds it. Lien entries and BridgeLock entries are
+indistinguishable on Solana (`from` = the account), which is what Agent Credit's F5
+proof reads.
+
+State: `Route ["route", account]` (schema tag 10): recipient, bps, until, cap,
+release_key, route_nonce, set_height, routed, pending, withdrawn, cleared; kept after
+the lien ends. RPC `getRoute`, `getAccount.route` (docs/RPC.md).
 
 ## 5. Solana side
 
@@ -251,6 +341,24 @@ relay services/header-relay):
 - Light-client params (incl. fallback m/n, K, WTEMA) mirror the chain's
   AdminConfig at init and via `set_params`; any chain AdminConfig change must be
   mirrored. Reorgs are limited to about 30 headers per tx (path accounts).
+- Final-header accumulator (Agent Credit R5, 2026-10-17): `Accumulator ["acc"]`, a
+  SHA-256 Merkle mountain range over the hashes of FINAL headers in height order
+  (`pearl_verify_sbf::acc`: leaf `sha256(0x00 || block_hash)`, node `sha256(0x01 || l ||
+  r)`, root `sha256(0x02 || n u64 || peaks left to right)`; stored: start height, count,
+  last hash, the 64 peak slots, the last 128 roots). `init_accumulator` (admin, once, at
+  the current final header = leaf 0; `header-relay init` does it); `accumulate`
+  (permissionless; header records in height order, each verified, final or canonical at
+  or below the floor, child of the last one; about 2.7k CU per header); `close_header`
+  refuses a final header not accumulated yet, so every final header from the start stays
+  provable for good. `prove_header(header, count, proof)`: short proof (siblings to the
+  peak, checked against the stored peak, `count` = current; 608 bytes at 2^20 leaves, so
+  it fits a tx at any realistic size) or full proof (siblings + other peaks, against one
+  of the last 128 roots); return data `block_hash || height`; 17.0k-20.8k CU at 2^20-1
+  leaves. `restore_header` re-creates a closed final `HeaderRecord` from such a proof
+  (25.9k CU; `_pad[0] = 1` marks it restored), so `read_final_header` readers (bridge,
+  storefront, ac_pearl) work on it unchanged. `verify_accumulated(acc_data, header,
+  count, proof)` is the raw reader for other programs (owner + PDA checked by the
+  caller). header-relay: `run` accumulates before closing; `acc-proof HEIGHT [--restore]`.
 - Historical withdrawal proofs (16a8842, fe1f88f): node RPC `getWithdrawalProof
   {nonce, at_height}` proves the entry against the `withdraw_root` of the FINAL header at
   `at_height` (Commonware keyless `historical_proof` at the log size that block committed;

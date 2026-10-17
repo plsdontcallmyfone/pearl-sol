@@ -235,10 +235,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
 6. AGENT CREDIT LAYER: built + pushed in ~/agent-credit (ac_pearl, 4a179dc..32f3b67;
    design ~/ideas/agent-credit/PEARL-LAYER.md, AC-D32..42). Owner 2026-10-17:
    pearl lines require a backer stake (AC-D39, agent started in ~/agent-credit);
-   pearl-sol builds requests R1 (coinbase receipt as last tx_root leaf), R2
-   (SetRoute payout lien, kind 9, chain routes income to a Solana repay vault) and
-   R5 (light-client final-header accumulator): agent started in ~/pearl-sol.
-   R3/R4/R6 not requested yet.
+   pearl-sol built requests R1, R2, R5 (item 9). R3/R4/R6 not requested yet.
 7. AGENT WALLET = LEATHER FORK (owner 2026-10-17): ~/pearl-wallet (Leather 6.73.4,
    MIT, remote `upstream`, no remote of ours). Our chain is the primary network +
    Solana token side; ports our extension's byte-tested codecs; Bitcoin/Stacks
@@ -276,6 +273,37 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    - Demo 9/9 PASS (132.8 s): new step 8 (see Demo).
    - Remaining: plain (non-order) deposits are never auto-refunded; the cross-operator
      guarantee is a signer rule, not enforced on chain; refunds return tokens, not SOL.
+9. AGENT CREDIT R1 + R2 + R5: DONE (83fc268..67d76b5; SPEC 3.4 "Coinbase receipt", 4.4,
+   5.3 "Final-header accumulator"; RPC getRoute, getBlock coinbase + paths).
+   - R1: every non-genesis block's tx_root ends with a 97-byte coinbase receipt
+     (`0x00 || height || miner || fees || subsidy || job_id || mature_height`; the 2
+     reserved bytes of the draft dropped), carried in the block body (context-free
+     tx_root check) and required to equal execution's. getBlock returns it with its
+     path (and every tx's path); `pearl_verify_sbf::chaintx::verify_coinbase`.
+   - R2: SetRoute (kind 9) / ClearRoute (kind 10). One lien per account, extension-only
+     while active, release key over `pearl-sol:route-clear:v1 || chain_id || account ||
+     route_nonce`; splits matured coinbase, CompleteJob W, ExpireJob refunds into
+     withdrawal entries (from = account) to the Solana recipient; < 1000-unit carry in
+     `pending`; held while the bridge is paused; dust back when the lien ends. Wallet
+     codecs in extension/src/chain (tx.ts, messages.ts, rpc.ts).
+   - R5: light-client `Accumulator ["acc"]` (SHA-256 MMR of final headers):
+     init_accumulator / accumulate / prove_header / restore_header, close_header waits
+     for accumulation; header-relay accumulates and has `acc-proof H [--restore]`.
+     CU: prove_header 17.0-20.8k at 2^20-1 leaves (short proof 608 bytes), restore 25.9k,
+     accumulate about 2.7k per header.
+   - Store fix (5f59002, orchestrator's side finding): Commonware batches hold only a
+     Weak parent, so a caller keeping only the tip snapshot lost uncommitted ancestors
+     ("left child missing" / "journal error: item out of range"). Snapshots now keep
+     their uncommitted ancestors alive (at most about K). The chain itself never hit it
+     (it keeps every non-final snapshot in `live`); 768 + 400 finalize schedules, a
+     consensus K 6 -> 1 finality jump with withdrawals, restart: all pass.
+   - Tests: chain 81 (+12), crates 72, pearl-verify-sbf 12 (+3), light-client LiteSVM 11
+     (+2) + fixture 2 (re-harvested with receipts; accumulate, close and restore the job
+     block's header, then prove its coinbase reward), relayer 33, extension 63 (+7).
+     Demo 10/10 PASS (197.2 s) with new step 9 (see Demo).
+   - For Agent Credit: see the notes in the R1/R2/R5 report (also SPEC 3.4/4.4/5.3).
+     Existing light clients need `init_accumulator` (admin) before `close_header` works
+     again; existing .devnet data must be reset (block encoding changed).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
@@ -352,9 +380,10 @@ wtema_half_life_ms 15000, emission_ppm 10000, min_fee 1000, target 0x207fffff (t
 easiest; WTEMA hardens it within about 200 blocks). emission is high on purpose so one
 job block pays exactly alpha x P (cap binds). Production values stay K 30 / 60 s / 7 ppm.
 
-Steps and last run (2026-10-17, all 9 PASS, 132.8 s without builds; 122.8 s before the
-refund step, 74.6 s before the light client). Step timings below are from the 8-step run;
-the 9-step run: 13.4 / 17.6 / 14.4 / 6.8 / 15.6 / 15.2 / 24.6 / 20.4 / 4.8 s.
+Steps and last run (2026-10-17, all 10 PASS, 197.2 s without builds; 132.8 s before the
+lien step, 122.8 s before the refund step, 74.6 s before the light client). Step timings
+below are from the 8-step run; the 10-step run: 13.1 / 11.4 / 19.5 / 6.1 / 12.7 / 22.3 /
+29.6 / 23.5 / 53.5 / 5.5 s.
 The relayer runs with REFUND_GRACE_MS 5000 (DEMO_REFUND_GRACE_MS).
 1. (13.3 s) up + init: reserve init, launch (1 SOL dev buy), bridge init (attester 1 of 1),
    storefront init + trader volume accumulators, genesis attester checked.
@@ -377,8 +406,16 @@ The relayer runs with REFUND_GRACE_MS 5000 (DEMO_REFUND_GRACE_MS).
    `refund_deposit` (asserted from the refund record's tx) + `mark_refunded`: the Order's
    buyer (storefront wallet) gets exactly Order.tokens back, Order status Refunded;
    floor restored, the deposit is still not unlocked; invariant exact, nothing in flight.
-9. (4.2 s) teardown by PID incl. header-relay, ports 10600-10662 free.
-Final invariant: vault 18,836,394,149,842 SPL x 1000 = 1e18 - escrow, nothing in flight,
+9. (53.5 s) payout lien (R2): the miner payout key sends SetRoute (50% to a demo lender
+   key, release key a demo key); a user tx with a 2-token fee gives it income; its
+   matured coinbase is split by the chain into a withdrawal entry from the miner to the
+   lender (routed 1,000,000,500, withdrawn 1e9 units, 500 carried), released on Solana by
+   `release_proof` (header-relay --settle; asserted from the Processed PDA's tx), 1,000,000
+   SPL to the lender; ClearRoute by the release key ends it. R1: the SetRoute block's
+   receipt is checked against getHeader's tx_root by its path. R5: accumulator holds 75
+   final headers; `acc-proof` + an on-chain `prove_header` for an early header.
+10. (5.5 s) teardown by PID incl. header-relay, ports 10600-10662 free.
+Final invariant: vault 18,836,393,149,842 SPL x 1000 = 1e18 - escrow, nothing in flight,
 delta 0. header-relay verified 40 headers in the run.
 
 Bugs fixed by the integration run (each with a test):
