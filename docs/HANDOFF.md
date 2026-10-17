@@ -179,9 +179,15 @@ once on this Mac), each owning its paths:
    Commonware 2026.9.0 pinned), docs/RPC.md (written early: miner, relayer and
    wallet build against it), scripts/devnet.sh (3 nodes, RPC 10630/10632/10634,
    p2p 10640-10649). Tx/header test vectors in chain/agent-types/vectors.
-2. miner: crates/pearl-job `pow` module (pow_digest seed, fallback blocks),
-   services/miner as block producer (getBlockTemplate/submitBlock), attester for
-   CompleteJob.
+2. miner: DONE (13f27ae..8e7cdc7): pearl-job `pow` (verify_block = the node's full
+   check; fallback derivation in PROOF-FORMAT.md section 7), new crates/pearl-node
+   (JSON-RPC client per docs/RPC.md, own tx encoding byte-checked against
+   chain/agent-types/vectors, MockNode), services/miner block producer with
+   --deliver, attester node mode (raw ed25519 result sigs). 42 tests pass. Only run
+   against the mock node so far. --deliver needs the payout funded (rewards mature
+   after K). About 3k nonces/s on 8 threads under load.
+   Attester/evaluator/deposit messages are RAW ed25519 over the domain-prefixed
+   bytes; only tx signatures use Commonware framing (node agent, fef1490).
 3. storefront: DONE (18f3cd0): 13 program + 10 service tests (LiteSVM, real pump +
    bridge). buy_job 173k CU, buy_job_amm 196k, finalize 13k. As-built details in
    SPEC 5.1; chain-side order rules sent to the node agent. Not done: USDC buys,
