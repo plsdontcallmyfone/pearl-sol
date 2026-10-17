@@ -19,6 +19,8 @@ export const KIND = {
   BridgeUnlock: 6,
   BridgeLock: 7,
   AdminConfig: 8,
+  SetRoute: 9,
+  ClearRoute: 10,
 } as const;
 export type KindName = keyof typeof KIND;
 export const KIND_NAME: Record<number, KindName> = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k])) as Record<number, KindName>;
@@ -53,7 +55,13 @@ export type TxBody =
   | { kind: "ExpireJob"; jobId: Uint8Array }
   | { kind: "BridgeUnlock"; solanaNonce: bigint; recipient: Uint8Array; amountSpl: bigint; jobOrder: PostJobBody | null; sigs: SigPair[] }
   | { kind: "BridgeLock"; solanaRecipient: Uint8Array; amount: bigint }
-  | { kind: "AdminConfig"; key: number; value: Uint8Array };
+  | { kind: "AdminConfig"; key: number; value: Uint8Array }
+  // Payout lien (SPEC 4.4): routeBps of the sender's matured coinbase, job pay and expiry
+  // refunds go to solanaRecipient until untilHeight or cap; releaseKey all zero = cannot be
+  // cleared early.
+  | { kind: "SetRoute"; solanaRecipient: Uint8Array; routeBps: number; untilHeight: bigint; cap: bigint; releaseKey: Uint8Array }
+  // Ends `account`'s lien early; sig = raw ed25519 by its release key over routeClearMessage.
+  | { kind: "ClearRoute"; account: Uint8Array; routeNonce: bigint; sig: Uint8Array };
 
 export interface UnsignedTx {
   chainId: number;
@@ -123,6 +131,14 @@ export function encodeBody(b: TxBody): Uint8Array {
     case "AdminConfig":
       if (b.value.length > 0xffff) throw new Error("config value too long");
       return concat(u8(b.key), u16(b.value.length), b.value);
+    case "SetRoute":
+      if (!Number.isInteger(b.routeBps) || b.routeBps < 1 || b.routeBps > 10_000) throw new Error("route_bps must be 1..=10000");
+      return concat(
+        fixed(b.solanaRecipient, 32, "solana_recipient"), u16(b.routeBps), u64(b.untilHeight), u64(b.cap),
+        fixed(b.releaseKey, 32, "release_key"),
+      );
+    case "ClearRoute":
+      return concat(fixed(b.account, 32, "account"), u64(b.routeNonce), fixed(b.sig, 64, "release sig"));
   }
 }
 
@@ -209,6 +225,13 @@ function readBody(kind: number, r: Reader): TxBody {
       const key = r.u8();
       return { kind: "AdminConfig", key, value: r.take(r.u16()).slice() };
     }
+    case "SetRoute":
+      return {
+        kind: "SetRoute", solanaRecipient: r.take(32).slice(), routeBps: r.u16(), untilHeight: r.u64(), cap: r.u64(),
+        releaseKey: r.take(32).slice(),
+      };
+    case "ClearRoute":
+      return { kind: "ClearRoute", account: r.take(32).slice(), routeNonce: r.u64(), sig: r.take(64).slice() };
     default:
       throw new Error(`unknown tx kind ${kind}`);
   }

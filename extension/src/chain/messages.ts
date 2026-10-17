@@ -18,6 +18,28 @@ export const depositOrderMessage = (solanaNonce: bigint, recipient: Uint8Array, 
 export const resultMessage = (jobId: Uint8Array, deliverer: Uint8Array, resultHash: Uint8Array) =>
   concat(utf8("pearl-sol:result:v1"), jobId, deliverer, resultHash);
 
+/** ClearRoute release signature (raw ed25519 by the lien's release key):
+ *  "pearl-sol:route-clear:v1" || chain_id u32 LE || account || route_nonce u64 LE. */
+export const routeClearMessage = (chainId: number, account: Uint8Array, routeNonce: bigint) =>
+  concat(utf8("pearl-sol:route-clear:v1"), u32(chainId), account, u64(routeNonce));
+
+/** Coinbase receipt (97 bytes, the last tx_root leaf of a block; getBlock `coinbase.record`). */
+export interface CoinbaseReceipt {
+  height: bigint;
+  miner: Uint8Array;
+  fees: bigint;
+  subsidy: bigint;
+  jobId: Uint8Array;
+  matureHeight: bigint;
+}
+
+export function decodeCoinbase(b: Uint8Array): CoinbaseReceipt {
+  if (b.length !== 97 || b[0] !== 0) throw new Error("not a coinbase receipt (97 bytes, version 0)");
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const u = (o: number) => dv.getBigUint64(o, true);
+  return { height: u(1), miner: b.slice(9, 41), fees: u(41), subsidy: u(49), jobId: b.slice(57, 89), matureHeight: u(89) };
+}
+
 /** PostJob tx: job_id = blake3(poster || tx nonce u64 LE). */
 export const jobIdForPost = (poster: Uint8Array, nonce: bigint) => blake3(poster, u64(nonce));
 

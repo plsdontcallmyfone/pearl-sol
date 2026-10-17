@@ -60,6 +60,24 @@ export interface ChainAccount {
   account: string;
   balance: string;
   nonce: number;
+  /** The account's payout lien (SetRoute), or null (docs/RPC.md getRoute). */
+  route?: ChainRoute | null;
+}
+export interface ChainRoute {
+  account: string;
+  solana_recipient: string;
+  route_bps: number;
+  until_height: number;
+  cap: string;
+  release_key: string | null;
+  route_nonce: number;
+  set_height: number;
+  routed: string;
+  pending: string;
+  withdrawn: string;
+  cleared: boolean;
+  active: boolean;
+  remaining_cap: string;
 }
 export interface Agent {
   account: string;
@@ -146,6 +164,7 @@ export class ChainRpc {
   chainInfo = () => this.call<ChainInfo>("getChainInfo");
   params = () => this.call<ChainParams>("getParams");
   account = (account: string) => this.call<ChainAccount>("getAccount", { account });
+  route = (account: string) => this.call<ChainRoute | null>("getRoute", { account });
   agent = (account: string) => this.call<Agent | null>("getAgent", { account });
   job = (job_id: string) => this.call<Job | null>("getJob", { job_id });
   listJobs = (p: { status?: string; offset?: number; limit?: number }) => this.call<{ total: number; jobs: Job[] }>("listJobs", p);

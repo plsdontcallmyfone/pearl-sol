@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { b58, fromHex, hex, key32 } from "../src/core/bytes";
 import { pubkeyOf, sha256, signRaw, blake3 } from "../src/core/crypto";
 import { KIND, PostJobBody, TxBody, decodeTx, encodePostJob, framedMessage, signTx, signingBytes, txHash, verifyTx } from "../src/chain/tx";
-import { RESERVED, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, resultMessage } from "../src/chain/messages";
+import { RESERVED, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, resultMessage, routeClearMessage } from "../src/chain/messages";
 
 const dir = resolve(__dirname, "../../chain/agent-types/vectors");
 const txv = JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8"));
@@ -32,6 +32,8 @@ function body(v: any): TxBody {
     case "BridgeUnlock": return { kind: "BridgeUnlock", solanaNonce: BigInt(b.solana_nonce), recipient: key32(b.recipient), amountSpl: BigInt(b.amount_spl), jobOrder: b.job_order ? postJob(b.job_order) : null, sigs: sigs(b.sigs) };
     case "BridgeLock": return { kind: "BridgeLock", solanaRecipient: key32(b.solana_recipient), amount: BigInt(b.amount) };
     case "AdminConfig": return { kind: "AdminConfig", key: b.key, value: fromHex(b.value) };
+    case "SetRoute": return { kind: "SetRoute", solanaRecipient: key32(b.solana_recipient), routeBps: b.route_bps, untilHeight: BigInt(b.until_height), cap: BigInt(b.cap), releaseKey: key32(b.release_key) };
+    case "ClearRoute": return { kind: "ClearRoute", account: key32(b.account), routeNonce: BigInt(b.route_nonce), sig: fromHex(b.sig) };
   }
   throw new Error(`unhandled ${v.kind_name}`);
 }
@@ -100,5 +102,24 @@ describe("domain messages", () => {
     expect(b58(RESERVED.escrow)).toBe(r.escrow);
     expect(b58(RESERVED.pool)).toBe(r.pool);
     expect(b58(blake3(new TextEncoder().encode("pearl-sol:escrow:v1")))).toBe(r.escrow);
+  });
+  it("route clear (R2 payout lien release)", () => {
+    const v = by("route_clear");
+    const clr = txv.find((t: any) => t.name === "clear_route");
+    const m = routeClearMessage(clr.chain_id, key32(clr.body.account), BigInt(clr.body.route_nonce));
+    expect(hex(m)).toBe(v.message);
+    expect(hex(signRaw(fromHex(v.seed), m))).toBe(clr.body.sig);
+  });
+  it("coinbase receipt (R1) and its tx_root leaf", () => {
+    const h = JSON.parse(readFileSync(resolve(dir, "header.json"), "utf8"));
+    const rec = fromHex(h.coinbase.record);
+    const c = decodeCoinbase(rec);
+    expect(c.height).toBe(BigInt(h.coinbase.fields.height));
+    expect(c.fees.toString()).toBe(h.coinbase.fields.fees);
+    expect(c.subsidy.toString()).toBe(h.coinbase.fields.subsidy);
+    expect(b58(c.miner)).toBe(h.coinbase.fields.miner);
+    expect(c.matureHeight).toBe(BigInt(h.coinbase.fields.mature_height));
+    expect(hex(blake3(rec))).toBe(h.coinbase.receipt_hash);
+    expect(() => decodeCoinbase(fromHex(txv[0].tx))).toThrow();
   });
 });
