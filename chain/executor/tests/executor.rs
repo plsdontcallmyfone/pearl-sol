@@ -230,6 +230,11 @@ fn order_unlock_posts_job_with_relative_deadline() {
     assert_eq!(j.poster, pk(5));
     assert_eq!(j.deadline_height, c.height + 50);
     assert_eq!(c.bal(&pk(5)), 0);
+    // order header: recipient || order terms (no W, P, job id or unlock height), so the
+    // buyer can commit hash_a / hash_b before the order is filled
+    assert_eq!(j.header_id, pk(5));
+    assert_eq!(j.terms_hash, schema::order_terms_hash(&pk(5), j.m, j.n, j.k, j.max_blocks, 50));
+    assert_eq!(j.pearl_header().job_pubkey, pk(5));
     // a plain-deposit signature does not authorise an order unlock
     let dmsg = deposit_message(78, &pk(5), amount_spl);
     let sigs = ATT[1..].iter().map(|i| AttesterSig { pubkey: pk(*i), sig: sign_plain(&seed(*i), &dmsg) }).collect();

@@ -106,6 +106,7 @@ pub fn job_json(j: &JobRecord, next_height: u64) -> Value {
         "terms_hash": hex::encode(j.terms_hash),
         "job_key": j.job_key().map(hex::encode).unwrap_or_default(),
         "job_header": hex::encode(j.pearl_header().to_bytes()),
+        "header_id": hex::encode(j.header_id),
         "created_height": 0, "share_target": 0, "posted_height": j.created_height,
         "deliverer": opt_key(&j.deliverer), "result_hash": opt_hash(&j.result_hash),
         "result_uri": String::from_utf8_lossy(&j.result_uri),

@@ -59,11 +59,18 @@ Reserved addresses (no key; cannot send):
   `deadline_height = unlock block height + body value`.
 - `terms_hash = blake3("pearl-sol:terms:v2" || poster || job_id || m u32 || n u32 || k u32 || W u64 || P u64 || deadline_height u64 || max_blocks u32)`
   (absolute deadline).
-- Pearl 76-byte job header for v2 chain jobs: `job_id || terms_hash || 0 u64 || 0 u32`.
-  The created-height and share-target fields are fixed at zero so a poster can compute
-  `job_key`, `hash_a`, `hash_b` before posting (the pow-bound seed already binds each
-  block proof to its parent). `getJob` reports them as `created_height: 0` and
-  `share_target: 0`; the real height is `posted_height`.
+- Pearl 76-byte job header for v2 chain jobs: `header_id || terms_hash || 0 u64 || 0 u32`,
+  `header_id = job_id` for a PostJob. The created-height and share-target fields are fixed
+  at zero so a poster can compute `job_key`, `hash_a`, `hash_b` before posting (the
+  pow-bound seed already binds each block proof to its parent). `getJob` reports them as
+  `created_height: 0` and `share_target: 0`; the real height is `posted_height`.
+- Storefront orders (change 2026-10-16, M1 integration): the buyer commits `hash_a`,
+  `hash_b` on Solana before the fill fixes W and P and before the bridge nonce (the job id)
+  and the unlock height exist, so an order job's header is `poster || order_terms || 0 || 0`
+  (`header_id = poster` = the unlock recipient) with
+  `order_terms = blake3("pearl-sol:order-terms:v1" || poster || m u32 || n u32 || k u32 || max_blocks u32 || deadline_blocks u64)`,
+  `deadline_blocks` as in the order body (relative). `getJob.terms_hash` is that value
+  and `getJob.header_id` the header's first field.
 
 ## Objects
 
@@ -79,7 +86,7 @@ Reserved addresses (no key; cannot send):
   "deadline_height": 1200, "max_blocks": 10, "blocks_mined": 3,
   "cap_remaining": "790000000", "subsidy_paid": "10000000",
   "evaluators": ["base58"], "threshold": 1,
-  "terms_hash": "hex", "job_key": "hex", "job_header": "hex (76 B)",
+  "terms_hash": "hex", "job_key": "hex", "job_header": "hex (76 B)", "header_id": "hex",
   "created_height": 0, "share_target": 0, "posted_height": 1100,
   "deliverer": "base58 | null", "result_hash": "hex | null", "result_uri": "",
   "closed_height": 0, "index": 4

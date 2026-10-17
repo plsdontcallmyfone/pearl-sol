@@ -360,7 +360,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             TxBody::PostJob(p) => {
                 let deadline = check_post_job(p, &self.cfg, h, false)?;
                 let id = schema::job_id_for_post(&tx.from, tx.nonce);
-                self.create_job(&tx.from, id, p, deadline).await?;
+                self.create_job(&tx.from, id, p, deadline, false).await?;
                 out.job_id = Some(id);
             }
             TxBody::SubmitResult { job_id, result_hash, uri } => {
@@ -436,7 +436,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if let Some(p) = job_order {
                     let deadline = check_post_job(p, &self.cfg, h, true)?;
                     let id = schema::job_id_for_order(*solana_nonce);
-                    self.create_job(recipient, id, p, deadline).await?;
+                    self.create_job(recipient, id, p, deadline, true).await?;
                     out.job_id = Some(id);
                 }
             }
@@ -479,7 +479,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         Ok(out)
     }
 
-    async fn create_job(&mut self, poster: &Pubkey, id: Hash, p: &PostJob, deadline: u64) -> Result<(), TxError> {
+    async fn create_job(&mut self, poster: &Pubkey, id: Hash, p: &PostJob, deadline: u64, order: bool) -> Result<(), TxError> {
         if self.ov.job(&id).await?.is_some() {
             return bad("job id already exists");
         }
@@ -504,17 +504,12 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             evaluators: p.evaluators.clone(),
             threshold: p.threshold,
             created_height: self.env.height,
-            terms_hash: schema::terms_hash(
-                poster,
-                &id,
-                p.m,
-                p.n,
-                p.k,
-                p.worker_pay,
-                p.protocol_fee,
-                deadline,
-                p.max_blocks,
-            ),
+            terms_hash: if order {
+                schema::order_terms_hash(poster, p.m, p.n, p.k, p.max_blocks, p.deadline_height)
+            } else {
+                schema::terms_hash(poster, &id, p.m, p.n, p.k, p.worker_pay, p.protocol_fee, deadline, p.max_blocks)
+            },
+            header_id: if order { *poster } else { id },
             status: JobStatus::Open,
             blocks_mined: 0,
             cap_remaining: mul_ppm(p.protocol_fee, self.cfg.alpha_ppm),

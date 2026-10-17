@@ -142,6 +142,9 @@ pub struct JobRecord {
     pub result_uri: Vec<u8>,
     pub closed_height: u64,
     pub index: u64,
+    /// First field of the Pearl job header (`job_pubkey`): the job id for a PostJob,
+    /// the recipient (poster) for a storefront order (see [`order_terms_hash`]).
+    pub header_id: Hash,
 }
 
 impl JobRecord {
@@ -176,7 +179,8 @@ impl JobRecord {
             .bytes(&self.result_hash)
             .bytes16(&self.result_uri)
             .u64(self.closed_height)
-            .u64(self.index);
+            .u64(self.index)
+            .bytes(&self.header_id);
         w.into_inner()
     }
 
@@ -228,18 +232,20 @@ impl JobRecord {
             result_uri: r.bytes16(usize::MAX, "result_uri")?,
             closed_height: r.u64()?,
             index: r.u64()?,
+            header_id: r.arr()?,
         };
         r.finish()?;
         Ok(j)
     }
 
     /// Pearl 76-byte job header for v2 chain jobs:
-    /// `job_id || terms_hash || created_height = 0 u64 || share_target = 0 u32`.
+    /// `header_id || terms_hash || created_height = 0 u64 || share_target = 0 u32`,
+    /// with `header_id = job_id` for a PostJob and `= poster` for a storefront order.
     /// The two trailing fields are zero so the poster can compute `job_key` (and so
     /// `hash_a`, `hash_b`) before the job lands in a block; the pow-bound seed already
     /// binds each proof to its parent, so there is no pre-mining to prevent.
     pub fn pearl_header(&self) -> pearl_job::JobHeader {
-        pearl_job::JobHeader { job_pubkey: self.job_id, terms_hash: self.terms_hash, created_slot: 0, target_bits: 0 }
+        pearl_job::JobHeader { job_pubkey: self.header_id, terms_hash: self.terms_hash, created_slot: 0, target_bits: 0 }
     }
 
     pub fn mining_config(&self) -> Result<pearl_job::MiningConfig, String> {
@@ -288,6 +294,18 @@ pub fn terms_hash(
         .u64(protocol_fee)
         .u64(deadline_height)
         .u32(max_blocks);
+    blake3_hash(&[&w.into_inner()])
+}
+
+/// Storefront orders: `terms_hash = blake3("pearl-sol:order-terms:v1" || poster || m u32 || n u32
+///  || k u32 || max_blocks u32 || deadline_blocks u64)`, `deadline_blocks` RELATIVE as in the
+/// order's PostJob body, and the Pearl header's first field is the poster (the unlock
+/// recipient). The buyer commits `hash_a`, `hash_b` on Solana before the fill sets W, P
+/// and before the bridge nonce (so the job id) and the unlock height are known, so the
+/// order header uses only fields fixed when the order is opened.
+pub fn order_terms_hash(poster: &Pubkey, m: u32, n: u32, k: u32, max_blocks: u32, deadline_blocks: u64) -> Hash {
+    let mut w = W::new();
+    w.bytes(b"pearl-sol:order-terms:v1").bytes(poster).u32(m).u32(n).u32(k).u32(max_blocks).u64(deadline_blocks);
     blake3_hash(&[&w.into_inner()])
 }
 
