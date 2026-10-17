@@ -296,13 +296,13 @@ fn orphans_connect_when_parent_arrives() {
 fn seal_real(t: &Template, a: &[i8], b: &[i8]) -> Block {
     let ph = consensus_pow::verifier::to_pearl_header(&t.header);
     let mined = match &t.job {
-        None => pearl_job::pow::mine_header(&ph, &pearl_job::BlockWork::Fallback(t.fallback), 0..64).unwrap(),
+        None => pearl_job::pow::mine_header(&ph, &pearl_job::BlockWork::Fallback(t.fallback), 0..4096).unwrap(),
         Some(j) => {
             let prep = pearl_job::PreparedJob::new(j.pearl_job().unwrap(), a, b).unwrap();
-            pearl_job::pow::mine_header(&ph, &pearl_job::BlockWork::Job(&prep), 0..64).unwrap()
+            pearl_job::pow::mine_header(&ph, &pearl_job::BlockWork::Job(&prep), 0..4096).unwrap()
         }
     }
-    .expect("easy target wins within 64 nonces");
+    .expect("easy target wins within 4096 nonces");
     let header = Header::decode(&mined.header.to_bytes()).unwrap();
     Block { header, proof: mined.proof, txs: t.txs.clone() }
 }
@@ -463,7 +463,7 @@ fn mock_job_body(data_uri: &[u8], p: u64) -> PostJob {
     PostJob {
         m: 64,
         n: 64,
-        k: 1024,
+        k: pearl_job::MiningConfig::localnet_default().common_dim,
         config: pearl_job::MiningConfig::localnet_default().to_bytes(),
         hash_a: [1; 32],
         hash_b: [2; 32],
@@ -517,9 +517,9 @@ fn fallback_size_is_a_chain_parameter() {
     deterministic::Runner::default().start(|ctx| async move {
         let mut c = C::open(ctx.child("a"), "n", genesis(3), PearlVerifier).await.unwrap();
         let mut now = T0 + 1000;
-        // default 4 x 8, k unchanged
+        // default 4 x 8 at k = 2048, r = 128 (Pearl rank-penalty floor)
         let t = c.build_template(pk(9), JobChoice::Fallback, &[unlock(200, 0, 1, pk(1), 1000)], now).await.unwrap();
-        assert_eq!((t.fallback.m, t.fallback.n, t.fallback.config.k()), (4, 8, 1024));
+        assert_eq!((t.fallback.m, t.fallback.n, t.fallback.config.k(), t.fallback.config.r()), (4, 8, 2048, 128));
         let b = seal_real(&t, &[], &[]);
         add(&mut c, b, now).await;
         // the admin changes the shape to 8 x 16
@@ -546,5 +546,10 @@ fn fallback_size_is_a_chain_parameter() {
         now += 1000;
         let t = c.build_template(pk(9), JobChoice::Fallback, &[set(2, state::config::keys::FALLBACK_M, 6)], now).await.unwrap();
         assert!(t.txs.is_empty(), "m = 6 is not a multiple of the 4-row tile");
+        // a fallback config below the rank-penalty floor (the pre-port r = 32) is refused
+        let old_cfg = pearl_job::MiningConfig { common_dim: 1024, rank: 32, ..pearl_job::MiningConfig::localnet_default() };
+        let tx = Tx::signed(&seed(1), CHAIN, 2, 10, TxBody::AdminConfig { key: state::config::keys::FALLBACK_CONFIG, value: old_cfg.to_bytes().to_vec() });
+        let t = c.build_template(pk(9), JobChoice::Fallback, &[tx], now).await.unwrap();
+        assert!(t.txs.is_empty(), "r = 32 is below the rank-penalty floor");
     });
 }
