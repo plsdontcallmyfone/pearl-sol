@@ -182,8 +182,11 @@ once on this Mac), each owning its paths:
 2. miner: crates/pearl-job `pow` module (pow_digest seed, fallback blocks),
    services/miner as block producer (getBlockTemplate/submitBlock), attester for
    CompleteJob.
-3. storefront: token/programs/storefront (buy_job in SOL, Order account,
-   finalize_order with attester sigs) + services/storefront-x402 (:10662).
+3. storefront: DONE (18f3cd0): 13 program + 10 service tests (LiteSVM, real pump +
+   bridge). buy_job 173k CU, buy_job_amm 196k, finalize 13k. As-built details in
+   SPEC 5.1; chain-side order rules sent to the node agent. Not done: USDC buys,
+   relayer order support, an automatic finalize submitter, a real-validator run.
+   Note: sigverify.rs now has 3 copies (bridge, escrow (superseded), storefront).
 After those: rewire services/relayer to the node RPC (K-deep), rebuild the wallet
 extension for our chain (tx encoding SPEC 2, vectors from agent-types), then
 scripts/demo.sh (SPEC 7 M1 item 6). If a session dies, check git log per path.

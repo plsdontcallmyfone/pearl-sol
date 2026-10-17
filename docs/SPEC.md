@@ -148,6 +148,27 @@ release with M-of-N ed25519 signatures). Changes and additions:
 - Refund path: if the job expires, W comes back over the bridge to the buyer.
 - Slippage bound and per-order caps are admin-editable.
 
+As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr):
+- Two steps, since the spec plus about 27 accounts exceeds 1232 bytes:
+  `open_order(draft_id, recipient, spec)` writes an `OrderDraft`, then
+  `buy_job` (curve) or `buy_job_amm` (PumpSwap) buys via a system-owned trader
+  PDA `["trader"]`, splits P (`protocol_fee_bps`, default 2000) and W, deposits
+  through the bridge with the trader PDA as sender, and creates
+  `Order ["order", deposit_nonce]` (fixed 1070 bytes, offsets in
+  `storefront::layout`).
+- A bridge Deposit whose sender is the trader PDA is an order. The relayer gets
+  attested: `b"pearl-sol:deposit-order:v1" || nonce || recipient || amount_spl ||
+  sha256(PostJob body)` (stored as `order.body_hash`).
+- Order job id on the chain: `sha256(b"pearl-sol:order-job:v1" || nonce LE)`
+  (Solana has no usable blake3). Normal PostJob keeps `blake3(poster || nonce)`.
+- The order's deadline is relative: `deadline_height = unlock height + deadline`.
+- `finalize_order` callers: buyer, admin or an attester (result_uri is unsigned).
+  `expire_order` takes attester sigs over `b"pearl-sol:expired:v1" || job_id`.
+- One-time setup: the trader PDA needs pump and PumpSwap
+  `init_user_volume_accumulator` before the first order.
+- The x402 service wallet is the on-chain buyer; the payer's key is the chain
+  recipient.
+
 ### 5.2 x402 endpoint (M1)
 `services/storefront-x402` (port 10662): an HTTP service that prices a job,
 accepts x402 payment on Solana, calls `buy_job`, and serves the result once
