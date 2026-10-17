@@ -213,6 +213,12 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    devnet fixture at k2048/r128 + un-ignore the replay test; add lightclient +
    header-relay + proof-mode release to scripts/demo.sh; retune pool share target
    for 4x8 fallback.
+6. AGENT CREDIT LAYER (owner 2026-10-17, started): wire pearl-sol's verified work into
+   ~/agent-credit ("Tab", Solana adaptation of priors.trade): verified jobs/mining
+   feed the credit passport, loans fund jobs, mining-backed lines. Work happens in
+   ~/agent-credit (design ~/ideas/agent-credit/PEARL-LAYER.md); pearl-sol only
+   receives precise change requests. Priors itself (Robinhood Chain) is NOT
+   targeted (third-party; would need a new RH Chain bridge).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
