@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     }
 
     // job terms (docs/RPC.md "Job ids and Pearl job header")
-    let (m, n, k) = (64u32, 64u32, 1024u32);
+    let (m, n, k) = (64u32, 64u32, 2048u32);
     let (w, p, max_blocks) = (5_000_000_000u64, 2_000_000_000u64.max(min_p), 3u32);
     let height = info["height"].as_u64().unwrap_or(0);
     let deadline = height + 2000;

@@ -322,12 +322,12 @@ mod tests {
         let (a1, b1) = fallback_matrices(&[9; 32], &p);
         let (a2, b2) = fallback_matrices(&[9; 32], &p);
         assert_eq!((a1.clone(), b1.clone()), (a2, b2));
-        assert_eq!(a1.len(), 4 * 1024);
-        assert_eq!(b1.len(), 1024 * 8);
+        assert_eq!(a1.len(), 4 * 2048);
+        assert_eq!(b1.len(), 2048 * 8);
         assert!(a1.iter().chain(&b1).all(|&x| (-64..=63).contains(&x)));
         let (a3, _) = fallback_matrices(&[8; 32], &p);
         assert_ne!(a1, a3);
-        assert_ne!(a1[..1024], b1[..1024]);
+        assert_ne!(a1[..2048], b1[..2048]);
         let j1 = fallback_job(&[9; 32], &p).unwrap();
         let j2 = fallback_job(&[9; 32], &p).unwrap();
         assert_eq!(j1.job, j2.job);

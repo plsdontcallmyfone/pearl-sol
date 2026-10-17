@@ -61,8 +61,8 @@ fn job_block_roundtrip() {
     let p = mine_block_proof(&a, &b, &prep.job, &pd, EASY, blk.header.nonce).unwrap().unwrap();
     assert_eq!(block_proof_to_bytes(&p), blk.proof);
     verify_block_proof(&prep.job, &p, &pd, EASY, blk.header.nonce).unwrap();
-    // 4 A leaves + 8 B^T leaves: same size class as a v1 share.
-    assert!(blk.proof.len() > 12 * 1024 && blk.proof.len() < 13 * 1024 + 512, "{}", blk.proof.len());
+    // 8 A leaves + 16 B^T leaves (k = 2048: two 1 KiB leaves per row).
+    assert!(blk.proof.len() > 24 * 1024 && blk.proof.len() < 25 * 1024 + 512, "{}", blk.proof.len());
 }
 
 /// Re-point one header field, keep the proof (and its proof_hash): must fail.
@@ -142,7 +142,7 @@ fn proof_bytes_checked() {
 #[test]
 fn fallback_block_roundtrip_and_rejections() {
     let t = template([0; 32]);
-    let blk = mine_header(&t, &BlockWork::Fallback(fb()), 0..64).unwrap().expect("a fallback block within 64 nonces");
+    let blk = mine_header(&t, &BlockWork::Fallback(fb()), 0..1024).unwrap().expect("a fallback block within 1024 nonces");
     verify_block(&blk.header, None, &blk.proof, &fb()).unwrap();
     // The job argument is ignored for fallback blocks.
     let (prep, _, _) = job_with(42);
@@ -194,6 +194,7 @@ fn pinned_vectors() {
     let fj = fallback_job(&[9; 32], &fb()).unwrap();
     println!("fallback 4x8 hash_a={} hash_b={}", hex::encode(fj.job.hash_a), hex::encode(fj.job.hash_b));
     let fj64 = fallback_job(&[9; 32], &FallbackParams { m: 64, n: 64, ..fb() }).unwrap();
+    println!("fallback 64x64 hash_a={} hash_b={}", hex::encode(fj64.job.hash_a), hex::encode(fj64.job.hash_b));
     assert_eq!(hex::encode(fj64.job.hash_a), FB64_HASH_A);
     assert_eq!(hex::encode(fj64.job.hash_b), FB64_HASH_B);
     // Header digests of the test template.
@@ -208,10 +209,10 @@ fn pinned_vectors() {
 
 const POW_B: &str = "e8f7d72728f2143cdb331ee04fd00792ebf1a07d9ef60367a8640ed8e78bbcac";
 const POW_A: &str = "3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c05fd2";
-const FB_HASH_A: &str = "8e192020e50ab1ce7d29a4d5b8294650fb782a41a0dc11c912ec791bcd726ec4";
-const FB_HASH_B: &str = "0fad28125cae2afdecc42b89699dca662ca5028c7c43dd4b24a96c354b5e5575";
-const FB64_HASH_A: &str = "f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a";
-const FB64_HASH_B: &str = "5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347";
+const FB_HASH_A: &str = "0e68c8d3bae3e18efe30f78e02f313921ce6dc7adcd6d496e3605fd7d445ee62";
+const FB_HASH_B: &str = "33e22b577f66feb98851fcb1f4ff628dcd6c42857b8b7e24f37f08bd542f1ae6";
+const FB64_HASH_A: &str = "f675c2fc3e528ca43cc87d78024ceace26202d5d71485c8cc75f7f3c847e4bc2";
+const FB64_HASH_B: &str = "dbbaa3865d4f10ddcb5b3b337e42b05c739b6a89c64a0f7b24669136d2408c05";
 const TEMPLATE_POW_DIGEST: &str = "de30bddaa1209116cffbf120dc3da81512c11e574fa098c1edb8cf3451bf3cee";
 
 /// Storefront orders: the job's Pearl header id (the poster) is not the chain job id in the

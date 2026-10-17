@@ -39,7 +39,7 @@ fn make_job(dir: &std::path::Path, id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32
 
 /// `header_id` = the Pearl header's first field (the poster for a storefront order).
 fn make_job_with(dir: &std::path::Path, id: [u8; 32], header_id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32>) {
-    let (m, n, k) = (64u32, 64u32, 1024u32);
+    let (m, n, k) = (64u32, 64u32, 2048u32);
     let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, Some(seed));
     let mp = data::save(&dir.join(hex::encode(&id[..4])), m, n, k, &a, &b).unwrap();
     let config = MiningConfig::localnet_default();
@@ -316,7 +316,7 @@ fn blob_job_data_and_blob_result() {
     let node = MockNode::new(CHAIN, EASY);
     let (mut job, c) = make_job(&dir, [0x0b; 32], 9);
     let d = data::load(&job.data_uri).unwrap();
-    let blob = data::encode_job_blob(job.m, job.n, 1024, &d.a, &d.b).unwrap();
+    let blob = data::encode_job_blob(job.m, job.n, job.config.common_dim, &d.a, &d.b).unwrap();
     let uri = node.put_blob(&blob).unwrap();
     assert_eq!(uri, data::blob_uri(&data::blob_id(&blob)));
     job.data_uri = uri;

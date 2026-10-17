@@ -58,12 +58,14 @@ pub struct MiningConfig {
 impl MiningConfig {
     pub const SIZE: usize = 52;
 
-    /// Localnet default: k=1024, r=32, 4x8 contiguous tile (h*w=32, the smallest
-    /// Pearl allows). Smallest plain proof, best fit for the M2 SBF verifier.
+    /// Localnet default: k=2048, r=128, 4x8 contiguous tile (h*w=32, the smallest
+    /// Pearl allows). r=128 is Pearl's rank-penalty floor ([`PENALTY_BASE_RANK`]) and
+    /// k=2048 the smallest k it allows (k >= 16r); same shape as Pearl's own default
+    /// (`zk-pow/bindings/go/src/mine.rs:19-22`) except for the contiguous tile.
     pub fn localnet_default() -> Self {
         Self {
-            common_dim: 1024,
-            rank: 32,
+            common_dim: 2048,
+            rank: 128,
             rows_pattern: PeriodicPattern::from_list(&[0, 1, 2, 3]).unwrap(),
             cols_pattern: PeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7]).unwrap(),
         }
@@ -137,6 +139,9 @@ impl Job {
 pub fn check_shape(c: &MiningConfig, m: usize, n: usize) -> Result<()> {
     let (k, r, h, w) = (c.k(), c.r(), c.h(), c.w());
     ensure!(r.is_power_of_two() && (32..=1024).contains(&r), "rank must be 2^5..2^10, got {r}");
+    // Pearl rank-penalty floor (zk-pow/src/api/sanity_checks.rs:166-168). Pearl gates
+    // it by height (RankPenaltyForkHeight); this chain has it from genesis.
+    ensure!(r >= PENALTY_BASE_RANK, "rank must be >= {PENALTY_BASE_RANK} (rank penalty), got {r}");
     ensure!(r % 16 == 0, "r must be divisible by 16");
     ensure!(k <= 1 << 16, "k must be <= 2^16, got {k}");
     ensure!(k % 64 == 0, "k must be a multiple of 64, got {k}");
@@ -280,11 +285,46 @@ pub fn nbits_to_target(nbits: u32) -> U256 {
     }
 }
 
-/// Pearl `extract_difficulty_bound`: `target * h*w*dot_product_length`, saturating.
-/// No rank penalty (that is a Pearl-mainnet consensus rule; our r can be 32).
+/// Minimum accepted noise rank and normalization point for the rank penalty
+/// (Pearl `zk-pow/src/api/sanity_checks.rs:12-13`).
+pub const PENALTY_BASE_RANK: usize = 128;
+
+/// Pearl `penalized_adjustment_factor` (`sanity_checks.rs:194-198`):
+/// `h*w * (dlen / r) * PENALTY_BASE_RANK`, the work credited to one jackpot attempt.
+/// Equals the unpenalized `h*w*dlen` at r = 128 and is `r/128` times smaller above it.
+pub fn penalized_adjustment_factor(c: &MiningConfig) -> usize {
+    c.h() * c.w() * (c.dot_product_length() / c.r()) * PENALTY_BASE_RANK
+}
+
+/// Pearl `extract_difficulty_bound` (`sanity_checks.rs:226-237`): `target * h*w*dlen`,
+/// saturating. Not used for acceptance; kept for the penalty tests.
+pub fn unpenalized_difficulty_bound(nbits: u32, c: &MiningConfig) -> U256 {
+    scale(nbits_to_target(nbits), c.h() * c.w() * c.dot_product_length())
+}
+
+/// The jackpot bound every proof is checked against: Pearl's rank-penalized bound
+/// (`check_rank_penalty`, `sanity_checks.rs:166-182`), `target * h*w*(dlen/r)*128`,
+/// saturating at U256::MAX like Pearl's consensus `scale` (`sanity_checks.rs:212-223`).
+/// The r >= 128 floor is in [`check_shape`]; every verifier path runs it first.
+/// For r >= 128 this is never above [`unpenalized_difficulty_bound`], so it replaces
+/// both of Pearl's checks.
 pub fn difficulty_bound(nbits: u32, c: &MiningConfig) -> U256 {
-    let t = nbits_to_target(nbits);
-    let f = U256::from(c.h() * c.w() * c.dot_product_length());
+    scale(nbits_to_target(nbits), penalized_adjustment_factor(c))
+}
+
+/// Pearl `penalized_target_bound` (`sanity_checks.rs:246-251`): the penalized bound
+/// without saturation, `None` when the factor is zero or the product overflows (a
+/// share target that every hash would meet is unusable).
+pub fn penalized_target_bound(target: U256, c: &MiningConfig) -> Option<U256> {
+    let f = penalized_adjustment_factor(c);
+    if f == 0 || target > U256::MAX / f {
+        return None;
+    }
+    Some(target * f)
+}
+
+fn scale(t: U256, factor: usize) -> U256 {
+    let f = U256::from(factor.max(1));
     if t > U256::MAX / f {
         U256::MAX
     } else {

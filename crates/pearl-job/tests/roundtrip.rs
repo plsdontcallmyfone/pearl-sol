@@ -44,8 +44,8 @@ fn commit_mine_verify_roundtrip() {
     let q = PlainProof::from_bytes(&bytes).unwrap();
     assert_eq!(p, q);
     verify_share(&prep.job, &q, &MINER).unwrap();
-    // 4 A leaves + 8 B^T leaves of 1 KiB, plus header and siblings
-    assert!(bytes.len() > 12 * 1024 && bytes.len() < 13 * 1024 + 512, "proof size {}", bytes.len());
+    // 8 A leaves + 16 B^T leaves of 1 KiB (k = 2048), plus header and siblings
+    assert!(bytes.len() > 24 * 1024 && bytes.len() < 25 * 1024 + 1024, "proof size {}", bytes.len());
     // Many shares: every share found in a range verifies.
     let mut count = 0;
     for nonce in 0..16 {

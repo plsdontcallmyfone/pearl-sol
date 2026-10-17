@@ -30,7 +30,7 @@ struct Fx {
 }
 
 fn fixture(tag: &str) -> Fx {
-    let (m, n, k) = (64u32, 64u32, 1024u32);
+    let (m, n, k) = (64u32, 64u32, 2048u32);
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("attester-{tag}"));
     let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, Some(11));
     let mp = data::save(&dir, m, n, k, &a, &b).unwrap();
@@ -121,7 +121,7 @@ fn share_rejections() {
 #[test]
 fn result_signature_matches_spec_bytes() {
     let fx = fixture("result");
-    let (m, n, k) = (64, 64, 1024);
+    let (m, n, k) = (64, 64, 2048);
     let c = matmul(&fx.a, &fx.b, m, n, k);
     let deliverer = [0x66u8; 32];
     let (st, v) = post(&fx.att, "/result", json!({
@@ -151,7 +151,7 @@ fn result_signature_matches_spec_bytes() {
 #[test]
 fn result_rejections() {
     let fx = fixture("result-bad");
-    let (m, n, k) = (64, 64, 1024);
+    let (m, n, k) = (64, 64, 2048);
     let mut c = matmul(&fx.a, &fx.b, m, n, k);
     c[100] += 1;
     let (st, v) = post(&fx.att, "/result", json!({
@@ -183,7 +183,7 @@ use pearl_node::JobInfo;
 /// The fixture job registered on a mock node as Delivered by `deliverer` with C's hash.
 fn node_fixture(tag: &str, evaluator: [u8; 32]) -> (Fx, MockNode, Vec<i32>, std::path::PathBuf) {
     let fx = fixture(tag);
-    let c = matmul(&fx.a, &fx.b, 64, 64, 1024);
+    let c = matmul(&fx.a, &fx.b, 64, 64, 2048);
     let cpath = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("attester-{tag}/C.i32"));
     data::write_i32(&cpath, &c).unwrap();
     let job = fx.spec.to_job().unwrap();

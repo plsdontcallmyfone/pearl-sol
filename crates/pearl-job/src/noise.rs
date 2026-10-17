@@ -92,6 +92,27 @@ pub fn noise_for_indices(k: usize, rank: usize, seeds: (&[u8; 32], &[u8; 32]), a
     }
 }
 
+/// The four noise factors behind [`noise_for_indices`], for analysis (the rank-penalty
+/// work-ratio tests): `E_A = e_al * e_ar_t^T`, `E_B^T = e_br_t * e_bl^T`. The sparse
+/// factors are `k` pairs `[p, q]` meaning `+1` at column p and `-1` at column q.
+#[derive(Debug, Clone)]
+pub struct NoiseFactors {
+    pub e_al: Vec<Vec<i8>>,
+    pub e_ar_t: Vec<[u32; 2]>,
+    pub e_bl: Vec<[u32; 2]>,
+    pub e_br_t: Vec<Vec<i8>>,
+}
+
+pub fn noise_factors(k: usize, rank: usize, seeds: (&[u8; 32], &[u8; 32]), a_rows: &[usize], bt_rows: &[usize]) -> NoiseFactors {
+    let (b_seed, a_seed) = seeds;
+    NoiseFactors {
+        e_al: uniform_rows(&SEED_LABEL_A, a_seed, a_rows, rank),
+        e_ar_t: permutation(&SEED_LABEL_A, a_seed, k, rank),
+        e_bl: permutation(&SEED_LABEL_B, b_seed, k, rank),
+        e_br_t: uniform_rows(&SEED_LABEL_B, b_seed, bt_rows, rank),
+    }
+}
+
 /// Pearl `compute_jackpot`: running h x w partial products of the noised strips,
 /// XOR-folded into 16 words after every rank block. Strips have length >= dlen.
 pub fn jackpot(k: usize, r: usize, s_a: &[Vec<i8>], s_bt: &[Vec<i8>], noise: &NoiseSlice) -> [u32; JACKPOT_SIZE] {

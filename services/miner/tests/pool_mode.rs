@@ -131,7 +131,7 @@ fn two_pool_miners_share_a_block_and_get_paid() {
 fn pool_miner_mines_job_work() {
     let dir = tmp("job");
     let node = RewardNode::new(CHAIN, BLOCK, K, 1);
-    let (m, n, k) = (64u32, 64u32, 1024u32);
+    let (m, n, k) = (64u32, 64u32, 2048u32);
     let (am, bm) = data::random_matrices(m as usize, n as usize, k as usize, Some(9));
     let mp = data::save(&dir.join("job"), m, n, k, &am, &bm).unwrap();
     let config = MiningConfig::localnet_default();
