@@ -726,6 +726,20 @@ dependencies = [
 [[package]]
 name = "consensus-pow"
 version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-macros",
+ "commonware-runtime",
+ "commonware-storage",
+ "executor",
+ "pearl-job",
+ "primitive-types",
+ "state",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "const-hex"

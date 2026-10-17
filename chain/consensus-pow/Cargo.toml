@@ -1,0 +1,22 @@
+[package]
+name = "consensus-pow"
+description = "Useful-PoW chain manager: block tree, cumulative work, WTEMA, finality depth, reorgs"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-types.workspace = true
+state.workspace = true
+executor.workspace = true
+pearl-job.workspace = true
+primitive-types.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+commonware-macros.workspace = true
