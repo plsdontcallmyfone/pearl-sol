@@ -43,6 +43,11 @@ export interface NodeParams {
   attesterThreshold: number;
   finalityK: number;
   bridgePaused: boolean;
+  /**
+   * getParams.min_protocol_fee_effective (chain units): the smallest P an order
+   * unlock may carry. null when the node does not report it (pre-M2 node).
+   */
+  minProtocolFeeEffective: bigint | null;
 }
 
 export interface EscrowInfo {
@@ -125,7 +130,8 @@ export class NodeRpc implements NodeIO {
 
   async getParams(): Promise<NodeParams> {
     const r = await this.req("getParams");
-    return { attesters: r.attesters ?? [], attesterThreshold: r.attester_threshold, finalityK: r.finality_k, bridgePaused: !!r.bridge_paused };
+    return { attesters: r.attesters ?? [], attesterThreshold: r.attester_threshold, finalityK: r.finality_k, bridgePaused: !!r.bridge_paused,
+      minProtocolFeeEffective: r.min_protocol_fee_effective == null ? null : big(r.min_protocol_fee_effective) };
   }
 
   async getEscrow(): Promise<EscrowInfo> {

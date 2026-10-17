@@ -316,9 +316,14 @@ The storefront program splits a purchase into P = `protocol_fee_bps` (default 20
 the bought tokens and W = the rest, both in SPL base units, and the order body carries them
 in chain units (x 1000). The chain refuses an order whose `protocol_fee` is below
 `min_protocol_fee_effective`, and the whole BridgeUnlock fails (the deposit stays locked on
-Solana; the expire/refund path is the way back). So the relayer should read `getParams`
-and refuse to sign / submit an order unlock with `P < min_protocol_fee_effective` (report it
-as needing a refund) instead of retrying it, and the storefront's minimum order size should
+Solana). services/relayer reads `getParams` and does not sign an order unlock with
+`P < min_protocol_fee_effective`: it holds the deposit back as needing a refund
+(`state.needsRefund`, tick `needsRefund`, `cli.ts status`) and re-checks it every tick, so
+lowering the floor unlocks it. GAP: there is no refund path for such a deposit yet. The
+tokens stay in the bridge vault; storefront `expire_order` only marks the Order Expired
+(moves no tokens) and `expire_order_proof` needs a chain ExpireJob that cannot exist (the
+job was never posted); the bridge has no instruction that returns a vault deposit on
+Solana. So the storefront's minimum order size should
 keep `amount x protocol_fee_bps / 10000 x 1000 >= min_protocol_fee_effective`. Raising
 `min_protocol_fee` by AdminConfig can strand orders already paid on Solana but not yet
 unlocked: raise it only with the storefront's minimum raised first.

@@ -272,6 +272,77 @@ describe("Solana -> chain", () => {
     assert.ok(t.invariant!.ok, "the deposit is still accounted as pending");
   });
 
+  it("order with P below min_protocol_fee_effective: never signed, held for refund, not retried; unlocks if the floor drops", async () => {
+    const w = await world();
+    const body = postJobFromJson(vec("bridge_unlock_order").body.job_order);
+    const recipient = Keypair.generate().publicKey;
+    const buyer = await orderDeposit(w, 0n, body, recipient);
+    w.node.minProtocolFee = body.protocolFee + 1n;
+    const logs: string[] = [];
+    const rl = relayer(w, { log: (m) => logs.push(m) });
+
+    for (let i = 0; i < 3; i++) {
+      const t = await rl.tick();
+      assert.deepEqual(t.unlocked, []);
+      assert.deepEqual(t.needsRefund, ["0"]);
+      assert.deepEqual(t.errors, [], "held back, not an error to retry");
+      assert.ok(t.invariant!.ok && t.invariant!.pendingDepositSpl === ((body.workerPay + body.protocolFee) / 1000n).toString());
+    }
+    assert.equal(w.node.mempool.length, 0, "nothing signed or submitted");
+    assert.equal(w.node.calls.get("sendTx") ?? 0, 0);
+    assert.equal(logs.filter((m) => /needs refund/.test(m)).length, 1, "logged once");
+    assert.equal(rl.failures.size, 0);
+    const rec = loadState(w.stateFile).needsRefund["0"];
+    assert.equal(rec.reason, "protocol_fee_below_min");
+    assert.equal(rec.buyer, buyer.publicKey.toBase58());
+    assert.equal(rec.recipient, recipient.toBase58());
+    assert.equal(rec.protocolFee, body.protocolFee.toString());
+    assert.equal(rec.minProtocolFeeEffective, (body.protocolFee + 1n).toString());
+    assert.equal(rl.state.deposit, 0n, "cursor stays on the held deposit");
+
+    // `cli.ts status` (dry run) reports it too.
+    const st = await relayer(w, { dryRun: true }).tick();
+    assert.deepEqual(st.needsRefund, ["0"]);
+
+    // AdminConfig lowers the floor: the order unlocks normally and the record goes.
+    w.node.minProtocolFee = body.protocolFee;
+    const t = await rl.tick();
+    assert.deepEqual(t.unlocked, ["0"], String(t.errors));
+    assert.deepEqual(t.needsRefund, []);
+    assert.deepEqual(rl.state.needsRefund, {});
+    w.node.mine();
+    assert.equal((await w.node.client().getJob(hexOf(orderJobId(0n))))?.status, "open");
+  });
+
+  it("an order already closed on Solana is never unlocked (held for refund)", async () => {
+    const w = await world();
+    const body = postJobFromJson(vec("bridge_unlock_order").body.job_order);
+    await orderDeposit(w, 0n, body, Keypair.generate().publicKey);
+    const k = orderPda(0n);
+    const a = w.token.svm.getAccount(k)!;
+    const d = Buffer.from(a.data);
+    d[ORDER_LAYOUT.STATUS] = 3; // Expired
+    w.token.svm.setAccount(k, { ...a, data: d });
+    const rl = relayer(w);
+    const t = await rl.tick();
+    assert.deepEqual(t.unlocked, []);
+    assert.deepEqual(t.needsRefund, ["0"]);
+    assert.equal(rl.state.needsRefund["0"].reason, "order_not_pending");
+    assert.equal(w.node.mempool.length, 0);
+  });
+
+  it("the fake node refuses an order unlock below the floor (what the relayer avoids)", async () => {
+    const w = await world();
+    const body = postJobFromJson(vec("bridge_unlock_order").body.job_order);
+    await orderDeposit(w, 0n, body, Keypair.generate().publicKey);
+    const rl = relayer(w);
+    const t = await rl.tick(); // signs while the floor is low
+    assert.deepEqual(t.unlocked, ["0"]);
+    const raw = w.node.mempool.pop()!;
+    w.node.minProtocolFee = body.protocolFee + 1n;
+    await assert.rejects(w.node.client().sendTx(raw), /min_protocol_fee_effective/);
+  });
+
   it("an unlock that is dropped, or reorged out, is resubmitted (the chain's replay set keeps it single)", async () => {
     const w = await world();
     const rl = relayer(w);

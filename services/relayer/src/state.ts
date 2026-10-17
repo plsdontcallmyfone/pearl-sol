@@ -21,6 +21,25 @@ export interface ReleaseRecord {
   sig: string;
 }
 
+/**
+ * A storefront order deposit the relayer will not unlock (it would be refused by
+ * the chain, or the Order is no longer pending on Solana). Nothing is signed for
+ * it; see "Orders the relayer will not unlock" in relayer.ts for the way back.
+ */
+export interface RefundRecord {
+  reason: "protocol_fee_below_min" | "order_not_pending";
+  jobId: string;
+  buyer: string;
+  recipient: string;
+  amountSpl: string;
+  /** Order P (chain units). */
+  protocolFee: string;
+  /** getParams.min_protocol_fee_effective when it was recorded. */
+  minProtocolFeeEffective: string;
+  /** ms since epoch, first seen. */
+  since: number;
+}
+
 export interface RelayerState {
   /** Every Solana deposit below this nonce is processed AND final on the chain. */
   deposit: bigint;
@@ -32,9 +51,11 @@ export interface RelayerState {
   orders: string[];
   /** Releases this relayer signed, by withdrawal nonce (the last 1000). */
   released: Record<string, ReleaseRecord>;
+  /** Order deposits held back for a refund, by Solana deposit nonce. */
+  needsRefund: Record<string, RefundRecord>;
 }
 
-export const emptyState = (): RelayerState => ({ deposit: 0n, withdrawal: 0n, inflight: {}, orders: [], released: {} });
+export const emptyState = (): RelayerState => ({ deposit: 0n, withdrawal: 0n, inflight: {}, orders: [], released: {}, needsRefund: {} });
 
 export function loadState(file: string): RelayerState {
   if (!existsSync(file)) return emptyState();
@@ -45,6 +66,7 @@ export function loadState(file: string): RelayerState {
     inflight: j.inflight ?? {},
     orders: j.orders ?? [],
     released: j.released ?? {},
+    needsRefund: j.needsRefund ?? {},
   };
 }
 

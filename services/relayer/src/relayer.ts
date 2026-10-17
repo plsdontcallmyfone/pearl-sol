@@ -29,6 +29,26 @@
 // the account nonce (deterministic, so an unchanged tx is byte-identical); a
 // double unlock is impossible because the chain keeps a replay set by Solana nonce.
 // Run one relayer per agentKey (two processes sharing a key would fight over nonces).
+//
+// Orders the relayer will not unlock (state.needsRefund, tick `needsRefund`,
+// `cli.ts status`): before signing an order BridgeUnlock the relayer compares the
+// order's P with getParams.min_protocol_fee_effective. The chain refuses a whole
+// order unlock with P below it (docs/RPC.md), so retrying would loop forever;
+// instead the deposit is held back, logged once and reported. It is re-checked
+// every tick, so if the chain floor is lowered (AdminConfig) the order unlocks
+// normally. An order whose Solana Order is no longer Pending (an attester closed
+// it) is held back the same way.
+// Refund GAP (as built, 2026-10-17): there is no automatic way back for such a
+// deposit. The tokens stay in the bridge vault (the invariant counts them as a
+// pending deposit). storefront `expire_order` / `expire_order_proof` only flip
+// Order.status to Expired: they move no tokens, and the proof variant needs a
+// chain ExpireJob tx, which cannot exist because the job was never posted. The
+// normal expiry refund (W back to the poster on the chain, then BridgeLock and
+// bridge release) needs the unlock to have happened. The bridge program has no
+// instruction that returns a vault deposit on Solana. Closing this needs a new
+// path, e.g. a bridge `refund_deposit` signed by the bridge signers over
+// (nonce, buyer), or a plain (non-order) BridgeUnlock of W + P to the recipient,
+// which the chain accepts today but is not an owner-approved flow.
 
 import { Keypair, PublicKey } from "@solana/web3.js";
 import type { ChainIO, RawAccount } from "./chain.ts";
@@ -70,7 +90,7 @@ import type { BridgeConfig, Deposit } from "./codec.ts";
 import { KIND, bridgeUnlockBody, signTx } from "./agent-tx.ts";
 import type { ChainInfo, DepositStatus, NodeIO, NodeParams, Withdrawal } from "./node.ts";
 import { loadState, saveState } from "./state.ts";
-import type { RelayerState } from "./state.ts";
+import type { RefundRecord, RelayerState } from "./state.ts";
 
 export interface RelayerOptions {
   /** Solana (token chain). */
@@ -128,6 +148,8 @@ export interface TickResult {
   expired: string[];
   /** Order nonces whose result is final on the chain but need an attester to finalize. */
   needsAttester: string[];
+  /** Order deposit nonces held back for a refund (state.needsRefund has why). */
+  needsRefund: string[];
   refused: string | null;
   errors: string[];
 }
@@ -185,6 +207,7 @@ export class Relayer {
       finalized: [],
       expired: [],
       needsAttester: [],
+      needsRefund: [],
       refused: null,
       errors: [],
     };
@@ -285,6 +308,8 @@ export class Relayer {
       return;
     }
 
+    const holdBack = await this.checkOrderFees(s, pendingDeposits, res);
+
     if (this.o.dryRun) {
       for (const w of pendingWithdrawals) if (!this.isFinal(w, K)) res.waitingDepth.push(w.nonce.toString());
       return;
@@ -293,7 +318,7 @@ export class Relayer {
     if (s.params.bridgePaused) {
       res.errors.push("bridge paused on the agent chain: not submitting unlocks");
     } else {
-      await this.unlockDeposits(s, pendingDeposits, res);
+      await this.unlockDeposits(s, pendingDeposits.filter((d) => !holdBack.has(d.nonce)), res);
     }
     const releasedNow = await this.releaseWithdrawals(s, pendingWithdrawals, K, res);
     await this.settleOrders(s, K, res);
@@ -336,6 +361,55 @@ export class Relayer {
   }
 
   // ------------------------------------------------------------------ Solana -> chain
+
+  /**
+   * Order deposits that must not be unlocked: P below the chain's
+   * min_protocol_fee_effective, or the Order no longer Pending on Solana. Records
+   * them in state.needsRefund (logged once) and returns their nonces. A record is
+   * dropped once the order becomes unlockable again (floor lowered).
+   */
+  private async checkOrderFees(s: Snapshot, pending: Deposit[], res: TickResult): Promise<Set<bigint>> {
+    const hold = new Set<bigint>();
+    const orders = pending.filter((d) => d.sender.equals(this.trader));
+    for (const k of Object.keys(this.state.needsRefund)) {
+      if (!pending.some((d) => d.nonce.toString() === k)) delete this.state.needsRefund[k]; // processed after all
+    }
+    if (orders.length === 0) return hold;
+    const min = s.params.minProtocolFeeEffective;
+    const accs = await this.o.token.getAccounts(orders.map((d) => orderPda(d.nonce, this.o.storefrontProgram)));
+    orders.forEach((d, i) => {
+      const acc = accs[i];
+      if (!isProgramAccount(acc, this.o.storefrontProgram)) return; // unlockDeposits reports it
+      let o;
+      try {
+        o = decodeOrder(acc.data);
+      } catch {
+        return; // unlockDeposits reports it
+      }
+      const key = d.nonce.toString();
+      let reason: RefundRecord["reason"] | null = null;
+      if (o.status !== ORDER_STATUS_PENDING) reason = "order_not_pending";
+      else if (min !== null && o.body.protocolFee < min) reason = "protocol_fee_below_min";
+      if (!reason) {
+        if (this.state.needsRefund[key]) {
+          this.o.log("order unlockable again", { nonce: key, protocolFee: o.body.protocolFee.toString(), min: String(min) });
+          delete this.state.needsRefund[key];
+        }
+        return;
+      }
+      hold.add(d.nonce);
+      res.needsRefund.push(key);
+      const prev = this.state.needsRefund[key];
+      if (prev && prev.reason === reason && prev.minProtocolFeeEffective === String(min ?? 0n)) return;
+      this.state.needsRefund[key] = {
+        reason, jobId: o.jobId.toString("hex"), buyer: o.buyer.toBase58(), recipient: o.recipient.toBase58(),
+        amountSpl: d.amount.toString(), protocolFee: o.body.protocolFee.toString(), minProtocolFeeEffective: String(min ?? 0n),
+        since: prev?.since ?? this.o.now(),
+      };
+      this.o.log("order not unlocked: needs refund", { nonce: key, ...this.state.needsRefund[key] });
+    });
+    return hold;
+  }
 
   private async unlockDeposits(s: Snapshot, pending: Deposit[], res: TickResult): Promise<void> {
     if (pending.length === 0) return;
@@ -601,6 +675,7 @@ export class Relayer {
       cursors: { deposit: this.state.deposit.toString(), withdrawal: this.state.withdrawal.toString() },
       inflight: this.state.inflight,
       orders: this.state.orders,
+      needsRefund: this.state.needsRefund,
       last: this.last,
       failures: Object.fromEntries(this.failures),
     };

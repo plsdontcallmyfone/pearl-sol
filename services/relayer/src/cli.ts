@@ -3,7 +3,7 @@
 //   node src/cli.ts init-bridge <mint> [threshold] [signer,...]   admin = TOKEN_PAYER
 //   node src/cli.ts deposit <amount_spl> <chain_recipient> [sender_key]
 //   node src/cli.ts lock <amount_chain_units> <solana_recipient> [sender_key]   BridgeLock via the node
-//   node src/cli.ts status                                         snapshot + invariant, no signing
+//   node src/cli.ts status                                         snapshot + invariant + orders held for refund, no signing
 //
 // Signers default to the public keys of SIGNER_KEYS.
 
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
         storefrontProgram: cfg.storefrontProgram, totalSupply: cfg.totalSupply, allowSurplus: cfg.allowSurplus, dryRun: true,
         log: () => {} });
       const t = await r.tick();
-      console.log(JSON.stringify(t, null, 2));
+      console.log(JSON.stringify({ ...t, needsRefundDetail: r.state.needsRefund }, null, 2));
       if (t.refused || t.errors.length) process.exitCode = 1;
       return;
     }

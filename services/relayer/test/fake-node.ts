@@ -71,6 +71,8 @@ export interface FakeNodeOptions {
   attesters: PublicKey[];
   threshold?: number;
   minFee?: bigint;
+  /** getParams.min_protocol_fee_effective; order unlocks with a smaller P are refused. */
+  minProtocolFee?: bigint;
   /** Initial balances / nonces at genesis (base58 -> values). */
   genesis?: Record<string, Partial<Acct>>;
 }
@@ -81,6 +83,7 @@ export class FakeNode {
   attesters: PublicKey[];
   threshold: number;
   minFee: bigint;
+  minProtocolFee: bigint;
   bridgePaused = false;
   blocks: Block[] = [];
   mempool: Buffer[] = [];
@@ -96,6 +99,7 @@ export class FakeNode {
     this.attesters = o.attesters;
     this.threshold = o.threshold ?? 1;
     this.minFee = o.minFee ?? 1000n;
+    this.minProtocolFee = o.minProtocolFee ?? 2n;
     this.genesis = o.genesis ?? {};
     this.replay();
   }
@@ -211,6 +215,9 @@ export class FakeNode {
     if (tx.chainId !== this.chainId) throw new Error("wrong chain_id");
     if (!edOk(tx.from, framed(TX_NS, tx.unsigned), tx.sig)) throw new Error("bad tx signature");
     if (tx.kind !== KIND.BridgeUnlock && tx.fee < this.minFee) throw new Error("fee below min_fee");
+    if (tx.body.kind === KIND.BridgeUnlock && tx.body.jobOrder && tx.body.jobOrder.protocolFee < this.minProtocolFee) {
+      throw new Error("protocol_fee below min_protocol_fee_effective");
+    }
     const a = this.account(tx.from);
     if (tx.nonce < a.nonce || tx.nonce > a.nonce + 64n) throw new Error("nonce out of window");
   }
@@ -244,6 +251,7 @@ export class FakeNode {
       if (b.jobOrder) {
         const p = b.jobOrder;
         if (p.workerPay + p.protocolFee > amount) throw new Error("order pay exceeds unlock");
+        if (p.protocolFee < this.minProtocolFee) throw new Error("protocol_fee below min_protocol_fee_effective");
         const jobId = orderJobId(b.solanaNonce).toString("hex");
         this.move(w, rcpt, POOL_ADDRESS.toBase58(), p.protocolFee);
         this.move(w, rcpt, `job:${jobId}`, p.workerPay); // W escrowed in the job
@@ -307,6 +315,7 @@ export class FakeNode {
         return {
           admin: "", min_fee: this.minFee.toString(), finality_k: this.K, attesters: this.attesters.map((a) => a.toBase58()),
           attester_threshold: this.threshold, bridge_paused: this.bridgePaused,
+          min_protocol_fee: this.minProtocolFee.toString(), min_protocol_fee_effective: this.minProtocolFee.toString(),
         };
       case "getEscrow": {
         const escrow = this.escrowBalance();

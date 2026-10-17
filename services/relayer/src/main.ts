@@ -41,7 +41,7 @@ async function loop(): Promise<void> {
   const r = await relayer.tick();
   if (r.unlocked.length || r.released.length || r.finalized.length || r.expired.length || r.refused || r.errors.length) {
     console.log(JSON.stringify({ t: r.at, height: r.chainHeight, unlocked: r.unlocked, released: r.released,
-      finalized: r.finalized, expired: r.expired, waitingDepth: r.waitingDepth, refused: r.refused, errors: r.errors }));
+      finalized: r.finalized, expired: r.expired, waitingDepth: r.waitingDepth, needsRefund: r.needsRefund, refused: r.refused, errors: r.errors }));
   }
   timer = setTimeout(loop, cfg.pollMs);
 }
