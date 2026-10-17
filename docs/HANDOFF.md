@@ -164,9 +164,16 @@ allows running as many agents as needed.
 
 M1 COMPLETE (2026-10-17). M2 STARTED 2026-10-17 (owner "start m2"). Agents, each
 owning its paths, max 3 heavy builds at once (all local; claude-host is destroyed):
-1. light client: token/programs/lightclient (+ SBF plain Pearl verifier, WTEMA
-   port, header tree, K finality), proof-mode bridge.release (MMR proof vs
-   withdraw_root) and storefront.finalize_order if feasible, services/header-relay.
+1. light client: IN PROGRESS (resumed 2026-10-17 after the disk filled). Verifier
+   crate committed (f5caf0f: no_std BLAKE3, PSJ1 steps, WTEMA in U256, Commonware
+   MMR). Program token/programs/lightclient (ID BUDUW2bG...MHK5), bridge
+   release_proof + set_release_modes, storefront finalize/expire_order_proof
+   (proves the CompleteJob/ExpireJob tx in tx_root, not a state proof): 8/8
+   LiteSVM tests, being committed. Cost: job block about 3.5M CU / 19 txs / about
+   0.0001 SOL; fallback block about 18.9M CU / 32 txs; header rent 0.0042 SOL,
+   refunded on close. Next: services/header-relay, devnet real-fixture test.
+   Owner decision (2026-10-17): shrink fallback matrices (chain params
+   fallback_m/n, default 4x8), DA agent adds them in chain/, light client mirrors.
 2. open net: DONE (0eccee0, 645640a, a557c24): chain/net/src/open on
    commonware-stream (any key admitted under limits; plaintext key banner then
    encrypted handshake; genesis-bound namespace; `key@host:port` pins a seed),
@@ -187,10 +194,10 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    Not done: push notifications (about 18% stale shares on the fast devnet),
    vardiff, signed miner requests, live job-block run, payout history pruning.
    Devnet fee helper: services/pool/examples/devnet_fees.rs.
-4. STARTED 2026-10-17: data availability (blob store in the
+4. RESTARTED 2026-10-17 (first run stopped by the disk filling): data availability (blob store in the
 node: putBlob/getBlob, p2p gossip, `blob:<blake3>` data_uri, retained until the job
 closes) + M1 leftovers: chain minimum protocol fee (P = 0 jobs can never be mined),
-getBlock subsidy field, history-by-address RPC. Later: USDC storefront path, demo
+getBlock subsidy field, history-by-address RPC, getPeers, fallback size params. Later: USDC storefront path, demo
 coverage of PumpSwap/expiry/reorgs/restarts.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
 emission), name and ticker. If a session dies, check git log per path and
@@ -303,3 +310,9 @@ across real nodes, restarts mid-flow, more than one relayer/attester.
   needed for SVM.
 - No GPU on this Mac: a localnet miner must use a CPU path at low difficulty.
 - research/pearlrepo is gitignored (51 MB clone of pearl-research-labs/pearl @ 837c69c).
+
+- DISK: the Mac's disk filled on 2026-10-17 (ENOSPC stops every tool, including the
+  orchestrator's). Agents check `df -h /System/Volumes/Data` before heavy builds and
+  stop under 6 GB. Throwaway test-crate target dirs (token/tests/*/target,
+  crates/pearl-verify-sbf/target, crates/chain-litesvm/target) are safe to delete;
+  never chain/target casually (18 min rebuild) or token/target/deploy.
