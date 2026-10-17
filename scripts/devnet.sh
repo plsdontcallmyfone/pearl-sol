@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local 3-node agent-chain devnet (chain/bin/agent-node).
+# Local agent-chain devnet (chain/bin/agent-node).
 #
 #   scripts/devnet.sh init      write .devnet/genesis.json and node configs (once)
 #   scripts/devnet.sh start     build (release) if needed and start 3 nodes
@@ -8,7 +8,14 @@
 #   scripts/devnet.sh mine [N]  mine N fallback blocks (0 = forever) on node 0
 #   scripts/devnet.sh reset     stop and delete all devnet data (keeps nothing)
 #
-# Ports: node i RPC 10630+2i, WebSocket 10631+2i, p2p 10640+i.
+#   scripts/devnet.sh open CMD  the same commands for the OPEN-membership devnet:
+#                               5 nodes in .devnet-open, node 0 is the seed and nodes
+#                               1-4 know only the seed address (127.0.0.1:10640); they
+#                               find each other by address gossip (net = "open").
+#
+# Static mode (default): 3 nodes, Commonware discovery over a fixed peer list.
+# Ports: node i RPC 10630+2i, WebSocket 10631+2i, p2p 10640+i (open: i = 0..4, so
+# RPC 10630-10638, WS 10631-10639, p2p 10640-10644).
 # Admin = keys/localnet/payer, attester = keys/localnet/attester (1 of 1),
 # miner payout = keys/localnet/miner. Never pattern-kills: PIDs only, checked.
 #
@@ -17,12 +24,30 @@
 #   DEVNET_PARAMS   JSON object merged over the genesis params below, e.g.
 #                   '{"finality_k": 6, "target_block_time_ms": 1500}'
 #   DEVNET_TARGET   genesis target_bits (default 0x207fffff)
+#   DEVNET_NET      static (default) or open; `open` as the first argument sets it
+#   DEVNET_NODES    node count (default 3 static, 5 open; open allows at most 5)
+#   DEVNET_MINE_NODE  node index `mine` talks to (default 0)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEV="${DEVNET_DIR:-$ROOT/.devnet}"
+if [[ "${1:-}" == "open" ]]; then
+  DEVNET_NET=open
+  shift
+fi
+NET="${DEVNET_NET:-static}"
+if [[ "$NET" == "open" ]]; then
+  DEV="${DEVNET_DIR:-$ROOT/.devnet-open}"
+  N="${DEVNET_NODES:-5}"
+else
+  DEV="${DEVNET_DIR:-$ROOT/.devnet}"
+  N="${DEVNET_NODES:-3}"
+fi
+# an initialised devnet remembers its mode and size
+if [[ -f "$DEV/devnet.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$DEV/devnet.env"
+fi
 BIN="$ROOT/chain/target/release/agent-node"
-N=3
 RPC_BASE=10630
 P2P_BASE=10640
 
@@ -71,6 +96,37 @@ init() {
   "params": $params
 }
 EOF
+  if [[ "$NET" == "open" && "$N" -gt 5 ]]; then echo "open devnet: at most 5 nodes (p2p 10640-10644)" >&2; exit 2; fi
+  printf 'NET=%s\nN=%s\n' "$NET" "$N" > "$DEV/devnet.env"
+  if [[ "$NET" == "open" ]]; then init_open_nodes; else init_static_nodes; fi
+  echo "initialised $DEV ($NET, $N nodes; admin $admin, attester $attester)"
+}
+
+init_open_nodes() {
+  local i seeds
+  for ((i = 0; i < N; i++)); do
+    mkdir -p "$DEV/node$i"
+    seeds='[]'
+    [[ $i -gt 0 ]] && seeds="[\"127.0.0.1:$P2P_BASE\"]"
+    cat > "$DEV/node$i.json" <<EOF
+{
+  "data_dir": "$DEV/node$i/data",
+  "genesis": "$DEV/genesis.json",
+  "p2p_key": "$(node_seed $i)",
+  "p2p_listen": "127.0.0.1:$((P2P_BASE + i))",
+  "rpc_listen": "127.0.0.1:$((RPC_BASE + 2 * i))",
+  "ws_listen": "127.0.0.1:$((RPC_BASE + 2 * i + 1))",
+  "net": "open",
+  "seeds": $seeds,
+  "open": {"max_outbound": 8, "max_inbound": 32},
+  "verifier": "pearl",
+  "tip_interval_ms": 2000
+}
+EOF
+  done
+}
+
+init_static_nodes() {
   local peers="" i seed key
   for ((i = 0; i < N; i++)); do
     seed="$(node_seed $i)"
@@ -94,7 +150,6 @@ EOF
 }
 EOF
   done
-  echo "initialised $DEV (admin $admin, attester $attester)"
 }
 
 pid_alive() { # pid is ours and alive
@@ -157,7 +212,7 @@ mine() {
   build
   local miner
   miner="$(pubkey_of_keyfile "$ROOT/keys/localnet/miner-keypair.json")"
-  "$BIN" mine --rpc "http://127.0.0.1:$RPC_BASE" --miner "$miner" --blocks "${1:-0}"
+  "$BIN" mine --rpc "http://127.0.0.1:$((RPC_BASE + 2 * ${DEVNET_MINE_NODE:-0}))" --miner "$miner" --blocks "${1:-0}"
 }
 
 reset() {
@@ -173,5 +228,5 @@ case "${1:-status}" in
   status) status ;;
   mine) mine "${2:-0}" ;;
   reset) reset ;;
-  *) echo "usage: $0 init|start|stop|status|mine [N]|reset" >&2; exit 2 ;;
+  *) echo "usage: $0 [open] init|start|stop|status|mine [N]|reset" >&2; exit 2 ;;
 esac

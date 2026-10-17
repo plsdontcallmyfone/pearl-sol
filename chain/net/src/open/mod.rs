@@ -58,6 +58,8 @@ pub struct Config {
     /// Address we advertise. None: the listen address if it is dialable.
     pub external: Option<SocketAddr>,
     pub seeds: Vec<Seed>,
+    /// Addresses remembered from a previous run (loaded as `new` book entries).
+    pub known: Vec<(SocketAddr, ed25519::PublicKey)>,
     pub max_outbound: usize,
     pub max_inbound: usize,
     pub max_inbound_per_ip: usize,
@@ -102,6 +104,7 @@ impl Config {
             listen,
             external: None,
             seeds: Vec::new(),
+            known: Vec::new(),
             max_outbound: 8,
             max_inbound: 64,
             max_inbound_per_ip: 4,

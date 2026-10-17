@@ -11,5 +11,6 @@ test-ledger/
 # localnet-only throwaway keys are committed so program IDs stay stable
 !keys/localnet/*-keypair.json
 .devnet/
+.devnet-open/
 .demo/
 scripts/demo/node_modules

@@ -230,6 +230,35 @@ impl NodeFile {
     }
 }
 
+/// Address book persistence for open mode: `[{"addr": "ip:port", "key": hex}]`.
+/// Missing or unreadable files load as empty.
+pub fn load_addrs(path: &Path) -> Vec<(std::net::SocketAddr, commonware_cryptography::ed25519::PublicKey)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<Vec<PeerEntry>>(&text) else { return Vec::new() };
+    v.into_iter()
+        .filter_map(|e| {
+            let a = e.addr.parse().ok()?;
+            let k = parse_key(&e.key).ok()?;
+            let pk = commonware_codec::ReadExt::read(&mut &k[..]).ok()?;
+            Some((a, pk))
+        })
+        .collect()
+}
+
+pub fn save_addrs(path: &Path, addrs: &[(std::net::SocketAddr, Option<commonware_cryptography::ed25519::PublicKey>, bool)]) {
+    use commonware_codec::Encode as _;
+    let v: Vec<PeerEntry> = addrs
+        .iter()
+        .filter_map(|(a, k, _)| k.as_ref().map(|k| PeerEntry { key: hex::encode(k.encode()), addr: a.to_string() }))
+        .collect();
+    let tmp = path.with_extension("json.tmp");
+    if let Ok(t) = serde_json::to_string_pretty(&v) {
+        if std::fs::write(&tmp, t).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +284,13 @@ mod tests {
         assert_eq!(c.max_inbound, 3);
         assert_eq!(c.seeds.len(), 1);
         assert!(nf.peers.is_empty());
+        let dir = std::env::temp_dir().join(format!("pearl-sol-addrs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p2p-addrs.json");
+        let k = commonware_cryptography::ed25519::PrivateKey::from_seed(5).public_key();
+        save_addrs(&f, &[("127.0.0.1:10642".parse().unwrap(), Some(k.clone()), true), ("127.0.0.1:1".parse().unwrap(), None, false)]);
+        assert_eq!(load_addrs(&f), vec![("127.0.0.1:10642".parse().unwrap(), k)]);
+        assert!(load_addrs(&dir.join("missing.json")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

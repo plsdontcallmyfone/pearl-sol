@@ -77,6 +77,11 @@ impl Shared {
         for s in &cfg.seeds {
             book.add_seed(s.addr, s.key.clone(), now);
         }
+        for (a, k) in &cfg.known {
+            if limits::dialable(a, cfg.allow_private) {
+                book.add(*a, k.clone(), None, 0, now);
+            }
+        }
         if let Some(a) = cfg.advertised() {
             book.mark_self(&a);
         }

@@ -200,14 +200,24 @@ async fn start<V: PowVerifier>(
             run(context.child("node"), core, me, oracle.clone(), oracle, started.channels, rx, cfg).await;
         }
         NetMode::Open(nf) => {
-            let ocfg = nf.open_config(signer, &net::open_namespace(&genesis_hash))?;
+            let mut ocfg = nf.open_config(signer, &net::open_namespace(&genesis_hash))?;
+            let addrs_file = PathBuf::from(&nf.data_dir).join("p2p-addrs.json");
+            ocfg.known = agent_node::config::load_addrs(&addrs_file);
             tracing::info!(%listen, seeds = ?nf.seeds, max_outbound = ocfg.max_outbound, max_inbound = ocfg.max_inbound,
                 allow_private = ocfg.allow_private, "p2p: open membership");
             let started = net::start_open(context.child("p2p"), context.child("transport"), ocfg);
             let oracle = started.oracle;
             let o2 = oracle.clone();
             let cfg = ActorConfig { tip_interval, peer_count: Some(PeerCount(std::sync::Arc::new(move || o2.connected_count()))) };
+            let o3 = oracle.clone();
+            let saver = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    agent_node::config::save_addrs(&addrs_file, &o3.known_addrs());
+                }
+            });
             run(context.child("node"), core, me, oracle.clone(), oracle, started.channels, rx, cfg).await;
+            saver.abort();
         }
     }
     http.abort();
