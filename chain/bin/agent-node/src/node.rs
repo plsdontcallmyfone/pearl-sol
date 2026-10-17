@@ -31,12 +31,31 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone)]
 pub struct ActorConfig {
     pub tip_interval: Duration,
+    /// Live connected-peer count for getChainInfo `peers` (open net). None: count the
+    /// distinct peers heard from (static net).
+    pub peer_count: Option<PeerCount>,
 }
 
 impl Default for ActorConfig {
     fn default() -> Self {
-        Self { tip_interval: Duration::from_secs(2) }
+        Self { tip_interval: Duration::from_secs(2), peer_count: None }
     }
+}
+
+#[derive(Clone)]
+pub struct PeerCount(pub std::sync::Arc<dyn Fn() -> usize + Send + Sync>);
+
+impl std::fmt::Debug for PeerCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PeerCount")
+    }
+}
+
+/// Should a gossiped block rejected with `reason` get its sender banned? Invalid
+/// blocks (bad PoW, bad roots, bad target, ...) yes; context-dependent rejections
+/// (orphans, future timestamps, reorgs deeper than K, internal errors) no.
+pub fn ban_worthy(reason: &str) -> bool {
+    reason.starts_with("invalid:") && !reason.contains("too far in the future")
 }
 
 pub fn now_ms<C: Clock>(c: &C) -> u64 {
@@ -93,6 +112,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
     B: Blocker<PublicKey = PublicKey> + Clone,
 {
     let (sync_tx, mut sync_rx) = commonware_utils::channel::mpsc::unbounded_channel::<SyncEvent>();
+    let mut gossip_blocker = blocker.clone();
     let headers = sync::start(context.child("headers"), Kind::Header, me.clone(), provider.clone(), blocker.clone(), channels.headers, sync_tx.clone());
     let bodies = sync::start(context.child("bodies"), Kind::Body, me.clone(), provider, blocker, channels.bodies, sync_tx);
     let (blocks_s, mut blocks_r) = channels.blocks;
@@ -117,16 +137,25 @@ pub async fn run<E, CE, V, S, R, D, B>(
             },
             msg = blocks_r.recv() => {
                 let Ok((peer, buf)) = msg else { break };
-                seen_peers.insert(peer);
+                seen_peers.insert(peer.clone());
                 match Block::decode(buf.as_ref()) {
                     Ok(b) => {
                         let now = now_ms(&context);
                         let r = core.add_block(b, now, true).await;
                         if !r.accepted {
-                            debug!(reason = ?r.reason, "gossiped block rejected");
+                            let reason = r.reason.unwrap_or_default();
+                            if ban_worthy(&reason) {
+                                warn!(?peer, %reason, "invalid block from peer: blocking it");
+                                let _ = gossip_blocker.block(peer);
+                            } else {
+                                debug!(%reason, "gossiped block rejected");
+                            }
                         }
                     }
-                    Err(e) => debug!("undecodable block from peer: {e}"),
+                    Err(e) => {
+                        warn!(?peer, "undecodable block from peer: {e}: blocking it");
+                        let _ = gossip_blocker.block(peer);
+                    }
                 }
             },
             msg = txs_r.recv() => {
@@ -158,7 +187,10 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 let mut m = tip.hash.to_vec();
                 m.extend_from_slice(&tip.header.height.to_le_bytes());
                 let _ = net.tips.send(Recipients::All, IoBuf::from(m), false);
-                core.peers = seen_peers.len();
+                core.peers = match &cfg.peer_count {
+                    Some(f) => (f.0)(),
+                    None => seen_peers.len(),
+                };
             },
         }
         let outs = core.take_outbox();

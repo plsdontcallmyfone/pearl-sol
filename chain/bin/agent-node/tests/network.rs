@@ -126,7 +126,7 @@ async fn setup(ctx: &deterministic::Context, n: usize, k: u32, linked: bool) -> 
         let provider = oracle.manager();
         let blocker = ctl.clone();
         ctx.child("node").with_attribute("node", i).spawn(move |c| async move {
-            run(c, core, me, provider, blocker, ch, rx, ActorConfig { tip_interval: Duration::from_millis(500) }).await;
+            run(c, core, me, provider, blocker, ch, rx, ActorConfig { tip_interval: Duration::from_millis(500), ..Default::default() }).await;
         });
         apis.push(Api(tx));
     }

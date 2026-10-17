@@ -95,7 +95,21 @@ pub struct NodeFile {
     pub rpc_listen: String,
     pub ws_listen: String,
     /// Static peers: `{ "key": base58/hex pubkey, "addr": "127.0.0.1:10640" }` (may include self).
+    /// Static mode only.
+    #[serde(default)]
     pub peers: Vec<PeerEntry>,
+    /// "static" (Commonware discovery over `peers`, the M1 default) or "open".
+    #[serde(default = "default_net")]
+    pub net: String,
+    /// Open mode: seeds as `host:port` or `key@host:port` (key base58 or hex pins it).
+    #[serde(default)]
+    pub seeds: Vec<String>,
+    /// Open mode: address to advertise (default: p2p_listen when it is dialable).
+    #[serde(default)]
+    pub p2p_external: Option<String>,
+    /// Open mode limits and timers (all optional).
+    #[serde(default)]
+    pub open: OpenFile,
     #[serde(default = "default_verifier")]
     pub verifier: String,
     #[serde(default = "default_tip_ms")]
@@ -106,6 +120,27 @@ pub struct NodeFile {
 pub struct PeerEntry {
     pub key: String,
     pub addr: String,
+}
+
+/// Optional overrides of `net::open::Config` (see that type for meanings).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenFile {
+    /// Allow loopback / private addresses (default: true when p2p_listen is local).
+    pub allow_private: Option<bool>,
+    pub max_outbound: Option<usize>,
+    pub max_inbound: Option<usize>,
+    pub max_inbound_per_ip: Option<usize>,
+    pub max_inbound_per_subnet: Option<usize>,
+    pub ban_threshold: Option<u32>,
+    pub ban_duration_s: Option<u64>,
+    pub dial_interval_ms: Option<u64>,
+    pub gossip_interval_ms: Option<u64>,
+    pub ping_interval_ms: Option<u64>,
+    pub idle_timeout_ms: Option<u64>,
+}
+
+fn default_net() -> String {
+    "static".into()
 }
 
 fn default_verifier() -> String {
@@ -119,5 +154,106 @@ impl NodeFile {
     pub fn load(p: &Path) -> Result<Self> {
         serde_json::from_str(&std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?)
             .with_context(|| format!("parse {}", p.display()))
+    }
+}
+
+/// Parse a seed: `host:port` or `key@host:port` (DNS names resolve once, first address).
+pub fn parse_seed(s: &str) -> Result<net::open::Seed> {
+    use std::net::ToSocketAddrs as _;
+    let s = s.trim();
+    let (key, hostport) = match s.split_once('@') {
+        Some((k, h)) => {
+            let k = parse_key(k)?;
+            let pk: commonware_cryptography::ed25519::PublicKey =
+                commonware_codec::ReadExt::read(&mut &k[..]).map_err(|e| anyhow::anyhow!("seed key: {e}"))?;
+            (Some(pk), h)
+        }
+        None => (None, s),
+    };
+    let addr = hostport
+        .to_socket_addrs()
+        .with_context(|| format!("seed {s:?}: expected host:port"))?
+        .next()
+        .with_context(|| format!("seed {s:?} resolves to nothing"))?;
+    Ok(net::open::Seed { addr, key })
+}
+
+impl NodeFile {
+    /// Build the open-network config (`namespace` = net::open_namespace(genesis hash)).
+    pub fn open_config(&self, signer: commonware_cryptography::ed25519::PrivateKey, namespace: &[u8]) -> Result<net::open::Config> {
+        use std::time::Duration;
+        let listen: std::net::SocketAddr = self.p2p_listen.parse().context("p2p_listen")?;
+        let o = &self.open;
+        let allow = o.allow_private.unwrap_or_else(|| net::open::limits::is_local(listen.ip()));
+        let mut c = if allow {
+            net::open::Config::local(signer, namespace, listen)
+        } else {
+            net::open::Config::recommended(signer, namespace, listen)
+        };
+        c.allow_private = allow;
+        c.external = match &self.p2p_external {
+            Some(a) => Some(a.parse().context("p2p_external")?),
+            None => None,
+        };
+        c.seeds = self.seeds.iter().map(|s| parse_seed(s)).collect::<Result<_>>()?;
+        if let Some(v) = o.max_outbound {
+            c.max_outbound = v;
+        }
+        if let Some(v) = o.max_inbound {
+            c.max_inbound = v;
+        }
+        if let Some(v) = o.max_inbound_per_ip {
+            c.max_inbound_per_ip = v;
+        }
+        if let Some(v) = o.max_inbound_per_subnet {
+            c.max_inbound_per_subnet = v;
+        }
+        if let Some(v) = o.ban_threshold {
+            c.ban_threshold = v;
+        }
+        if let Some(v) = o.ban_duration_s {
+            c.ban_duration = Duration::from_secs(v);
+        }
+        if let Some(v) = o.dial_interval_ms {
+            c.dial_interval = Duration::from_millis(v);
+        }
+        if let Some(v) = o.gossip_interval_ms {
+            c.gossip_interval = Duration::from_millis(v);
+        }
+        if let Some(v) = o.ping_interval_ms {
+            c.ping_interval = Duration::from_millis(v);
+        }
+        if let Some(v) = o.idle_timeout_ms {
+            c.idle_timeout = Duration::from_millis(v);
+        }
+        Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_cryptography::Signer as _;
+
+    #[test]
+    fn seeds_and_open_config() {
+        let s = parse_seed("127.0.0.1:10640").unwrap();
+        assert_eq!(s.addr, "127.0.0.1:10640".parse().unwrap());
+        assert!(s.key.is_none());
+        let k = bs58::encode(agent_types::tx::pubkey_from_seed(&[7u8; 32])).into_string();
+        let s = parse_seed(&format!("{k}@127.0.0.1:10641")).unwrap();
+        assert!(s.key.is_some());
+        assert!(parse_seed("nonsense").is_err());
+        let nf: NodeFile = serde_json::from_value(serde_json::json!({
+            "data_dir": "/tmp/x", "genesis": "/tmp/g", "p2p_key": "00", "p2p_listen": "127.0.0.1:10641",
+            "rpc_listen": "127.0.0.1:10632", "ws_listen": "127.0.0.1:10633",
+            "net": "open", "seeds": ["127.0.0.1:10640"], "open": {"max_inbound": 3}
+        }))
+        .unwrap();
+        let c = nf.open_config(commonware_cryptography::ed25519::PrivateKey::from_seed(1), b"ns").unwrap();
+        assert!(c.allow_private);
+        assert_eq!(c.max_inbound, 3);
+        assert_eq!(c.seeds.len(), 1);
+        assert!(nf.peers.is_empty());
     }
 }
