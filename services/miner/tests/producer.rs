@@ -256,3 +256,27 @@ fn over_http_jsonrpc() {
     assert!(node.height() >= 2);
     assert!(node.job(&[0x0e; 32]).unwrap().is("Completed"));
 }
+
+/// `cargo test --release -p pearl-miner --test producer -- --ignored --nocapture bench`
+/// Nonce rate on job and fallback templates with a target nothing meets.
+#[test]
+#[ignore]
+fn bench_rates() {
+    let dir = tmp("bench");
+    for (label, with_job, threads) in [("job 64x64", true, 1), ("job 64x64", true, 8), ("fallback 64x64", false, 1), ("fallback 64x64", false, 8)] {
+        let node = MockNode::new(CHAIN, 0x03000001);
+        if with_job {
+            node.add_job(make_job(&dir, [0x1f; 32], 3).0);
+        }
+        let (_l, log) = collecting_log();
+        let mut c = cfg(&dir, 1, false);
+        c.threads = threads;
+        c.refresh = Duration::from_secs(4);
+        let mut m = Miner::new(&node, None, miner_key(), c, log);
+        let _ = m.step(); // loads the job, one round
+        let (n0, t0) = (m.nonces_done(), std::time::Instant::now());
+        let _ = m.step();
+        let rate = (m.nonces_done() - n0) as f64 / t0.elapsed().as_secs_f64();
+        println!("{label} threads={threads}: {rate:.0} nonces/s ({:.2} ms per nonce per thread)", 1e3 * threads as f64 / rate);
+    }
+}

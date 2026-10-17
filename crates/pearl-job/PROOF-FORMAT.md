@@ -229,7 +229,7 @@ int7(x)       = (x & 0x7f) - 64                                     (values in [
 hash_a, hash_b = section 1 commitments of A and B^T under job_key
 ```
 then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (128 KiB
-of XOF and keyed hashing at the default size, about 0.3 ms) before the usual check.
+of XOF and keyed hashing at the default size; fallback verify measured 0.55-0.7 ms vs about 0.1 ms for a job block, M4 under load) before the usual check.
 
 ### 7.5 Pinned vectors (`tests/pow.rs::pinned_vectors`)
 

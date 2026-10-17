@@ -392,6 +392,11 @@ impl<'a> Miner<'a> {
         Ok(())
     }
 
+    /// Header nonces tried so far (all threads).
+    pub fn nonces_done(&self) -> u64 {
+        self.nonces_done.load(Ordering::Relaxed)
+    }
+
     pub fn pending_deliveries(&self) -> usize {
         self.deliveries.len()
     }
