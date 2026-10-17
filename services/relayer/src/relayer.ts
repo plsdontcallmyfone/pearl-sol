@@ -54,6 +54,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import type { ChainIO, RawAccount } from "./chain.ts";
 import {
   BRIDGE_PROGRAM_ID,
+  MODE_SIGNERS,
   ORDER_STATUS_PENDING,
   STOREFRONT_PROGRAM_ID,
   TOTAL_SUPPLY,
@@ -148,6 +149,12 @@ export interface TickResult {
   expired: string[];
   /** Order nonces whose result is final on the chain but need an attester to finalize. */
   needsAttester: string[];
+  /**
+   * Final withdrawals / order results this relayer leaves to the proof path because
+   * the bridge (release_modes) or storefront (finalize_modes) has the signer path off.
+   * services/header-relay `run --settle` submits those by light-client proof.
+   */
+  proofMode: string[];
   /** Order deposit nonces held back for a refund (state.needsRefund has why). */
   needsRefund: string[];
   refused: string | null;
@@ -208,6 +215,7 @@ export class Relayer {
       expired: [],
       needsAttester: [],
       needsRefund: [],
+      proofMode: [],
       refused: null,
       errors: [],
     };
@@ -513,6 +521,10 @@ export class Relayer {
     res.waitingDepth = waiting.map((w) => w.nonce.toString());
     const ready = pending.filter((w) => this.isFinal(w, K));
     if (ready.length === 0) return done;
+    if ((s.bcfg.releaseModes & MODE_SIGNERS) === 0) {
+      for (const w of ready) res.proofMode.push(`withdrawal:${w.nonce}`);
+      return done; // signer path off: released by light-client proof (header-relay --settle)
+    }
     const keys = this.localSigners(s.bcfg.signers, s.bcfg.threshold);
     if (!keys) {
       res.errors.push(`hold fewer than ${s.bcfg.threshold} bridge signer keys; cannot release`);
@@ -590,6 +602,10 @@ export class Relayer {
         const job = await this.o.node.getJob(order.jobId.toString("hex"));
         if (!job || (job.status !== "completed" && job.status !== "expired")) continue;
         if (s.info.height - job.closedHeight < K) continue; // not final yet
+        if ((sf.finalizeModes & MODE_SIGNERS) === 0) {
+          res.proofMode.push(`order:${nonce}`); // finalized / expired by light-client proof
+          continue;
+        }
         if (!keys) {
           res.needsAttester.push(nonce.toString());
           if (!this.failures.has(id)) {

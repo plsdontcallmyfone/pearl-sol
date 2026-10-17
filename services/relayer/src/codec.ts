@@ -151,6 +151,11 @@ function checkDisc(data: Uint8Array, name: string): Buffer {
   if (b.length < 8 || !b.subarray(0, 8).equals(accDisc(name))) throw new Error(`not a ${name} account`);
   return b;
 }
+/** A modes byte appended in M2; MODE_SIGNERS if the account predates it (or reads 0). */
+function modesAt(b: Buffer, at: number): number {
+  return at < b.length && b[at] !== 0 ? b[at] : 1;
+}
+
 function readKeys(b: Buffer, at: number): PublicKey[] {
   const n = b.readUInt32LE(at);
   const out: PublicKey[] = [];
@@ -166,7 +171,12 @@ export interface BridgeConfig {
   depositNonce: bigint;
   threshold: number;
   signers: PublicKey[];
+  /** MODE_SIGNERS | MODE_PROOF (M2); MODE_SIGNERS when the field is absent. */
+  releaseModes: number;
 }
+/** Bridge `release_modes` / storefront `finalize_modes` bits. */
+export const MODE_SIGNERS = 1;
+export const MODE_PROOF = 2;
 export function decodeBridgeConfig(data: Uint8Array): BridgeConfig {
   const b = checkDisc(data, "Config");
   return {
@@ -177,6 +187,7 @@ export function decodeBridgeConfig(data: Uint8Array): BridgeConfig {
     depositNonce: b.readBigUInt64LE(136),
     threshold: b[144],
     signers: readKeys(b, 146),
+    releaseModes: modesAt(b, 146 + 4 + 32 * b.readUInt32LE(146)),
   };
 }
 
@@ -211,13 +222,18 @@ export interface StorefrontConfig {
   admin: PublicKey;
   threshold: number;
   attesters: PublicKey[];
+  /** MODE_SIGNERS | MODE_PROOF (M2). */
+  finalizeModes: number;
 }
 export function decodeStorefrontConfig(data: Uint8Array): StorefrontConfig {
   const b = checkDisc(data, "Config");
   // admin, mint, bridge_program (3 x 32), paused u8, protocol_fee_bps u16, max_slippage_bps u16,
   // min_sol_in u64, max_sol_in u64, max_dim u32, max_blocks_cap u32, max_deadline_blocks u64.
   const at = 8 + 96 + 1 + 2 + 2 + 8 + 8 + 4 + 4 + 8; // 141
-  return { admin: new PublicKey(b.subarray(8, 40)), threshold: b[at], attesters: readKeys(b, at + 1) };
+  const n = b.readUInt32LE(at + 1);
+  // after attesters: orders u64, total_sol u64, total_tokens u64, bump u8, trader_bump u8, finalize_modes u8
+  const fm = at + 1 + 4 + 32 * n + 24 + 2;
+  return { admin: new PublicKey(b.subarray(8, 40)), threshold: b[at], attesters: readKeys(b, at + 1), finalizeModes: modesAt(b, fm) };
 }
 
 export const ORDER_STATUS_PENDING = 1;

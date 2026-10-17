@@ -30,6 +30,7 @@ import type { PostJobBody } from "../src/codec.ts";
 import { REPO_ROOT } from "../src/config.ts";
 import { startHealth } from "../src/health.ts";
 import { NodeRpc, httpTransport } from "../src/node.ts";
+import { MODE_PROOF, decodeBridgeConfig, decodeStorefrontConfig, ixDisc, storefrontConfigPda } from "../src/codec.ts";
 import { Relayer } from "../src/relayer.ts";
 import { loadState, saveState, emptyState } from "../src/state.ts";
 import { postJobFromJson } from "./vectors.ts";
@@ -509,6 +510,55 @@ describe("order results", () => {
     assert.deepEqual([t.finalized, t.needsAttester], [[], ["0"]]);
     assert.equal(decodeOrder(w.token.svm.getAccount(orderPda(0n))!.data).status, ORDER_STATUS_PENDING);
     assert.ok((rl.health(2000).orders as string[]).includes("0"));
+  });
+});
+
+describe("proof mode (M2)", () => {
+  /** Admin `set_release_modes` (bridge) / `set_finalize_modes` (storefront), light client = any key. */
+  async function setModes(w: World, program: PublicKey, ix: string, config: PublicKey, modes: number): Promise<void> {
+    const lc = Keypair.generate().publicKey;
+    await w.token.send([new TransactionInstruction({
+      programId: program,
+      keys: [{ pubkey: w.payer.publicKey, isSigner: true, isWritable: true }, { pubkey: config, isSigner: false, isWritable: true }],
+      data: Buffer.concat([ixDisc(ix), Buffer.from([modes]), lc.toBuffer()]),
+    })], w.payer);
+  }
+
+  it("decodes the modes bytes; signer path off -> no signed release / finalize, reported as proofMode", async () => {
+    const w = await world();
+    const cfgOf = () => decodeBridgeConfig(w.token.svm.getAccount(bridgeConfigPda())!.data);
+    const sfOf = () => decodeStorefrontConfig(w.token.svm.getAccount(storefrontConfigPda())!.data);
+    assert.equal(cfgOf().releaseModes, 1);
+    assert.equal(sfOf().finalizeModes, 1);
+    await setModes(w, BRIDGE_PROGRAM_ID, "set_release_modes", bridgeConfigPda(), MODE_PROOF);
+    await setModes(w, STOREFRONT_PROGRAM_ID, "set_finalize_modes", storefrontConfigPda(), MODE_PROOF);
+    assert.equal(cfgOf().releaseModes, MODE_PROOF);
+    assert.equal(sfOf().finalizeModes, MODE_PROOF);
+
+    // order 0: completed and K deep
+    const body = postJobFromJson(vec("bridge_unlock_order").body.job_order);
+    await orderDeposit(w, 0n, body, Keypair.generate().publicKey);
+    const rl = relayer(w);
+    assert.deepEqual((await rl.tick()).unlocked, ["0"], "Solana -> chain is unchanged");
+    w.node.mine();
+    const jobId = hexOf(orderJobId(0n));
+    w.node.mine([{ op: "deliver", jobId, deliverer: Keypair.generate().publicKey, resultHash: Buffer.alloc(32, 7), uri: "" }, { op: "complete", jobId }]);
+    // a plain deposit funds a chain user who locks back (withdrawal 0), K deep
+    const u = Keypair.generate();
+    await userDeposits(w, 5_000_000n, u.publicKey, 1n);
+    assert.deepEqual((await rl.tick()).unlocked, ["1"]);
+    w.node.mine();
+    await lock(w, u, 2_000_000_000n, Keypair.generate().publicKey);
+    w.node.mine();
+    w.node.mineN(K + 1);
+
+    const t = await rl.tick();
+    assert.deepEqual(t.errors, []);
+    assert.deepEqual([t.released, t.finalized], [[], []]);
+    assert.deepEqual(t.proofMode.sort(), ["order:0", "withdrawal:0"]);
+    assert.equal(decodeOrder(w.token.svm.getAccount(orderPda(0n))!.data).status, ORDER_STATUS_PENDING);
+    assert.ok(t.invariant!.ok);
+    assert.equal(t.invariant!.pendingWithdrawalSpl, "2000000", "counted in flight until the proof release");
   });
 });
 
