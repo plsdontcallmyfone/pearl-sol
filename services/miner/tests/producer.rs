@@ -44,6 +44,7 @@ fn make_job(dir: &std::path::Path, id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32
     let c = matmul(&a, &b, m as usize, n as usize, k as usize);
     let info = JobInfo {
         job_id: id,
+        header_id: id,
         poster: [0x10; 32],
         terms_hash: [0x33; 32],
         created_height: 1,

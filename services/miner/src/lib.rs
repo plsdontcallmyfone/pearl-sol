@@ -242,7 +242,12 @@ impl<'a> Miner<'a> {
             }
         });
         if let Some(e) = err.lock().unwrap().take() {
-            self.log(json!({"event": "mine_error", "error": e}));
+            self.log(json!({"event": "mine_error", "job": (!t.header.is_fallback()).then(|| hex::encode(t.header.job_id)), "error": e}));
+            // A job that cannot be mined must not stall block production: skip it for a
+            // while (the next template falls back, see `step`).
+            if !t.header.is_fallback() {
+                self.bad_jobs.insert(t.header.job_id, Instant::now() + Duration::from_secs(60));
+            }
         }
         stats_tick(&mut self.ticker, &mut self.stats, &self.nonces_done, &self.cfg, &self.log, header.height);
         let b = found.lock().unwrap().take();

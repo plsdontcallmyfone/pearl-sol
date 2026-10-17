@@ -28,6 +28,9 @@ pub const DEFAULT_RPC: &str = "http://127.0.0.1:10630";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobInfo {
     pub job_id: [u8; 32],
+    /// First field of the Pearl job header: the job id for a PostJob, the poster for a
+    /// storefront order (node `header_id`, docs/RPC.md).
+    pub header_id: [u8; 32],
     pub poster: [u8; 32],
     pub terms_hash: [u8; 32],
     pub created_height: u64,
@@ -52,7 +55,7 @@ pub struct JobInfo {
 impl JobInfo {
     pub fn job_header(&self) -> JobHeader {
         JobHeader {
-            job_pubkey: self.job_id,
+            job_pubkey: self.header_id,
             terms_hash: self.terms_hash,
             created_slot: self.created_height,
             target_bits: self.share_target,
@@ -66,7 +69,7 @@ impl JobInfo {
     /// The pearl-job JobSpec (job id as hex).
     pub fn to_spec(&self) -> JobSpec {
         JobSpec {
-            job: hex::encode(self.job_id),
+            job: hex::encode(self.header_id),
             terms_hash: hex::encode(self.terms_hash),
             created_slot: self.created_height,
             target_bits: self.share_target,
@@ -105,8 +108,19 @@ impl JobInfo {
             Some(c) => MiningConfig::from_bytes(&hex::decode(as_str(c)?.trim_start_matches("0x")).context("config hex")?)?,
             None => MiningConfig::localnet_default(),
         };
+        let job_id = key32(alt(o, &["job_id", "id", "job"]).ok_or_else(|| anyhow!("job_id missing"))?)?;
+        let header_id = match (get("header_id"), get("job_header")) {
+            (Some(h), _) => key32(h)?,
+            (None, Some(h)) => {
+                let b = hex::decode(as_str(h)?).context("job_header hex")?;
+                ensure!(b.len() == 76, "job_header is {} bytes, not 76", b.len());
+                b[..32].try_into().unwrap()
+            }
+            (None, None) => job_id,
+        };
         Ok(Self {
-            job_id: key32(alt(o, &["job_id", "id", "job"]).ok_or_else(|| anyhow!("job_id missing"))?)?,
+            job_id,
+            header_id,
             poster: opt_key("poster")?.unwrap_or([0; 32]),
             terms_hash: key32(req("terms_hash")?)?,
             created_height: num(alt(o, &["created_height", "created"]).ok_or_else(|| anyhow!("created_height missing"))?)?,
@@ -142,7 +156,7 @@ impl JobInfo {
     pub fn to_json(&self) -> Value {
         let k = |b: &[u8; 32]| hex::encode(b);
         json!({
-            "job_id": k(&self.job_id), "poster": bs58::encode(self.poster).into_string(), "terms_hash": k(&self.terms_hash),
+            "job_id": k(&self.job_id), "header_id": k(&self.header_id), "poster": bs58::encode(self.poster).into_string(), "terms_hash": k(&self.terms_hash),
             "created_height": self.created_height, "share_target": self.share_target,
             "config": hex::encode(self.config.to_bytes()), "m": self.m, "n": self.n,
             "hash_a": k(&self.hash_a), "hash_b": k(&self.hash_b), "data_uri": self.data_uri, "status": self.status.to_lowercase(),

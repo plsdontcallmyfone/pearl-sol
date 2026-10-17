@@ -114,8 +114,8 @@ fn wrong_job_or_matrices_rejected() {
     let mut h = blk.header;
     h.job_id = [0; 32];
     assert!(verify_block(&h, Some(&prep.job), &blk.proof, &fb()).is_err());
-    // Header names a job the miner did not prepare.
-    assert!(mine_header(&template([8; 32]), &BlockWork::Job(&prep), 0..1).is_err());
+    // (Which chain job id a prepared job is mined under is the caller's pairing: see
+    // job_block_with_header_id_other_than_chain_job_id.)
 }
 
 #[test]
@@ -207,3 +207,18 @@ const POW_A: &str = "3eb3148589302d73b3e2e7dcd56f5cd4d7479187fe18fbfa761f0aea28c
 const FB_HASH_A: &str = "f3f1b82d6f82b46c16435bdb2cb5b97bcfb02f22ad30ca3f50bd3360b6e1596a";
 const FB_HASH_B: &str = "5ead9e6b5c2c9da12cf8dd666c7592afb7e7a64377e86741c2cec91fff84d347";
 const TEMPLATE_POW_DIGEST: &str = "de30bddaa1209116cffbf120dc3da81512c11e574fa098c1edb8cf3451bf3cee";
+
+/// Storefront orders: the job's Pearl header id (the poster) is not the chain job id in the
+/// block header. Mining and verifying pair them by the caller; the proof still binds both.
+#[test]
+fn job_block_with_header_id_other_than_chain_job_id() {
+    let (prep, _, _) = job_with(42);
+    let chain_job_id = [0x5e; 32];
+    assert_ne!(chain_job_id, prep.job.header.job_pubkey);
+    let blk = mine_header(&template(chain_job_id), &BlockWork::Job(&prep), 0..64).unwrap().expect("a block within 64 nonces");
+    verify_block(&blk.header, Some(&prep.job), &blk.proof, &fb()).unwrap();
+    // The same proof under another chain job id (another pow_digest) fails.
+    let mut h = blk.header;
+    h.job_id = [0x5f; 32];
+    assert!(verify_block(&h, Some(&prep.job), &blk.proof, &fb()).is_err());
+}

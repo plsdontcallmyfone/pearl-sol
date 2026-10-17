@@ -190,6 +190,7 @@ fn node_fixture(tag: &str, evaluator: [u8; 32]) -> (Fx, MockNode, Vec<i32>, std:
     let node = MockNode::new(1, EASY);
     node.add_job(JobInfo {
         job_id: fx.job_pk,
+        header_id: fx.job_pk,
         poster: [1; 32],
         terms_hash: job.header.terms_hash,
         created_height: job.header.created_slot,

@@ -214,7 +214,10 @@ pub fn fallback_job(pow_digest: &Hash256, p: &FallbackParams) -> Result<Prepared
 
 /// What a block is mined on.
 pub enum BlockWork<'a> {
-    /// A posted job: its prepared matrices. The header's `job_id` must equal the job's id.
+    /// A posted job: its prepared matrices; the header's `job_id` names it on the chain.
+    /// The job's Pearl header id may differ from that chain id (storefront orders use the
+    /// poster, docs/RPC.md), so the caller pairs the two; the proof binds both (job_key via
+    /// the seeds, the chain job_id via `pow_digest`).
     Job(&'a PreparedJob),
     /// `job_id` zero: matrices from `pow_digest`.
     Fallback(FallbackParams),
@@ -235,7 +238,6 @@ pub fn mine_header_nonce(template: &BlockHeader, work: &BlockWork, nonce: u64) -
     let pd = h.pow_digest();
     let proof = match work {
         BlockWork::Job(prep) => {
-            ensure!(h.job_id == prep.job.header.job_pubkey, "header job_id is not the prepared job's id");
             ensure!(!h.is_fallback(), "job blocks need a non-zero job_id");
             prep.mine_block(&pd, h.target_bits, nonce)
         }
@@ -263,7 +265,8 @@ pub fn mine_header(template: &BlockHeader, work: &BlockWork, nonces: Range<u64>)
 
 /// Full check of a block's work: `proof_hash`, the proof's seed mode, the job binding,
 /// the pow-bound seed and the header's target. `job` is the posted job named by
-/// `header.job_id` (ignored, and may be None, for fallback blocks).
+/// `header.job_id` (ignored, and may be None, for fallback blocks); the caller looks it up
+/// by that id (its Pearl header id need not equal it, see [`BlockWork::Job`]).
 pub fn verify_block(header: &BlockHeader, job: Option<&Job>, proof: &[u8], fallback: &FallbackParams) -> Result<VerifiedShare> {
     ensure!(proof_hash(proof) == header.proof_hash, "proof_hash does not match the proof bytes");
     let p = block_proof_from_bytes(proof)?;
@@ -273,7 +276,6 @@ pub fn verify_block(header: &BlockHeader, job: Option<&Job>, proof: &[u8], fallb
         return verify_block_proof(&fj.job, &p, &pd, header.target_bits, header.nonce);
     }
     let Some(job) = job else { bail!("job block needs its job") };
-    ensure!(job.header.job_pubkey == header.job_id, "job does not match the header's job_id");
     verify_block_proof(job, &p, &pd, header.target_bits, header.nonce)
 }
 
