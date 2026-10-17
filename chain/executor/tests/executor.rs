@@ -75,11 +75,12 @@ impl Chain {
 }
 
 fn job_body(evals: &[u8], w: u64, p: u64, deadline: u64, max_blocks: u32) -> PostJob {
+    let cfg = pearl_job::MiningConfig::localnet_default();
     PostJob {
         m: 64,
         n: 64,
-        k: 1024,
-        config: pearl_job::MiningConfig::localnet_default().to_bytes(),
+        k: cfg.k() as u32,
+        config: cfg.to_bytes(),
         hash_a: [1; 32],
         hash_b: [2; 32],
         data_uri: b"ipfs://x".to_vec(),

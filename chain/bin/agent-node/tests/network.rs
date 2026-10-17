@@ -414,11 +414,12 @@ fn unlock_tx(rnonce: u64, solana_nonce: u64, to: Pubkey, amount_spl: u64) -> Tx 
 }
 
 fn post_job(poster: u8, nonce: u64, data_uri: &str, p: u64, deadline: u64) -> Tx {
+    let cfg = pearl_job::MiningConfig::localnet_default();
     let body = PostJob {
         m: 64,
         n: 64,
-        k: 1024,
-        config: pearl_job::MiningConfig::localnet_default().to_bytes(),
+        k: cfg.k() as u32,
+        config: cfg.to_bytes(),
         hash_a: [1; 32],
         hash_b: [2; 32],
         data_uri: data_uri.as_bytes().to_vec(),
