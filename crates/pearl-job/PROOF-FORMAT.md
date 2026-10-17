@@ -220,8 +220,9 @@ the job named by `header.job_id`. The verifier checks `job_id` against that job.
 Everything is derived from `pow_digest`, with chain parameters `fallback_m`,
 `fallback_n` and `fallback_config` (genesis `params`, editable by AdminConfig keys 12,
 13, 14; `getParams` and `getBlockTemplate.fallback` report them). Default
-`FallbackParams` (owner decision 2026-10-17): **m = 4, n = 8**, the localnet config of
-section 2 (k = 1024, one 4x8 tile). Until 2026-10-17 the default was m = n = 64.
+`FallbackParams` (owner decision 2026-10-17): **m = 4, n = 8** (one 4x8 tile) with the
+localnet config of section 2 (k and r from that config). Until 2026-10-17 the default was
+m = n = 64.
 
 ```
 job header76  = 0^32 || pow_digest || 0 u64 || 0 u32
@@ -232,18 +233,20 @@ int7(x)       = (x & 0x7f) - 64                                     (values in [
 hash_a, hash_b = section 1 commitments of A and B^T under job_key
 ```
 then sections 4 and 7.2 as for a job block. The verifier rebuilds A and B (m*k + k*n
-bytes of XOF and keyed hashing: 12 KiB at 4 x 8, 128 KiB at 64 x 64) before the usual
+bytes of XOF and keyed hashing: 12 KiB at 4 x 8 and k = 1024, 128 KiB at 64 x 64) before the usual
 check. A node verifies with the parameters in force at the block's parent; changing
 them by AdminConfig applies from the next block on.
 
-Fallback verify time (`cargo run --release -p pearl-job --example fallback_verify -- m n`,
-M4 laptop with other builds running, 2026-10-17):
+Fallback verify time (`cargo run --release -p pearl-job --example fallback_verify -- m n [iters k r]`,
+M4 laptop with other builds running, 2026-10-17, mean of 500 to 1000 verifies):
 
-| m x n | verify per block | proof bytes |
-|---|---|---|
-| 64 x 64 (old default) | 1.3 to 1.7 ms | 12612 |
-| 16 x 16 | 0.37 ms | 12484 |
-| 4 x 8 (default) | 0.18 to 0.25 ms | 12388 |
+| config | m x n | verify per block | proof bytes |
+|---|---|---|---|
+| k 1024, r 32 (before the rank penalty) | 64 x 64 (old default) | 1.3 to 1.7 ms (load 17) | 12612 |
+| k 1024, r 32 | 16 x 16 | 0.37 ms | 12484 |
+| k 1024, r 32 | 4 x 8 (default) | 0.18 to 0.25 ms (load 17) | 12388 |
+| k 2048, r 128 (current localnet default) | 64 x 64 | 0.64 to 0.84 ms (load 5) | 24948 |
+| k 2048, r 128 | 4 x 8 (default) | 0.14 to 0.19 ms (load 5) | 24724 |
 
 ### 7.5 Pinned vectors (`tests/pow.rs::pinned_vectors`)
 

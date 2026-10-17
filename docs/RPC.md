@@ -132,7 +132,7 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
 "bridge_paused": false, "max_job_blocks": 100000, "min_difficulty_bits": 0, "keys": {"admin": 0, ...}}`.
 `keys` maps each name to its AdminConfig key byte.
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
-  shape (default 4 x 8 since 2026-10-17, k = 1024 from the config; PROOF-FORMAT.md 7.4). A block
+  shape (default 4 x 8 since 2026-10-17, k and r from fallback_config; PROOF-FORMAT.md 7.4). A block
   is verified with the parameters of its parent state, so an AdminConfig change applies from
   the next block. Settable in genesis `params`. The Solana light client mirrors them.
 - `min_protocol_fee` (key 15): the chain's minimum P. `min_protocol_fee_effective` =
