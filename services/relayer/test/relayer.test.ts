@@ -31,6 +31,7 @@ import { REPO_ROOT } from "../src/config.ts";
 import { startHealth } from "../src/health.ts";
 import { NodeRpc, httpTransport } from "../src/node.ts";
 import { MODE_PROOF, decodeBridgeConfig, decodeStorefrontConfig, ixDisc, storefrontConfigPda } from "../src/codec.ts";
+import { ORDER_STATUS_REFUNDED, bridgeRefundIx, bridgeRefundPda, ed25519Instruction, refundMessage, signEntries } from "../src/codec.ts";
 import { Relayer } from "../src/relayer.ts";
 import { loadState, saveState, emptyState } from "../src/state.ts";
 import { postJobFromJson } from "./vectors.ts";
@@ -586,6 +587,137 @@ describe("supply invariant", () => {
     t = await rl.tick();
     assert.equal(t.refused, null);
     assert.deepEqual(t.unlocked, ["0"]);
+  });
+});
+
+describe("refunds (bridge refund_deposit, storefront mark_refunded)", () => {
+  /** Held-back order world: P below the chain floor, storefront config pointing at the bridge. */
+  async function heldWorld() {
+    const w = await world();
+    // storefront config.bridge_program (offset 8 + 32 admin + 32 mint) = the bridge, as on localnet
+    const ck = storefrontConfigPda();
+    const ca = w.token.svm.getAccount(ck)!;
+    const cd = Buffer.from(ca.data);
+    BRIDGE_PROGRAM_ID.toBuffer().copy(cd, 72);
+    w.token.svm.setAccount(ck, { ...ca, data: cd });
+    const body = postJobFromJson(vec("bridge_unlock_order").body.job_order);
+    const recipient = Keypair.generate().publicKey;
+    const buyer = await orderDeposit(w, 0n, body, recipient);
+    const amount = (body.workerPay + body.protocolFee) / 1000n;
+    return { w, body, buyer, amount };
+  }
+  const clock = (start = 1_000_000) => {
+    const c = { t: start, now: () => c.t };
+    return c;
+  };
+
+  it("refunds a held-back order after the grace period: buyer paid, Order Refunded, invariant exact, never unlocked after", async () => {
+    const { w, body, buyer, amount } = await heldWorld();
+    w.node.minProtocolFee = body.protocolFee + 1n;
+    const c = clock();
+    const rl = relayer(w, { now: c.now, refundGraceMs: 60_000 });
+    let t = await rl.tick();
+    assert.deepEqual([t.needsRefund, t.refunded, t.unlocked], [["0"], [], []]);
+    c.t += 59_999;
+    t = await rl.tick();
+    assert.deepEqual(t.refunded, [], "not before the grace period");
+    assert.equal(t.invariant!.pendingDepositSpl, amount.toString());
+    c.t += 1;
+    t = await rl.tick();
+    assert.deepEqual(t.refunded, ["0"], String(t.errors));
+    assert.deepEqual(t.errors, []);
+    const bAta = ata(buyer.publicKey, w.mint);
+    assert.equal(spl(w, bAta), amount, "buyer got the order tokens back");
+    assert.equal(decodeOrder(w.token.svm.getAccount(orderPda(0n))!.data).status, ORDER_STATUS_REFUNDED);
+    assert.ok(w.token.svm.getAccount(bridgeRefundPda(0n)), "refund record");
+    const saved = loadState(w.stateFile);
+    assert.equal(saved.refunds["0"].buyer, buyer.publicKey.toBase58());
+    assert.ok(saved.refunds["0"].sig);
+    assert.deepEqual(saved.needsRefund, {});
+
+    // next tick: nothing in flight, the strict SPEC form holds, the cursor passed the refunded deposit
+    t = await rl.tick();
+    assert.deepEqual(t.pendingDeposits, []);
+    assert.ok(t.invariant!.ok && t.invariant!.delta === "0" && t.invariant!.strictFormHolds, JSON.stringify(t.invariant));
+    assert.equal(rl.state.deposit, 1n);
+
+    // the floor drops: still never unlocked (cursor past it; a fresh relayer from scratch also refuses)
+    w.node.minProtocolFee = 0n;
+    t = await rl.tick();
+    assert.deepEqual(t.unlocked, []);
+    const fresh = relayer(w, { stateFile: join(mkdtempSync(join(tmpdir(), "relayer-test-")), "s.json") });
+    t = await fresh.tick();
+    assert.deepEqual(t.unlocked, [], "the refund record on Solana stops any relayer");
+    assert.ok(t.invariant!.strictFormHolds);
+    assert.equal(w.node.calls.get("sendTx") ?? 0, 0, "no BridgeUnlock ever sent");
+  });
+
+  it("never refunds a deposit it signed an unlock for (even if that unlock was dropped and the order is now held back)", async () => {
+    const { w, body } = await heldWorld();
+    const c = clock();
+    const rl = relayer(w, { now: c.now, refundGraceMs: 0 });
+    let t = await rl.tick();
+    assert.deepEqual(t.unlocked, ["0"]);
+    assert.ok(loadState(w.stateFile).signedUnlock["0"], "persisted before sending");
+    w.node.mempool = []; // dropped
+    w.node.minProtocolFee = body.protocolFee + 1n; // and now below the floor
+    for (let i = 0; i < 3; i++) {
+      c.t += 1_000_000;
+      t = await rl.tick();
+      assert.deepEqual(t.refunded, []);
+      assert.deepEqual(t.needsRefund, ["0"]);
+    }
+    assert.equal(w.token.svm.getAccount(bridgeRefundPda(0n)), null);
+    // a restart keeps the choice
+    t = await relayer(w, { now: c.now, refundGraceMs: 0 }).tick();
+    assert.deepEqual(t.refunded, []);
+  });
+
+  it("never refunds a deposit the chain already unlocked", async () => {
+    const { w, body } = await heldWorld();
+    const c = clock();
+    const rl = relayer(w, { now: c.now, refundGraceMs: 0 });
+    await rl.tick();
+    w.node.mine(); // unlocked on the chain
+    rl.state.signedUnlock = {}; // even without the local record
+    rl.state.needsRefund["0"] = { reason: "protocol_fee_below_min", jobId: "", buyer: "", recipient: "", amountSpl: "0",
+      protocolFee: body.protocolFee.toString(), minProtocolFeeEffective: "0", since: 0 };
+    const t = await rl.tick();
+    assert.deepEqual(t.refunded, []);
+    assert.equal(w.token.svm.getAccount(bridgeRefundPda(0n)), null);
+  });
+
+  it("a refund signed elsewhere stops the unlock; the relayer marks the Order Refunded and the invariant stays exact", async () => {
+    const { w, buyer, amount } = await heldWorld();
+    const bAta = ata(buyer.publicKey, w.mint);
+    await w.token.send([
+      createAtaIdempotentIx(w.payer.publicKey, buyer.publicKey, w.mint),
+      ed25519Instruction(signEntries([w.bridgeSigner], refundMessage(0n, buyer.publicKey, amount))),
+      bridgeRefundIx({ payer: w.payer.publicKey, mint: w.mint, nonce: 0n, buyer: buyer.publicKey, buyerToken: bAta }),
+    ], w.payer);
+    assert.equal(spl(w, bAta), amount);
+    const rl = relayer(w); // P is above the floor: it would unlock
+    const t = await rl.tick();
+    assert.deepEqual(t.unlocked, []);
+    assert.deepEqual(t.pendingDeposits, []);
+    assert.ok(t.invariant!.strictFormHolds && t.invariant!.delta === "0", JSON.stringify(t.invariant));
+    assert.equal(decodeOrder(w.token.svm.getAccount(orderPda(0n))!.data).status, ORDER_STATUS_REFUNDED);
+    assert.equal(w.node.mempool.length, 0);
+    assert.equal(rl.state.deposit, 1n);
+  });
+
+  it("REFUND_GRACE_MS < 0 never refunds; without bridge signer keys it reports instead", async () => {
+    const { w, body } = await heldWorld();
+    w.node.minProtocolFee = body.protocolFee + 1n;
+    const c = clock();
+    let t = await relayer(w, { now: c.now, refundGraceMs: -1 }).tick();
+    c.t += 10_000_000;
+    t = await relayer(w, { now: c.now, refundGraceMs: -1 }).tick();
+    assert.deepEqual(t.refunded, []);
+    t = await relayer(w, { now: c.now, refundGraceMs: 0, signers: [...w.attesters, w.sfAttester] }).tick();
+    assert.deepEqual(t.refunded, []);
+    assert.ok(t.errors.some((e) => /bridge signer keys; cannot refund/.test(e)), String(t.errors));
+    assert.deepEqual(loadState(w.stateFile).refunds, {}, "nothing decided without the keys");
   });
 });
 

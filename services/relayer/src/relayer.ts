@@ -38,23 +38,26 @@
 // every tick, so if the chain floor is lowered (AdminConfig) the order unlocks
 // normally. An order whose Solana Order is no longer Pending (an attester closed
 // it) is held back the same way.
-// Refund GAP (as built, 2026-10-17): there is no automatic way back for such a
-// deposit. The tokens stay in the bridge vault (the invariant counts them as a
-// pending deposit). storefront `expire_order` / `expire_order_proof` only flip
-// Order.status to Expired: they move no tokens, and the proof variant needs a
-// chain ExpireJob tx, which cannot exist because the job was never posted. The
-// normal expiry refund (W back to the poster on the chain, then BridgeLock and
-// bridge release) needs the unlock to have happened. The bridge program has no
-// instruction that returns a vault deposit on Solana. Closing this needs a new
-// path, e.g. a bridge `refund_deposit` signed by the bridge signers over
-// (nonce, buyer), or a plain (non-order) BridgeUnlock of W + P to the recipient,
-// which the chain accepts today but is not an owner-approved flow.
+// Refunds (owner decision 2026-10-17, SPEC 5.1): a held-back order still held back
+// `refundGraceMs` after it was first seen is refunded on Solana: bridge
+// `refund_deposit` (bridge signers over `pearl-sol:refund:v1 || nonce || buyer ||
+// amount_spl`) returns the deposit's tokens to the Order's buyer and writes the refund
+// record Processed["processed", [0], nonce]; storefront `mark_refunded` in the same tx
+// flips the Order to Refunded. The chain cannot see Solana, so "never both unlocked and
+// refunded" rests on each signer key signing at most one of the two per nonce. This
+// relayer enforces it for its keys with persisted state, saved BEFORE signing:
+// state.signedUnlock (it never refunds those) and state.refunds (it never unlocks
+// those), and it reads the refund records every tick (it never unlocks a refunded
+// deposit, whoever refunded it). It refunds only a deposit the chain reports as not
+// processed. Refunded deposits leave the vault, so they are not pending: the
+// invariant is exact again and the deposit cursor passes them.
 
 import { Keypair, PublicKey } from "@solana/web3.js";
 import type { ChainIO, RawAccount } from "./chain.ts";
 import {
   BRIDGE_PROGRAM_ID,
   MODE_SIGNERS,
+  ORDER_STATUS_EXPIRED,
   ORDER_STATUS_PENDING,
   STOREFRONT_PROGRAM_ID,
   TOTAL_SUPPLY,
@@ -62,6 +65,8 @@ import {
   ata,
   bridgeConfigPda,
   bridgeProcessedPda,
+  bridgeRefundIx,
+  bridgeRefundPda,
   bridgeReleaseIx,
   createAtaIdempotentIx,
   decodeBridgeConfig,
@@ -77,8 +82,10 @@ import {
   expiredMessage,
   expireOrderIx,
   finalizeOrderIx,
+  markRefundedIx,
   orderJobId,
   orderPda,
+  refundMessage,
   resultMessage,
   sha256,
   signEntries,
@@ -113,6 +120,11 @@ export interface RelayerOptions {
   maxPerTick?: number;
   /** A BridgeUnlock still pending after this long is re-signed from the account nonce. */
   staleMs?: number;
+  /**
+   * A held-back order deposit is refunded on Solana this long after it was first held
+   * back (state.needsRefund `since`). Negative: never refund. Default 1 h.
+   */
+  refundGraceMs?: number;
   /** Snapshot and check only; never sign or submit. */
   dryRun?: boolean;
   log?: (msg: string, extra?: Record<string, unknown>) => void;
@@ -157,6 +169,8 @@ export interface TickResult {
   proofMode: string[];
   /** Order deposit nonces held back for a refund (state.needsRefund has why). */
   needsRefund: string[];
+  /** Deposit nonces refunded on Solana this tick (bridge refund_deposit). */
+  refunded: string[];
   refused: string | null;
   errors: string[];
 }
@@ -191,6 +205,7 @@ export class Relayer {
       allowSurplus: true,
       maxPerTick: 50,
       staleMs: 120_000,
+      refundGraceMs: 3_600_000,
       dryRun: false,
       log: (m, e) => console.log(JSON.stringify({ t: new Date().toISOString(), msg: m, ...e })),
       now: () => Date.now(),
@@ -215,6 +230,7 @@ export class Relayer {
       expired: [],
       needsAttester: [],
       needsRefund: [],
+      refunded: [],
       proofMode: [],
       refused: null,
       errors: [],
@@ -257,12 +273,22 @@ export class Relayer {
 
       const [cfg0] = await token.getAccounts([bridgeConfigPda()]);
       if (!isProgramAccount(cfg0, BRIDGE_PROGRAM_ID)) throw new Error("bridge config not found on Solana");
-      const vault = decodeBridgeConfig(cfg0.data).vault;
-      const accs = await token.getAccounts([bridgeConfigPda(), vault, ...withdrawals.map((w) => bridgeProcessedPda(w.nonce))]);
+      const cfg0d = decodeBridgeConfig(cfg0.data);
+      const vault = cfg0d.vault;
+      // Refund records of the scanned deposits, read at the same slot as the vault.
+      const refundNonces: bigint[] = [];
+      for (let n = this.state.deposit; n < cfg0d.depositNonce; n++) refundNonces.push(n);
+      const nw = withdrawals.length;
+      const accs = await token.getAccounts([bridgeConfigPda(), vault, ...withdrawals.map((w) => bridgeProcessedPda(w.nonce)),
+        ...refundNonces.map(bridgeRefundPda)]);
       const [cfgAcc, vaultAcc] = accs;
       if (!isProgramAccount(cfgAcc, BRIDGE_PROGRAM_ID) || !vaultAcc) throw new Error("bridge config or vault missing");
       const bcfg = decodeBridgeConfig(cfgAcc.data);
-      const released = accs.slice(2).map((a) => isProgramAccount(a, BRIDGE_PROGRAM_ID));
+      const released = accs.slice(2, 2 + nw).map((a) => isProgramAccount(a, BRIDGE_PROGRAM_ID));
+      const refunded = new Set<bigint>();
+      accs.slice(2 + nw).forEach((a, i) => {
+        if (isProgramAccount(a, BRIDGE_PROGRAM_ID)) refunded.add(refundNonces[i]);
+      });
 
       const deposits = new Map<bigint, DepositStatus>();
       for (let n = this.state.deposit; n < bcfg.depositNonce; n++) deposits.set(n, await node.getDeposit(n));
@@ -271,7 +297,7 @@ export class Relayer {
       if (after.tip === info.tip && esc.height === info.height) {
         return {
           info, params, escrow: esc.escrowBalance, withdrawals, withdrawalCount, released, bcfg,
-          vaultSpl: tokenAccountAmount(vaultAcc.data), deposits,
+          vaultSpl: tokenAccountAmount(vaultAcc.data), deposits, refunded,
         };
       }
     }
@@ -295,9 +321,18 @@ export class Relayer {
       deposits.set(n, decodeDeposit(a.data));
     });
 
-    // Pending relative to the chain snapshot height.
+    // Pending relative to the chain snapshot height. A deposit refunded on Solana left
+    // the vault and is never unlocked: not pending.
     const processedAt = (st: DepositStatus) => st.processed && (st.height ?? 0) <= s.info.height;
-    const pendingDeposits = dNonces.filter((n) => !processedAt(s.deposits.get(n)!)).map((n) => deposits.get(n)!);
+    for (const n of s.refunded) {
+      if (s.deposits.get(n)?.processed) {
+        res.errors.push(`deposit ${n} is BOTH refunded on Solana and unlocked on the chain: signers signed both`);
+        this.o.log("deposit both refunded and unlocked", { nonce: n.toString() });
+      }
+    }
+    const pendingDeposits = dNonces
+      .filter((n) => !processedAt(s.deposits.get(n)!) && !s.refunded.has(n))
+      .map((n) => deposits.get(n)!);
     const pendingWithdrawals = s.withdrawals.filter((_, i) => !s.released[i]);
     res.pendingDeposits = pendingDeposits.map((d) => d.nonce.toString());
     res.pendingWithdrawals = pendingWithdrawals.map((w) => w.nonce.toString());
@@ -326,8 +361,9 @@ export class Relayer {
     if (s.params.bridgePaused) {
       res.errors.push("bridge paused on the agent chain: not submitting unlocks");
     } else {
-      await this.unlockDeposits(s, pendingDeposits.filter((d) => !holdBack.has(d.nonce)), res);
+      await this.unlockDeposits(s, pendingDeposits.filter((d) => !holdBack.has(d.nonce) && !this.state.refunds[d.nonce.toString()]), res);
     }
+    await this.refundDeposits(s, pendingDeposits, deposits, res);
     const releasedNow = await this.releaseWithdrawals(s, pendingWithdrawals, K, res);
     await this.settleOrders(s, K, res);
 
@@ -339,13 +375,15 @@ export class Relayer {
     // Deposits: past the prefix that is processed AND final on the chain.
     let d = s.bcfg.depositNonce;
     for (const [n, st] of s.deposits) {
-      if (!(st.processed && st.final)) {
+      if (!(st.processed && st.final) && !s.refunded.has(n)) {
         d = n;
         break;
       }
     }
     this.state.deposit = d;
     for (const k of Object.keys(this.state.inflight)) if (BigInt(k) < d) delete this.state.inflight[k];
+    // An unlock below the cursor is final on the chain: a refund of it is impossible anyway.
+    for (const k of Object.keys(this.state.signedUnlock)) if (BigInt(k) < d && !s.refunded.has(BigInt(k))) delete this.state.signedUnlock[k];
 
     // Withdrawals: past the prefix released on Solana.
     let w = s.withdrawalCount;
@@ -398,6 +436,7 @@ export class Relayer {
       let reason: RefundRecord["reason"] | null = null;
       if (o.status !== ORDER_STATUS_PENDING) reason = "order_not_pending";
       else if (min !== null && o.body.protocolFee < min) reason = "protocol_fee_below_min";
+      if (!reason && this.state.refunds[key]) reason = this.state.refunds[key].reason; // refund chosen: stays held
       if (!reason) {
         if (this.state.needsRefund[key]) {
           this.o.log("order unlockable again", { nonce: key, protocolFee: o.body.protocolFee.toString(), min: String(min) });
@@ -460,9 +499,13 @@ export class Relayer {
     for (const d of pending) {
       if (sent >= this.o.maxPerTick) break;
       if (this.state.inflight[d.nonce.toString()]) continue;
+      if (this.state.refunds[d.nonce.toString()] || s.refunded.has(d.nonce)) continue; // refund chosen: never unlock
       const id = `deposit:${d.nonce}`;
       try {
         const tx = await this.buildUnlock(s, d, keys, next);
+        // Persist the choice before the signed tx leaves this process.
+        this.state.signedUnlock[d.nonce.toString()] ??= now;
+        saveState(this.o.stateFile, this.state);
         const txHash = await node.sendTx(tx);
         this.state.inflight[d.nonce.toString()] = { txHash, txNonce: next.toString(), at: now };
         next++;
@@ -471,6 +514,93 @@ export class Relayer {
         this.failures.delete(id);
         this.o.log("unlock submitted", { nonce: d.nonce.toString(), recipient: d.recipient.toBase58(),
           amountSpl: d.amount.toString(), order: d.sender.equals(this.trader), txHash });
+      } catch (e) {
+        this.fail(id, e, res);
+      }
+    }
+  }
+
+  /**
+   * Refunds held-back order deposits on Solana once their grace period is over
+   * (see "Refunds" at the top). Each refund tx: create the buyer's ATA (idempotent),
+   * the ed25519 precompile with the bridge signers' refund signatures, bridge
+   * refund_deposit, and storefront mark_refunded when the Order is Pending or Expired.
+   */
+  private async refundDeposits(s: Snapshot, pending: Deposit[], deposits: Map<bigint, Deposit>, res: TickResult): Promise<void> {
+    const now = this.o.now();
+    // Orders refunded (by anyone) but not yet marked Refunded on the storefront.
+    const marks: bigint[] = [];
+    for (const n of s.refunded) if (deposits.get(n)?.sender.equals(this.trader)) marks.push(n);
+    if (marks.length) {
+      const accs = await this.o.token.getAccounts(marks.map((n) => orderPda(n, this.o.storefrontProgram)));
+      for (let i = 0; i < marks.length; i++) {
+        const a = accs[i];
+        if (!isProgramAccount(a, this.o.storefrontProgram)) continue;
+        const st = decodeOrder(a.data).status;
+        if (st !== ORDER_STATUS_PENDING && st !== ORDER_STATUS_EXPIRED) continue;
+        try {
+          await this.o.token.send([markRefundedIx(marks[i], this.o.storefrontProgram)], this.o.tokenPayer);
+          this.o.log("order marked refunded", { nonce: marks[i].toString() });
+        } catch (e) {
+          this.fail(`mark_refunded:${marks[i]}`, e, res);
+        }
+      }
+    }
+    for (const [k, r] of Object.entries(this.state.refunds)) {
+      if (!r.sig && s.refunded.has(BigInt(k))) r.sig = "confirmed-by-record";
+    }
+
+    if (this.o.refundGraceMs < 0) return;
+    const due = pending.filter((d) => {
+      const k = d.nonce.toString();
+      if (this.state.refunds[k]) return true; // decided earlier: final, retry until it lands
+      const rec = this.state.needsRefund[k];
+      return !!rec && now - rec.since >= this.o.refundGraceMs;
+    });
+    if (due.length === 0) return;
+    const keys = this.localSigners(s.bcfg.signers, s.bcfg.threshold);
+    if (!keys) {
+      res.errors.push(`hold fewer than ${s.bcfg.threshold} bridge signer keys; cannot refund ${due.map((d) => d.nonce).join(",")}`);
+      return;
+    }
+    const orderAccs = await this.o.token.getAccounts(due.map((d) => orderPda(d.nonce, this.o.storefrontProgram)));
+    let sent = 0;
+    for (let i = 0; i < due.length; i++) {
+      if (sent >= this.o.maxPerTick) break;
+      const d = due[i];
+      const k = d.nonce.toString();
+      const id = `refund:${k}`;
+      const st = s.deposits.get(d.nonce);
+      if (st?.processed) continue; // unlocked on the chain after all: never refund
+      if (this.state.signedUnlock[k] || this.state.inflight[k]) {
+        if (!this.failures.has(id)) {
+          this.o.log("not refunding: this relayer signed an unlock for it", { nonce: k });
+          this.failures.set(id, { attempts: 0, lastError: "signed an unlock" });
+        }
+        continue;
+      }
+      try {
+        const oa = orderAccs[i];
+        if (!isProgramAccount(oa, this.o.storefrontProgram)) throw new Error("Order account missing");
+        const order = decodeOrder(oa.data);
+        if (order.depositNonce !== d.nonce || order.tokens !== d.amount) throw new Error("Order does not match the deposit");
+        const buyer = order.buyer;
+        this.state.refunds[k] ??= { buyer: buyer.toBase58(), amountSpl: d.amount.toString(), reason: this.state.needsRefund[k]?.reason ?? "order_not_pending", at: now };
+        saveState(this.o.stateFile, this.state); // the choice is persisted before anything is signed
+        const ixs = [
+          createAtaIdempotentIx(this.o.tokenPayer.publicKey, buyer, s.bcfg.mint, s.bcfg.tokenProgram),
+          ed25519Instruction(signEntries(keys, refundMessage(d.nonce, buyer, d.amount))),
+          bridgeRefundIx({ payer: this.o.tokenPayer.publicKey, mint: s.bcfg.mint, nonce: d.nonce, buyer,
+            buyerToken: ata(buyer, s.bcfg.mint, s.bcfg.tokenProgram), tokenProgram: s.bcfg.tokenProgram }),
+        ];
+        if (order.status === ORDER_STATUS_PENDING || order.status === ORDER_STATUS_EXPIRED) ixs.push(markRefundedIx(d.nonce, this.o.storefrontProgram));
+        const sig = await this.o.token.send(ixs, this.o.tokenPayer);
+        this.state.refunds[k].sig = sig;
+        delete this.state.needsRefund[k];
+        sent++;
+        res.refunded.push(k);
+        this.failures.delete(id);
+        this.o.log("refunded", { nonce: k, buyer: buyer.toBase58(), amountSpl: d.amount.toString(), sig });
       } catch (e) {
         this.fail(id, e, res);
       }
@@ -711,4 +841,6 @@ interface Snapshot {
   vaultSpl: bigint;
   /** Chain status of every Solana deposit from the cursor to the counter. */
   deposits: Map<bigint, DepositStatus>;
+  /** Deposits (from the cursor) with a bridge refund record on Solana. */
+  refunded: Set<bigint>;
 }

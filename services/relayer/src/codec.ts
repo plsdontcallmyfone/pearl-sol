@@ -17,6 +17,8 @@ export const INSTRUCTIONS_SYSVAR_ID = new PublicKey("Sysvar1nstructions111111111
 
 /** Bridge `Processed` PDA chain tag for releases (withdrawals from the agent chain). */
 export const CHAIN_AGENT = 1;
+/** Bridge `Processed` PDA chain tag for refund records (Solana deposits refunded on Solana). */
+export const CHAIN_TOKEN = 0;
 /** 1 SPL base unit (6 dp) = 1000 agent-chain base units (9 dp). */
 export const UNITS_PER_SPL = 1000n;
 /** Whole agent-chain supply, all in the bridge escrow at genesis: 1B x 1e9. */
@@ -28,6 +30,7 @@ export const WITHDRAW_DOMAIN = Buffer.from("pearl-sol:withdraw:v1");
 export const RESULT_DOMAIN = Buffer.from("pearl-sol:result:v1");
 export const EXPIRED_DOMAIN = Buffer.from("pearl-sol:expired:v1");
 export const ORDER_JOB_DOMAIN = Buffer.from("pearl-sol:order-job:v1");
+export const REFUND_DOMAIN = Buffer.from("pearl-sol:refund:v1");
 
 // ---------- primitives ----------
 
@@ -64,6 +67,9 @@ export const bridgeConfigPda = (): PublicKey => pda([Buffer.from("config")], BRI
 export const depositPda = (nonce: bigint): PublicKey => pda([Buffer.from("deposit"), u64le(nonce)], BRIDGE_PROGRAM_ID);
 export const bridgeProcessedPda = (nonce: bigint): PublicKey =>
   pda([Buffer.from("processed"), Buffer.from([CHAIN_AGENT]), u64le(nonce)], BRIDGE_PROGRAM_ID);
+/** Refund record of Solana deposit `nonce` (bridge `refund_deposit`). */
+export const bridgeRefundPda = (nonce: bigint): PublicKey =>
+  pda([Buffer.from("processed"), Buffer.from([CHAIN_TOKEN]), u64le(nonce)], BRIDGE_PROGRAM_ID);
 
 export const storefrontConfigPda = (program = STOREFRONT_PROGRAM_ID): PublicKey => pda([Buffer.from("config")], program);
 /** The storefront's trader PDA: a bridge Deposit with this sender is an order. */
@@ -92,6 +98,9 @@ export const depositOrderMessage = (nonce: bigint, recipient: PublicKey, amountS
 /** Bridge release on Solana (unchanged). */
 export const withdrawMessage = (nonce: bigint, recipient: PublicKey, amountSpl: bigint): Buffer =>
   bridgeMessage(WITHDRAW_DOMAIN, nonce, recipient, amountSpl);
+/** Bridge refund_deposit: `pearl-sol:refund:v1 || nonce || buyer || amount_spl` (all of the deposit). */
+export const refundMessage = (nonce: bigint, buyer: PublicKey, amountSpl: bigint): Buffer =>
+  bridgeMessage(REFUND_DOMAIN, nonce, buyer, amountSpl);
 export const resultMessage = (jobId: Buffer, deliverer: PublicKey, resultHash: Buffer): Buffer =>
   Buffer.concat([RESULT_DOMAIN, jobId, deliverer.toBuffer(), resultHash]);
 export const expiredMessage = (jobId: Buffer): Buffer => Buffer.concat([EXPIRED_DOMAIN, jobId]);
@@ -239,6 +248,7 @@ export function decodeStorefrontConfig(data: Uint8Array): StorefrontConfig {
 export const ORDER_STATUS_PENDING = 1;
 export const ORDER_STATUS_FINALIZED = 2;
 export const ORDER_STATUS_EXPIRED = 3;
+export const ORDER_STATUS_REFUNDED = 4;
 
 /** storefront::layout offsets (including the 8-byte discriminator). */
 export const ORDER_LAYOUT = {
@@ -361,6 +371,27 @@ export function bridgeReleaseIx(a: { payer: PublicKey; mint: PublicKey; nonce: b
     keys: [w(a.payer, true), r(bridgeConfigPda()), r(a.mint), w(vaultAta(a.mint, tp)), w(a.recipientToken),
       w(bridgeProcessedPda(a.nonce)), r(INSTRUCTIONS_SYSVAR_ID), r(tp), r(SystemProgram.programId)],
     data: Buffer.concat([ixDisc("release"), u64le(a.nonce), a.recipient.toBuffer(), u64le(a.amount)]),
+  });
+}
+
+/** bridge `refund_deposit(nonce, buyer)`: the deposit's full amount from the vault to `buyerToken` (owned by buyer). */
+export function bridgeRefundIx(a: { payer: PublicKey; mint: PublicKey; nonce: bigint; buyer: PublicKey; buyerToken: PublicKey;
+  tokenProgram?: PublicKey }): TransactionInstruction {
+  const tp = a.tokenProgram ?? TOKEN_2022_PROGRAM_ID;
+  return new TransactionInstruction({
+    programId: BRIDGE_PROGRAM_ID,
+    keys: [w(a.payer, true), r(bridgeConfigPda()), r(a.mint), w(vaultAta(a.mint, tp)), r(depositPda(a.nonce)), w(a.buyerToken),
+      w(bridgeRefundPda(a.nonce)), r(INSTRUCTIONS_SYSVAR_ID), r(tp), r(SystemProgram.programId)],
+    data: Buffer.concat([ixDisc("refund_deposit"), u64le(a.nonce), a.buyer.toBuffer()]),
+  });
+}
+
+/** storefront `mark_refunded()` (permissionless; reads the bridge refund record). */
+export function markRefundedIx(nonce: bigint, program = STOREFRONT_PROGRAM_ID): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: program,
+    keys: [r(storefrontConfigPda(program)), w(orderPda(nonce, program)), r(bridgeRefundPda(nonce))],
+    data: ixDisc("mark_refunded"),
   });
 }
 

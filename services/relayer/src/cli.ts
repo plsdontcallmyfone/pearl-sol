@@ -66,7 +66,7 @@ async function main(): Promise<void> {
         storefrontProgram: cfg.storefrontProgram, totalSupply: cfg.totalSupply, allowSurplus: cfg.allowSurplus, dryRun: true,
         log: () => {} });
       const t = await r.tick();
-      console.log(JSON.stringify({ ...t, needsRefundDetail: r.state.needsRefund }, null, 2));
+      console.log(JSON.stringify({ ...t, needsRefundDetail: r.state.needsRefund, refunds: r.state.refunds }, null, 2));
       if (t.refused || t.errors.length) process.exitCode = 1;
       return;
     }

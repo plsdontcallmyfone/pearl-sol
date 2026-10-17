@@ -40,6 +40,20 @@ export interface RefundRecord {
   since: number;
 }
 
+/**
+ * A refund this relayer decided to sign (bridge refund_deposit). Written and saved
+ * BEFORE anything is signed; from then on the relayer never signs an unlock for the
+ * nonce. `sig` is set once the refund tx confirmed on Solana.
+ */
+export interface RefundDone {
+  buyer: string;
+  amountSpl: string;
+  reason: RefundRecord["reason"];
+  /** ms since epoch the decision was made. */
+  at: number;
+  sig?: string;
+}
+
 export interface RelayerState {
   /** Every Solana deposit below this nonce is processed AND final on the chain. */
   deposit: bigint;
@@ -53,9 +67,16 @@ export interface RelayerState {
   released: Record<string, ReleaseRecord>;
   /** Order deposits held back for a refund, by Solana deposit nonce. */
   needsRefund: Record<string, RefundRecord>;
+  /**
+   * Deposit nonces this relayer signed a BridgeUnlock for (saved before the tx is
+   * sent; kept until the deposit is final on the chain). It never refunds these.
+   */
+  signedUnlock: Record<string, number>;
+  /** Refunds decided / sent, by Solana deposit nonce (kept: the per-nonce choice is final). */
+  refunds: Record<string, RefundDone>;
 }
 
-export const emptyState = (): RelayerState => ({ deposit: 0n, withdrawal: 0n, inflight: {}, orders: [], released: {}, needsRefund: {} });
+export const emptyState = (): RelayerState => ({ deposit: 0n, withdrawal: 0n, inflight: {}, orders: [], released: {}, needsRefund: {}, signedUnlock: {}, refunds: {} });
 
 export function loadState(file: string): RelayerState {
   if (!existsSync(file)) return emptyState();
@@ -67,6 +88,8 @@ export function loadState(file: string): RelayerState {
     orders: j.orders ?? [],
     released: j.released ?? {},
     needsRefund: j.needsRefund ?? {},
+    signedUnlock: j.signedUnlock ?? {},
+    refunds: j.refunds ?? {},
   };
 }
 

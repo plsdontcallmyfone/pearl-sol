@@ -14,6 +14,8 @@
 //   COMMITMENT       Solana commitment                        default confirmed (use finalized outside localnet)
 //   TOTAL_SUPPLY     agent-chain total supply (chain units)   default 1e18
 //   ALLOW_SURPLUS    0 to also refuse on a surplus (over-backed vault)  default 1; a deficit always refuses
+//   REFUND_GRACE_MS  a held-back order (needsRefund) is refunded on Solana (bridge refund_deposit)
+//                    this long after it was first held back             default 3600000 (1 h); -1 = never
 //
 // Finality depth K is read from the node (getChainInfo.finality_k), not configured here.
 
@@ -44,6 +46,7 @@ export interface Config {
   commitment: Commitment;
   totalSupply: bigint;
   allowSurplus: boolean;
+  refundGraceMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -62,5 +65,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     commitment: (env.COMMITMENT ?? "confirmed") as Commitment,
     totalSupply: BigInt(env.TOTAL_SUPPLY ?? TOTAL_SUPPLY),
     allowSurplus: env.ALLOW_SURPLUS !== "0",
+    refundGraceMs: Number(env.REFUND_GRACE_MS ?? 3_600_000),
   };
 }

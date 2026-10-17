@@ -17,6 +17,7 @@ const relayer = new Relayer({
   stateFile: cfg.stateFile,
   totalSupply: cfg.totalSupply,
   allowSurplus: cfg.allowSurplus,
+  refundGraceMs: cfg.refundGraceMs,
 });
 
 const server = startHealth(cfg.healthPort, () => relayer.health(cfg.pollMs));
@@ -39,9 +40,9 @@ let timer: NodeJS.Timeout | undefined;
 async function loop(): Promise<void> {
   if (stopping) return;
   const r = await relayer.tick();
-  if (r.unlocked.length || r.released.length || r.finalized.length || r.expired.length || r.refused || r.errors.length) {
+  if (r.unlocked.length || r.released.length || r.finalized.length || r.expired.length || r.refunded.length || r.refused || r.errors.length) {
     console.log(JSON.stringify({ t: r.at, height: r.chainHeight, unlocked: r.unlocked, released: r.released,
-      finalized: r.finalized, expired: r.expired, waitingDepth: r.waitingDepth, needsRefund: r.needsRefund, refused: r.refused, errors: r.errors }));
+      finalized: r.finalized, expired: r.expired, refunded: r.refunded, waitingDepth: r.waitingDepth, needsRefund: r.needsRefund, refused: r.refused, errors: r.errors }));
   }
   timer = setTimeout(loop, cfg.pollMs);
 }
