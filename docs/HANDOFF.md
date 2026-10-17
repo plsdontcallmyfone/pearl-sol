@@ -214,12 +214,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
      held in state.needsRefund (reason, buyer, recipient, P, floor), logged once,
      shown in tick `needsRefund` and `cli.ts status`, re-checked every tick (lowering
      the floor unlocks it). Orders no longer Pending on Solana are held the same way.
-     REFUND GAP (not invented): such a deposit has no way back. Tokens stay in the
-     bridge vault (invariant counts them in flight); storefront expire_order only sets
-     status Expired (moves nothing); expire_order_proof needs a chain ExpireJob that
-     cannot exist (the job was never posted); the bridge has no instruction returning
-     a vault deposit on Solana. Options for the owner: a bridge `refund_deposit`
-     (signers over nonce + buyer) or a plain BridgeUnlock of W + P to the recipient.
+     Refund path: CLOSED by item 8 (bridge refund_deposit + storefront mark_refunded).
      Relayer also reads bridge release_modes / storefront finalize_modes and leaves
      final withdrawals / order results to the proof path when signers are off
      (`proofMode`).
@@ -231,11 +226,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    - header-relay: `run --settle` (src/settle.rs) submits bridge release_proof and
      storefront finalize/expire_order_proof; `status` subcommand; 50 ms confirmation
      polling + batched proof chunks: about 1.4 s per header on 50 ms slots (was about
-     20 s). GAP: getWithdrawalProof proves only against the node's current final
-     withdraw_root, so the light client needs a final header carrying that root (any
-     header after the last withdrawal block); with withdrawals every block it must sit
-     at the node's final tip. Fix: a historical-proof RPC (Commonware keyless
-     historical_proof at the block's log size).
+     20 s). The current-root gap is CLOSED by item 8 (historical proofs).
    - demo: light client + proof mode (see Demo); scripts/localnet.sh loads
      lightclient.so; demo token validator runs --ticks-per-slot 8.
    - pool: default share factor 16 -> 11 (pearl_pool::DEFAULT_SHARE_FACTOR). Live:
@@ -254,8 +245,38 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    hidden behind one flag (default off); Leather branding removed. Plan doc
    ~/pearl-wallet/docs/PEARL-PORT.md. The simpler ~/pearl-sol/extension stays as the
    reference implementation until the fork matches it.
-Not done in M2 (later): order refund path (gap above), historical withdrawal proofs,
-chunked blob manifests, persistent history index, multi-hop
+8. REFUND + HISTORICAL PROOFS: DONE (6743aa0..c3d1bc0; SPEC 5.1 "Refunds", 5.3
+   "Historical withdrawal proofs"). Owner decision 2026-10-17: refund held-back orders
+   on Solana, in tokens.
+   - bridge `refund_deposit(nonce, buyer)`: bridge signers over `pearl-sol:refund:v1 ||
+     nonce || buyer || amount_spl`; full Deposit amount from the vault to the buyer;
+     refund record `Processed ["processed", [0], nonce]` (replay guard; withdrawals keep
+     [1]); open in any release_modes. About 23k CU.
+   - storefront `mark_refunded()`: permissionless, CPI-free read of the refund record
+     (owner, address, nonce, recipient = Order.buyer, amount = Order.tokens); Pending or
+     Expired -> Refunded (status 4). About 10.5k CU.
+   - relayer: held-back orders refunded after REFUND_GRACE_MS (default 1 h, -1 never)
+     in one tx (ATA, ed25519, refund_deposit, mark_refunded). Persisted before signing:
+     `signedUnlock` (never refunded) and `refunds` (never unlocked); refund records are
+     read with the vault, so refunded deposits are not pending, the invariant is exact
+     and the cursor passes them; never refunds a deposit the chain processed. Mutual
+     exclusion across operators rests on the signers (bridge signers = chain attesters,
+     threshold > N/2), written in SPEC 5.1.
+   - chain: getWithdrawalProof `at_height` (keyless historical_proof at that final
+     block's log size; per-height log-size index rebuilt on restart). header-relay
+     `--settle` proves at the light client's final height (hash checked; current-root
+     fallback); `seed` locks twice and `harvest` adds `withdrawals_at_own_block`.
+   - Tests: bridge LiteSVM 13 (+3), storefront 15 (+2), relayer 33 (+5: refund after
+     grace, never after a signed unlock, never after a chain unlock, a refund signed
+     elsewhere stops the unlock, grace -1 / no keys), chain 69 (+3: store historical
+     proofs verified with pearl-verify-sbf at every commit boundary incl. multi-block
+     finalize, restart, node RPC), light-client LiteSVM 9 + fixture 2 (fixture
+     re-harvested: 13 headers, 1 job block, withdrawal 0 released by a historical proof
+     against an older final header where the current-root proof fails).
+   - Demo 9/9 PASS (132.8 s): new step 8 (see Demo).
+   - Remaining: plain (non-order) deposits are never auto-refunded; the cross-operator
+     guarantee is a signer rule, not enforced on chain; refunds return tokens, not SOL.
+Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
 (mirrors the superseded agent/ terms_hash vector; never submitted).
@@ -331,8 +352,10 @@ wtema_half_life_ms 15000, emission_ppm 10000, min_fee 1000, target 0x207fffff (t
 easiest; WTEMA hardens it within about 200 blocks). emission is high on purpose so one
 job block pays exactly alpha x P (cap binds). Production values stay K 30 / 60 s / 7 ppm.
 
-Steps and last run (2026-10-17, all 8 PASS, 122.8 s without builds; was 74.6 s before the
-light client):
+Steps and last run (2026-10-17, all 9 PASS, 132.8 s without builds; 122.8 s before the
+refund step, 74.6 s before the light client). Step timings below are from the 8-step run;
+the 9-step run: 13.4 / 17.6 / 14.4 / 6.8 / 15.6 / 15.2 / 24.6 / 20.4 / 4.8 s.
+The relayer runs with REFUND_GRACE_MS 5000 (DEMO_REFUND_GRACE_MS).
 1. (13.3 s) up + init: reserve init, launch (1 SOL dev buy), bridge init (attester 1 of 1),
    storefront init + trader volume accumulators, genesis attester checked.
 2. (15.6 s) trades: 0.0306 SOL creator fee; crank buyback +847.9k tokens; fund 10M tokens
@@ -349,7 +372,12 @@ light client):
 7. (33.5 s) bridge `set_release_modes` proof only; miner BridgeLocks half its balance at
    251; `release_proof` against final header 251 (asserted from the Processed PDA's tx);
    SPL checked; relayer signed nothing (reported proofMode).
-8. (4.2 s) teardown by PID incl. header-relay, ports 10600-10662 free.
+8. (20.4 s) refund: AdminConfig raises min_protocol_fee to 1e16 (above any P), a new x402
+   order is held back (protocol_fee_below_min), refunded after the grace period by
+   `refund_deposit` (asserted from the refund record's tx) + `mark_refunded`: the Order's
+   buyer (storefront wallet) gets exactly Order.tokens back, Order status Refunded;
+   floor restored, the deposit is still not unlocked; invariant exact, nothing in flight.
+9. (4.2 s) teardown by PID incl. header-relay, ports 10600-10662 free.
 Final invariant: vault 18,836,394,149,842 SPL x 1000 = 1e18 - escrow, nothing in flight,
 delta 0. header-relay verified 40 headers in the run.
 
@@ -363,8 +391,8 @@ Bugs fixed by the integration run (each with a test):
   pearl-node JobInfo gained header_id; miner delivered under the wrong id; the miner
   stalled the chain retrying a job whose mining errors (now skipped 60 s).
 
-Not covered by the demo: PumpSwap (graduated) path, expire/refund path (and the
-below-floor refund gap), USDC, reorgs
+Not covered by the demo: PumpSwap (graduated) path, the expire path (ExpireJob + W back),
+USDC, reorgs
 across real nodes, restarts mid-flow, more than one relayer/attester.
 
 ## Gotchas

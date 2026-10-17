@@ -149,7 +149,8 @@ release with M-of-N ed25519 signatures). Changes and additions:
 - `finalize_order(order, result_hash, result_uri)`: records the result on Solana.
   M1: M-of-N attester signatures. M2: a proof against a light-client header.
   The `Order` account is readable by any Solana program (CPI-composable result).
-- Refund path: if the job expires, W comes back over the bridge to the buyer.
+- Refund path: if the job expires, W comes back over the bridge to the buyer. If the
+  chain never unlocks the order, the deposit is refunded on Solana (see "Refunds" below).
 - Slippage bound and per-order caps are admin-editable.
 
 As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr):
@@ -178,6 +179,39 @@ As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGj
   `init_user_volume_accumulator` before the first order.
 - The x402 service wallet is the on-chain buyer; the payer's key is the chain
   recipient.
+
+Refunds (owner decision 2026-10-17; 6743aa0, e9a3dfa): an order deposit the chain will
+never unlock (the relayer holds it back: P below `min_protocol_fee_effective`, or the
+Order closed on Solana before any unlock) is refunded ON SOLANA, in tokens:
+- bridge `refund_deposit(nonce, buyer)`: M-of-N bridge signers sign
+  `b"pearl-sol:refund:v1" || nonce u64 LE || buyer [32] || amount_spl u64 LE`
+  (ed25519 precompile, as `release`); the vault pays the Deposit's full amount to the
+  buyer's token account and writes the refund record `Processed ["processed", [0],
+  nonce]` (source chain 0 = a Solana deposit; withdrawals use [1]). The record is the
+  replay guard (a deposit is refunded once) and is open in every `release_modes`
+  (inbound stays attested in M2). For orders, buyer = `Order.buyer`.
+- storefront `mark_refunded()`: permissionless and CPI-free; reads the refund record
+  (owner = `config.bridge_program`, address, nonce, recipient = `order.buyer`, amount =
+  `order.tokens`) and moves a Pending or Expired Order to Refunded (status 4). Finalize /
+  expire then refuse it (NotPending).
+- Mutual exclusion with the chain's BridgeUnlock: the chain cannot read Solana, so
+  "a deposit is never both unlocked on the chain and refunded on Solana" rests on the
+  signers signing at most ONE of the two messages per nonce. Requirements: the bridge
+  signer set is the chain's attester set (same operators), each operator's relayer keeps
+  the choice in persisted state, and threshold > N/2 (two disjoint signer subsets cannot
+  both reach the threshold). services/relayer enforces it for its keys: it saves
+  `signedUnlock[nonce]` before sending an unlock and never refunds those; it saves
+  `refunds[nonce]` before signing a refund and never unlocks those; it reads the refund
+  records every tick and never unlocks a refunded deposit (whoever refunded it); it
+  refunds only a deposit the chain reports as unprocessed, and only after
+  `REFUND_GRACE_MS` (default 1 h; lowering the floor within it unlocks normally).
+  A refunded deposit left the vault, so the invariant counts it as settled
+  (`vault x 1000 == 1e18 - escrow` holds exactly again).
+- The relayer refunds in one Solana tx: buyer ATA (idempotent), ed25519 precompile,
+  `refund_deposit`, `mark_refunded`. Plain (non-order) deposits are not auto-refunded.
+- Measured (LiteSVM): refund_deposit about 23k CU, mark_refunded about 10.5k CU.
+- An expired job (unlocked, posted, never delivered) still refunds W the normal way:
+  ExpireJob on the chain returns W to the poster, then BridgeLock + release.
 
 ### 5.2 x402 endpoint (M1)
 `services/storefront-x402` (port 10662): an HTTP service that prices a job,
@@ -217,6 +251,14 @@ relay services/header-relay):
 - Light-client params (incl. fallback m/n, K, WTEMA) mirror the chain's
   AdminConfig at init and via `set_params`; any chain AdminConfig change must be
   mirrored. Reorgs are limited to about 30 headers per tx (path accounts).
+- Historical withdrawal proofs (16a8842, fe1f88f): node RPC `getWithdrawalProof
+  {nonce, at_height}` proves the entry against the `withdraw_root` of the FINAL header at
+  `at_height` (Commonware keyless `historical_proof` at the log size that block committed;
+  the node keeps a per-height log-size index, rebuilt from the log on restart). A light
+  client therefore need not hold a header carrying the node's CURRENT root: header-relay
+  `--settle` proves each withdrawal at the light client's own final height (block hash
+  checked against the node's), falling back to the current-root proof on an older node.
+  Refused below the withdrawal's block or above the node's final height.
 ## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
 
 | Crate | Uses (commonware-*) | Job |

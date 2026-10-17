@@ -327,14 +327,15 @@ in chain units (x 1000). The chain refuses an order whose `protocol_fee` is belo
 Solana). services/relayer reads `getParams` and does not sign an order unlock with
 `P < min_protocol_fee_effective`: it holds the deposit back as needing a refund
 (`state.needsRefund`, tick `needsRefund`, `cli.ts status`) and re-checks it every tick, so
-lowering the floor unlocks it. GAP: there is no refund path for such a deposit yet. The
-tokens stay in the bridge vault; storefront `expire_order` only marks the Order Expired
-(moves no tokens) and `expire_order_proof` needs a chain ExpireJob that cannot exist (the
-job was never posted); the bridge has no instruction that returns a vault deposit on
-Solana. So the storefront's minimum order size should
-keep `amount x protocol_fee_bps / 10000 x 1000 >= min_protocol_fee_effective`. Raising
-`min_protocol_fee` by AdminConfig can strand orders already paid on Solana but not yet
-unlocked: raise it only with the storefront's minimum raised first.
+lowering the floor unlocks it. Refund (2026-10-17): once the deposit has been held back
+for `REFUND_GRACE_MS` (default 1 h) the relayer refunds it on Solana: bridge
+`refund_deposit` (bridge signers over `pearl-sol:refund:v1 || nonce || buyer ||
+amount_spl`) pays the deposit back to the Order's buyer (tokens, not SOL) and writes the
+refund record; storefront `mark_refunded` sets the Order to Refunded (status 4). From then
+on no relayer unlocks that deposit (SPEC 5.1 "Refunds"). Still, keep the storefront's
+minimum order size so that `amount x protocol_fee_bps / 10000 x 1000 >=
+min_protocol_fee_effective`: a raised `min_protocol_fee` holds paid orders back until the
+grace period passes and they are refunded (the buyer gets tokens back, not a job).
 
 ### getMempool `{}`
 `{"size": 2, "txs": ["hex"]}`
