@@ -162,14 +162,23 @@ allows running as many agents as needed.
 
 ## Next step
 
-M1 is COMPLETE (2026-10-17). Next is M2 (SPEC 7): Solana light-client program +
-proof-based bridge.release / storefront finalize; open-membership `net` crate;
-data availability for job matrices and results; mining pools (shares). Also
-pending from M1: chain-side minimum protocol fee (a P = 0 job can never earn
-subsidy, so miners skip it), getBlock subsidy field, history-by-address RPC,
-USDC storefront path, demo coverage of PumpSwap/expiry/reorgs/restarts.
+M1 COMPLETE (2026-10-17). M2 STARTED 2026-10-17 (owner "start m2"). Agents, each
+owning its paths, max 3 heavy builds at once (all local; claude-host is destroyed):
+1. light client: token/programs/lightclient (+ SBF plain Pearl verifier, WTEMA
+   port, header tree, K finality), proof-mode bridge.release (MMR proof vs
+   withdraw_root) and storefront.finalize_order if feasible, services/header-relay.
+2. open net: chain/net on commonware-stream (any key admitted under limits, address
+   gossip, seeds, caps, ban scores), node `--net open --seeds`, devnet.sh open mode.
+3. pools: services/pool (:10663, shares at a lower target, PPLNS payouts after
+   maturity, restart safe) + miner `--pool` mode.
+QUEUED after net lands (same chain/ code): 4. data availability (blob store in the
+node: putBlob/getBlob, p2p gossip, `blob:<blake3>` data_uri, retained until the job
+closes) + M1 leftovers: chain minimum protocol fee (P = 0 jobs can never be mined),
+getBlock subsidy field, history-by-address RPC. Later: USDC storefront path, demo
+coverage of PumpSwap/expiry/reorgs/restarts.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
-emission), name and ticker.
+emission), name and ticker. If a session dies, check git log per path and
+CLAUDE.md "Who is working on what".
 
 ## M1 components (SPEC v2, all DONE)
 
