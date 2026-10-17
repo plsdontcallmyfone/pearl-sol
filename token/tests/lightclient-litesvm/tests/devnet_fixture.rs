@@ -1,7 +1,9 @@
-//! Replays a REAL agent-chain devnet (fixtures/devnet.json, harvested with
-//! `services/header-relay harvest` from a 1-node devnet seeded by `header-relay seed`):
-//! genesis checkpoint, 15 headers (fallback blocks and one job block on a PostJob),
-//! the node's own withdrawal MMR proof, released by proof through the bridge.
+//! Replays a REAL agent-chain devnet (fixtures/devnet.json, harvested 2026-10-17 with
+//! `services/header-relay harvest` from a 1-node devnet seeded by `header-relay seed`,
+//! default config k=2048 r=128, 4x8 fallback, K=6): genesis checkpoint, 17 headers
+//! (fallback blocks and one job block on a PostJob), the node's own withdrawal MMR
+//! proof, released by proof through the bridge. fixtures/devnet-pre-rank-penalty.json
+//! is the older k=1024 r=32 64x64 harvest, kept as a rejection test.
 
 use base64::Engine;
 use lightclient::client;
@@ -9,21 +11,25 @@ use lightclient_litesvm_tests::*;
 use pearl_verify_sbf as pv;
 use serde_json::Value;
 
+fn load(name: &str) -> Value {
+    let p = format!("{}/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_str(&std::fs::read_to_string(&p).expect(&p)).unwrap()
+}
+
 fn fixture() -> Value {
-    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/devnet.json");
-    serde_json::from_str(&std::fs::read_to_string(p).expect("fixtures/devnet.json")).unwrap()
+    load("devnet.json")
 }
 
 fn b64(s: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(s).unwrap()
 }
 
-/// The fixture was harvested before the rank-penalty port (2026-10-17): its fallback
-/// config and its job are k=1024, r=32, below Pearl's r >= 128 floor. Its real headers
-/// are now refused, natively and by the light client's params check.
+/// The pre-penalty fixture was harvested before the rank-penalty port (2026-10-17): its
+/// fallback config and its job are k=1024, r=32, below Pearl's r >= 128 floor. Its real
+/// headers are now refused, natively and by the light client's params check.
 #[test]
 fn pre_rank_penalty_devnet_headers_are_refused() {
-    let f = fixture();
+    let f = load("devnet-pre-rank-penalty.json");
     let cfg52: [u8; 52] = hex::decode(f["params"]["fallback_config"].as_str().unwrap()).unwrap().try_into().unwrap();
     let cfg = pearl_job::MiningConfig::from_bytes(&cfg52).unwrap();
     assert_eq!((cfg.k(), cfg.r()), (1024, 32));
@@ -44,7 +50,6 @@ fn pre_rank_penalty_devnet_headers_are_refused() {
 }
 
 #[test]
-#[ignore = "fixtures/devnet.json predates the rank penalty (r=32); re-harvest with `header-relay seed` + `harvest` on a k=2048 r=128 devnet"]
 fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     let f = fixture();
     let fp = &f["params"];
@@ -59,6 +64,8 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     p.fallback_m = n("fallback_m") as u32;
     p.fallback_n = n("fallback_n") as u32;
     p.fallback_config = hex::decode(fp["fallback_config"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let cfg = pearl_job::MiningConfig::from_bytes(&p.fallback_config).unwrap();
+    assert_eq!((cfg.k(), cfg.r(), p.fallback_m, p.fallback_n), (2048, 128, 4, 8), "current default config");
     let hs = f["headers"].as_array().unwrap();
     let blk = |i: usize| {
         let h = &hs[i];

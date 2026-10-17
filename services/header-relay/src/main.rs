@@ -425,7 +425,16 @@ fn seed(node: &Node, attester_path: &PathBuf, withdraw_to: Option<String>) -> Re
     body.extend_from_slice(&cfg.to_bytes());
     body.extend_from_slice(&prep.job.hash_a);
     body.extend_from_slice(&prep.job.hash_b);
-    let uri = b"blob:seed";
+    // Job data as a PSD1 blob on this node (the node refuses malformed blob URIs).
+    let mut psd = b"PSD1".to_vec();
+    for x in [m, n, k] {
+        psd.extend_from_slice(&x.to_le_bytes());
+    }
+    psd.extend(a.iter().map(|&x| x as u8));
+    psd.extend(b.iter().map(|&x| x as u8));
+    let put = node.rpc.call("putBlob", json!({"data_hex": hex::encode(&psd)}))?;
+    let uri_s = put["uri"].as_str().context("putBlob uri")?.to_string();
+    let uri = uri_s.as_bytes();
     body.extend_from_slice(&(uri.len() as u16).to_le_bytes());
     body.extend_from_slice(uri);
     for x in [w, p, deadline] {
