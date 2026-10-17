@@ -23,13 +23,19 @@ pub type Sig = [u8; 64];
 
 /// Transaction signature namespace (Commonware `sign(ns, msg)` framing).
 pub const NS_TX: &[u8] = b"pearl-sol:tx:v1";
-/// Evaluator signatures for CompleteJob: msg = job_id || deliverer || result_hash.
-pub const NS_RESULT: &[u8] = b"pearl-sol:result:v1";
-/// Attester signatures for a plain BridgeUnlock: msg = solana_nonce u64 LE || recipient || amount_spl u64 LE.
-pub const NS_DEPOSIT: &[u8] = b"pearl-sol:deposit:v1";
-/// Attester signatures for a job-order BridgeUnlock:
-/// msg = solana_nonce u64 LE || recipient || amount_spl u64 LE || blake3(PostJob body bytes).
-pub const NS_DEPOSIT_JOB: &[u8] = b"pearl-sol:deposit-job:v1";
+// Attester and evaluator messages are signed as RAW ed25519 over `domain || fields`
+// (no Commonware framing), the same bytes the Solana programs check with the ed25519
+// precompile and the relayer already signs.
+
+/// Evaluator signatures for CompleteJob: `domain || job_id || deliverer || result_hash`.
+pub const DOMAIN_RESULT: &[u8] = b"pearl-sol:result:v1";
+/// Plain BridgeUnlock: `domain || solana_nonce u64 LE || recipient || amount_spl u64 LE`.
+pub const DOMAIN_DEPOSIT: &[u8] = b"pearl-sol:deposit:v1";
+/// Storefront order BridgeUnlock (job_order = 1):
+/// `domain || solana_nonce u64 LE || recipient || amount_spl u64 LE || sha256(PostJob body)`.
+pub const DOMAIN_DEPOSIT_ORDER: &[u8] = b"pearl-sol:deposit-order:v1";
+/// Order job id: `sha256(domain || solana_nonce u64 LE)`.
+pub const DOMAIN_ORDER_JOB: &[u8] = b"pearl-sol:order-job:v1";
 
 /// Native base units per token (9 decimals).
 pub const UNITS_PER_TOKEN: u64 = 1_000_000_000;
@@ -49,6 +55,15 @@ pub fn escrow_address() -> Pubkey {
 /// Reserved account holding the mining reserve pool. No key controls it.
 pub fn pool_address() -> Pubkey {
     *blake3::hash(b"pearl-sol:mining-pool:v1").as_bytes()
+}
+
+pub fn sha256(parts: &[&[u8]]) -> Hash {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for p in parts {
+        h.update(p);
+    }
+    h.finalize().into()
 }
 
 pub fn is_reserved(addr: &Pubkey) -> bool {

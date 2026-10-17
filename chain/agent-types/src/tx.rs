@@ -12,7 +12,7 @@ use commonware_codec::{Encode, ReadExt};
 use commonware_cryptography::{ed25519, Signer, Verifier};
 
 use crate::codec::{R, W};
-use crate::{blake3_hash, DecodeError, Hash, Pubkey, Sig, NS_TX, TX_VERSION};
+use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_RESULT, NS_TX, TX_VERSION};
 
 pub const MAX_NAME: usize = 64;
 pub const MAX_URI: usize = 512;
@@ -162,9 +162,9 @@ impl PostJob {
         w.into_inner()
     }
 
-    /// blake3 of the body bytes; attesters sign this for a job-order deposit.
+    /// sha256 of the body bytes (`order.body_hash` on Solana); part of the order unlock message.
     pub fn body_hash(&self) -> Hash {
-        blake3_hash(&[&self.encode()])
+        sha256(&[&self.encode()])
     }
 }
 
@@ -182,7 +182,8 @@ pub enum TxBody {
     /// `job_id [32]`
     ExpireJob { job_id: Hash },
     /// `solana_nonce u64, recipient [32], amount_spl u64, job_order u8 (0|1),
-    ///  [PostJob body if 1], count u8, (pubkey [32], sig [64])*`
+    ///  [PostJob body if 1], count u8, (pubkey [32], sig [64])*`.
+    /// For an order, the body's `deadline_height` is RELATIVE (blocks after the unlock).
     BridgeUnlock {
         solana_nonce: u64,
         recipient: Pubkey,
@@ -433,23 +434,43 @@ pub fn verify(pubkey: &Pubkey, ns: &[u8], msg: &[u8], sig: &Sig) -> bool {
     pk.verify(ns, msg, &s)
 }
 
-/// Message attesters sign for a plain deposit.
+/// Raw ed25519 signature (no framing) with a 32-byte seed.
+pub fn sign_plain(seed: &[u8; 32], msg: &[u8]) -> Sig {
+    use ed25519_dalek::Signer as _;
+    ed25519_dalek::SigningKey::from_bytes(seed).sign(msg).to_bytes()
+}
+
+/// Raw ed25519 strict verification (same rule as Solana's precompile for honest keys).
+pub fn verify_plain(pubkey: &Pubkey, msg: &[u8], sig: &Sig) -> bool {
+    let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(pubkey) else {
+        return false;
+    };
+    vk.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(sig)).is_ok()
+}
+
+/// Attested message for a plain deposit: `b"pearl-sol:deposit:v1" || nonce || recipient || amount_spl`.
 pub fn deposit_message(solana_nonce: u64, recipient: &Pubkey, amount_spl: u64) -> Vec<u8> {
     let mut w = W::new();
-    w.u64(solana_nonce).bytes(recipient).u64(amount_spl);
+    w.bytes(DOMAIN_DEPOSIT).u64(solana_nonce).bytes(recipient).u64(amount_spl);
     w.into_inner()
 }
 
-/// Message attesters sign for a job-order deposit.
-pub fn deposit_job_message(solana_nonce: u64, recipient: &Pubkey, amount_spl: u64, job: &PostJob) -> Vec<u8> {
-    let mut m = deposit_message(solana_nonce, recipient, amount_spl);
-    m.extend_from_slice(&job.body_hash());
-    m
+/// Attested message for a storefront order:
+/// `b"pearl-sol:deposit-order:v1" || nonce || recipient || amount_spl || sha256(PostJob body)`.
+pub fn order_message(solana_nonce: u64, recipient: &Pubkey, amount_spl: u64, job: &PostJob) -> Vec<u8> {
+    let mut w = W::new();
+    w.bytes(DOMAIN_DEPOSIT_ORDER).u64(solana_nonce).bytes(recipient).u64(amount_spl).bytes(&job.body_hash());
+    w.into_inner()
 }
 
-/// Message evaluators sign to complete a job.
+/// Order job id: `sha256(b"pearl-sol:order-job:v1" || nonce u64 LE)`.
+pub fn order_job_id(solana_nonce: u64) -> Hash {
+    sha256(&[DOMAIN_ORDER_JOB, &solana_nonce.to_le_bytes()])
+}
+
+/// Message evaluators sign to complete a job: `b"pearl-sol:result:v1" || job_id || deliverer || result_hash`.
 pub fn result_message(job_id: &Hash, deliverer: &Pubkey, result_hash: &Hash) -> Vec<u8> {
-    [&job_id[..], &deliverer[..], &result_hash[..]].concat()
+    [DOMAIN_RESULT, &job_id[..], &deliverer[..], &result_hash[..]].concat()
 }
 
 impl commonware_codec::Write for Tx {

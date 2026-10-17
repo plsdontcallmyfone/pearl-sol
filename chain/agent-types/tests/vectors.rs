@@ -4,9 +4,7 @@
 //! a plain run checks that the encoder still produces them byte for byte.
 
 use agent_types::block::{encode_header_with_proof, tx_root};
-use agent_types::tx::{
-    deposit_job_message, deposit_message, frame, pubkey_from_seed, result_message, sign_with_seed,
-};
+use agent_types::tx::{deposit_message, order_job_id, order_message, pubkey_from_seed, result_message, sign_plain};
 use agent_types::*;
 use serde_json::{json, Value};
 
@@ -104,9 +102,9 @@ fn tx_vector(name: &str, seed_i: u8, nonce: u64, fee: u64, body: TxBody) -> (Val
     (v, tx)
 }
 
-fn signed_sig(seed_i: u8, ns: &[u8], msg: &[u8]) -> AttesterSig {
+fn signed_sig(seed_i: u8, msg: &[u8]) -> AttesterSig {
     let s = seed(seed_i);
-    AttesterSig { pubkey: pubkey_from_seed(&s), sig: sign_with_seed(&s, ns, msg) }
+    AttesterSig { pubkey: pubkey_from_seed(&s), sig: sign_plain(&s, msg) }
 }
 
 fn build() -> Vec<(&'static str, Value)> {
@@ -117,7 +115,10 @@ fn build() -> Vec<(&'static str, Value)> {
     let result_hash = [0x5a; 32];
     let rmsg = result_message(&job_id, &bob, &result_hash);
     let dmsg = deposit_message(42, &alice, 1_000_000);
-    let djmsg = deposit_job_message(43, &alice, 6_000_000, &job);
+    // Storefront order: deadline is relative (blocks after the unlock height).
+    let mut order_job = job.clone();
+    order_job.deadline_height = 500;
+    let omsg = order_message(43, &alice, 6_000_000, &order_job);
     let mut txs = Vec::new();
     let mut add = |v: (Value, Tx)| txs.push(v);
     add(tx_vector("transfer", 1, 0, 1000, TxBody::Transfer { to: bob, amount: 123_456_789 }));
@@ -141,7 +142,7 @@ fn build() -> Vec<(&'static str, Value)> {
         2,
         1,
         1000,
-        TxBody::CompleteJob { job_id, sigs: vec![signed_sig(20, NS_RESULT, &rmsg)] },
+        TxBody::CompleteJob { job_id, sigs: vec![signed_sig(20, &rmsg)] },
     ));
     add(tx_vector("expire_job", 3, 0, 1000, TxBody::ExpireJob { job_id }));
     add(tx_vector(
@@ -154,11 +155,11 @@ fn build() -> Vec<(&'static str, Value)> {
             recipient: alice,
             amount_spl: 1_000_000,
             job_order: None,
-            sigs: vec![signed_sig(30, NS_DEPOSIT, &dmsg), signed_sig(31, NS_DEPOSIT, &dmsg)],
+            sigs: vec![signed_sig(30, &dmsg), signed_sig(31, &dmsg)],
         },
     ));
     add(tx_vector(
-        "bridge_unlock_job_order",
+        "bridge_unlock_order",
         4,
         1,
         0,
@@ -166,8 +167,8 @@ fn build() -> Vec<(&'static str, Value)> {
             solana_nonce: 43,
             recipient: alice,
             amount_spl: 6_000_000,
-            job_order: Some(job.clone()),
-            sigs: vec![signed_sig(30, NS_DEPOSIT_JOB, &djmsg)],
+            job_order: Some(order_job.clone()),
+            sigs: vec![signed_sig(30, &omsg)],
         },
     ));
     add(tx_vector(
@@ -188,17 +189,23 @@ fn build() -> Vec<(&'static str, Value)> {
     let tx_objs: Vec<Tx> = txs.iter().map(|(_, t)| t.clone()).collect();
     let tx_json: Vec<Value> = txs.into_iter().map(|(v, _)| v).collect();
 
+    let msg_v = |name: &str, domain: &[u8], msg: &[u8], seed_i: u8| {
+        json!({"name": name, "domain": String::from_utf8_lossy(domain), "message": hex::encode(msg),
+               "signing": "raw ed25519 over message (no framing)",
+               "seed": hex::encode(seed(seed_i)), "pubkey": b58(&pubkey_from_seed(&seed(seed_i))),
+               "sig": hex::encode(sign_plain(&seed(seed_i), msg))})
+    };
+    let mut order_v = msg_v("deposit_order", DOMAIN_DEPOSIT_ORDER, &omsg, 30);
+    order_v["post_job_body"] = json!(hex::encode(order_job.encode()));
+    order_v["post_job_body_sha256"] = json!(hex::encode(order_job.body_hash()));
+    order_v["solana_nonce"] = json!(43);
+    order_v["job_id"] = json!(hex::encode(order_job_id(43)));
+    order_v["job_id_rule"] = json!("sha256(b\"pearl-sol:order-job:v1\" || solana_nonce u64 LE)");
+    order_v["deadline_rule"] = json!("relative: deadline_height = unlock block height + body.deadline_height");
     let messages = json!([
-        {"name": "deposit", "namespace": String::from_utf8_lossy(NS_DEPOSIT), "message": hex::encode(&dmsg),
-         "framed": hex::encode(frame(NS_DEPOSIT, &dmsg)), "seed": hex::encode(seed(30)),
-         "pubkey": b58(&pubkey_from_seed(&seed(30))), "sig": hex::encode(sign_with_seed(&seed(30), NS_DEPOSIT, &dmsg))},
-        {"name": "deposit_job", "namespace": String::from_utf8_lossy(NS_DEPOSIT_JOB), "message": hex::encode(&djmsg),
-         "post_job_body": hex::encode(job.encode()), "post_job_body_hash": hex::encode(job.body_hash()),
-         "framed": hex::encode(frame(NS_DEPOSIT_JOB, &djmsg)), "seed": hex::encode(seed(30)),
-         "pubkey": b58(&pubkey_from_seed(&seed(30))), "sig": hex::encode(sign_with_seed(&seed(30), NS_DEPOSIT_JOB, &djmsg))},
-        {"name": "result", "namespace": String::from_utf8_lossy(NS_RESULT), "message": hex::encode(&rmsg),
-         "framed": hex::encode(frame(NS_RESULT, &rmsg)), "seed": hex::encode(seed(20)),
-         "pubkey": b58(&pubkey_from_seed(&seed(20))), "sig": hex::encode(sign_with_seed(&seed(20), NS_RESULT, &rmsg))},
+        msg_v("deposit", DOMAIN_DEPOSIT, &dmsg, 30),
+        order_v,
+        msg_v("result", DOMAIN_RESULT, &rmsg, 20),
         {"name": "job_id", "poster": b58(&alice), "poster_nonce": 3, "job_id": hex::encode(job_id),
          "rule": "blake3(poster || nonce u64 LE)"},
         {"name": "reserved_addresses", "escrow": b58(&escrow_address()), "pool": b58(&pool_address())},

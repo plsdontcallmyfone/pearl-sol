@@ -1,0 +1,23 @@
+[package]
+name = "state"
+description = "Agent-chain state schema and QMDB storage (current for state, keyless for withdrawals)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-types.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+commonware-parallel = "=2026.9.0"
+blake3.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+pearl-job.workspace = true
+
+[dev-dependencies]
+commonware-macros.workspace = true
+futures.workspace = true
