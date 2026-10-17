@@ -103,6 +103,11 @@ impl Node {
     pub fn withdrawal_proof(&self, nonce: u64) -> Result<Value> {
         self.rpc.call("getWithdrawalProof", json!({"nonce": nonce}))
     }
+
+    /// Historical proof against the withdraw_root of the node's final header at `at_height`.
+    pub fn withdrawal_proof_at(&self, nonce: u64, at_height: u64) -> Result<Value> {
+        self.rpc.call("getWithdrawalProof", json!({"nonce": nonce, "at_height": at_height}))
+    }
 }
 
 /// chain/agent-types/src/merkle.rs: root and per-tx paths (33-byte entries).

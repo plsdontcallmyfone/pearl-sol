@@ -420,8 +420,12 @@ fn seed(node: &Node, attester_path: &PathBuf, withdraw_to: Option<String>) -> Re
     };
     let mut body = to.to_vec();
     body.extend_from_slice(&2_000_000_000u64.to_le_bytes());
-    let h = send_signed(node, &user, min_fee, Body::Raw { kind: tx::kind::BRIDGE_LOCK, body })?;
+    let h = send_signed(node, &user, min_fee, Body::Raw { kind: tx::kind::BRIDGE_LOCK, body: body.clone() })?;
     println!("lock at {}", wait_included(node, &h, &miner)?);
+    // A second lock in a later block, so the withdraw_root changes between them (the
+    // fixture then holds a historical proof against the older root).
+    let h = send_signed(node, &user, min_fee, Body::Raw { kind: tx::kind::BRIDGE_LOCK, body })?;
+    println!("lock 2 at {}", wait_included(node, &h, &miner)?);
     // 3. PostJob with real matrices, then mine one block on it.
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
     let (m, n) = (64u32, 64u32);
@@ -518,11 +522,17 @@ fn harvest(node: &Node, out: &PathBuf, to: Option<u64>) -> Result<()> {
     }
     let ev = node.rpc.call("getBridgeEvents", json!({"from_nonce": 0, "limit": 100}))?;
     let mut withdrawals = vec![];
+    let mut withdrawals_at = vec![];
     for w in ev["withdrawals"].as_array().cloned().unwrap_or_default() {
         let n = chain::num(&w["nonce"])?;
         let p = node.withdrawal_proof(n)?;
         if p["final"] == true {
             withdrawals.push(p);
+            // Historical proof against the root of the withdrawal's own block (getWithdrawalProof
+            // at_height), older than the current root once a later block adds withdrawals.
+            let at = chain::num(&w["height"])?;
+            let h = node.withdrawal_proof_at(n, at)?;
+            withdrawals_at.push(h);
         }
     }
     let p = chain::lc_params(node, 10_000, 4)?;
@@ -535,6 +545,7 @@ fn harvest(node: &Node, out: &PathBuf, to: Option<u64>) -> Result<()> {
         },
         "headers": headers,
         "withdrawals": withdrawals,
+        "withdrawals_at_own_block": withdrawals_at,
     });
     std::fs::write(out, serde_json::to_string_pretty(&doc)?)?;
     println!("wrote {} headers, {} final withdrawals to {}", tip + 1, doc["withdrawals"].as_array().unwrap().len(), out.display());

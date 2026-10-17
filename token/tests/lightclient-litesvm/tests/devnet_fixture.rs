@@ -1,8 +1,9 @@
-//! Replays a REAL agent-chain devnet (fixtures/devnet.json, harvested 2026-10-17 with
+//! Replays a REAL agent-chain devnet (fixtures/devnet.json, re-harvested 2026-10-17 with
 //! `services/header-relay harvest` from a 1-node devnet seeded by `header-relay seed`,
-//! default config k=2048 r=128, 4x8 fallback, K=6): genesis checkpoint, 17 headers
-//! (fallback blocks and one job block on a PostJob), the node's own withdrawal MMR
-//! proof, released by proof through the bridge. fixtures/devnet-pre-rank-penalty.json
+//! default config k=2048 r=128, 4x8 fallback, K=6): genesis checkpoint, 13 headers
+//! (fallback blocks and one job block on a PostJob), two withdrawals in different blocks:
+//! withdrawal 0 released by the node's HISTORICAL MMR proof (getWithdrawalProof
+//! at_height) against an older final header, withdrawal 1 by the current-root proof. fixtures/devnet-pre-rank-penalty.json
 //! is the older k=1024 r=32 64x64 harvest, kept as a rejection test.
 
 use base64::Engine;
@@ -111,25 +112,45 @@ fn real_devnet_chain_job_block_and_withdrawal_by_proof() {
     let c = env.config();
     assert_eq!(c.tip_hash, blk(hs.len() - 1).hash);
     assert_eq!(pv::difficulty::u256_from_le(&c.tip_work), blk(hs.len() - 1).cum_work, "cumulative work equals the node's");
-    // withdrawal: the node's own proof against withdraw_root of its final header
-    let w = &f["withdrawals"][0];
-    let root_hash: [u8; 32] = hex::decode(w["root_block_hash"].as_str().unwrap()).unwrap().try_into().unwrap();
-    env.mark_final(&root_hash).unwrap();
+    // withdrawals: 0 by a HISTORICAL proof (getWithdrawalProof at_height = its own block)
+    // against an older final header, whose withdraw_root predates withdrawal 1; then 1 by
+    // the node's current-root proof against the node's final header.
     let bs = env.setup_bridge(1_000_000_000, bridge::MODE_PROOF);
-    let entry = hex::decode(w["entry"].as_str().unwrap()).unwrap();
+    let hist = &f["withdrawals_at_own_block"][0];
+    let cur0 = &f["withdrawals"][0];
+    let cur1 = &f["withdrawals"][1];
+    assert_ne!(hist["withdraw_root"], cur0["withdraw_root"], "the fixture has an older root");
+    assert!(hist["root_height"].as_u64().unwrap() < cur0["root_height"].as_u64().unwrap());
+    let old_hash: [u8; 32] = hex::decode(hist["root_block_hash"].as_str().unwrap()).unwrap().try_into().unwrap();
+    env.mark_final(&old_hash).unwrap();
+    let entry = hex::decode(hist["entry"].as_str().unwrap()).unwrap();
     let to = solana_sdk::pubkey::Pubkey::new_from_array(entry[40..72].try_into().unwrap());
     let to_t = env.create_ata(&to, &bs.mint);
-    let loc = w["location"].as_u64().unwrap();
-    let proof = b64(w["proof"].as_str().unwrap());
+    let loc = hist["location"].as_u64().unwrap();
     let nonce = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+    // the current-root proof does not verify against the older header (the old gap)
+    let ix = env.release_proof_ix(&bs, nonce, &entry, loc, b64(cur0["proof"].as_str().unwrap()), &old_hash, to_t);
+    assert!(custom(u32::from(bridge::BridgeError::BadProof))(&env.send(&[ix], &[]).unwrap_err()));
+    let proof = b64(hist["proof"].as_str().unwrap());
     let mut forged = proof.clone();
     let last = forged.len() - 1;
     forged[last] ^= 1;
-    let ix = env.release_proof_ix(&bs, nonce, &entry, loc, forged, &root_hash, to_t);
+    let ix = env.release_proof_ix(&bs, nonce, &entry, loc, forged, &old_hash, to_t);
     assert!(custom(u32::from(bridge::BridgeError::BadProof))(&env.send(&[ix], &[]).unwrap_err()));
-    let ix = env.release_proof_ix(&bs, nonce, &entry, loc, proof, &root_hash, to_t);
+    let ix = env.release_proof_ix(&bs, nonce, &entry, loc, proof, &old_hash, to_t);
     let cu = env.send(&[ix], &[]).unwrap();
     let amount = u64::from_le_bytes(entry[72..80].try_into().unwrap());
     assert_eq!(env.token_balance(&to_t), amount);
-    println!("real devnet: {} headers verified (1 job block), withdrawal {nonce} of {amount} released by proof ({cu} CU)", hs.len() - 1);
+    // withdrawal 1 is not in the older root: its proof only verifies against the newer header
+    let e1 = hex::decode(cur1["entry"].as_str().unwrap()).unwrap();
+    let n1 = u64::from_le_bytes(e1[0..8].try_into().unwrap());
+    let l1 = cur1["location"].as_u64().unwrap();
+    let ix = env.release_proof_ix(&bs, n1, &e1, l1, b64(cur1["proof"].as_str().unwrap()), &old_hash, to_t);
+    assert!(custom(u32::from(bridge::BridgeError::BadProof))(&env.send(&[ix], &[]).unwrap_err()));
+    let new_hash: [u8; 32] = hex::decode(cur1["root_block_hash"].as_str().unwrap()).unwrap().try_into().unwrap();
+    env.mark_final(&new_hash).unwrap();
+    let ix = env.release_proof_ix(&bs, n1, &e1, l1, b64(cur1["proof"].as_str().unwrap()), &new_hash, to_t);
+    env.send(&[ix], &[]).unwrap();
+    assert_eq!(env.token_balance(&to_t), amount + u64::from_le_bytes(e1[72..80].try_into().unwrap()));
+    println!("real devnet: {} headers verified (1 job block), withdrawal {nonce} of {amount} released by historical proof against final header {} ({cu} CU), withdrawal {n1} by the current root", hs.len() - 1, hist["root_height"]);
 }

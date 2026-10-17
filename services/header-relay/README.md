@@ -29,8 +29,9 @@ incl. one job block relayed, 583 txs, resumed after a restart.
 
 Proof-mode settlement (`run --settle`, src/settle.rs): when the bridge has
 `release_modes` proof on, it calls `bridge.release_proof` for each final withdrawal not
-yet Processed, with the node's MMR proof against a FINAL light-client header whose
-`withdraw_root` equals the proof's root; when the storefront has `finalize_modes` proof
+yet Processed, with the node's historical MMR proof (getWithdrawalProof `at_height` =
+the light client's final height) against that final light-client header's
+`withdraw_root` (the header's hash must match the node's); when the storefront has `finalize_modes` proof
 on, it calls `finalize_order_proof` (CompleteJob tx + tx_root path + ed25519 precompile
 of the evaluator signature) or `expire_order_proof` for Pending orders whose chain job
 closed in a final light-client header. The payer must be the order's buyer, the
@@ -41,8 +42,7 @@ Speed: confirmations are polled every 50 ms and proof chunks go out as one batch
 takes about 1.4 s (37 txs); at the default 400 ms slots about 20 s before these changes.
 4 ticks per slot was slower (about 14 s per header; confirmations lag).
 
-Gap: getWithdrawalProof only proves against the node's CURRENT final withdraw_root. That
-root changes only in blocks with withdrawals, so any later final header carries it; if
-withdrawals land every block the light client must sit exactly at the node's final tip.
-A node RPC for a historical proof at a given height (Commonware keyless
-`historical_proof` at that block's log size) would remove this.
+Historical proofs (2026-10-17): the relay proves each withdrawal against the header the
+light client has final, so it no longer needs a final header carrying the node's
+current root (that was a gap while withdrawals landed every block). Against an older
+node without `at_height` it falls back to the current-root proof.

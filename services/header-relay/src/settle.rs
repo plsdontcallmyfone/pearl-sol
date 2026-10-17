@@ -2,14 +2,12 @@
 //! done by light-client proof once the light client holds the needed final header.
 //!
 //! - Withdrawals: for each final chain withdrawal not yet Processed on Solana, when the
-//!   bridge has MODE_PROOF on, `bridge.release_proof` with the node's MMR proof
-//!   (getWithdrawalProof) against a FINAL light-client header whose `withdraw_root`
-//!   equals the proof's root. The node only serves proofs against its current final
-//!   root; that root changes only in blocks with withdrawals, so any final light-client
-//!   header after the last withdrawal block carries it. GAP: if withdrawals land in
-//!   every block, the light client must be exactly at the node's final tip (a historical
-//!   proof RPC at a given log size would remove this; Commonware keyless
-//!   `historical_proof` supports it).
+//!   bridge has MODE_PROOF on, `bridge.release_proof` with the node's historical MMR
+//!   proof (getWithdrawalProof `at_height` = the light client's final height) against
+//!   that FINAL light-client header's `withdraw_root`, so the light client need not sit
+//!   at the node's final tip. The header's block hash must equal the node's at that
+//!   height. Fallback (an old node without `at_height`): the node's current-root proof
+//!   against any final light-client header carrying that root.
 //! - Orders: for each Pending storefront Order whose chain job is Completed / Expired,
 //!   when the storefront has MODE_PROOF on and the closing block is final in the light
 //!   client, `finalize_order_proof` (CompleteJob tx + tx_root path + ed25519 precompile
@@ -225,14 +223,39 @@ impl Settle {
             if w["final"] != true {
                 continue;
             }
-            let p = node.withdrawal_proof(n)?;
-            if p["final"] != true {
-                continue;
-            }
-            let root: [u8; 32] = hex::decode(p["withdraw_root"].as_str().context("withdraw_root")?)?.try_into().map_err(|_| anyhow!("root"))?;
             let wh = chain::num(&w["height"])?;
-            let Some((lc_header, at)) = Self::final_header_where(sol, wh, |_, h| pv::header::Header(h).withdraw_root() == root)? else {
-                continue; // the light client has no final header with the node's current root yet
+            let lc_final = sol.config()?.final_height;
+            if lc_final < wh {
+                continue; // the withdrawal's block is not final in the light client yet
+            }
+            // Prove against the header the light client actually has final.
+            let (p, lc_header, at) = match node.withdrawal_proof_at(n, lc_final) {
+                Ok(p) if p["final"] == true => {
+                    let root: [u8; 32] = hex::decode(p["withdraw_root"].as_str().context("withdraw_root")?)?.try_into().map_err(|_| anyhow!("root"))?;
+                    let bh: [u8; 32] = hex::decode(p["root_block_hash"].as_str().context("root_block_hash")?)?.try_into().map_err(|_| anyhow!("hash"))?;
+                    let found = Self::final_header_where(sol, lc_final, |h, hdr| {
+                        h == lc_final && pv::blake3::hash(hdr) == bh && pv::header::Header(hdr).withdraw_root() == root
+                    })?;
+                    let Some((lc_header, at)) = found else {
+                        eprintln!("withdrawal {n}: light-client final header {lc_final} is not the node's (fork?)");
+                        continue;
+                    };
+                    (p, lc_header, at)
+                }
+                Ok(_) => continue,
+                Err(e) => {
+                    // Older node without at_height: current-root proof, any final header with that root.
+                    eprintln!("withdrawal {n}: historical proof at {lc_final} refused ({e:#}); trying the current root");
+                    let p = node.withdrawal_proof(n)?;
+                    if p["final"] != true {
+                        continue;
+                    }
+                    let root: [u8; 32] = hex::decode(p["withdraw_root"].as_str().context("withdraw_root")?)?.try_into().map_err(|_| anyhow!("root"))?;
+                    let Some((lc_header, at)) = Self::final_header_where(sol, wh, |_, h| pv::header::Header(h).withdraw_root() == root)? else {
+                        continue;
+                    };
+                    (p, lc_header, at)
+                }
             };
             let entry = hex::decode(p["entry"].as_str().context("entry")?)?;
             let recipient = Pubkey::new_from_array(entry[40..72].try_into()?);
