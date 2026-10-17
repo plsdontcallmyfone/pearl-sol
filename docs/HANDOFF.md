@@ -199,11 +199,24 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    Not done: push notifications (about 18% stale shares on the fast devnet),
    vardiff, signed miner requests, live job-block run, payout history pruning.
    Devnet fee helper: services/pool/examples/devnet_fees.rs.
-4. RESTARTED 2026-10-17 (first run stopped by the disk filling): data availability (blob store in the
-node: putBlob/getBlob, p2p gossip, `blob:<blake3>` data_uri, retained until the job
-closes) + M1 leftovers: chain minimum protocol fee (P = 0 jobs can never be mined),
-getBlock subsidy field, history-by-address RPC, getPeers, fallback size params. Later: USDC storefront path, demo
-coverage of PumpSwap/expiry/reorgs/restarts.
+4. data availability + leftovers: DONE (b717103..52303a6). chain/blobs: blake3-addressed
+   blob store, putBlob/getBlob/hasBlob/getBlobStats, one-hop push + fetch on demand,
+   retained while a job is open/delivered + grace_blocks (100), `blob:<hex>` URIs
+   (job data format PSD1). Min protocol fee (getParams.min_protocol_fee_effective),
+   getBlock fees/subsidy/reward/matured, getAccountTxs, getPeers, docs/NODE.md.
+   Fallback default 4x8 (verify 0.14-0.19 ms). Miner/attester/extension use blobs.
+   Tests: chain 66, crates 67, extension 58 + 47 UI, storefront 13; demo 7/7 PASS
+   (74.6 s) with job data as a blob. Live 5-node open devnet: cross-node blob fetch,
+   late node catch-up (bug fixed ba4b0ce), pruning. Existing .devnet dirs need reset.
+5. WRAP-UP (started 2026-10-17): relayer refuses order unlocks below
+   min_protocol_fee_effective (refund path instead); re-harvest the light-client
+   devnet fixture at k2048/r128 + un-ignore the replay test; add lightclient +
+   header-relay + proof-mode release to scripts/demo.sh; retune pool share target
+   for 4x8 fallback.
+Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
+blob push, getPeers across real hosts, USDC storefront, demo coverage of
+PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
+(mirrors the superseded agent/ terms_hash vector; never submitted).
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
 emission), name and ticker. If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
