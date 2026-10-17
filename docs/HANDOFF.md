@@ -204,10 +204,16 @@ once on this Mac), each owning its paths:
    (else listed in needsAttester), invariant via getEscrow. Env: NODE_RPC,
    AGENT_KEY, STATE_FILE (.state/relayer.json). Not run against the real node yet
    (its RPC was still a stub). One relayer per AGENT_KEY (nonce contention).
-5. wallet extension (started 2026-10-16, extension/ only): MV3 + React, one key for
-   both chains, tx encoding parity with chain/agent-types vectors, bridge, agents,
-   jobs (post job only if pearl-job parity is exact), storefront buy, rewards,
-   Wallet Standard (Solana) + window.pearl (our chain). Headless Chromium only.
+5. wallet extension: DONE (00b6d73, 4850a39, 73d5f40): extension/, 51 unit tests (tx
+   bytes equal all 9 chain vectors, job commitments equal the pearl-job CLI, Solana
+   ixs equal Anchor's coder) + 25 headless-Chromium UI checks against a mock RPC
+   (scripts/mock-rpc.mjs, ports 10671-10673). Screenshots in extension/screenshots/
+   (gitignored). Load unpacked per extension/README.md. Not run live yet. TODO:
+   storefront Buy form takes hash_a/hash_b as hex (needs the order_terms RPC to
+   compute them); mining view shows fees only (getBlock has no subsidy field);
+   chain activity is the wallet's own log (no history-by-address RPC); the token
+   is labelled PEARL (placeholder, like APP_NAME); bottom tab bar overlaps the
+   last home-screen row (cosmetic).
 scripts/localnet.sh now defaults to the token chain only (+ storefront); the
 agent chain is scripts/devnet.sh. Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet:
 integration agent started 2026-10-16. If a
