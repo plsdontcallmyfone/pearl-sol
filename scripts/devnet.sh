@@ -11,10 +11,16 @@
 # Ports: node i RPC 10630+2i, WebSocket 10631+2i, p2p 10640+i.
 # Admin = keys/localnet/payer, attester = keys/localnet/attester (1 of 1),
 # miner payout = keys/localnet/miner. Never pattern-kills: PIDs only, checked.
+#
+# Env overrides (read by init; the demo uses them, scripts/demo.sh):
+#   DEVNET_DIR      data dir (default .devnet)
+#   DEVNET_PARAMS   JSON object merged over the genesis params below, e.g.
+#                   '{"finality_k": 6, "target_block_time_ms": 1500}'
+#   DEVNET_TARGET   genesis target_bits (default 0x207fffff)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEV="$ROOT/.devnet"
+DEV="${DEVNET_DIR:-$ROOT/.devnet}"
 BIN="$ROOT/chain/target/release/agent-node"
 N=3
 RPC_BASE=10630
@@ -52,20 +58,17 @@ init() {
   admin="$(pubkey_of_keyfile "$ROOT/keys/localnet/payer-keypair.json")"
   attester="$(pubkey_of_keyfile "$ROOT/keys/localnet/attester-keypair.json")"
   ts=$(( $(date +%s) * 1000 ))
+  local params='{"target_block_time_ms": 10000, "wtema_half_life_ms": 600000, "finality_k": 30, "min_fee": 1000}'
+  params="$(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); p.update(json.loads(sys.argv[2] or "{}")); print(json.dumps(p))' "$params" "${DEVNET_PARAMS:-}")"
   cat > "$DEV/genesis.json" <<EOF
 {
   "chain_id": 1347616769,
   "timestamp_ms": $ts,
-  "target_bits": "0x207fffff",
+  "target_bits": "${DEVNET_TARGET:-0x207fffff}",
   "admin": "$admin",
   "attesters": ["$attester"],
   "attester_threshold": 1,
-  "params": {
-    "target_block_time_ms": 10000,
-    "wtema_half_life_ms": 600000,
-    "finality_k": 30,
-    "min_fee": 1000
-  }
+  "params": $params
 }
 EOF
   local peers="" i seed key

@@ -1,0 +1,506 @@
+// M1 end to end demo driver (SPEC 7 M1 item 6). Run through scripts/demo.sh, which
+// builds the binaries, checks ports and links node_modules. Every step prints
+// PASS/FAIL and the supply invariant; the first failure stops the run (exit 1).
+// Every process this script starts is stopped by its PID at the end.
+
+import { blake3 } from "@noble/hashes/blake3";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  ComputeBudgetProgram, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction,
+  TransactionMessage, VersionedTransaction,
+} from "@solana/web3.js";
+import {
+  ATTESTER_URL, DEMO, KEYS, NODE_RPC, RELAYER_HEALTH, ROOT, STOREFRONT_URL, TOKEN_RPC, conn, demoKey, httpJson, lastJson,
+  loadKp, nodeCall, portBusy, procs, run, sleep, start, waitFor,
+} from "./lib.ts";
+import {
+  BRIDGE_PROGRAM_ID, ORDER_LAYOUT, ORDER_STATUS_FINALIZED, STOREFRONT_PROGRAM_ID, ata, bridgeConfigPda, decodeBridgeConfig,
+  decodeOrder, orderPda, storefrontConfigPda, tokenAccountAmount, traderPda, u16le, u32le, u64le,
+} from "../../services/relayer/src/codec.ts";
+import { KIND, signTx, transferBody } from "../../services/relayer/src/agent-tx.ts";
+import { NodeRpc } from "../../services/relayer/src/node.ts";
+import { RpcChain } from "../../services/relayer/src/chain.ts";
+import { Relayer } from "../../services/relayer/src/relayer.ts";
+
+// ------------------------------------------------------------ demo parameters
+
+// Agent-chain genesis overrides (docs/HANDOFF.md "Demo"): short K and fast blocks so the
+// whole flow fits in minutes; emission high enough that one job block hits alpha x P.
+const FINALITY_K = Number(process.env.DEMO_K ?? 6);
+const GENESIS_PARAMS = {
+  finality_k: FINALITY_K,
+  target_block_time_ms: Number(process.env.DEMO_BLOCK_MS ?? 1500),
+  wtema_half_life_ms: 15_000,
+  emission_ppm: 10_000,
+  min_fee: 1000,
+};
+const MINER_THREADS = process.env.DEMO_MINER_THREADS ?? "4";
+const DEV_BUY = 1_000_000_000n; // 1 SOL dev buy into the reserve
+const FUND_SPL = 10_000_000_000_000n; // 10M tokens (6 dp) from the reserve to the mining pool
+const JOB = { m: 64, n: 64, k: 1024, maxBlocks: 5, deadlineBlocks: 400 };
+
+const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+const T22 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+const payer = loadKp(KEYS.payer);
+const attester = loadKp(KEYS.attester);
+const miner = loadKp(KEYS.miner);
+const trader = demoKey("trader");
+const user = demoKey("user");
+const buyer = demoKey("buyer");
+const sfWallet = demoKey("storefront-wallet");
+const mintKey = demoKey("mint");
+const MINT = mintKey.kp.publicKey;
+const RESERVE_ID = loadKp("keys/localnet/reserve-keypair.json").publicKey;
+const node = NodeRpc.http(NODE_RPC);
+
+const BIN = {
+  node: resolve(ROOT, "chain/target/release/agent-node"),
+  miner: resolve(ROOT, "crates/target/release/pearl-miner"),
+  attester: resolve(ROOT, "crates/target/release/pearl-attester"),
+  job: resolve(ROOT, "crates/target/release/pearl-job"),
+};
+const CRANK = resolve(ROOT, "services/crank");
+const RELAYER = resolve(ROOT, "services/relayer");
+const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS) };
+
+const crank = (args: string[]) => run("node", ["src/main.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC, KEYPAIR: resolve(ROOT, KEYS.payer) } });
+const trade = (args: string[]) => lastJson(run("node", ["src/trade.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC } }));
+const relayerCli = (args: string[]) => run("node", ["src/cli.ts", ...args], { cwd: RELAYER, env: relayerEnv() });
+function relayerEnv(): Record<string, string> {
+  return {
+    TOKEN_RPC, NODE_RPC, SIGNER_KEYS: resolve(ROOT, KEYS.attester), TOKEN_PAYER: resolve(ROOT, KEYS.payer),
+    AGENT_KEY: resolve(ROOT, KEYS.payer), STATE_FILE: resolve(DEMO, "relayer-state.json"), POLL_MS: "1000", HEALTH_PORT: "10660",
+  };
+}
+
+// ------------------------------------------------------------ reporting
+
+interface StepResult { step: string; ok: boolean; secs: number; detail: string; invariant: string }
+const results: StepResult[] = [];
+const t0 = Date.now();
+const info = (msg: string, extra?: unknown) => console.log(`    ${msg}${extra === undefined ? "" : " " + JSON.stringify(extra, big)}`);
+function big(_k: string, v: unknown) { return typeof v === "bigint" ? v.toString() : v; }
+
+/** Invariant snapshot through the relayer's own (dry-run) check: vault x 1000 vs 1e18 - escrow, in-flight adjusted. */
+async function invariant(): Promise<string> {
+  const [cfg] = await new RpcChain("token", TOKEN_RPC).getAccounts([bridgeConfigPda()]);
+  if (!cfg) return "n/a (bridge not initialized yet)";
+  const r = new Relayer({ token: new RpcChain("token", TOKEN_RPC), node, signers: [], tokenPayer: payer, agentKey: payer,
+    stateFile: resolve(DEMO, "invariant-probe.json"), dryRun: true, log: () => {} });
+  const t = await r.tick();
+  const inv = t.invariant;
+  if (!inv) return `n/a (${t.errors.join("; ")})`;
+  return `${inv.ok ? "OK" : "BROKEN"} vault_spl=${inv.vaultSpl} vault_x1000=${BigInt(inv.vaultSpl) * 1000n} 1e18-escrow=${inv.outsideEscrow} ` +
+    `in_flight_deposits_spl=${inv.pendingDepositSpl} in_flight_withdrawals_spl=${inv.pendingWithdrawalSpl} delta=${inv.delta} strict=${inv.strictFormHolds}`;
+}
+
+async function step(name: string, f: () => Promise<string>): Promise<void> {
+  const s = Date.now();
+  console.log(`\n== ${name}`);
+  let ok = true;
+  let detail = "";
+  try {
+    detail = await f();
+  } catch (e) {
+    ok = false;
+    detail = String((e as Error).stack ?? e).slice(0, 3000);
+  }
+  let inv = "";
+  try {
+    inv = await invariant();
+    if (inv.startsWith("BROKEN")) ok = false;
+  } catch (e) {
+    inv = `n/a (${String((e as Error).message).slice(0, 200)})`;
+  }
+  const secs = (Date.now() - s) / 1000;
+  results.push({ step: name, ok, secs, detail, invariant: inv });
+  console.log(`   ${ok ? "PASS" : "FAIL"} ${name} (${secs.toFixed(1)} s): ${detail}`);
+  console.log(`   invariant: ${inv}`);
+  if (!ok) throw new Error(`step failed: ${name}`);
+}
+
+// ------------------------------------------------------------ Solana helpers
+
+async function send(ixs: TransactionInstruction[], signers: Keypair[]): Promise<string> {
+  const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...ixs);
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+  tx.feePayer = signers[0].publicKey;
+  tx.recentBlockhash = blockhash;
+  tx.sign(...signers);
+  const sig = await conn.sendRawTransaction(tx.serialize());
+  const r = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  if (r.value.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(r.value.err)}`);
+  return sig;
+}
+
+async function airdrop(to: PublicKey, sol: number) {
+  const sig = await conn.requestAirdrop(to, sol * LAMPORTS_PER_SOL);
+  await conn.confirmTransaction(sig, "confirmed");
+}
+
+async function splBalance(owner: PublicKey): Promise<bigint> {
+  const a = await conn.getAccountInfo(ata(owner, MINT));
+  return a ? tokenAccountAmount(a.data) : 0n;
+}
+
+const disc = (n: string) => createHash("sha256").update(`global:${n}`).digest().subarray(0, 8);
+const some = (b: Buffer) => Buffer.concat([Buffer.from([1]), b]);
+const NONE = Buffer.from([0]);
+const m = (pubkey: PublicKey, isWritable = false, isSigner = false) => ({ pubkey, isWritable, isSigner });
+const pda = (seeds: Buffer[], prog: PublicKey) => PublicKey.findProgramAddressSync(seeds, prog)[0];
+
+// ------------------------------------------------------------ agent-chain helpers
+
+async function chainBalance(k: PublicKey): Promise<bigint> {
+  return (await node.getAccount(k.toBase58())).balance;
+}
+
+async function sendChainTx(kp: Keypair, kind: number, body: Buffer): Promise<string> {
+  const ci = await node.getChainInfo();
+  const p = await nodeCall("getParams");
+  const acct = await node.getAccount(kp.publicKey.toBase58());
+  const tx = signTx(kp, { chainId: ci.chainId, from: kp.publicKey, nonce: acct.nonce, fee: BigInt(p.min_fee), kind }, body);
+  const h = await node.sendTx(tx);
+  await waitFor(`chain tx ${h.slice(0, 12)} included`, async () => (await node.getTx(h))?.status === "included", 120_000);
+  return h;
+}
+
+const registerAgentBody = (name: string, uri: string) => {
+  const n = Buffer.from(name), u = Buffer.from(uri);
+  return Buffer.concat([Buffer.from([n.length]), n, u16le(u.length), u]);
+};
+
+/** schema::order_terms_hash (chain/state): what a storefront buyer commits against. */
+function orderTermsHash(poster: PublicKey, mm: number, n: number, k: number, maxBlocks: number, deadlineBlocks: bigint): Buffer {
+  return Buffer.from(blake3(Buffer.concat([Buffer.from("pearl-sol:order-terms:v1"), poster.toBuffer(), u32le(mm), u32le(n), u32le(k),
+    u32le(maxBlocks), u64le(deadlineBlocks)])));
+}
+
+async function depositFinal(nonce: bigint): Promise<any> {
+  return waitFor(`deposit ${nonce} unlocked and final on the chain`, async () => {
+    const d = await node.getDeposit(nonce);
+    return d.processed && d.final ? d : null;
+  }, 240_000);
+}
+
+async function bridgeNonce(): Promise<bigint> {
+  const a = await conn.getAccountInfo(bridgeConfigPda());
+  return decodeBridgeConfig(a!.data).depositNonce;
+}
+
+// ------------------------------------------------------------ steps
+
+async function step1(): Promise<string> {
+  // token chain
+  console.log(run("bash", ["scripts/localnet.sh", "up", "token"]).trim());
+  for (const k of [payer.publicKey, trader.kp.publicKey, user.kp.publicKey, buyer.kp.publicKey, sfWallet.kp.publicKey]) await airdrop(k, 100);
+  // agent chain: 3-node devnet from a fresh genesis
+  console.log(run("bash", ["scripts/devnet.sh", "init"], { env: DEVNET_ENV }).trim());
+  console.log(run("bash", ["scripts/devnet.sh", "start"], { env: DEVNET_ENV }).trim());
+  const params = await waitFor("agent-chain node RPC", () => nodeCall("getParams"), 60_000);
+  if (params.attesters.length !== 1 || params.attesters[0] !== attester.publicKey.toBase58() || params.attester_threshold !== 1) {
+    throw new Error(`genesis attesters ${JSON.stringify(params.attesters)} are not the attester key 1-of-1`);
+  }
+  if (params.finality_k !== FINALITY_K) throw new Error(`finality_k ${params.finality_k}`);
+  info("genesis params", { finality_k: params.finality_k, target_block_time_ms: params.target_block_time_ms, emission_ppm: params.emission_ppm,
+    alpha_ppm: params.alpha_ppm, attesters: params.attesters });
+  const esc = await nodeCall("getEscrow");
+  if (esc.escrow_balance !== "1000000000000000000") throw new Error(`escrow at genesis ${esc.escrow_balance}`);
+  const pool = new PublicKey(esc.pool);
+
+  // services that do not need Solana state yet
+  start("attester", BIN.attester, ["--keypair", KEYS.attester, "--port", "10661", "--rpc", NODE_RPC, "--mode", "node"]);
+  start("miner", BIN.miner, ["--rpc", NODE_RPC, "--payout", KEYS.miner, "--deliver", "--attester", ATTESTER_URL,
+    "--results-dir", resolve(DEMO, "results"), "--threads", MINER_THREADS, "--stats-secs", "30"]);
+  await waitFor("attester /health", async () => (await httpJson(`${ATTESTER_URL}/health`)).body?.ok === true, 30_000);
+  await waitFor("first mined blocks", async () => (await node.getChainInfo()).height >= 3, 120_000);
+
+  // reserve: init, then launch with the creator PDA + dev buy
+  console.log(crank(["init", "--minIntervalSecs", "1", "--minBuy", "100000", "--bridgeProgram", BRIDGE_PROGRAM_ID.toBase58(),
+    "--miningPool", pool.toBase58()]).trim());
+  console.log(crank(["launch", "--name", "Pearl Demo", "--symbol", "PRLD", "--uri", "https://example.invalid/pearl.json",
+    "--devBuy", DEV_BUY.toString(), "--mintKeypair", mintKey.file]).trim());
+  const status = JSON.parse(crank(["status"]));
+  if (status.mint !== MINT.toBase58() || BigInt(status.reserveTokens) === 0n) throw new Error(`reserve after launch: ${JSON.stringify(status)}`);
+  info("reserve", { mint: status.mint, creatorPda: status.creatorPda, reserveTokens: status.reserveTokens, miningPool: status.miningPool });
+
+  // bridge: mint + attester signer set, 1 of 1
+  console.log(relayerCli(["init-bridge", MINT.toBase58(), "1", attester.publicKey.toBase58()]).trim());
+
+  // storefront: config (mint, bridge, attester 1 of 1) + the trader PDA's volume accumulators
+  const sfCfg = storefrontConfigPda();
+  const trader_ = traderPda();
+  const params_ = Buffer.concat([some(MINT.toBuffer()), some(BRIDGE_PROGRAM_ID.toBuffer()), NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE]);
+  await send([new TransactionInstruction({
+    programId: STOREFRONT_PROGRAM_ID,
+    keys: [m(payer.publicKey, true, true), m(sfCfg, true), m(trader_, true), m(SystemProgram.programId)],
+    data: Buffer.concat([disc("initialize"), params_, u32le(1), attester.publicKey.toBuffer(), Buffer.from([1])]),
+  })], [payer]);
+  for (const prog of [PUMP, AMM]) {
+    await send([new TransactionInstruction({
+      programId: prog,
+      keys: [m(payer.publicKey, true, true), m(trader_), m(pda([Buffer.from("user_volume_accumulator"), trader_.toBuffer()], prog), true),
+        m(SystemProgram.programId), m(pda([Buffer.from("__event_authority")], prog)), m(prog)],
+      data: Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]), // init_user_volume_accumulator
+    })], [payer]);
+  }
+
+  // relayer + storefront service
+  start("relayer", "node", ["src/main.ts"], { cwd: RELAYER, env: relayerEnv() });
+  start("storefront-x402", "node", ["src/main.ts"], { cwd: resolve(ROOT, "services/storefront-x402"), env: {
+    TOKEN_RPC, STOREFRONT_PORT: "10662", STOREFRONT_WALLET: sfWallet.file, STATE_FILE: resolve(DEMO, "storefront-state.json") } });
+  await waitFor("relayer /health ok", async () => (await httpJson(RELAYER_HEALTH)).body?.ok === true, 60_000);
+  await waitFor("storefront /health", async () => (await httpJson(`${STOREFRONT_URL}/health`)).body?.ok === true, 30_000);
+  const ci = await node.getChainInfo();
+  return `token :10600, devnet 3 nodes (height ${ci.height}, peers ${(await nodeCall("getChainInfo")).peers}), mint ${MINT.toBase58()}, ` +
+    `pool ${pool.toBase58()}, services up (relayer, attester, miner, storefront-x402)`;
+}
+
+async function step2(): Promise<string> {
+  // curve volume from a funded trader: two round trips
+  const mint = MINT.toBase58();
+  const b1 = trade(["buy", "--keypair", trader.file, "--mint", mint, "--sol", String(3 * LAMPORTS_PER_SOL)]);
+  const s1 = trade(["sell", "--keypair", trader.file, "--mint", mint, "--fraction", "0.5"]);
+  const b2 = trade(["buy", "--keypair", trader.file, "--mint", mint, "--sol", String(2 * LAMPORTS_PER_SOL)]);
+  const s2 = trade(["sell", "--keypair", trader.file, "--mint", mint, "--fraction", "0.5"]);
+  info("trades", { buy1: b1.tokens, sell1: s1.tokens, buy2: b2.tokens, sell2: s2.tokens, curveCreatorFee: s2.creatorFee });
+  if (BigInt(s2.creatorFee) === 0n) throw new Error("no creator fee accrued");
+  const before = BigInt(JSON.parse(crank(["status"])).reserveTokens);
+  await sleep(1500); // min_interval_secs = 1 since launch
+  const once = crank(["once"]).trim();
+  console.log(once);
+  const after = BigInt(JSON.parse(crank(["status"])).reserveTokens);
+  if (after <= before) throw new Error(`buyback did not add reserve tokens (${before} -> ${after}): ${once}`);
+  // fund_mining into the bridge, recipient = the chain's mining pool
+  const nonce = await bridgeNonce();
+  const poolBefore = BigInt((await nodeCall("getEscrow")).pool_balance);
+  console.log(crank(["fund", "--amount", FUND_SPL.toString()]).trim());
+  const d = await depositFinal(nonce);
+  const esc = await nodeCall("getEscrow");
+  const poolGain = BigInt(esc.pool_balance) - poolBefore;
+  if (d.recipient !== esc.pool || poolGain < FUND_SPL * 1000n) throw new Error(`pool unlock: ${JSON.stringify(d)} gain ${poolGain}`);
+  return `creator fee ${s2.creatorFee} lamports, buyback +${after - before} reserve tokens, fund_mining ${FUND_SPL} SPL ` +
+    `(deposit ${nonce}) unlocked at height ${d.height} to pool ${esc.pool}, pool balance ${esc.pool_balance}`;
+}
+
+async function step3(): Promise<string> {
+  const mint = MINT.toBase58();
+  const b = trade(["buy", "--keypair", user.file, "--mint", mint, "--sol", String(LAMPORTS_PER_SOL / 2)]);
+  const amount = BigInt(b.tokens) / 2n;
+  const nonce = await bridgeNonce();
+  console.log(relayerCli(["deposit", amount.toString(), user.kp.publicKey.toBase58(), user.file]).trim());
+  const d = await depositFinal(nonce);
+  const bal = await chainBalance(user.kp.publicKey);
+  if (bal !== amount * 1000n) throw new Error(`user chain balance ${bal}, want ${amount * 1000n}`);
+  const reg = await sendChainTx(user.kp, KIND.RegisterAgent, registerAgentBody("demo-agent", "https://example.invalid/agent.json"));
+  const agent = await nodeCall("getAgent", { account: user.kp.publicKey.toBase58() });
+  if (!agent || agent.name !== "demo-agent") throw new Error(`getAgent: ${JSON.stringify(agent)}`);
+  // fund the miner's payout key so it can pay SubmitResult / CompleteJob fees before its rewards mature
+  const fund = 5_000_000_000n;
+  const minerBefore = await chainBalance(miner.publicKey);
+  await sendChainTx(user.kp, KIND.Transfer, transferBody(miner.publicKey, fund));
+  const minerAfter = await chainBalance(miner.publicKey);
+  if (minerAfter < minerBefore + fund) throw new Error(`miner funding ${minerBefore} -> ${minerAfter}`);
+  return `user bought ${b.tokens}, deposited ${amount} SPL (nonce ${nonce}) -> ${bal} chain units at height ${d.height}; ` +
+    `RegisterAgent ${reg.slice(0, 16)} (agent "${agent.name}" at ${agent.registered_height}); miner payout funded with ${fund}`;
+}
+
+let order: { nonce: bigint; jobId: string; P: bigint; W: bigint; postedHeight: number } | null = null;
+
+async function step4(): Promise<string> {
+  const g = lastJson(run(BIN.job, ["gen", "--m", String(JOB.m), "--n", String(JOB.n), "--k", String(JOB.k), "--out-dir", resolve(DEMO, "job"), "--seed", "7"]));
+  const cfg = lastJson(run(BIN.job, ["config", "--k", String(JOB.k)])).config as string;
+  const recipient = buyer.kp.publicKey;
+  const terms = orderTermsHash(recipient, JOB.m, JOB.n, JOB.k, JOB.maxBlocks, BigInt(JOB.deadlineBlocks));
+  const c = lastJson(run(BIN.job, ["commit", "--job", recipient.toBase58(), "--terms-hash", terms.toString("hex"), "--config", cfg, "--data", g.data_uri]));
+  const body = { spec: { m: JOB.m, n: JOB.n, k: JOB.k, config: cfg, hash_a: c.hash_a, hash_b: c.hash_b, data_uri: g.data_uri,
+    deadline_blocks: JOB.deadlineBlocks, max_blocks: JOB.maxBlocks } };
+  const quote = await httpJson(`${STOREFRONT_URL}/quote?m=${JOB.m}&n=${JOB.n}&k=${JOB.k}&max_blocks=${JOB.maxBlocks}`);
+  info("quote", { price_lamports: quote.body.price_lamports, venue: quote.body.venue, tokens_spl: quote.body.estimate?.tokens_spl });
+  // x402: first call answers 402 with the payment requirements
+  const r402 = await httpJson(`${STOREFRONT_URL}/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (r402.status !== 402) throw new Error(`expected 402, got ${r402.status} ${JSON.stringify(r402.body)}`);
+  const req = r402.body.accepts[0];
+  // exact native payment: service = fee payer, buyer signs the transfer
+  const { blockhash } = await conn.getLatestBlockhash();
+  const msg = new TransactionMessage({ payerKey: new PublicKey(req.extra.feePayer), recentBlockhash: blockhash, instructions: [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 }),
+    SystemProgram.transfer({ fromPubkey: recipient, toPubkey: new PublicKey(req.payTo), lamports: BigInt(req.maxAmountRequired) }),
+  ] }).compileToV0Message();
+  const vtx = new VersionedTransaction(msg);
+  vtx.sign([buyer.kp]);
+  const xPayment = Buffer.from(JSON.stringify({ x402Version: 1, scheme: "exact", network: req.network,
+    payload: { transaction: Buffer.from(vtx.serialize()).toString("base64") } })).toString("base64");
+  const buyerSolBefore = await conn.getBalance(recipient);
+  const r = await httpJson(`${STOREFRONT_URL}/jobs`, { method: "POST", headers: { "content-type": "application/json", "x-payment": xPayment }, body: JSON.stringify(body) });
+  if (r.status !== 201) throw new Error(`POST /jobs with payment: ${r.status} ${JSON.stringify(r.body)}`);
+  const nonce = BigInt(r.body.id);
+  info("order placed", { nonce: r.body.id, order: r.body.order, job_id: r.body.job_id, venue: r.body.venue, paid: req.maxAmountRequired,
+    buyerSolSpent: buyerSolBefore - (await conn.getBalance(recipient)) });
+  // relayer: BridgeUnlock with job_order; the job shows up on the chain
+  const d = await depositFinal(nonce);
+  const job = await waitFor("getJob for the order", () => nodeCall("getJob", { job_id: r.body.job_id }), 60_000);
+  if (job.poster !== recipient.toBase58() || job.hash_a !== c.hash_a || job.hash_b !== c.hash_b) throw new Error(`job mismatch ${JSON.stringify(job)}`);
+  if (job.job_key !== c.job_key) throw new Error(`node job_key ${job.job_key} != buyer's ${c.job_key}`);
+  const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
+  order = { nonce, jobId: job.job_id, P: BigInt(job.protocol_fee), W: BigInt(job.worker_pay), postedHeight: job.posted_height };
+  writeFileSync(resolve(DEMO, "order.json"), JSON.stringify({ ...order, nonce: nonce.toString(), P: order.P.toString(), W: order.W.toString() }));
+  return `order ${nonce} (Solana Order ${orderPda(nonce).toBase58()}, ${o.tokens} SPL bought) unlocked at height ${d.height}: ` +
+    `job ${job.job_id.slice(0, 16)} ${job.status} W=${job.worker_pay} P=${job.protocol_fee} cap=${job.cap_remaining} ` +
+    `deadline ${job.deadline_height} data ${g.data_uri}`;
+}
+
+async function step5(): Promise<string> {
+  if (!order) throw new Error("no order from step 4");
+  const p = await nodeCall("getParams");
+  const cap = (order.P * BigInt(p.alpha_ppm)) / 1_000_000n;
+  const job = await waitFor("job mined, delivered and completed", async () => {
+    const j = await nodeCall("getJob", { job_id: order!.jobId });
+    return j.status === "completed" ? j : null;
+  }, 600_000, 2000);
+  // scan the chain for job blocks and fallback blocks since the job was posted
+  const ci = await node.getChainInfo();
+  const jobBlocks: number[] = [];
+  let fallbackAfter = 0;
+  let fallbackBefore = 0;
+  for (let h = 1; h <= ci.height; h++) {
+    const b = await nodeCall("getBlock", { height: h });
+    const jid = b.header_fields.job_id as string;
+    if (jid === order.jobId) jobBlocks.push(h);
+    else if (/^0+$/.test(jid)) h > order.postedHeight ? fallbackAfter++ : fallbackBefore++;
+  }
+  const subsidy = BigInt(job.subsidy_paid);
+  info("job", { blocks_mined: job.blocks_mined, job_blocks: jobBlocks, subsidy_paid: job.subsidy_paid, cap_alpha_x_P: cap.toString(),
+    cap_remaining: job.cap_remaining, deliverer: job.deliverer, result_hash: job.result_hash, closed_height: job.closed_height,
+    fallback_blocks_before_job: fallbackBefore, fallback_blocks_after_job: fallbackAfter });
+  if (jobBlocks.length === 0 || jobBlocks.length !== job.blocks_mined) throw new Error(`job blocks ${jobBlocks.length} vs blocks_mined ${job.blocks_mined}`);
+  if (subsidy === 0n || subsidy > cap || BigInt(job.cap_remaining) !== cap - subsidy) throw new Error(`subsidy ${subsidy} vs cap ${cap}`);
+  const poolNow = BigInt((await nodeCall("getEscrow")).pool_balance);
+  const uncapped = (poolNow * BigInt(p.emission_ppm)) / 1_000_000n;
+  info("cap check", { pool_now: poolNow.toString(), pool_x_emission_per_block: uncapped.toString(), cap: cap.toString() });
+  if (fallbackBefore === 0) throw new Error("no fallback blocks seen");
+  if (job.deliverer !== miner.publicKey.toBase58()) throw new Error(`deliverer ${job.deliverer}`);
+  // relayer finalizes the order on Solana once the completion is K deep
+  const pda_ = orderPda(order.nonce);
+  const acc = await waitFor("finalize_order on Solana", async () => {
+    const a = await conn.getAccountInfo(pda_);
+    return a && a.data[ORDER_LAYOUT.STATUS] === ORDER_STATUS_FINALIZED ? a : null;
+  }, 300_000);
+  const rh = Buffer.from(acc.data.subarray(ORDER_LAYOUT.RESULT_HASH, ORDER_LAYOUT.RESULT_HASH + 32)).toString("hex");
+  const deliverer = new PublicKey(acc.data.subarray(ORDER_LAYOUT.DELIVERER, ORDER_LAYOUT.DELIVERER + 32)).toBase58();
+  if (rh !== job.result_hash || deliverer !== job.deliverer) throw new Error(`Order on Solana: result_hash ${rh} deliverer ${deliverer}`);
+  const svc = await httpJson(`${STOREFRONT_URL}/jobs/${order.nonce}`);
+  const heightNow = (await node.getChainInfo()).height;
+  return `${job.blocks_mined} job block(s) at ${jobBlocks.join(",")}, subsidy ${subsidy} = cap alpha x P ${cap} ` +
+    `(pool x emission per block now ${uncapped}), ${fallbackBefore} fallback blocks before / ${fallbackAfter} after; completed at ${job.closed_height}, ` +
+    `finalized on Solana by height ${heightNow} (K=${FINALITY_K}); Order ${pda_.toBase58()} result_hash ${rh} (GET /jobs/${order.nonce}: ${svc.body?.status ?? svc.status})`;
+}
+
+async function step6(): Promise<string> {
+  if (!order) throw new Error("no order");
+  const job = await nodeCall("getJob", { job_id: order.jobId });
+  const lastJobBlock = job.closed_height; // completion block; subsidies were paid in earlier job blocks
+  await waitFor("miner rewards matured (K past the last job block)", async () => (await node.getChainInfo()).height >= lastJobBlock + FINALITY_K + 1, 120_000);
+  const bal = await chainBalance(miner.publicKey);
+  const lockAmount = ((bal / 2n) / 1000n) * 1000n;
+  if (lockAmount === 0n) throw new Error(`miner balance ${bal}`);
+  const to = miner.publicKey; // same ed25519 key on Solana
+  const splBefore = await splBalance(to);
+  const out = relayerCli(["lock", lockAmount.toString(), to.toBase58(), resolve(ROOT, KEYS.miner)]).trim();
+  console.log(out);
+  const hash = out.split(" ").pop()!;
+  await waitFor("BridgeLock included", async () => (await node.getTx(hash))?.status === "included", 120_000);
+  const lockHeight = (await node.getTx(hash))!.height!;
+  const got = await waitFor("SPL released on Solana", async () => {
+    const b = await splBalance(to);
+    return b > splBefore ? b : null;
+  }, 300_000);
+  const heightAtRelease = (await node.getChainInfo()).height;
+  if (got - splBefore !== lockAmount / 1000n) throw new Error(`released ${got - splBefore}, want ${lockAmount / 1000n}`);
+  return `miner balance ${bal}, BridgeLock ${lockAmount} at height ${lockHeight}, released ${lockAmount / 1000n} SPL to ${to.toBase58()} ` +
+    `(ATA ${ata(to, MINT).toBase58()}) by chain height ${heightAtRelease}`;
+}
+
+// ------------------------------------------------------------ teardown
+
+function stopPid(name: string, pid: number) {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    /* gone */
+  }
+}
+
+async function teardown(): Promise<string> {
+  for (const p of [...procs].reverse()) stopPid(p.name, p.pid);
+  await sleep(1500);
+  for (const p of procs) {
+    try {
+      process.kill(p.pid, 0);
+      process.kill(p.pid, "SIGKILL");
+    } catch {
+      /* stopped */
+    }
+  }
+  try {
+    console.log(run("bash", ["scripts/devnet.sh", "stop"], { env: DEVNET_ENV }).trim());
+  } catch (e) {
+    console.log(String(e).slice(0, 300));
+  }
+  try {
+    console.log(run("bash", ["scripts/localnet.sh", "down", "token"]).trim());
+  } catch (e) {
+    console.log(String(e).slice(0, 300));
+  }
+  const ports = [10600, 10601, 10602, 10603, 10630, 10631, 10632, 10633, 10634, 10635, 10640, 10641, 10642, 10660, 10661, 10662];
+  const busy = await waitFor("ports free", async () => {
+    const b = ports.filter((p) => portBusy(p));
+    return b.length === 0 ? [] : null;
+  }, 30_000).catch(() => ports.filter((p) => portBusy(p)));
+  if (busy.length) throw new Error(`ports still bound: ${busy.join(",")}`);
+  return `stopped ${procs.map((p) => `${p.name}(${p.pid})`).join(", ")}, devnet and token validator by PID; ports ${ports[0]}-${ports[ports.length - 1]} free`;
+}
+
+// ------------------------------------------------------------ main
+
+let failed = false;
+try {
+  await step("1. bring up, init reserve + launch, bridge, storefront, genesis signers", step1);
+  await step("2. trades, buyback crank, fund_mining -> pool unlock", step2);
+  await step("3. plain bridge-in + RegisterAgent", step3);
+  await step("4. storefront order over x402 -> job on the chain", step4);
+  await step("5. job + fallback mining, delivery, CompleteJob, finalize_order on Solana", step5);
+  await step("6. rewards mature, BridgeLock -> SPL release on Solana", step6);
+} catch (e) {
+  failed = true;
+  console.log(`\n${String((e as Error).message)}`);
+}
+const keepUp = process.env.DEMO_KEEP_UP === "1";
+if (!keepUp) {
+  const s = Date.now();
+  try {
+    const d = await teardown();
+    results.push({ step: "7. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 7. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+  } catch (e) {
+    failed = true;
+    results.push({ step: "7. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 7. teardown\n   FAIL: ${(e as Error).message}`);
+  }
+} else {
+  console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);
+}
+console.log("\n== summary");
+for (const r of results) console.log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.step}  (${r.secs.toFixed(1)} s)`);
+console.log(`  total ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+writeFileSync(resolve(DEMO, "result.json"), JSON.stringify(results, null, 2));
+process.exit(failed || results.some((r) => !r.ok) ? 1 : 0);
