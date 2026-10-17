@@ -162,6 +162,12 @@ As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGj
 - Order job id on the chain: `sha256(b"pearl-sol:order-job:v1" || nonce LE)`
   (Solana has no usable blake3). Normal PostJob keeps `blake3(poster || nonce)`.
 - The order's deadline is relative: `deadline_height = unlock height + deadline`.
+- Order job header (fixed after the M1 demo, 29f4783..): the buyer commits hash_a /
+  hash_b before W, P, job_id and the absolute deadline exist, so order jobs use the
+  Pearl job header `poster || order_terms_hash`, where order_terms hashes poster,
+  m, n, k, max_blocks and the relative deadline (chain/state/src/schema.rs).
+  `JobRecord.header_id` holds it and getJob returns it; miners build the job header
+  from header_id, not job_id. Normal PostJob jobs keep `job_id || terms_hash || 0 || 0`.
 - `finalize_order` callers: buyer, admin or an attester (result_uri is unsigned).
   `expire_order` takes attester sigs over `b"pearl-sol:expired:v1" || job_id`.
 - One-time setup: the trader PDA needs pump and PumpSwap
