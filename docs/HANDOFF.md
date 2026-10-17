@@ -247,6 +247,12 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    ~/agent-credit (design ~/ideas/agent-credit/PEARL-LAYER.md); pearl-sol only
    receives precise change requests. Priors itself (Robinhood Chain) is NOT
    targeted (third-party; would need a new RH Chain bridge).
+7. AGENT WALLET = LEATHER FORK (owner 2026-10-17): ~/pearl-wallet (Leather 6.73.4,
+   MIT, remote `upstream`, no remote of ours). Our chain is the primary network +
+   Solana token side; ports our extension's byte-tested codecs; Bitcoin/Stacks
+   hidden behind one flag (default off); Leather branding removed. Plan doc
+   ~/pearl-wallet/docs/PEARL-PORT.md. The simpler ~/pearl-sol/extension stays as the
+   reference implementation until the fork matches it.
 Not done in M2 (later): order refund path (gap above), historical withdrawal proofs,
 chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
