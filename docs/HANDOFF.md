@@ -27,6 +27,16 @@ allows running as many agents as needed.
   the stopped SVM integration demo + extension WIP.
 - Still valid: token chain = Solana (pump.fun, reserve, bridge program),
   crates/pearl-job, relayer/crank token side.
+- Solana's role (owner approved 2026-10-16, both): (1) M1 compute storefront:
+  a Solana program + x402 endpoint where any Solana app/agent buys AI jobs in
+  USDC or SOL; payment swaps into the token (buy pressure), bridges to our chain
+  as W + P, and the result commitment is posted back to Solana for the buyer.
+  (2) M2 trust-minimised bridge: a Solana light-client program that tracks our
+  PoW headers and verifies the work (plain Pearl verify, about 1.3-1.9M CU, split
+  over 2 txs per header); bridge withdrawals and job results are proved against
+  those headers instead of an M-of-N signer set. Plus the existing roles:
+  liquidity (pump.fun/PumpSwap), creator-fee buybacks funding the reserve, miner
+  exit liquidity. Framing: Solana = money, buyers, final record; our chain = work.
 - Validators/builds run locally on this Mac (owner OK), not claude-host.
 - Ports 10600-10699 (see CLAUDE.md). Repo is local git only, no remote.
 
@@ -171,7 +181,9 @@ allows running as many agents as needed.
    them), fallback blocks when no job is open (no subsidy), difficulty (WTEMA),
    native tx types (transfer, bridge unlock/lock, agent register, post job,
    deliver result), reward from the reserve pool with the alpha x P cap,
-   confirmations-based bridge finality.
+   confirmations-based bridge finality, the Solana storefront program + x402
+   endpoint (M1), and the Solana light client (M2; header format must make it
+   cheap: fixed-size header, proof hash committed in it).
 3. Then build: node crates, miner as block producer, RPC, rewire relayer and the
    extension to our RPC.
 ## Gotchas
