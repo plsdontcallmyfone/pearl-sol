@@ -87,10 +87,9 @@ allows running as many agents as needed.
          advance_epoch; claim is per job; pool tracks `outstanding`; terms_hash
          = sha256("pearl-sol:terms:v1" || poster || job_id || m || n || k || W ||
          P || deadline_slot || share_target). agent-cli not yet run on a validator.
-      Program tests run in LiteSVM (no ports). Not yet built: scripts/demo.sh, the
-      real-validator end to end run (SPEC 5, M1 step 4); that is the orchestrator's
-      integration step once all four report. If a session dies mid-build, check
-      `git log` and each scope's files to see which workstreams landed.
+      Program tests run in LiteSVM (no ports). The v2 end to end run is scripts/demo.sh
+      (see Demo below). If a session dies mid-build, check `git log` and each
+      scope's files to see which workstreams landed.
 
 - [x] Integration step 1: `scripts/localnet.sh up` now loads our built programs
       at genesis (reserve, bridge on token; escrow, agents, jobs, mining on agent;
@@ -158,7 +157,7 @@ allows running as many agents as needed.
      jobs/mining .so; proof 12.6 KB, verify about 95 us, share target 0x1d010000
      about 1 s per share per core. result_hash = blake3_keyed(C as i32 LE
      row-major, key = job_key). Share message has no tile (one share per nonce).
-- All four M1 workstreams DONE. Left: the real-validator end to end run.
+- All four M1 workstreams DONE; the v2 end to end demo passes (see Demo).
 - Validators run locally (owner OK, see CLAUDE.md), not on claude-host.
 
 - [ ] Chrome extension wallet (owner request 2026-10-16): build agent started,
@@ -180,7 +179,8 @@ once on this Mac), each owning its paths:
    scripts/devnet.sh (init/start/stop/status/mine/reset), RPC 10630/10632/10634, WS
    = RPC+1. Measured: 51 blocks/s at easy target, about 480 tx/s end to end; live
    pearl-miner 3/3 blocks accepted. Deviations: chain job header =
-   job_id||terms_hash||0||0; genesis tx_root = genesis spec digest; BridgeUnlock fee
+   header_id||terms_hash||0||0 (header_id = job_id for PostJob, = poster for storefront
+   orders with order_terms, see docs/RPC.md; M1 integration fix); genesis tx_root = genesis spec digest; BridgeUnlock fee
    may be 0; work = 2^256/(target+1); withdrawal proofs = Commonware MMR (SHA-256),
    final only. Not done: open-membership net, body pruning, restart loads all
    blocks in memory, no job block mined live yet (needs a job with real data_uri).
@@ -214,10 +214,64 @@ once on this Mac), each owning its paths:
    chain activity is the wallet's own log (no history-by-address RPC); the token
    is labelled PEARL (placeholder, like APP_NAME); bottom tab bar overlaps the
    last home-screen row (cosmetic).
-scripts/localnet.sh now defaults to the token chain only (+ storefront); the
-agent chain is scripts/devnet.sh. Then: scripts/demo.sh (SPEC 7 M1 item 6) on a real validator + our devnet:
-integration agent started 2026-10-16. If a
-session dies, check git log per path.
+6. M1 demo: DONE. `scripts/demo.sh` passes end to end on real local processes
+   (all 7 steps PASS, about 3.5 min plus builds; details in "Demo" below).
+
+## Demo (scripts/demo.sh, SPEC 7 M1 item 6)
+
+Run: `scripts/demo.sh` (builds agent-node and pearl-job/miner/attester if stale, refuses
+if any demo port is bound, wipes and recreates `.demo/`, runs `scripts/demo/run.ts`,
+tears everything down by PID, exit 1 on any FAIL). `DEMO_KEEP_UP=1 scripts/demo.sh`
+leaves the stack up (then `scripts/demo.sh down`). Logs: `.demo/logs/*.log`, results
+`.demo/result.json`, demo keys `.demo/keys/` (throwaway, regenerated each run).
+
+Topology: token chain `scripts/localnet.sh up token` (:10600); agent chain
+`scripts/devnet.sh` with `DEVNET_DIR=.demo/devnet` (3 nodes, RPC 10630/10632/10634, p2p
+10640-10642); attester :10661 (node mode), miner (`--deliver`, 4 threads, payout
+keys/localnet/miner), relayer :10660 (SIGNER_KEYS = attester, AGENT_KEY = TOKEN_PAYER =
+payer, POLL_MS 1000), storefront-x402 :10662 (wallet = a demo key), crank CLI.
+One key (keys/localnet/attester) is the chain attester (genesis, 1 of 1), the bridge
+signer (1 of 1), the storefront attester (1 of 1) and the job evaluator.
+
+Demo genesis (DEVNET_PARAMS): finality_k 6, target_block_time_ms 1500,
+wtema_half_life_ms 15000, emission_ppm 10000, min_fee 1000, target 0x207fffff (the
+easiest; WTEMA hardens it within about 200 blocks). emission is high on purpose so one
+job block pays exactly alpha x P (cap binds). Production values stay K 30 / 60 s / 7 ppm.
+
+Steps and last run (2026-10-16, all PASS, 205 s without builds):
+1. up + init (40 s): reserve init (min_interval 1 s, min_buy 1e5, bridge + mining pool
+   = getEscrow.pool), launch with a 1 SOL dev buy (34.2M tokens), bridge init (mint,
+   attester 1 of 1), storefront init + trader PDA pump/PumpSwap volume accumulators,
+   genesis attester checked.
+2. (48 s) trader 3 SOL + 2 SOL round trips: 0.0306 SOL creator fee; crank once: +847.9k
+   tokens buyback; crank fund 10M tokens: deposit 0 unlocked to the pool (1e16 units).
+3. (38 s) user buys, deposits 8.69M tokens, unlocked; RegisterAgent; 5 tokens Transfer
+   to the miner payout (fees for SubmitResult/CompleteJob).
+4. (18 s) `pearl-job gen` 64x64x1024, commitments against the order header
+   (buyer || order_terms), POST /jobs -> 402 -> x402 native SOL payment -> 201; relayer
+   BridgeUnlock with job_order; getJob matches hash_a/hash_b/job_key.
+5. (9 s) 1 job block, subsidy 45.56e12 = alpha x P exactly (pool x emission was 100e12),
+   fallback blocks before and after, SubmitResult, attester sig, CompleteJob (W to the
+   miner), relayer finalize_order after K; Order on Solana read back: status finalized,
+   result_hash = the chain's.
+6. (15 s) after K, miner BridgeLocks half its balance (136.69M tokens) to its own key on
+   Solana; relayer releases after K; SPL balance checked.
+7. (37 s) teardown by PID, ports 10600-10662 free.
+Final invariant: vault 18,836,332,079,710 SPL x 1000 = 1e18 - escrow =
+18,836,332,079,710,000, nothing in flight, delta 0.
+
+Bugs fixed by the integration run (each with a test):
+- Storefront orders were unmineable: the Pearl job header (job_id || terms_hash with W,
+  P and the absolute deadline) cannot be known when the buyer commits hash_a/hash_b on
+  Solana. Order jobs now use `poster || order_terms(poster, m, n, k, max_blocks,
+  relative deadline)` (chain/state schema `order_terms_hash`, JobRecord.header_id, RPC
+  `header_id`). The extension's Buy form can now compute hash_a/hash_b from this rule.
+- pearl-job pow refused job blocks whose chain job_id differs from the header id;
+  pearl-node JobInfo gained header_id; miner delivered under the wrong id; the miner
+  stalled the chain retrying a job whose mining errors (now skipped 60 s).
+
+Not covered by the demo: PumpSwap (graduated) path, expire/refund path, USDC, reorgs
+across real nodes, restarts mid-flow, more than one relayer/attester.
 
 ## Gotchas
 

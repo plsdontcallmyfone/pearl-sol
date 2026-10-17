@@ -51,7 +51,7 @@ explicitly; never touch `solana config`.
 | Claude subagent (reserve) | 2026-10-16 | token/programs/reserve, token/tests/reserve*, services/crank, fixtures/pump/, scripts/pump-fixtures.sh, token branch of scripts/localnet.sh (DONE) |
 | Claude subagent (proof crates) | 2026-10-16 | crates/ (pearl-job, pearl-chain, chain-litesvm), services/miner, services/attester, keys/localnet/{attester,miner}-keypair.json (DONE, committed) |
 | Claude subagent (market) | 2026-10-16 | agent/programs/{agents,jobs,mining}, agent/tests/{agents,jobs,mining}*, services/agent-cli (DONE, committed) |
-| Claude subagent (M1 integration v2) | 2026-10-16 | scripts/demo.sh, scripts/demo/, minimal fixes in any component (not extension/) for the real-process e2e run: localnet token + devnet + relayer/attester/miner/crank/storefront-x402 (IN PROGRESS) |
+| Claude subagent (M1 integration v2) | 2026-10-16 | scripts/demo.sh, scripts/demo/, minimal fixes in any component (not extension/) for the real-process e2e run: localnet token + devnet + relayer/attester/miner/crank/storefront-x402 (DONE: all 7 steps PASS, see HANDOFF Demo) |
 | Research subagent (Commonware) | 2026-10-16 | research/NOTES-commonware.md only (DONE, uncommitted) |
 | Claude subagent (storefront) | 2026-10-16 | token/programs/storefront, token/tests/storefront-litesvm, services/storefront-x402, keys/localnet/storefront-keypair.json, storefront entry in token/Anchor.toml, no bridge changes needed (DONE, committed 18f3cd0) |
 | Claude subagent (miner v2) | 2026-10-16 | crates/pearl-job (pow module), crates/pearl-node (node RPC client, tx encoding, mock node), services/miner (block producer), services/attester (node mode) (DONE, committed) |
