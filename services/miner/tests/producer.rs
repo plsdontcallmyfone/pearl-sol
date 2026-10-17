@@ -34,17 +34,22 @@ fn tmp(tag: &str) -> std::path::PathBuf {
 
 /// A 64 x 64 job with data on disk, evaluated by `attester_key()`.
 fn make_job(dir: &std::path::Path, id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32>) {
+    make_job_with(dir, id, id, seed)
+}
+
+/// `header_id` = the Pearl header's first field (the poster for a storefront order).
+fn make_job_with(dir: &std::path::Path, id: [u8; 32], header_id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32>) {
     let (m, n, k) = (64u32, 64u32, 1024u32);
     let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, Some(seed));
     let mp = data::save(&dir.join(hex::encode(&id[..4])), m, n, k, &a, &b).unwrap();
     let config = MiningConfig::localnet_default();
-    let header = JobHeader { job_pubkey: id, terms_hash: [0x33; 32], created_slot: 1, target_bits: 0x1d010000 };
+    let header = JobHeader { job_pubkey: header_id, terms_hash: [0x33; 32], created_slot: 1, target_bits: 0x1d010000 };
     let key = job_key(&header, &config);
     let (ha, hb) = pearl_job::commit(&key, &a, &b, k as usize, n as usize);
     let c = matmul(&a, &b, m as usize, n as usize, k as usize);
     let info = JobInfo {
         job_id: id,
-        header_id: id,
+        header_id,
         poster: [0x10; 32],
         terms_hash: [0x33; 32],
         created_height: 1,
@@ -125,6 +130,25 @@ fn mines_job_blocks_and_delivers() {
     assert!(events(&logs, "stats") > 0, "no stats line");
     // Account nonce advanced by SubmitResult + CompleteJob.
     assert_eq!(node.get_account(&miner_key().verifying_key().to_bytes()).unwrap().nonce, 2);
+}
+
+/// Storefront order: the job's Pearl header id (the poster) differs from its chain id.
+#[test]
+fn delivers_order_job_whose_header_id_is_the_poster() {
+    let dir = tmp("order");
+    let node = MockNode::new(CHAIN, EASY);
+    let (job, c) = make_job_with(&dir, [0x0b; 32], [0x10; 32], 6);
+    node.add_job(job.clone());
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 2, true), log);
+    m.run(&|| false).unwrap();
+    assert!(node.state.lock().unwrap().blocks.iter().any(|b| b.header.job_id == [0x0b; 32]), "no job block");
+    let j = node.job(&[0x0b; 32]).unwrap();
+    assert!(j.is("Completed"), "job is {}", j.status);
+    assert_eq!(j.result_hash, Some(result_hash(&job.to_job().job_key(), &c)));
+    assert_eq!(events(&logs, "mine_error"), 0);
+    assert_eq!(m.stats.completed, 1);
 }
 
 #[test]

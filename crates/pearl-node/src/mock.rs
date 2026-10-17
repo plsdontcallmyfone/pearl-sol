@@ -243,8 +243,8 @@ impl NodeApi for MockNode {
                 applied += 1;
             }
         }
-        if let Some(j) = &job {
-            *s.job_blocks.entry(j.header.job_pubkey).or_default() += 1;
+        if job.is_some() {
+            *s.job_blocks.entry(b.header.job_id).or_default() += 1;
         }
         s.blocks.push(MockBlock { header: b.header, proof_len: b.proof.len(), txs: applied });
         Ok(SubmitOutcome::Accepted { block_hash: b.header.block_hash() })

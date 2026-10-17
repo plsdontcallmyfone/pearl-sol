@@ -291,7 +291,7 @@ impl<'a> Miner<'a> {
                                 "nonce": b.header.nonce, "job": job, "proof_len": b.proof.len()}));
                 if self.cfg.deliver && !b.header.is_fallback() && !self.deliveries.contains_key(&b.header.job_id) {
                     if let Some(p) = &prep {
-                        self.queue_delivery(p)?;
+                        self.queue_delivery(b.header.job_id, p)?;
                     }
                 }
             }
@@ -303,8 +303,9 @@ impl<'a> Miner<'a> {
         Ok(Some(out))
     }
 
-    fn queue_delivery(&mut self, prep: &PreparedJob) -> Result<()> {
-        let id = prep.job.header.job_pubkey;
+    /// `id` is the chain job id (the block header's job_id); the prepared job's Pearl header
+    /// id differs from it for storefront orders.
+    fn queue_delivery(&mut self, id: [u8; 32], prep: &PreparedJob) -> Result<()> {
         let c = prep.product();
         let rh = result_hash(&prep.job_key, &c);
         std::fs::create_dir_all(&self.cfg.results_dir)?;
