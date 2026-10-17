@@ -39,10 +39,12 @@ dependencies = [
  "mempool",
  "net",
  "pearl-job",
+ "pearl-verify-sbf",
  "rand_core 0.10.1",
  "rpc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "state",
  "sync",
  "tokio",
@@ -2284,6 +2286,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-verify-sbf"
+version = "0.1.0"
+dependencies = [
+ "primitive-types",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3069,6 +3078,8 @@ dependencies = [
  "commonware-utils",
  "futures",
  "pearl-job",
+ "pearl-verify-sbf",
+ "sha2 0.10.9",
  "thiserror",
  "tracing",
 ]

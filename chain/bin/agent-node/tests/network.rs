@@ -401,6 +401,87 @@ fn withdrawal_becomes_final_with_proof() {
     });
 }
 
+/// getWithdrawalProof `at_height`: a historical proof against an OLDER final header's
+/// withdraw_root verifies with the light client's verifier (crates/pearl-verify-sbf), so
+/// a light client need not sit at the node's final tip; bad heights are refused.
+#[test]
+fn historical_withdrawal_proof_at_an_older_final_header() {
+    runner(7).start(|ctx| async move {
+        let net = setup(&ctx, 1, 3, true).await;
+        let api = &net.apis[0];
+        let b64 = |t: &Tx| base64::engine::general_purpose::STANDARD.encode(t.encode());
+        let msg = deposit_message(9, &pk(2), 5000);
+        let sig = AttesterSig { pubkey: pk(50), sig: sign_plain(&seed(50), &msg) };
+        let fund = Tx::signed(&seed(200), CHAIN, 0, 0, TxBody::BridgeUnlock { solana_nonce: 9, recipient: pk(2), amount_spl: 5000, job_order: None, sigs: vec![sig] });
+        api.call("sendTx", json!({"tx": b64(&fund)})).await;
+        api.mine(3).await;
+        // withdrawal 0 in one block, withdrawal 1 in a later one
+        for (n, amount) in [(0u64, 1_000_000u64), (1, 2_000_000)] {
+            let lock = Tx::signed(&seed(2), CHAIN, n, 10, TxBody::BridgeLock { solana_recipient: [9; 32], amount });
+            api.call("sendTx", json!({"tx": b64(&lock)})).await;
+            api.mine(3).await;
+            api.mine(3).await;
+        }
+        for _ in 0..5 {
+            api.mine(3).await;
+        }
+        let w0 = api.call("getWithdrawalProof", json!({"nonce": 0})).await;
+        let w1 = api.call("getWithdrawalProof", json!({"nonce": 1})).await;
+        assert_eq!((w0["final"].clone(), w1["final"].clone()), (json!(true), json!(true)), "{w0} {w1}");
+        let h0 = w0["withdrawal"]["height"].as_u64().unwrap();
+        let h1 = w1["withdrawal"]["height"].as_u64().unwrap();
+        assert!(h0 < h1);
+        let final_h = api.call("getChainInfo", json!({})).await["finalized_height"].as_u64().unwrap();
+        let sha: pearl_verify_sbf::mmr::Sha = |parts| {
+            use sha2::Digest;
+            let mut h = sha2::Sha256::new();
+            for p in parts {
+                h.update(p);
+            }
+            h.finalize().into()
+        };
+        let check = |p: &Value, root_hex: &str| -> bool {
+            let entry = hex::decode(p["entry"].as_str().unwrap()).unwrap();
+            let proof = base64::engine::general_purpose::STANDARD.decode(p["proof"].as_str().unwrap()).unwrap();
+            let root: [u8; 32] = hex::decode(root_hex).unwrap().try_into().unwrap();
+            let mut el = vec![0u8; 11 + entry.len()];
+            let n = pearl_verify_sbf::mmr::append_element(&entry, &mut el);
+            pearl_verify_sbf::mmr::verify_inclusion(sha, &proof, &el[..n], p["location"].as_u64().unwrap(), &root).is_ok()
+        };
+        let mut older_roots = 0;
+        for at in h0..=final_h {
+            let p = api.call("getWithdrawalProof", json!({"nonce": 0, "at_height": at})).await;
+            let hdr = api.call("getHeader", json!({"height": at})).await;
+            let root = hdr["header_fields"]["withdraw_root"].as_str().unwrap();
+            assert_eq!(p["withdraw_root"].as_str().unwrap(), root, "root is the header's at {at}");
+            assert_eq!(p["root_height"], json!(at));
+            assert_eq!(p["root_block_hash"], hdr["hash"]);
+            assert!(check(&p, root), "historical proof at {at} verifies");
+            if root != w0["withdraw_root"].as_str().unwrap() {
+                older_roots += 1;
+                assert!(!check(&w0, root), "the tip proof does not verify against an older root");
+            }
+        }
+        assert!(older_roots >= 2, "{older_roots}");
+        // withdrawal 1 against its own block and later
+        let p = api.call("getWithdrawalProof", json!({"nonce": 1, "at_height": h1})).await;
+        assert!(check(&p, p["withdraw_root"].as_str().unwrap()));
+        // refused: below the withdrawal's block, above final
+        let try_call = |params: Value| {
+            let api = api.clone();
+            async move {
+                let (tx, rx) = oneshot::channel();
+                api.0.clone().send(ApiRequest::Call { method: "getWithdrawalProof".into(), params, reply: tx }).await.unwrap();
+                rx.await.unwrap()
+            }
+        };
+        let e = try_call(json!({"nonce": 1, "at_height": h1 - 1})).await.unwrap_err();
+        assert!(e.message.contains("below the withdrawal"), "{}", e.message);
+        let e = try_call(json!({"nonce": 0, "at_height": final_h + 1})).await.unwrap_err();
+        assert!(e.message.contains("not final"), "{}", e.message);
+    });
+}
+
 // ---------------------------------------------------------------- M2: data availability
 
 fn b64e(b: &[u8]) -> String {

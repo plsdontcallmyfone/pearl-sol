@@ -63,3 +63,74 @@ fn fork_finalize_reopen() {
         assert_eq!(store.committed_height().await.unwrap(), Some(2));
     });
 }
+
+fn sha(parts: &[&[u8]]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for p in parts {
+        h.update(p);
+    }
+    h.finalize().into()
+}
+
+fn verifies(proof: &[u8], entry: &[u8], loc: u64, root: &[u8; 32]) -> bool {
+    let mut el = vec![0u8; 11 + entry.len()];
+    let n = pearl_verify_sbf::mmr::append_element(entry, &mut el);
+    pearl_verify_sbf::mmr::verify_inclusion(sha, proof, &el[..n], loc, root).is_ok()
+}
+
+/// getWithdrawalProof at_height: a proof against an OLDER final withdraw_root verifies
+/// with the light client's verifier, at every commit boundary, including blocks that
+/// were finalized together in one commit; the current proof does not verify against an
+/// old root and vice versa.
+#[test]
+fn historical_withdrawal_proofs_verify_against_older_roots() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut store = Store::open(context.child("h"), "t").await.unwrap();
+        let mut snap = store.committed().clone();
+        // heights 1..=6; withdrawals in 1 (two), 2 (none), 3 (one), 4 (one), 5 (none), 6 (one)
+        let plan: [&[&[u8]]; 6] = [&[b"w0", b"w1"], &[], &[b"w2"], &[b"w3"], &[], &[b"w4"]];
+        let mut per_height = vec![]; // (height, log_size, withdraw_root)
+        let mut locs = vec![]; // (entry, loc, block height)
+        let mut snaps = vec![];
+        for (i, ws_) in plan.iter().enumerate() {
+            let h = i as u64 + 1;
+            let base = snap.log_size;
+            let next = store.build(&snap, &ws(&[(h as u8, Some(b"v"))], ws_), h).await.unwrap();
+            for (j, e) in ws_.iter().enumerate() {
+                locs.push((e.to_vec(), base + j as u64, h));
+            }
+            per_height.push((h, next.log_size, next.withdraw_root));
+            snaps.push(next.clone());
+            snap = next;
+            // Finality lags the tip (as in the chain, children are built before their
+            // parent is final): finalize 1 after 2 exists, then 2..=4 together and
+            // 5..=6 together once 6 exists.
+            if h == 2 {
+                store.finalize(&snaps[0]).await.unwrap();
+            }
+            if h == 6 {
+                store.finalize(&snaps[3]).await.unwrap();
+                store.finalize(&snaps[5]).await.unwrap();
+            }
+        }
+        for (entry, loc, wh) in &locs {
+            assert_eq!(store.log_get(*loc).await.unwrap().as_deref(), Some(entry.as_slice()));
+            for &(h, size, root) in &per_height {
+                if h < *wh {
+                    continue;
+                }
+                let proof = store.withdrawal_proof_at(*loc, size).await.unwrap();
+                assert!(verifies(&proof, entry, *loc, &root), "entry at {loc} (block {wh}) against the root of height {h}");
+                if root != store.committed().withdraw_root {
+                    let (cur, _) = store.withdrawal_proof(*loc).await.unwrap();
+                    assert!(!verifies(&cur, entry, *loc, &root), "the current proof must not verify against an older root");
+                    assert!(!verifies(&proof, entry, *loc, &store.committed().withdraw_root));
+                }
+            }
+        }
+        // a location beyond the historical size is refused
+        let (_, size1, _) = per_height[0];
+        assert!(store.withdrawal_proof_at(size1, size1).await.is_err());
+    });
+}

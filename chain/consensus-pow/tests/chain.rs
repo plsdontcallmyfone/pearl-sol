@@ -553,3 +553,45 @@ fn fallback_size_is_a_chain_parameter() {
         assert!(t.txs.is_empty(), "r = 32 is below the rank-penalty floor");
     });
 }
+
+/// Historical withdrawal proofs (getWithdrawalProof at_height) are the same after a
+/// restart: the per-height log sizes are rebuilt from the committed log.
+#[test]
+fn historical_withdrawal_proofs_survive_restart() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(3), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let b = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 1000)], now).await;
+        add(&mut c, b, now).await;
+        let mut tip = c.tip().hash;
+        for n in 0..3u64 {
+            now += 1000;
+            let lock = Tx::signed(&seed(2), CHAIN, n, 10, TxBody::BridgeLock { solana_recipient: [9; 32], amount: 100_000 });
+            let b = mine_on(&c, tip, 9, &[lock], now).await;
+            add(&mut c, b, now).await;
+            let t = c.tip().hash;
+            tip = extend(&mut c, t, 1, 9, &mut now).await;
+        }
+        tip = extend(&mut c, tip, 4, 9, &mut now).await;
+        let f = c.finalized().header.height;
+        let mut before = vec![];
+        for nonce in 0..3u64 {
+            for at in 1..=f {
+                before.push((nonce, at, c.withdrawal_proof_at(nonce, at).await.map_err(|e| e.to_string())));
+            }
+        }
+        let ok = before.iter().filter(|(_, _, r)| matches!(r, Ok(Some(_)))).count();
+        let refused = before.iter().filter(|(_, _, r)| r.is_err()).count();
+        assert!(ok >= 3 && refused >= 3, "{ok} ok, {refused} refused below the withdrawal block");
+        // distinct roots across heights (one per withdrawal block)
+        let roots: std::collections::HashSet<_> = before.iter().filter_map(|(_, _, r)| r.as_ref().ok().and_then(|o| o.as_ref()).map(|x| x.3)).collect();
+        assert_eq!(roots.len(), 3);
+        drop(c);
+        let c2 = C::open(ctx.child("b"), "n", genesis(3), MockVerifier).await.unwrap();
+        assert_eq!(c2.tip().hash, tip);
+        for (nonce, at, r) in before {
+            assert_eq!(c2.withdrawal_proof_at(nonce, at).await.map_err(|e| e.to_string()), r, "nonce {nonce} at {at}");
+        }
+    });
+}

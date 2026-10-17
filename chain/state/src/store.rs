@@ -212,6 +212,19 @@ impl<E: commonware_storage::Context + Spawner> Store<E> {
         Ok((proof.encode().to_vec(), d32(&self.ldb().root())))
     }
 
+    /// Historical inclusion proof for the committed log entry at `loc`, against the
+    /// withdraw_root the log had when it held `op_count` operations (a commit boundary:
+    /// the `log_size` of some final block's snapshot). Codec-encoded `merkle::Proof`.
+    /// Verifies against that block's header `withdraw_root`.
+    pub async fn withdrawal_proof_at(&self, loc: u64, op_count: u64) -> Result<Vec<u8>, StateError> {
+        let (proof, _ops) = self
+            .ldb()
+            .historical_proof(Location::new(op_count), Location::new(loc), NonZeroU64::new(1).unwrap())
+            .await
+            .map_err(StateError::db)?;
+        Ok(proof.encode().to_vec())
+    }
+
     /// Codec-encoded current-value proof for `key` against the committed `state_root`.
     pub async fn state_proof(&self, key: &Key) -> Result<Vec<u8>, StateError> {
         let p = self.sdb().key_value_proof(B3(*key)).await.map_err(StateError::db)?;

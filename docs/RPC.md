@@ -236,6 +236,14 @@ SHA-256, codec-encoded, base64) against the committed `withdraw_root`.
 Not yet final: `{"withdrawal": Withdrawal, "final": false, "proof": null}`. M2 (light
 client) uses this; M1 relayers use `getBridgeEvents` and attester signatures.
 
+Historical proof: `{"nonce": 0, "at_height": 57}` proves the entry against the
+`withdraw_root` of the FINAL canonical header at `at_height` (Commonware keyless
+`historical_proof` at the log size that block committed), so a light client can prove
+against any final header it holds, not only the node's final tip. Same response shape;
+`withdraw_root` / `root_height` / `root_block_hash` are that header's. Refused (params
+error) when `at_height` is below the withdrawal's block or above the final height. Without
+`at_height` the proof is against the node's current final root, as before.
+
 ### getAccountTxs `{"account": "base58", "limit"?: 50, "before"?: "height:index"}`
 Txs touching the account on the canonical chain, newest first: txs it sent, Transfers to it,
 BridgeUnlocks to it (coinbase, job payouts and refunds are not txs and are not listed).

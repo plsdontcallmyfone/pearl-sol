@@ -21,3 +21,6 @@ pearl-job.workspace = true
 [dev-dependencies]
 commonware-macros.workspace = true
 futures.workspace = true
+# Historical withdrawal proofs are checked with the light client's own verifier.
+pearl-verify-sbf = { path = "../../crates/pearl-verify-sbf" }
+sha2 = "0.10"

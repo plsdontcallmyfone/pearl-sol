@@ -151,6 +151,10 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     too_deep: HashSet<Hash>,
     tx_index: HashMap<Hash, (Hash, u32)>,
     withdraw_loc: BTreeMap<u64, u64>,
+    /// Withdrawal-log size (operations, a commit boundary) after each FINAL block that
+    /// appended withdrawals, by height. The log size at any final height H is the value
+    /// of the last key <= H; historical proofs (getWithdrawalProof at_height) use it.
+    log_size_at: BTreeMap<u64, u64>,
     /// Per-block rewards (`fees u64 || subsidy u64 || matured u64`), every connected
     /// block on any branch, keyed by hash (node-local index, not consensus state).
     rewards: Option<BlockArchive<E>>,
@@ -293,6 +297,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             too_deep: HashSet::new(),
             tx_index: HashMap::new(),
             withdraw_loc: BTreeMap::new(),
+            log_size_at: BTreeMap::new(),
             rewards: Some(rewards),
             history: HashMap::new(),
         };
@@ -407,6 +412,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             if let Some(e) = self.store.log_get(loc).await.map_err(internal)? {
                 if let Ok(w) = Withdrawal::from_log_entry(&e) {
                     self.withdraw_loc.insert(w.nonce, loc);
+                    // A block's entries are followed by its commit op: size = last loc + 2.
+                    self.log_size_at.insert(w.height, loc + 2);
                 }
             }
         }
@@ -938,6 +945,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.withdraw_loc.insert(w.nonce, n.log_base + i as u64);
                 events.push(ChainEvent::WithdrawalFinal(*w));
             }
+            if !n.summary.withdrawals.is_empty() {
+                self.log_size_at.insert(height, n.snapshot.log_size);
+            }
             for (i, t) in n.txs.iter().enumerate() {
                 for a in tx_accounts(t) {
                     self.history.entry(a).or_default().push((height, i as u32));
@@ -1093,6 +1103,28 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
     /// Decode a sync payload (header + proof).
     pub fn decode_header_payload(b: &[u8]) -> Result<(Header, Vec<u8>), ChainError> {
         decode_header_with_proof(b).map_err(|e| ChainError::Invalid(e.to_string()))
+    }
+
+    /// Historical withdrawal proof against the withdraw_root of the FINAL canonical
+    /// block at `at_height` (which must be at or above the withdrawal's block):
+    /// `(log entry, location, proof bytes, that header's withdraw_root, its block hash)`.
+    /// `Ok(None)` if the withdrawal is not final yet.
+    pub async fn withdrawal_proof_at(&self, nonce: u64, at_height: u64) -> Result<Option<(Vec<u8>, u64, Vec<u8>, Hash, Hash)>, ChainError> {
+        let Some(loc) = self.withdraw_loc.get(&nonce).copied() else { return Ok(None) };
+        if at_height > self.finalized().header.height {
+            return invalid(format!("at_height {at_height} is not final (final height {})", self.finalized().header.height));
+        }
+        let size = self.log_size_at.range(..=at_height).next_back().map(|(_, s)| *s).unwrap_or(0);
+        if loc >= size {
+            return invalid(format!("withdrawal {nonce} is not in the log at height {at_height} (it is in a later block)"));
+        }
+        let hash = self.canonical_hash(at_height).ok_or_else(|| internal("no canonical block at a final height"))?;
+        let header = if hash == self.finalized { self.finalized().header } else {
+            self.get_block(&hash).await?.ok_or_else(|| internal("final block missing from the archive"))?.header
+        };
+        let entry = self.store.log_get(loc).await.map_err(internal)?.ok_or_else(|| internal("log entry missing"))?;
+        let proof = self.store.withdrawal_proof_at(loc, size).await.map_err(internal)?;
+        Ok(Some((entry, loc, proof, header.withdraw_root, hash)))
     }
 
     /// Committed withdrawal proof: `(log entry, location, proof bytes, root)`.

@@ -399,6 +399,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let Some(b) = self.tip_record(&schema::withdrawal_key(n)).await? else { return Ok(Value::Null) };
                 let w = srv(Withdrawal::decode(&b))?;
                 let wj = withdrawal_json(&self.chain, &w);
+                if let Some(at) = p_u64(p, "at_height") {
+                    // Historical proof against the withdraw_root of the final header at `at`.
+                    if at < w.height {
+                        return Err(RpcError::params(format!("at_height {at} is below the withdrawal's block {}", w.height)));
+                    }
+                    if at > self.chain.finalized().header.height {
+                        return Err(RpcError::params(format!("at_height {at} is not final (final height {})", self.chain.finalized().header.height)));
+                    }
+                    return match srv(self.chain.withdrawal_proof_at(n, at).await)? {
+                        None => Ok(json!({"withdrawal": wj, "final": false, "proof": null})),
+                        Some((entry, loc, proof, root, hash)) => Ok(json!({"withdrawal": wj, "final": true, "entry": hex::encode(entry),
+                            "location": loc, "proof": b64(&proof), "withdraw_root": hex::encode(root),
+                            "root_height": at, "root_block_hash": hex::encode(hash)})),
+                    };
+                }
                 match srv(self.chain.withdrawal_proof(n).await)? {
                     None => Ok(json!({"withdrawal": wj, "final": false, "proof": null})),
                     Some((entry, loc, proof, root)) => {
