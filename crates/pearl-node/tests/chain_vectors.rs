@@ -1,0 +1,77 @@
+//! Cross-check SPEC section 2 tx encoding and the v2 Result message against the node's
+//! vectors (chain/agent-types/vectors). Skipped when the files are not there.
+
+use ed25519_dalek::{Signer, SigningKey};
+use pearl_job::messages::result_message_v2;
+use pearl_job::spec::parse_key32;
+use pearl_node::tx::{self, Body, Tx};
+use serde_json::Value;
+
+fn vectors(name: &str) -> Option<Value> {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../chain/agent-types/vectors").join(name);
+    Some(serde_json::from_str(&std::fs::read_to_string(&p).ok()?).unwrap())
+}
+
+fn k(v: &Value) -> [u8; 32] {
+    parse_key32(v.as_str().unwrap()).unwrap()
+}
+
+fn n(v: &Value) -> u64 {
+    pearl_node::num(v).unwrap()
+}
+
+#[test]
+fn txs_match_agent_types() {
+    let Some(v) = vectors("tx.json") else {
+        eprintln!("tx.json missing, skipping");
+        return;
+    };
+    let mut checked = 0;
+    for t in v.as_array().unwrap() {
+        let b = &t["body"];
+        let body = match t["name"].as_str().unwrap() {
+            "transfer" => Body::Transfer { to: k(&b["to"]), amount: n(&b["amount"]) },
+            "submit_result" => Body::SubmitResult { job_id: k(&b["job_id"]), result_hash: k(&b["result_hash"]), uri: b["uri"].as_str().unwrap().into() },
+            "complete_job" => Body::CompleteJob {
+                job_id: k(&b["job_id"]),
+                sigs: b["sigs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| (k(&s["pubkey"]), hex::decode(s["sig"].as_str().unwrap()).unwrap().try_into().unwrap()))
+                    .collect(),
+            },
+            "expire_job" => Body::ExpireJob { job_id: k(&b["job_id"]) },
+            _ => continue,
+        };
+        let key = SigningKey::from_bytes(&k(&t["seed"]));
+        assert_eq!(key.verifying_key().to_bytes(), k(&t["from"]), "seed -> pubkey");
+        let tx = Tx { chain_id: n(&t["chain_id"]) as u32, from: k(&t["from"]), nonce: n(&t["nonce"]), fee: n(&t["fee"]), body };
+        let unsigned = tx::unsigned_bytes(&tx).unwrap();
+        let name = t["name"].as_str().unwrap();
+        assert_eq!(hex::encode(&unsigned), t["signing_bytes"].as_str().unwrap(), "{name}: unsigned bytes");
+        assert_eq!(hex::encode(tx::signing_bytes(&unsigned)), t["framed_message"].as_str().unwrap(), "{name}: framing");
+        let wire = tx::sign(&tx, &key).unwrap();
+        assert_eq!(hex::encode(&wire), t["tx"].as_str().unwrap(), "{name}: wire");
+        assert_eq!(hex::encode(blake3::hash(&wire).as_bytes()), t["tx_hash"].as_str().unwrap(), "{name}: tx_hash");
+        assert_eq!(tx::decode(&wire).unwrap().0, tx);
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "transfer, submit_result, complete_job, expire_job");
+}
+
+#[test]
+fn result_message_matches_agent_types() {
+    let Some(v) = vectors("messages.json") else {
+        eprintln!("messages.json missing, skipping");
+        return;
+    };
+    let r = v.as_array().unwrap().iter().find(|m| m["name"] == "result").expect("result vector");
+    let msg = hex::decode(r["message"].as_str().unwrap()).unwrap();
+    let (job, deliverer, rh): ([u8; 32], [u8; 32], [u8; 32]) =
+        (msg[..32].try_into().unwrap(), msg[32..64].try_into().unwrap(), msg[64..96].try_into().unwrap());
+    let framed = result_message_v2(&job, &deliverer, &rh);
+    assert_eq!(hex::encode(&framed), r["framed"].as_str().unwrap());
+    let key = SigningKey::from_bytes(&k(&r["seed"]));
+    assert_eq!(hex::encode(key.sign(&framed).to_bytes()), r["sig"].as_str().unwrap());
+}

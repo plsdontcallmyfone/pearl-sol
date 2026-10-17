@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "pearl-job",
     "pearl-chain",
+    "pearl-node",
     "../services/miner",
     "../services/attester",
 ]
@@ -33,6 +34,7 @@ ureq = { version = "2", default-features = false, features = ["json"] }
 tiny_http = "0.12"
 pearl-job = { path = "pearl-job" }
 pearl-chain = { path = "pearl-chain" }
+pearl-node = { path = "pearl-node" }
 
 # Naive int matmul is slow unoptimised; tests run at localnet difficulty.
 [profile.dev]

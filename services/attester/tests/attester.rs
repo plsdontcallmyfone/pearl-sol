@@ -174,3 +174,100 @@ fn result_rejections() {
     assert_eq!(st, 400);
     assert!(v["error"].as_str().unwrap().contains("commitments"), "{v}");
 }
+
+// ------------------------------------------------------------------ node mode (v2)
+
+use pearl_node::mock::MockNode;
+use pearl_node::JobInfo;
+
+/// The fixture job registered on a mock node as Delivered by `deliverer` with C's hash.
+fn node_fixture(tag: &str, evaluator: [u8; 32]) -> (Fx, MockNode, Vec<i32>, std::path::PathBuf) {
+    let fx = fixture(tag);
+    let c = matmul(&fx.a, &fx.b, 64, 64, 1024);
+    let cpath = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("attester-{tag}/C.i32"));
+    data::write_i32(&cpath, &c).unwrap();
+    let job = fx.spec.to_job().unwrap();
+    let node = MockNode::new(1, EASY);
+    node.add_job(JobInfo {
+        job_id: fx.job_pk,
+        poster: [1; 32],
+        terms_hash: job.header.terms_hash,
+        created_height: job.header.created_slot,
+        share_target: job.header.target_bits,
+        config: job.config,
+        m: 64,
+        n: 64,
+        hash_a: job.hash_a,
+        hash_b: job.hash_b,
+        data_uri: fx.spec.data_uri.clone(),
+        status: "Delivered".into(),
+        deliverer: Some([0x66; 32]),
+        result_hash: Some(result_hash(&fx.prep.job_key, &c)),
+        result_uri: format!("file://{}", cpath.display()),
+        evaluators: vec![evaluator],
+        threshold: 1,
+        deadline_height: 100,
+    });
+    (fx, node, c, cpath)
+}
+
+fn node_attester(node: &MockNode) -> Attester {
+    Attester { key: SigningKey::from_bytes(&[5u8; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 }
+}
+
+#[test]
+fn node_mode_signs_delivered_result() {
+    let me = SigningKey::from_bytes(&[5u8; 32]).verifying_key().to_bytes();
+    let (fx, node, c, _) = node_fixture("node-ok", me);
+    let att = node_attester(&node);
+    // Job id as hex, no result_uri: taken from the job.
+    let (st, v) = post(&att, "/result", json!({"job": hex::encode(fx.job_pk), "deliverer": b58(&[0x66; 32])}));
+    assert_eq!(st, 200, "{v}");
+    let mut expect = vec![19u8];
+    expect.extend_from_slice(b"pearl-sol:result:v1");
+    expect.extend_from_slice(&fx.job_pk);
+    expect.extend_from_slice(&[0x66; 32]);
+    expect.extend_from_slice(&result_hash(&fx.prep.job_key, &c));
+    check_sig(&att, &v, &expect);
+    // Shares are v1 only.
+    let (st, v) = post(&att, "/share", json!({"job": fx.spec.job, "miner": b58(&[1; 32]), "proof_b64": ""}));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("v1"));
+    assert_eq!(att.route("GET", "/health", b"").1["mode"], "node");
+}
+
+#[test]
+fn node_mode_rejections() {
+    let me = SigningKey::from_bytes(&[5u8; 32]).verifying_key().to_bytes();
+    let (fx, node, c, _) = node_fixture("node-bad", me);
+    let att = node_attester(&node);
+    let req = |d: &[u8; 32]| json!({"job": hex::encode(fx.job_pk), "deliverer": b58(d)});
+    // not the deliverer
+    let (st, v) = post(&att, "/result", req(&[0x67; 32]));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("deliverer"), "{v}");
+    // a C that differs from the delivered one (via result_b64)
+    let mut bad = c.clone();
+    bad[3] += 1;
+    let (st, v) = post(&att, "/result", json!({"job": hex::encode(fx.job_pk), "deliverer": b58(&[0x66; 32]), "result_b64": b64(&c_to_bytes(&bad))}));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("Freivalds"), "{v}");
+    // on-chain result_hash differs
+    node.state.lock().unwrap().jobs[0].result_hash = Some([9; 32]);
+    let (st, v) = post(&att, "/result", req(&[0x66; 32]));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("result_hash"), "{v}");
+    // not Delivered
+    node.state.lock().unwrap().jobs[0].status = "Open".into();
+    let (st, v) = post(&att, "/result", req(&[0x66; 32]));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("not Delivered"), "{v}");
+    // unknown job
+    let (st, _) = post(&att, "/result", json!({"job": hex::encode([0xee; 32]), "deliverer": b58(&[0x66; 32])}));
+    assert_eq!(st, 400);
+    // not an evaluator
+    let (fx2, node2, _, _) = node_fixture("node-noeval", [0x42; 32]);
+    let (st, v) = post(&node_attester(&node2), "/result", json!({"job": hex::encode(fx2.job_pk), "deliverer": b58(&[0x66; 32])}));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("evaluator"), "{v}");
+}

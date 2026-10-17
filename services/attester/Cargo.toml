@@ -1,6 +1,6 @@
 [package]
 name = "pearl-attester"
-description = "M1 attester: verifies plain share proofs and Freivalds-checks results, signs SPEC section 6 messages"
+description = "Attester: Freivalds-checks delivered results against jobs read from the v2 node and signs the SPEC v2 4.1 Result message (v1 share mode kept)"
 edition = "2021"
 license = "ISC"
 version = "0.1.0"
@@ -26,3 +26,4 @@ ed25519-dalek.workspace = true
 tiny_http.workspace = true
 pearl-job.workspace = true
 pearl-chain.workspace = true
+pearl-node.workspace = true

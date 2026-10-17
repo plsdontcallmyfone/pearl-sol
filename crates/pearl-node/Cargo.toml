@@ -1,0 +1,20 @@
+[package]
+name = "pearl-node"
+description = "Client side of the v2 agent-chain node: JSON RPC (getBlockTemplate, submitBlock, getJob, getAccount, sendTx) and SPEC section 2 tx encoding"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+ureq.workspace = true
+pearl-job.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]

@@ -1,7 +1,7 @@
 //! pearl-attester HTTP server (M1, 1-of-1). Port 10661 by default, 127.0.0.1 only.
 //!
 //!   GET  /health
-//!   POST /share   {job, miner, proof_b64[, job_spec]}
+//!   POST /share   {job, miner, proof_b64[, job_spec]}   (v1 modes only)
 //!   POST /result  {job, deliverer, result_b64 | result_uri[, job_spec]}
 
 use std::io::Read;
@@ -12,23 +12,24 @@ use clap::Parser;
 
 use pearl_attester::{Attester, JobSource};
 use pearl_chain::ix::Programs;
-use pearl_chain::{read_keypair, Pubkey, Rpc};
+use pearl_chain::{Pubkey, Rpc};
 
 #[derive(Parser)]
 #[command(name = "pearl-attester")]
 struct Args {
-    /// Attester keypair (Solana JSON). Localnet key: keys/localnet/attester-keypair.json
+    /// Attester key file (Solana JSON, base58 or hex). Localnet key: keys/localnet/attester-keypair.json
     #[arg(long, default_value = "keys/localnet/attester-keypair.json")]
     keypair: PathBuf,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 10661)]
     port: u16,
-    /// Agent-chain RPC.
-    #[arg(long, default_value = pearl_chain::DEFAULT_RPC)]
+    /// Agent-chain node RPC.
+    #[arg(long, default_value = pearl_node::DEFAULT_RPC)]
     rpc: String,
-    /// `chain` (read jobs from the agent chain) or `request` (trust job_spec in requests; dev only).
-    #[arg(long, default_value = "chain")]
+    /// `node` (read jobs from the v2 node), `chain` (v1 SVM jobs program, superseded)
+    /// or `request` (trust job_spec in requests; dev only).
+    #[arg(long, default_value = "node")]
     mode: String,
     #[arg(long, default_value = pearl_chain::JOBS_PROGRAM)]
     jobs_program: String,
@@ -41,6 +42,7 @@ struct Args {
 fn main() -> Result<()> {
     let a = Args::parse();
     let source = match a.mode.as_str() {
+        "node" => JobSource::Node(Box::new(pearl_node::HttpNode::new(&a.rpc))),
         "chain" => JobSource::Chain {
             rpc: Rpc::new(&a.rpc),
             programs: Programs { jobs: Pubkey::from_b58(&a.jobs_program)?, mining: Pubkey::from_b58(&a.mining_program)? },
@@ -48,7 +50,7 @@ fn main() -> Result<()> {
         "request" => JobSource::Request,
         m => return Err(anyhow!("unknown --mode {m}")),
     };
-    let att = Attester { key: read_keypair(&a.keypair)?, source, freivalds_rounds: a.freivalds_rounds };
+    let att = Attester { key: pearl_node::read_key_file(&a.keypair)?, source, freivalds_rounds: a.freivalds_rounds };
     let addr = format!("{}:{}", a.host, a.port);
     // Binding fails if anything already holds the port; we never take it over.
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;

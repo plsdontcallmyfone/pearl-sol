@@ -1,0 +1,258 @@
+//! Miner against the in-process mock node (no sockets), plus one JSON-RPC-over-HTTP
+//! run on a free port in 10663-10669 (checked with lsof first).
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use ed25519_dalek::SigningKey;
+use serde_json::Value;
+
+use pearl_attester::{Attester, JobSource};
+use pearl_job::freivalds::{matmul, result_hash};
+use pearl_job::{data, job_key, JobHeader, MiningConfig};
+use pearl_miner::{Miner, MinerConfig, ResultAttester};
+use pearl_node::mock::MockNode;
+use pearl_node::{HttpNode, JobInfo, NodeApi};
+
+/// About 0.6 wins per nonce on 64 x 64 (CLI.md).
+const EASY: u32 = 0x1e040000;
+const CHAIN: u32 = 4242;
+
+fn miner_key() -> SigningKey {
+    SigningKey::from_bytes(&[0x4d; 32])
+}
+fn attester_key() -> SigningKey {
+    SigningKey::from_bytes(&[0x5a; 32])
+}
+
+fn tmp(tag: &str) -> std::path::PathBuf {
+    let d = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("miner-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A 64 x 64 job with data on disk, evaluated by `attester_key()`.
+fn make_job(dir: &std::path::Path, id: [u8; 32], seed: u64) -> (JobInfo, Vec<i32>) {
+    let (m, n, k) = (64u32, 64u32, 1024u32);
+    let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, Some(seed));
+    let mp = data::save(&dir.join(hex::encode(&id[..4])), m, n, k, &a, &b).unwrap();
+    let config = MiningConfig::localnet_default();
+    let header = JobHeader { job_pubkey: id, terms_hash: [0x33; 32], created_slot: 1, target_bits: 0x1d010000 };
+    let key = job_key(&header, &config);
+    let (ha, hb) = pearl_job::commit(&key, &a, &b, k as usize, n as usize);
+    let c = matmul(&a, &b, m as usize, n as usize, k as usize);
+    let info = JobInfo {
+        job_id: id,
+        poster: [0x10; 32],
+        terms_hash: [0x33; 32],
+        created_height: 1,
+        share_target: 0x1d010000,
+        config,
+        m,
+        n,
+        hash_a: ha,
+        hash_b: hb,
+        data_uri: format!("file://{}", mp.display()),
+        status: "Open".into(),
+        deliverer: None,
+        result_hash: None,
+        result_uri: String::new(),
+        evaluators: vec![attester_key().verifying_key().to_bytes()],
+        threshold: 1,
+        deadline_height: 1000,
+    };
+    (info, c)
+}
+
+struct InProc(Attester);
+impl ResultAttester for InProc {
+    fn attest(&self, job_id: &[u8; 32], deliverer: &[u8; 32], result_uri: &str) -> anyhow::Result<([u8; 32], [u8; 64])> {
+        let body = serde_json::json!({"job": hex::encode(job_id), "deliverer": bs58::encode(deliverer).into_string(), "result_uri": result_uri});
+        let (_, v) = self.0.route("POST", "/result", body.to_string().as_bytes());
+        pearl_miner::parse_attestation(&v)
+    }
+}
+
+fn cfg(dir: &std::path::Path, blocks: u64, deliver: bool) -> MinerConfig {
+    MinerConfig {
+        threads: 2,
+        refresh: Duration::from_millis(300),
+        stats_every: Duration::from_millis(1),
+        deliver,
+        results_dir: dir.join("results"),
+        max_blocks: Some(blocks),
+        deliver_retry: Duration::from_secs(5),
+        ..MinerConfig::default()
+    }
+}
+
+fn collecting_log() -> (Arc<Mutex<Vec<Value>>>, pearl_miner::Logger) {
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let l2 = logs.clone();
+    (logs, Box::new(move |v| l2.lock().unwrap().push(v)))
+}
+
+fn events(logs: &Arc<Mutex<Vec<Value>>>, e: &str) -> usize {
+    logs.lock().unwrap().iter().filter(|v| v["event"] == e).count()
+}
+
+#[test]
+fn mines_job_blocks_and_delivers() {
+    let dir = tmp("deliver");
+    let node = MockNode::new(CHAIN, EASY);
+    let (job, c) = make_job(&dir, [0x0a; 32], 5);
+    node.add_job(job.clone());
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 3, true), log);
+    m.run(&|| false).unwrap();
+
+    let s = node.state.lock().unwrap();
+    assert!(s.blocks.len() >= 3, "{} blocks", s.blocks.len());
+    assert!(s.blocks.iter().all(|b| b.header.miner == miner_key().verifying_key().to_bytes()));
+    assert!(s.blocks.iter().any(|b| b.header.job_id == [0x0a; 32]), "no job block");
+    assert!(s.blocks.iter().all(|b| b.proof_len > 12_000));
+    drop(s);
+    let j = node.job(&[0x0a; 32]).unwrap();
+    assert!(j.is("Completed"), "job is {}", j.status);
+    assert_eq!(j.deliverer, Some(miner_key().verifying_key().to_bytes()));
+    assert_eq!(j.result_hash, Some(result_hash(&job.to_job().job_key(), &c)));
+    assert_eq!(m.stats.completed, 1);
+    assert_eq!(m.pending_deliveries(), 0);
+    assert!(events(&logs, "result_submitted") == 1 && events(&logs, "complete_sent") == 1);
+    assert!(events(&logs, "stats") > 0, "no stats line");
+    // Account nonce advanced by SubmitResult + CompleteJob.
+    assert_eq!(node.get_account(&miner_key().verifying_key().to_bytes()).unwrap().nonce, 2);
+}
+
+#[test]
+fn fallback_blocks_without_jobs() {
+    let dir = tmp("fallback");
+    let node = MockNode::new(CHAIN, EASY);
+    let (_logs, log) = collecting_log();
+    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 3, false), log);
+    m.run(&|| false).unwrap();
+    let s = node.state.lock().unwrap();
+    assert_eq!(s.blocks.len(), 3);
+    assert!(s.blocks.iter().all(|b| b.header.is_fallback()));
+    assert!(s.rejected.is_empty(), "{:?}", s.rejected);
+    // Chain links.
+    for w in s.blocks.windows(2) {
+        assert_eq!(w[1].header.prev_hash, w[0].header.block_hash());
+    }
+    assert_eq!(m.stats.fallback_accepted, 3);
+}
+
+/// The job gets one block, then the node moves to fallback blocks.
+#[test]
+fn job_then_fallback() {
+    let dir = tmp("mixed");
+    let node = MockNode::new(CHAIN, EASY);
+    node.state.lock().unwrap().max_blocks_per_job = 1;
+    let (job, _) = make_job(&dir, [0x0b; 32], 6);
+    node.add_job(job);
+    let (_logs, log) = collecting_log();
+    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 3, false), log);
+    m.run(&|| false).unwrap();
+    let s = node.state.lock().unwrap();
+    assert_eq!(s.blocks.iter().filter(|b| !b.header.is_fallback()).count(), 1);
+    assert_eq!(s.blocks.iter().filter(|b| b.header.is_fallback()).count(), 2);
+}
+
+#[test]
+fn stale_templates_are_rejected_not_fatal() {
+    let dir = tmp("stale");
+    let node = MockNode::new(CHAIN, EASY);
+    node.state.lock().unwrap().steal_templates = true;
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 1, false), log);
+    let mut rejected = 0;
+    for _ in 0..4 {
+        if let Some(pearl_node::SubmitOutcome::Rejected { .. }) = m.step().unwrap() {
+            rejected += 1;
+        }
+    }
+    assert!(rejected >= 2, "rejected {rejected}");
+    assert_eq!(m.stats.accepted, 0);
+    assert_eq!(events(&logs, "block_rejected"), rejected);
+    assert!(node.state.lock().unwrap().rejected.iter().all(|r| r.contains("stale")));
+}
+
+#[test]
+fn unusable_job_data_is_skipped() {
+    let dir = tmp("baddata");
+    let node = MockNode::new(CHAIN, EASY);
+    let (mut job, _) = make_job(&dir, [0x0c; 32], 7);
+    job.hash_a[0] ^= 1; // data no longer matches the commitment
+    node.add_job(job);
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, None, miner_key(), cfg(&dir, 1, false), log);
+    assert!(m.step().unwrap().is_none());
+    assert!(m.step().unwrap().is_none());
+    assert_eq!(events(&logs, "job_unusable"), 1, "retried too early");
+    assert!(node.state.lock().unwrap().blocks.is_empty());
+}
+
+/// The wrong attester key (not an evaluator) gets no signature; the job stays Delivered.
+#[test]
+fn attester_must_be_an_evaluator() {
+    let dir = tmp("noeval");
+    let node = MockNode::new(CHAIN, EASY);
+    let (job, _) = make_job(&dir, [0x0d; 32], 8);
+    node.add_job(job);
+    let att = InProc(Attester { key: SigningKey::from_bytes(&[0x77; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 1 });
+    let (logs, log) = collecting_log();
+    let mut c = cfg(&dir, 2, true);
+    c.max_blocks = Some(2);
+    let mut m = Miner::new(&node, Some(&att), miner_key(), c, log);
+    for _ in 0..12 {
+        let _ = m.step();
+        let t = node.block_template(&miner_key().verifying_key().to_bytes()).unwrap();
+        m.deliver_step(&t).unwrap();
+    }
+    let j = node.job(&[0x0d; 32]).unwrap();
+    assert!(j.is("Delivered"), "{}", j.status);
+    assert!(events(&logs, "complete_failed") > 0);
+    let errs: Vec<String> = logs.lock().unwrap().iter().filter(|v| v["event"] == "complete_failed").map(|v| v["error"].to_string()).collect();
+    assert!(errs[0].contains("not an evaluator"), "{errs:?}");
+}
+
+fn free_test_port() -> Option<u16> {
+    (10663..=10669).find(|p| {
+        let out = std::process::Command::new("lsof").args(["-ti", &format!(":{p}")]).output();
+        matches!(out, Ok(o) if o.stdout.is_empty())
+    })
+}
+
+/// Same miner, through HttpNode (JSON-RPC 2.0) to the mock behind tiny_http.
+#[test]
+fn over_http_jsonrpc() {
+    let Some(port) = free_test_port() else {
+        eprintln!("no free port in 10663-10669, skipping");
+        return;
+    };
+    let dir = tmp("http");
+    let node = MockNode::new(CHAIN, EASY);
+    let (job, _) = make_job(&dir, [0x0e; 32], 9);
+    node.add_job(job);
+    let server = Arc::new(tiny_http::Server::http(format!("127.0.0.1:{port}")).expect("bind test port"));
+    let (srv, mock) = (server.clone(), node.clone());
+    let handle = std::thread::spawn(move || {
+        for mut req in srv.incoming_requests() {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let v = mock.handle_jsonrpc(&body);
+            let _ = req.respond(tiny_http::Response::from_string(v.to_string()));
+        }
+    });
+    let http = HttpNode::new(&format!("http://127.0.0.1:{port}"));
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(HttpNode::new(&format!("http://127.0.0.1:{port}")))), freivalds_rounds: 2 });
+    let (_logs, log) = collecting_log();
+    let mut m = Miner::new(&http, Some(&att), miner_key(), cfg(&dir, 2, true), log);
+    m.run(&|| false).unwrap();
+    server.unblock();
+    handle.join().unwrap();
+    assert!(node.height() >= 2);
+    assert!(node.job(&[0x0e; 32]).unwrap().is("Completed"));
+}

@@ -1,10 +1,13 @@
 [package]
 name = "pearl-miner"
-description = "M1 CPU miner: mines shares on Open jobs, gets them attested, submits submit_share, delivers AB"
+description = "v2 block producer: getBlockTemplate -> mine job or fallback blocks on CPU -> submitBlock; optional AB delivery (SubmitResult, attester, CompleteJob)"
 edition = "2021"
 license = "ISC"
 version = "0.1.0"
 workspace = "../../crates"
+
+[lib]
+name = "pearl_miner"
 
 [[bin]]
 name = "pearl-miner"
@@ -12,12 +15,16 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
-base64.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true
 ureq.workspace = true
 pearl-job.workspace = true
-pearl-chain.workspace = true
+pearl-node.workspace = true
+
+[dev-dependencies]
+pearl-attester = { path = "../attester" }
+tiny_http.workspace = true
+base64.workspace = true
+bs58.workspace = true

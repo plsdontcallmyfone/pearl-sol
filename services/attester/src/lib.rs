@@ -2,8 +2,10 @@
 //! an ed25519 signature over the exact SPEC section 6 message bytes.
 //!
 //! Job source:
-//! - `Chain`: the job is read from the agent chain (jobs program account); the
-//!   request's job fields are ignored. This is the mode the demo runs in.
+//! - `Node`: the job is read from the v2 agent-chain node (`getJob`, SPEC v2 4.1);
+//!   the request's job fields are ignored. Default. Only `/result` applies (v2 has no
+//!   share messages; block proofs are checked by the node itself).
+//! - `Chain`: v1 (SVM, superseded): the job is read from the jobs program account.
 //! - `Request`: the request carries a `job_spec` and it is trusted. Dev and tests only,
 //!   since a client could then describe a fake job with an easy target.
 
@@ -19,11 +21,13 @@ use pearl_chain::accounts::JobStatus;
 use pearl_chain::ix::Programs;
 use pearl_chain::{Pubkey, Rpc};
 use pearl_job::freivalds::{freivalds, result_hash};
-use pearl_job::messages::{result_message, share_message};
-use pearl_job::spec::parse_pubkey;
+use pearl_job::messages::{result_message, result_message_v2, share_message};
+use pearl_job::spec::{parse_key32, parse_pubkey};
+use pearl_node::{JobInfo, NodeApi};
 use pearl_job::{data, JobSpec, PlainProof};
 
 pub enum JobSource {
+    Node(Box<dyn NodeApi>),
     Chain { rpc: Rpc, programs: Programs },
     Request,
 }
@@ -115,9 +119,10 @@ impl Attester {
         match &self.source {
             JobSource::Request => {
                 let s = given.clone().ok_or_else(|| anyhow!("job_spec required (attester runs in request mode)"))?;
-                ensure!(s.job == job, "job_spec.job does not match job");
+                ensure!(parse_key32(&s.job)? == parse_key32(job)?, "job_spec.job does not match job");
                 Ok((s, None))
             }
+            JobSource::Node(_) => bail!("v1 job accounts are not available in node mode"),
             JobSource::Chain { rpc, programs } => {
                 let pk = Pubkey::from_b58(job)?;
                 let acct = programs.get_job(rpc, &pk)?;
@@ -128,7 +133,10 @@ impl Attester {
     }
 
     pub fn handle_share(&self, req: &ShareRequest) -> Result<ShareResponse> {
-        let job_pk = parse_pubkey(&req.job)?;
+        if matches!(self.source, JobSource::Node(_)) {
+            bail!("share attestation is v1 only; v2 block proofs are verified by the node");
+        }
+        let job_pk = parse_key32(&req.job)?;
         let miner = parse_pubkey(&req.miner)?;
         let (spec, acct) = self.job_spec(&req.job, &req.job_spec)?;
         if let Some(a) = &acct {
@@ -159,23 +167,15 @@ impl Attester {
     }
 
     pub fn handle_result(&self, req: &ResultRequest) -> Result<ResultResponse> {
-        let job_pk = parse_pubkey(&req.job)?;
-        let deliverer = parse_pubkey(&req.deliverer)?;
+        let job_pk = parse_key32(&req.job)?;
+        let deliverer = parse_key32(&req.deliverer)?;
+        if let JobSource::Node(node) = &self.source {
+            let info = node.get_job(&job_pk)?.ok_or_else(|| anyhow!("job {} not found on the node", hex::encode(job_pk)))?;
+            return self.handle_result_node(req, &info, &job_pk, &deliverer);
+        }
         let (spec, acct) = self.job_spec(&req.job, &req.job_spec)?;
-        let t0 = Instant::now();
-        let d = data::load(&spec.data_uri).context("load job data")?;
-        let job = spec.to_job()?;
-        let (m, n, k) = (job.m as usize, job.n as usize, job.config.k());
-        ensure!(d.manifest.m == job.m && d.manifest.n == job.n && d.manifest.k as usize == k, "job data dims differ from the job");
-        let (ha, hb) = pearl_job::commit(&job.job_key(), &d.a, &d.b, k, n);
-        ensure!(ha == job.hash_a && hb == job.hash_b, "job data does not match the job's commitments");
         let uri = req.result_uri.clone().or_else(|| acct.as_ref().map(|a| a.result_uri.clone()).filter(|u| !u.is_empty()));
-        let c = read_result(&req.result_b64, &uri, m * n)?;
-        ensure!(
-            freivalds(&d.a, &d.b, &c, m, n, k, self.freivalds_rounds, &mut rand::rng()),
-            "Freivalds check failed: C != AB"
-        );
-        let rh = result_hash(&job.job_key(), &c);
+        let (rh, ms) = self.check_result(&spec, req, &uri)?;
         if let Some(a) = &acct {
             ensure!(
                 matches!(a.status, JobStatus::Delivered | JobStatus::Disputed),
@@ -195,7 +195,50 @@ impl Attester {
             message_hex: hex::encode(&msg),
             signature_hex: self.sign(&msg),
             freivalds_rounds: self.freivalds_rounds,
-            elapsed_ms: t0.elapsed().as_secs_f64() * 1e3,
+            elapsed_ms: ms,
+        })
+    }
+
+    /// Load the job's A, B (checked against its commitments), read C, Freivalds it.
+    /// Returns `(result_hash, elapsed_ms)`.
+    fn check_result(&self, spec: &JobSpec, req: &ResultRequest, uri: &Option<String>) -> Result<([u8; 32], f64)> {
+        let t0 = Instant::now();
+        let d = data::load(&spec.data_uri).context("load job data")?;
+        let job = spec.to_job()?;
+        let (m, n, k) = (job.m as usize, job.n as usize, job.config.k());
+        ensure!(d.manifest.m == job.m && d.manifest.n == job.n && d.manifest.k as usize == k, "job data dims differ from the job");
+        let (ha, hb) = pearl_job::commit(&job.job_key(), &d.a, &d.b, k, n);
+        ensure!(ha == job.hash_a && hb == job.hash_b, "job data does not match the job's commitments");
+        let c = read_result(&req.result_b64, uri, m * n)?;
+        ensure!(
+            freivalds(&d.a, &d.b, &c, m, n, k, self.freivalds_rounds, &mut rand::rng()),
+            "Freivalds check failed: C != AB"
+        );
+        Ok((result_hash(&job.job_key(), &c), t0.elapsed().as_secs_f64() * 1e3))
+    }
+
+    /// v2: job from the node. Signs `result_message_v2` (framed), only for a Delivered job, its deliverer, and the
+    /// result_hash the chain holds; and only if this attester is one of its evaluators.
+    fn handle_result_node(&self, req: &ResultRequest, info: &JobInfo, job_pk: &[u8; 32], deliverer: &[u8; 32]) -> Result<ResultResponse> {
+        ensure!(info.is("Delivered"), "job is not Delivered ({})", info.status);
+        ensure!(info.deliverer.as_ref() == Some(deliverer), "deliverer is not the job's deliverer");
+        let me = self.key.verifying_key().to_bytes();
+        ensure!(info.evaluators.is_empty() || info.evaluators.contains(&me), "this attester is not an evaluator of the job");
+        let uri = req.result_uri.clone().or_else(|| Some(info.result_uri.clone()).filter(|u| !u.is_empty()));
+        let (rh, ms) = self.check_result(&info.to_spec(), req, &uri)?;
+        ensure!(info.result_hash == Some(rh), "on-chain result_hash does not match the delivered C");
+        // The v2 chain checks Commonware-framed signatures (agent-types NS_RESULT).
+        let msg = result_message_v2(job_pk, deliverer, &rh);
+        Ok(ResultResponse {
+            ok: true,
+            job: req.job.clone(),
+            deliverer: req.deliverer.clone(),
+            result_hash: hex::encode(rh),
+            attester: self.pubkey_b58(),
+            message_hex: hex::encode(&msg),
+            signature_hex: self.sign(&msg),
+            freivalds_rounds: self.freivalds_rounds,
+            elapsed_ms: ms,
         })
     }
 
@@ -203,7 +246,7 @@ impl Attester {
     pub fn route(&self, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
         let res: Result<Value> = match (method, path) {
             ("GET", "/health") => Ok(json!({"ok": true, "attester": self.pubkey_b58(),
-                                             "mode": match self.source { JobSource::Chain { .. } => "chain", JobSource::Request => "request" }})),
+                                             "mode": match self.source { JobSource::Node(_) => "node", JobSource::Chain { .. } => "chain", JobSource::Request => "request" }})),
             ("POST", "/share") => serde_json::from_slice::<ShareRequest>(body)
                 .map_err(anyhow::Error::from)
                 .and_then(|r| self.handle_share(&r))

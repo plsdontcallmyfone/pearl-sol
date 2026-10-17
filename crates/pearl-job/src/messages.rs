@@ -25,6 +25,32 @@ pub fn result_message(job: &[u8; 32], deliverer: &[u8; 32], result_hash: &[u8; 3
     v
 }
 
+/// Commonware `sign(namespace, msg)` framing: `varint(len ns) || ns || msg`
+/// (unsigned LEB128 length). The v2 chain verifies every signature over these bytes.
+pub fn frame(ns: &[u8], msg: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(2 + ns.len() + msg.len());
+    let mut x = ns.len() as u64;
+    loop {
+        let b = (x & 0x7f) as u8;
+        x >>= 7;
+        if x == 0 {
+            v.push(b);
+            break;
+        }
+        v.push(b | 0x80);
+    }
+    v.extend_from_slice(ns);
+    v.extend_from_slice(msg);
+    v
+}
+
+/// v2 (own chain) Result message, the bytes an evaluator signs for CompleteJob:
+/// `frame(b"pearl-sol:result:v1", job_id || deliverer || result_hash)`, that is
+/// `0x13 ||` the v1 [`result_message`] (116 bytes).
+pub fn result_message_v2(job: &[u8; 32], deliverer: &[u8; 32], result_hash: &[u8; 32]) -> Vec<u8> {
+    frame(RESULT_TAG, &[&job[..], &deliverer[..], &result_hash[..]].concat())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +67,8 @@ mod tests {
         assert_eq!(r.len(), 19 + 96);
         assert_eq!(&r[..19], b"pearl-sol:result:v1");
         assert_eq!(&r[83..], &[3; 32]);
+        let r2 = result_message_v2(&[1; 32], &[2; 32], &[3; 32]);
+        assert_eq!(r2[0], 19);
+        assert_eq!(&r2[1..], &r[..]);
     }
 }
