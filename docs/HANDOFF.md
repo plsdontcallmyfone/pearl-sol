@@ -172,20 +172,22 @@ allows running as many agents as needed.
 
 ## Next step
 
-1. Commonware research agent (started 2026-10-16) -> research/NOTES-commonware.md.
-   If missing, rerun: crates, PoW on Commonware runtime/p2p/storage, state DB with
-   roots + reorg rollback, ed25519, permissionless peers.
-2. Orchestrator writes docs/SPEC.md v2 for the own chain: block/header format,
-   useful-PoW binding (seed = blake3(job_key || block_header_digest || hash_b'),
-   replacing the miner pubkey; commitments stay job-level so posters precompute
-   them), fallback blocks when no job is open (no subsidy), difficulty (WTEMA),
-   native tx types (transfer, bridge unlock/lock, agent register, post job,
-   deliver result), reward from the reserve pool with the alpha x P cap,
-   confirmations-based bridge finality, the Solana storefront program + x402
-   endpoint (M1), and the Solana light client (M2; header format must make it
-   cheap: fixed-size header, proof hash committed in it).
-3. Then build: node crates, miner as block producer, RPC, rewire relayer and the
-   extension to our RPC.
+SPEC v2 written (28a685f). Build agents started 2026-10-16 (max 3 heavy builds at
+once on this Mac), each owning its paths:
+1. node: chain/ workspace (agent-types, state, executor, consensus-pow, sync, net,
+   mempool, rpc, bin/agent-node), chain/rust-toolchain.toml (Rust >= 1.95,
+   Commonware 2026.9.0 pinned), docs/RPC.md (written early: miner, relayer and
+   wallet build against it), scripts/devnet.sh (3 nodes, RPC 10630/10632/10634,
+   p2p 10640-10649). Tx/header test vectors in chain/agent-types/vectors.
+2. miner: crates/pearl-job `pow` module (pow_digest seed, fallback blocks),
+   services/miner as block producer (getBlockTemplate/submitBlock), attester for
+   CompleteJob.
+3. storefront: token/programs/storefront (buy_job in SOL, Order account,
+   finalize_order with attester sigs) + services/storefront-x402 (:10662).
+After those: rewire services/relayer to the node RPC (K-deep), rebuild the wallet
+extension for our chain (tx encoding SPEC 2, vectors from agent-types), then
+scripts/demo.sh (SPEC 7 M1 item 6). If a session dies, check git log per path.
+
 ## Gotchas
 
 - ~/memechain and ~/ansemchain are deleted locally. The private backup
