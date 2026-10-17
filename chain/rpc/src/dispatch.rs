@@ -183,10 +183,19 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     }
 
     async fn route(&self, a: &[u8; 32]) -> Result<Value, RpcError> {
-        Ok(match self.tip_record(&schema::route_key(a)).await? {
-            Some(b) => route_json(a, &srv(Route::decode(&b))?, self.chain.tip_height() + 1),
-            None => Value::Null,
-        })
+        let Some(b) = self.tip_record(&schema::route_key(a)).await? else { return Ok(Value::Null) };
+        let r = srv(Route::decode(&b))?;
+        let mut v = route_json(a, &r, self.chain.tip_height() + 1);
+        // R8: where the current SetRoute and the last ClearRoute sit (canonical chain).
+        let set = srv(self.chain.route_set_tx(a, r.set_height, r.route_nonce).await)?;
+        v["set_block"] = set.map(|e| self.route_tx_json(&e)).unwrap_or(Value::Null);
+        v["last_clear"] = self.chain.last_clear(a).map(|e| self.route_tx_json(&e)).unwrap_or(Value::Null);
+        Ok(v)
+    }
+
+    fn route_tx_json(&self, e: &consensus_pow::RouteTxEntry) -> Value {
+        json!({"block_hash": hex::encode(e.block_hash), "height": e.height, "index": e.index, "route_nonce": e.route_nonce,
+               "confirmations": self.chain.confirmations(&e.block_hash, e.height), "final": self.chain.is_final(&e.block_hash, e.height)})
     }
 
     async fn counters(&self) -> Result<Counters, RpcError> {
@@ -533,7 +542,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     v["block_hash"] = json!(hex::encode(e.block_hash));
                     v["height"] = json!(e.height);
                     v["index"] = json!(e.index);
-                    v["role"] = json!(if t.from == a { "sender" } else { "recipient" });
+                    let lien = matches!(&t.body, agent_types::TxBody::ClearRoute { account, .. } if *account == a);
+                    v["role"] = json!(if lien { "lien" } else if t.from == a { "sender" } else { "recipient" });
                     v["confirmations"] = json!(self.chain.confirmations(&e.block_hash, e.height));
                     v["final"] = json!(self.chain.is_final(&e.block_hash, e.height));
                     out.push(v);

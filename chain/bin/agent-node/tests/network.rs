@@ -708,6 +708,14 @@ fn coinbase_receipts_and_payout_lien_over_rpc() {
         assert_eq!(r["route_bps"], json!(4000));
         assert_eq!(r["route_nonce"], json!(0));
         assert_eq!(r["release_key"], json!(bs58::encode(pk(70)).into_string()));
+        // R8: the SetRoute's block, no clear yet
+        let txs = api.call("getAccountTxs", json!({"account": bs58::encode(pk(3)).into_string(), "limit": 1})).await;
+        let st = &txs["txs"][0];
+        assert_eq!(st["kind"], json!("SetRoute"), "{txs}");
+        assert_eq!(r["set_block"]["block_hash"], st["block_hash"], "{r}");
+        assert_eq!(r["set_block"]["height"], st["height"]);
+        assert_eq!(r["set_block"]["index"], st["index"]);
+        assert_eq!(r["last_clear"], Value::Null);
         // a big-fee tx mined by pk(3), so its matured coinbase is worth splitting
         let t = Tx::signed(&seed(3), CHAIN, 1, 2_000_000, TxBody::Transfer { to: pk(5), amount: 1 });
         api.call("sendTx", json!({"tx": b64(&t)})).await;
@@ -763,5 +771,14 @@ fn coinbase_receipts_and_payout_lien_over_rpc() {
         api.mine(4).await;
         let r = api.call("getRoute", json!({"account": bs58::encode(pk(3)).into_string()})).await;
         assert_eq!((r["active"].clone(), r["cleared"].clone()), (json!(false), json!(true)));
+        // R7: the clear is in the account's history with role "lien"; R8 points at it
+        let txs = api.call("getAccountTxs", json!({"account": bs58::encode(pk(3)).into_string(), "limit": 1})).await;
+        let ct = &txs["txs"][0];
+        assert_eq!((ct["kind"].clone(), ct["role"].clone()), (json!("ClearRoute"), json!("lien")), "{txs}");
+        assert_eq!(r["last_clear"]["block_hash"], ct["block_hash"], "{r}");
+        assert_eq!(r["last_clear"]["height"], ct["height"]);
+        assert_eq!(r["last_clear"]["index"], ct["index"]);
+        assert_eq!(r["last_clear"]["route_nonce"], json!(0));
+        assert!(r["set_block"]["height"].as_u64().unwrap() < ct["height"].as_u64().unwrap());
     });
 }

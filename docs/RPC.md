@@ -194,11 +194,19 @@ block's height). The record stays after the lien ends (`route_nonce` keeps count
 {"account": "base58", "solana_recipient": "base58", "route_bps": 5000, "until_height": 10279,
  "cap": "1000000000000000", "release_key": "base58 | null", "route_nonce": 0, "set_height": 279,
  "routed": "1000000500", "pending": "500", "withdrawn": "1000000000", "cleared": false,
- "active": true, "remaining_cap": "999998999999500"}
+ "active": true, "remaining_cap": "999998999999500",
+ "set_block": {"block_hash": "hex", "height": 279, "index": 0, "route_nonce": 0, "confirmations": 4, "final": false},
+ "last_clear": {"block_hash": "hex", "height": 201, "index": 1, "route_nonce": 2, "confirmations": 82, "final": true} | null}
 ```
 `routed` = income the lien took (counts toward `cap`), `withdrawn` = what went out as
 withdrawal entries (chain units), `pending` = taken, below 1000 units (or the bridge is
-paused), waiting for the next credit. Lien entries appear in getBridgeEvents /
+paused), waiting for the next credit. `set_block` (R8) is the canonical block holding the
+SetRoute that wrote this record (height = `set_height`, `index` = its position in the block,
+`route_nonce` = the record's); `last_clear` is the newest ClearRoute naming the account on the
+canonical chain (any route nonce, so it may belong to an earlier lien: compare
+`route_nonce`), null if none. Both are reorg safe like getAccountTxs: the final part comes
+from an index extended at finalization, the rest is read from the current branch, so a
+reorged-out clear disappears (`last_clear` falls back to an older one or null). Lien entries appear in getBridgeEvents /
 getWithdrawalProof like any BridgeLock (`from` = the account).
 
 ### getAgent `{"account": "base58"}`
@@ -275,14 +283,16 @@ error) when `at_height` is below the withdrawal's block or above the final heigh
 
 ### getAccountTxs `{"account": "base58", "limit"?: 50, "before"?: "height:index"}`
 Txs touching the account on the canonical chain, newest first: txs it sent, Transfers to it,
-BridgeUnlocks to it (coinbase, job payouts and refunds are not txs and are not listed).
+BridgeUnlocks to it, and ClearRoutes naming it in their `account` field, whoever sent them
+(R7; coinbase, job payouts and refunds are not txs and are not listed).
 ```json
 {"account": "base58", "txs": [{"tx_hash", "kind", "from", "nonce", "fee", "tx",
-  "block_hash": "hex", "height": 41, "index": 0, "role": "sender|recipient",
+  "block_hash": "hex", "height": 41, "index": 0, "role": "sender|recipient|lien",
   "confirmations": 3, "final": false}], "next": "41:0" | null,
  "tip_height": 43, "finalized_height": 13}
 ```
-`limit` is 1..200. Pass `next` back as `before` for the next page (strictly older entries);
+`role` is `lien` for a ClearRoute naming the account (also when the account sent it itself),
+else `sender` when it sent the tx, else `recipient`. `limit` is 1..200. Pass `next` back as `before` for the next page (strictly older entries);
 `next` is null on the last page. The final part comes from an index the node extends when
 blocks finalize (they cannot reorg); the part above `finalized_height` is read from the
 current canonical branch at query time, so a reorg simply changes what is listed. A page

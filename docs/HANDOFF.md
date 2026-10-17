@@ -311,6 +311,12 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
      block's header, then prove its coinbase reward), relayer 33, extension 63 (+7).
      Demo 10/10 PASS (197.2 s) with new step 9 (see Demo).
    - For Agent Credit: see the notes in the R1/R2/R5 report (also SPEC 3.4/4.4/5.3).
+   - R7 + R8 (2026-10-17): getAccountTxs lists ClearRoutes naming the account (role
+     `lien`, also when a third party sent them); getRoute adds `set_block` (block hash,
+     height, index of the SetRoute behind the record) and `last_clear` (newest canonical
+     ClearRoute naming the account, with its route_nonce, or null). Node-local index
+     (consensus-pow `clears`, extended at finalization, live part read from the branch),
+     no state or encoding change. Chain 82 (+1).
      Existing light clients need `init_accumulator` (admin) before `close_header` works
      again; existing .devnet data must be reset (block encoding changed).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop

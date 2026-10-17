@@ -479,6 +479,64 @@ fn rewards_and_history_across_reorg_and_restart() {
     });
 }
 
+fn clear_tx(sender: u8, nonce: u64, account: Pubkey, route_nonce: u64) -> Tx {
+    let msg = tx::route_clear_message(CHAIN, &account, route_nonce);
+    Tx::signed(&seed(sender), CHAIN, nonce, 10, TxBody::ClearRoute { account, route_nonce, sig: sign_plain(&seed(70), &msg) })
+}
+
+/// R7 + R8: ClearRoute txs naming an account are in its history (sent by anyone), and
+/// `last_clear` / `route_set_tx` locate the clear and the current SetRoute on the
+/// canonical chain: a reorg drops a clear, finalization keeps it, a restart rebuilds it.
+#[test]
+fn route_txs_across_reorg_finality_and_restart() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(5), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let fund = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 1000), unlock(200, 1, 2, pk(4), 1000)], now).await;
+        add(&mut c, fund.clone(), now).await;
+        now += 1000;
+        let set = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::SetRoute { solana_recipient: [0x4c; 32], route_bps: 5000, until_height: 1000, cap: u64::MAX, release_key: pk(70) });
+        let sb = mine_on(&c, fund.hash(), 9, &[transfer(4, 0, pk(5), 1), set], now).await;
+        let fork = sb.hash();
+        add(&mut c, sb, now).await;
+        let e = c.route_set_tx(&pk(2), 2, 0).await.unwrap().unwrap();
+        assert_eq!((e.block_hash, e.height, e.index), (fork, 2, 1));
+        assert!(c.last_clear(&pk(2)).is_none());
+        // A: a third party (pk 4) sends the clear at height 3
+        now += 1000;
+        let a1 = mine_on(&c, fork, 5, &[clear_tx(4, 1, pk(2), 0)], now).await;
+        add(&mut c, a1.clone(), now).await;
+        let lc = c.last_clear(&pk(2)).unwrap();
+        assert_eq!((lc.block_hash, lc.height, lc.index, lc.route_nonce), (a1.hash(), 3, 0, 0));
+        assert_eq!(hist(&c, &pk(2), None, 10).0, vec![(3, 0), (2, 1), (1, 0)]);
+        assert!(c.last_clear(&pk(4)).is_none(), "the sender is not the lien account");
+        // B: heavier branch without the clear (reorg depth 1)
+        let mut bnow = now;
+        let b_tip = extend(&mut c, fork, 2, 6, &mut bnow).await;
+        assert_eq!(c.tip().hash, b_tip);
+        assert!(c.last_clear(&pk(2)).is_none(), "the reorged-out clear is gone");
+        assert_eq!(hist(&c, &pk(2), None, 10).0, vec![(2, 1), (1, 0)]);
+        // on B the clear lands at height 5, then finalizes
+        bnow += 1000;
+        let b3 = mine_on(&c, b_tip, 6, &[clear_tx(4, 1, pk(2), 0)], bnow).await;
+        add(&mut c, b3.clone(), bnow).await;
+        let tip = extend(&mut c, b3.hash(), 7, 6, &mut bnow).await;
+        assert!(c.finalized().header.height >= 5);
+        let lc = c.last_clear(&pk(2)).unwrap();
+        assert_eq!((lc.block_hash, lc.height, lc.index), (b3.hash(), 5, 0), "read from the final index");
+        assert_eq!(hist(&c, &pk(2), None, 1).0, vec![(5, 0)]);
+        let e = c.route_set_tx(&pk(2), 2, 0).await.unwrap().unwrap();
+        assert_eq!((e.block_hash, e.index), (fork, 1), "final SetRoute block read from the archive");
+        drop(c);
+        let c2 = C::open(ctx.child("b"), "n", genesis(5), MockVerifier).await.unwrap();
+        assert_eq!(c2.tip().hash, tip);
+        let lc = c2.last_clear(&pk(2)).unwrap();
+        assert_eq!((lc.block_hash, lc.height, lc.index, lc.route_nonce), (b3.hash(), 5, 0, 0));
+        assert_eq!(c2.route_set_tx(&pk(2), 2, 0).await.unwrap().unwrap().index, 1);
+    });
+}
+
 fn mock_job_body(data_uri: &[u8], p: u64) -> PostJob {
     PostJob {
         m: 64,

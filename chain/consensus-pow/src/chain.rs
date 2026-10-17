@@ -162,6 +162,10 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// Extended when blocks finalize (they never reorg); the non-final part of a
     /// query is read from the live canonical chain, so reorgs need no undo.
     history: HashMap<Pubkey, Vec<(u64, u32)>>,
+    /// Last ClearRoute naming each account over FINAL canonical blocks: `(height, tx
+    /// index, route_nonce)`. Same rule as `history`: extended at finalization, the live
+    /// part is read from the canonical branch at query time.
+    clears: HashMap<Pubkey, (u64, u32, u64)>,
 }
 
 /// Fees, subsidy and matured coinbase of one block (getBlock).
@@ -186,6 +190,22 @@ impl Rewards {
         }
         let u = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
         Some(Self { fees: u(0), subsidy: u(8), matured: u(16) })
+    }
+}
+
+/// The block and position of a route tx (getRoute, SPEC 4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteTxEntry {
+    pub block_hash: Hash,
+    pub height: u64,
+    pub index: u32,
+    pub route_nonce: u64,
+}
+
+fn clear_of(t: &Tx) -> Option<(Pubkey, u64)> {
+    match &t.body {
+        agent_types::TxBody::ClearRoute { account, route_nonce, .. } => Some((*account, *route_nonce)),
+        _ => None,
     }
 }
 
@@ -301,6 +321,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             log_size_at: BTreeMap::new(),
             rewards: Some(rewards),
             history: HashMap::new(),
+            clears: HashMap::new(),
         };
 
         match committed_height {
@@ -403,6 +424,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 for a in tx_accounts(t) {
                     self.history.entry(a).or_default().push((b.header.height, j as u32));
                 }
+                if let Some((a, rn)) = clear_of(t) {
+                    self.clears.insert(a, (b.header.height, j as u32, rn));
+                }
             }
         }
         let fb = by_hash[&f_hash].clone();
@@ -500,6 +524,41 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             }
         }
         (out, false)
+    }
+
+    /// The last ClearRoute naming `account` on the canonical chain (reorg safe: the
+    /// non-final part is read from the current branch).
+    pub fn last_clear(&self, account: &Pubkey) -> Option<RouteTxEntry> {
+        let f = self.finalized().header.height;
+        for height in (f + 1..=self.tip_height()).rev() {
+            let Some(c) = self.canon.get(height as usize) else { continue };
+            let Some(n) = self.live.get(&c.hash) else { continue };
+            for (i, t) in n.txs.iter().enumerate().rev() {
+                if let Some((a, rn)) = clear_of(t) {
+                    if a == *account {
+                        return Some(RouteTxEntry { block_hash: c.hash, height, index: i as u32, route_nonce: rn });
+                    }
+                }
+            }
+        }
+        let &(height, index, route_nonce) = self.clears.get(account)?;
+        let c = self.canon.get(height as usize)?;
+        Some(RouteTxEntry { block_hash: c.hash, height, index, route_nonce })
+    }
+
+    /// The SetRoute that wrote `account`'s current route record: the last SetRoute sent
+    /// by `account` in the canonical block at `set_height` (the record's `set_height`).
+    pub async fn route_set_tx(&self, account: &Pubkey, set_height: u64, route_nonce: u64) -> Result<Option<RouteTxEntry>, ChainError> {
+        let Some(hash) = self.canonical_hash(set_height) else { return Ok(None) };
+        let txs: Arc<Vec<Tx>> = match self.live.get(&hash) {
+            Some(n) => n.txs.clone(),
+            None => match self.get_block(&hash).await? {
+                Some(b) => Arc::new(b.txs),
+                None => return Ok(None),
+            },
+        };
+        let idx = txs.iter().rposition(|t| t.from == *account && matches!(t.body, agent_types::TxBody::SetRoute { .. }));
+        Ok(idx.map(|i| RouteTxEntry { block_hash: hash, height: set_height, index: i as u32, route_nonce }))
     }
 
     async fn read_config(&self, snap: &Snapshot) -> Result<Config, ChainError> {
@@ -957,6 +1016,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             for (i, t) in n.txs.iter().enumerate() {
                 for a in tx_accounts(t) {
                     self.history.entry(a).or_default().push((height, i as u32));
+                }
+                if let Some((a, rn)) = clear_of(t) {
+                    self.clears.insert(a, (height, i as u32, rn));
                 }
             }
             events.push(ChainEvent::Finalized { hash: hh, height });
