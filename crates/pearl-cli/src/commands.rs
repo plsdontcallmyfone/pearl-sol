@@ -1255,6 +1255,7 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
     // events: newest txs touching the vault (orders pay into it, buys spend from it)
     let mut buys = vec![];
     let mut accrued = 0usize;
+    let mut accrued_lamports = 0u64;
     let sigs = ctx.sol.call("getSignaturesForAddress", json!([b58(&vault), {"limit": 100, "commitment": "confirmed"}]))?;
     for sg in sigs.as_array().into_iter().flatten() {
         if buys.len() >= limit {
@@ -1270,7 +1271,10 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
             let Ok(raw) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, p) else { continue };
             match solana::decode_store_event(&raw) {
                 Some(solana::StoreEvent::Executed(e)) => buys.push((sig.to_string(), sg["slot"].as_u64().unwrap_or(0), sg["blockTime"].as_i64(), e)),
-                Some(solana::StoreEvent::Accrued(_)) => accrued += 1,
+                Some(solana::StoreEvent::Accrued(a)) => {
+                    accrued += 1;
+                    accrued_lamports += a.lamports;
+                }
                 None => {}
             }
         }
@@ -1297,7 +1301,7 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
         "pending": {"orders": b.pending_orders, "first_nonce": if b.pending_orders > 0 { Some(b.pending_first_nonce) } else { None },
                     "last_nonce": if b.pending_orders > 0 { Some(b.pending_last_nonce) } else { None }},
         "mint_supply_spl": supply.map(|x| x.to_string()),
-        "recent_buys": jb, "recent_accruals_seen": accrued,
+        "recent_buys": jb, "recent_accruals_seen": accrued, "recent_accrued_lamports": accrued_lamports.to_string(),
     });
     let t = format!(
         "buyback {} bps -> {}  vault {} SOL  bought {} {TICKER} for {} SOL in {} buys (reserve {}, burned {})  pending orders {}",
