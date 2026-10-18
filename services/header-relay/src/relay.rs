@@ -40,10 +40,11 @@ use crate::chain::{self, ChainHeader, Src};
 use crate::ledger::{self, Ledger, TxState, MAX_CU};
 
 const CANON_LEN: usize = lightclient::CANON_LEN;
-/// CU asked for by the small txs (measured in tests/catchup.rs, with headroom).
-const CU_SUBMIT2: u32 = 160_000;
-const CU_BEGIN: u32 = 60_000;
-const CU_WRITE: u32 = 20_000;
+/// CU asked for by the small txs (measured in LiteSVM: submit 31.7k each, begin + first
+/// chunk 24.9k, a 950-byte chunk 1.5k; with headroom).
+const CU_SUBMIT2: u32 = 90_000;
+const CU_BEGIN: u32 = 45_000;
+const CU_WRITE: u32 = 6_000;
 const CU_CONNECT_EACH: u32 = 25_000;
 const CU_FINAL_EACH: u32 = 15_000;
 const CU_ACC: u32 = 150_000;
