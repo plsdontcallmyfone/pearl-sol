@@ -289,9 +289,10 @@ async function step1(): Promise<string> {
   }
 
   // storefront buyback: the vault PDA's pump + PumpSwap volume accumulators (once), and
-  // no minimum interval so the demo can show two buys back to back (default 600 s)
+  // no minimum interval so the demo can show two buys back to back (default 600 s),
   console.log(crank(["sf-setup"]).trim());
-  console.log(crank(["sf-set", "--minIntervalSecs", "0"]).trim());
+  // and a lower min buy: the demo order's share is about 0.001 SOL and buy 1 spends half of it
+  console.log(crank(["sf-set", "--minIntervalSecs", "0", "--minBuy", "100000"]).trim());
 
   // relayer + storefront service
   start("relayer", "node", ["src/main.ts"], { cwd: RELAYER, env: relayerEnv() });
@@ -574,7 +575,8 @@ async function stepBuyback(): Promise<string> {
   const supply2 = await supply();
   if (supply0 - supply2 !== BigInt(b2.routed) || BigInt(b2.routed) === 0n) throw new Error(`supply ${supply0} -> ${supply2}, burned ${b2.routed}`);
   info("buy 2 (burn)", b2);
-  // back to the provisional defaults: destination reserve, 1 SOL per call
+  // back to the provisional defaults: destination reserve, 1 SOL per call (interval and min
+  // buy stay at the demo's values)
   console.log(crank(["sf-set", "--dest", "reserve", "--maxPerCall", "1000000000"]).trim());
 
   const s2 = sfStatus();
