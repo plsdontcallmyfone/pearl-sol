@@ -619,7 +619,10 @@ test('buyback: setup (reserve ATA, vault volume accumulators); crank to the rese
   assert.equal(available(), BigInt(c1.bbAccrued.toString()), 'vault above rent = all shares so far');
   const avail = available();
   const bc = curve();
-  const expected = BigInt(sdk.getBuyTokenAmountFromSolAmount({ global, feeConfig: sdk.PUMP_SDK.decodeFeeConfig(info(pda(['fee_config', PUMP], FEE))), mintSupply: null, bondingCurve: bc, amount: bn(avail), quoteMint: WSOL }).toString());
+  // fee-free constant-product quote on the curve's virtual reserves, less pump's 1.25% fee
+  // (the SDK helper reads the reserves of a fresh curve only)
+  const vt = BigInt(bc.virtualTokenReserves.toString()), vq = BigInt((bc.virtualQuoteReserves ?? bc.virtualSolReserves).toString());
+  const expected = ((vt * avail) / (vq + avail) * 9875n) / 10_000n;
   const res0 = tokenAmount(RESERVE_ATA), bridge0 = tokenAmount(VAULT), supply0 = mintSupply();
   // the caller's min out binds
   fails([await crankIx(cranker.publicKey, 10n ** 12n, expected * 2n)], [cranker], null, 'min_tokens_out above the fill');
