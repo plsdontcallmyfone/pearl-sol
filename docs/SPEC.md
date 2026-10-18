@@ -315,18 +315,35 @@ event anyone can read.
   fee, of which 0.30% creator fee comes back to the reserve's creator-fee buyback); the
   tokens became W (job pay, 80%) and P (to the mining pool, 20%). There was no margin.
 - Now: `buy_job` / `buy_job_amm` first move `share = sol_in x config.buyback_bps / 10000`
-  (floor) from the buyer to the buyback vault, a system-owned data-less PDA `["buyback"]`
-  (appended as the last account of both instructions), and the job buys with
-  `sol_in - share`; `Order.sol_spent` is the job's part. The first share also tops the vault
-  up to rent exemption (890,880 lamports, not counted as a share). The x402 service grosses
+  (floor) from the buyer to the buyback vault, a system-owned data-less PDA `["buyback"]`,
+  and the job buys with `sol_in - share`; `Order.sol_spent` is the job's part. The first
+  share also tops the vault up to rent exemption (890,880 lamports, not counted as a share).
+  Both instructions take two more accounts at the end: the vault, then the order's
+  `ShareRecord ["share", deposit nonce]` (57 bytes: disc, nonce u64, buyer [32], lamports
+  u64, bump u8; created in the handler, rent paid by the buyer).
+- Held until the order closes (owner decision 2026-10-18: a refunded order also refunds
+  its share). A new share is HELD (`config.bb_locked`, event `BuybackShareHeld`) and no crank
+  can spend it. `settle_share()` (permissionless, accounts config, order, share record,
+  buyer = order.buyer, vault, system program) settles it once the Order is closed:
+  Finalized -> released to the buyback (`BuybackAccrued`, now crankable, counted in the
+  next buy's order range); Refunded or Expired -> paid back from the vault to the buyer
+  (`BuybackShareRefunded`, `config.bb_refunded`). Pending -> refused. The record is closed
+  (rent back to the buyer), so a share settles exactly once. Why this option and not a
+  refundable reserve: the buyer pays for a buyback only when the job was delivered, the
+  vault always holds every unsettled share (cranks are bounded by `vault - rent -
+  bb_locked` and re-check that floor after the trade), so a refund can never find the SOL
+  already spent; the cost is a delay (shares buy back after finalize, not at order time).
+  Expired orders refund the share too (W comes back as well; P does not).
+  services/relayer adds `settle_share` to its refund tx; the crank (`sf-settle`, and
+  `sf-buyback` / `run` first) settles every closed order before buying. The x402 service grosses
   `sol_in` up so that `sol_in - share` still covers the job's own price: the buyback is a
   markup on top of the job (quote fields `job_lamports`, `buyback_lamports`).
 - Crank: `crank_buyback(max_sol_in, min_tokens_out)` (curve, `buy_exact_quote_in_v3`) and
   `crank_buyback_amm` (PumpSwap after graduation, `buy_exact_quote_in_v2`, wSOL ATA
   wrapped and closed, its rent back to the cranker). The vault PDA is the pump `user`,
   exactly as the reserve's creator PDA is for creator-fee buybacks. Permissionless unless
-  `buyback_cranker` is set. Spend = `min(vault - rent, buyback_max_per_call (0 = no cap),
-  max_sol_in)`, at least `buyback_min_buy`, at most once per `buyback_min_interval_secs`;
+  `buyback_cranker` is set. Spend = `min(vault - rent - bb_locked (released shares only),
+  buyback_max_per_call (0 = no cap), max_sol_in)`, at least `buyback_min_buy`, at most once per `buyback_min_interval_secs`;
   fill checked like `buy_job` (caller's `min_tokens_out`, and `max_slippage_bps` against
   the program's fee-free quote). Then the vault ATA's whole balance goes to
   `buyback_dest`: 0 = the mining reserve (TransferChecked to
@@ -335,35 +352,42 @@ event anyone can read.
 - Admin: `set_buyback(BuybackParams { buyback_bps, destination, reserve_program, cranker,
   max_per_call, min_buy, min_interval_secs })` (each optional; bps < 10000; destination
   reserve needs a reserve program); emits `BuybackConfigUpdated` with every value.
-  PROVISIONAL defaults at `initialize` (owner decision open, HANDOFF): 1000 bps,
-  destination reserve, reserve program `4FkQcoCM...LY6p`, cranker anyone, 1 SOL per call,
-  min 0.001 SOL, 600 s.
+  Defaults at `initialize`: share 1000 bps (10%) and destination mining reserve are
+  DECIDED (owner, 2026-10-18); reserve program `4FkQcoCM...LY6p`; cranker anyone, 1 SOL per
+  call, min 0.001 SOL and 600 s stay PROVISIONAL.
 - Config fields appended after `light_client`: `buyback_bps u16, buyback_dest u8,
   reserve_program [32], buyback_cranker [32], buyback_max_per_call u64, buyback_min_buy u64,
   buyback_min_interval_secs i64, bb_last_ts i64, bb_accrued, bb_spent, bb_tokens,
   bb_to_reserve, bb_burned, bb_buys, bb_pending_orders, bb_pending_first_nonce,
-  bb_pending_last_nonce (u64)` (171 bytes, starting 59 bytes after the attester vector).
+  bb_pending_last_nonce, bb_locked, bb_refunded (u64)` (187 bytes, starting 59 bytes after
+  the attester vector; readers that stop at bb_pending_last_nonce still parse).
   The Order layout is unchanged (1070 bytes). A config written before this reads as zeros
   (share 0) as long as the attester vector leaves 171 bytes of slack (4 attesters or fewer);
   a fuller one needs a fresh initialize (localnet only so far).
+  `bb_accrued` now counts RELEASED shares (finalized orders).
 - Events (Anchor `Program data:` logs; discriminator `sha256("event:<Name>")[..8]`, Borsh):
-  `BuybackAccrued { order, nonce, lamports, vault_available, total_accrued }` per order;
+  `BuybackShareHeld { order, nonce, lamports, total_locked, vault_lamports }` per order
+  (buy_job*); `BuybackAccrued { order, nonce, lamports, vault_available, total_accrued }`
+  when a finalized order's share is released; `BuybackShareRefunded { order, nonce, buyer,
+  lamports, status, total_refunded }` when a refunded / expired order's share goes back;
   `BuybackExecuted { buy, venue, sol_in, tokens_out, routed, destination,
   destination_account, quote, first_nonce, last_nonce, orders, available_before, carry,
   total_spent, total_tokens, total_to_reserve, total_burned }` per buy. `first_nonce ..
-  last_nonce` / `orders` = the Orders (bridge deposit nonces) whose share arrived since the
-  previous buy; `carry` = what a per-call cap left for the next buy (a later buy can then
-  show `orders = 0`). Sum of accrued shares = sum of `sol_in` + vault above rent (less any
-  donation sent straight to the vault, which is bought back too).
+  last_nonce` / `orders` = the Orders (bridge deposit nonces) whose share was released since
+  the previous buy; `carry` = what a per-call cap left for the next buy (a later buy can then
+  show `orders = 0`). Vault = rent + bb_locked + released-not-yet-spent (plus any donation
+  sent straight to the vault, which is bought back too); sum of released shares = sum of
+  buys' `sol_in` + what is crankable now.
 - Supply: the bridge invariant `vault SPL x 1000 == 1e18 - escrow` is unaffected (the
   buyback never touches the bridge vault or the escrow; tested). A burn lowers the Solana
   mint supply below 1B; the escrow lamports matching burned tokens can never be unlocked, so
   the chain-side bound is `1e18 - escrow <= 1000 x mint supply` (demo step 6 checks it).
   "Supply stays 1B across both chains" now reads: 1B minus what the buyback burned.
-- Not refunded: a later refund of an order (bridge `refund_deposit`) returns its tokens,
-  not its buyback share (like P).
-- Measured (LiteSVM): buy_job 175.7k CU (tx 1100 bytes), buy_job_amm 211k, crank_buyback
-  128.7k (894 bytes), crank_buyback_amm 187k.
+- Refunds: a refunded order (bridge `refund_deposit` + `mark_refunded`) gets its tokens
+  back and, by `settle_share`, its buyback share in SOL (owner decision 2026-10-18).
+- Measured (LiteSVM): buy_job 180.8k CU (tx 1133 bytes), buy_job_amm 208.7k, crank_buyback
+  134.8k (894 bytes), crank_buyback_amm 184.1k. x402 `overhead` default 14M lamports (12M +
+  the ShareRecord rent, which comes back to the service wallet at settle).
 - Sandwich risk is the reserve's: the on-chain quote is read inside the tx, so the caller's
   `min_tokens_out`, the per-call cap and the optional cranker allowlist are the protection.
 - Readers: `GET /buyback` (storefront-x402), `node services/crank/src/main.ts sf-status`,
@@ -553,7 +577,8 @@ randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
 
 ## 9. Open questions for the owner
 - Dev buy size (sets the starting reserve).
-- Storefront buyback share (`buyback_bps`, provisional 1000) and destination (mining
-  reserve or burn, provisional reserve); per-call cap and interval (5.1 "Buyback").
+- Storefront buyback: share 10% and destination mining reserve DECIDED 2026-10-18; still
+  open: per-call cap (1 SOL), min buy (0.001 SOL), interval (600 s), cranker allowlist
+  (5.1 "Buyback").
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
 - Name and ticker.
