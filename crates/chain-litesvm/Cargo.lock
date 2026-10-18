@@ -2372,6 +2372,7 @@ dependencies = [
  "hex",
  "pearl-chain",
  "pearl-job",
+ "pearl-node",
  "rand 0.9.5",
  "serde",
  "serde_json",
@@ -2429,6 +2430,22 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pearl-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "bs58",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "pearl-job",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

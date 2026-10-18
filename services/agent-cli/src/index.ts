@@ -432,8 +432,8 @@ function cmdSelftest(f: Record<string, string>) {
     // offline round trip through pearl-job: gen -> config -> commit, header must match ours
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pearl-selftest-"));
     const job = Keypair.generate().publicKey;
-    const g = pearlJob(REPO, ["gen", "--m", "64", "--n", "64", "--k", "1024", "--out-dir", dir, "--seed", "1"]);
-    const config = pearlJob(REPO, ["config", "--k", "1024"]).config;
+    const g = pearlJob(REPO, ["gen", "--m", "64", "--n", "64", "--k", "2048", "--out-dir", dir, "--seed", "1"]);
+    const config = pearlJob(REPO, ["config", "--k", "2048"]).config;
     const hh = buildHeader(job, th, 1234n, 0x207fffff);
     const cm = pearlJob(REPO, ["commit", "--job", job.toBase58(), "--terms-hash", th.toString("hex"), "--slot", "1234",
       "--target-bits", `${0x207fffff}`, "--config", config, "--data", g.data_uri]);
