@@ -421,18 +421,26 @@ pub fn deposit_ix(cfg: &BridgeConfig, sender: &Pubkey, amount_spl: u64, agent_re
     }
 }
 
-/// Lock `amount_spl` in the bridge vault for `agent_recipient`; returns
-/// (signature, deposit nonce, slot).
-pub fn bridge_deposit(rpc: &SolRpc, key: &SigningKey, amount_spl: u64, agent_recipient: &Pubkey) -> Result<(String, u64, u64)> {
+/// Build and sign the bridge `deposit` locking `amount_spl` for `agent_recipient`:
+/// (signed legacy tx, the deposit nonce it takes). Checks the SPL balance first.
+pub fn sign_deposit(rpc: &SolRpc, key: &SigningKey, amount_spl: u64, agent_recipient: &Pubkey) -> Result<(Vec<u8>, u64)> {
     let cfg = BridgeConfig::parse(&rpc.account(&bridge_config_pda())?.context("bridge is not initialised on this cluster")?)?;
     let me = key.verifying_key().to_bytes();
     let have = rpc.token_balance(&ata(&me, &cfg.mint, &cfg.token_program))?.unwrap_or(0);
     ensure!(have >= amount_spl, "SPL balance {} is below {}", have, amount_spl);
     let ix = deposit_ix(&cfg, &me, amount_spl, agent_recipient);
     let tx = legacy_tx(key, &[ix], &rpc.latest_blockhash()?)?;
+    Ok((tx, cfg.deposit_nonce))
+}
+
+/// Lock `amount_spl` in the bridge vault for `agent_recipient`; returns
+/// (signature, deposit nonce, slot).
+#[allow(dead_code)]
+pub fn bridge_deposit(rpc: &SolRpc, key: &SigningKey, amount_spl: u64, agent_recipient: &Pubkey) -> Result<(String, u64, u64)> {
+    let (tx, nonce) = sign_deposit(rpc, key, amount_spl, agent_recipient)?;
     let sig = rpc.send(&tx)?;
     let slot = rpc.confirm(&sig, Duration::from_secs(60))?;
-    Ok((sig, cfg.deposit_nonce, slot))
+    Ok((sig, nonce, slot))
 }
 
 #[cfg(test)]

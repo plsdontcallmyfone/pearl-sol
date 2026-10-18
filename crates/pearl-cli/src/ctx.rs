@@ -13,6 +13,7 @@ use serde_json::Value;
 use pearl_node::{read_key_file, HttpNode};
 
 use crate::solana::{Pubkey, SolRpc};
+use crate::term::Ui;
 
 #[derive(Args, Debug, Clone)]
 pub struct Opts {
@@ -47,6 +48,10 @@ pub struct Opts {
     /// Wait for the effect: tx included (and for bridge in, unlocked on the chain).
     #[arg(long, global = true)]
     pub wait: bool,
+    /// Text mode: return once the tx is submitted instead of following it to the end
+    /// (inclusion, K-deep finality, unlock / release, job completion).
+    #[arg(long, global = true)]
+    pub no_wait: bool,
 }
 
 pub struct Ctx {
@@ -59,6 +64,8 @@ pub struct Ctx {
     pub sol_me: Option<Pubkey>,
     /// A pearl-miner this session spawned (`mine start`); only this one is ever stopped.
     pub miner: Mutex<Option<Child>>,
+    /// Where steps go: silent for `--json` and the dashboard, the terminal in text mode.
+    pub ui: Ui,
 }
 
 impl Ctx {
@@ -83,6 +90,7 @@ impl Ctx {
             me,
             sol_me,
             miner: Mutex::new(None),
+            ui: Ui::silent(),
         })
     }
 
@@ -92,6 +100,16 @@ impl Ctx {
 
     pub fn sol_key(&self) -> Result<&SigningKey> {
         self.sol_key.as_ref().ok_or_else(|| anyhow!("no Solana key: pass --sol-key FILE (or --key)"))
+    }
+
+    /// Text mode follows a write to its end (inclusion, finality, ...) unless --no-wait.
+    pub fn follow(&self) -> bool {
+        self.ui.is_plain() && !self.opts.no_wait
+    }
+
+    /// Wait for inclusion: --wait (any mode) or text mode without --no-wait.
+    pub fn wait_inclusion(&self) -> bool {
+        self.opts.wait || self.follow()
     }
 
     pub fn has_key(&self) -> bool {

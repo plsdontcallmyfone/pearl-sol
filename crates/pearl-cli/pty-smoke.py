@@ -6,7 +6,7 @@ exe, key, out = sys.argv[1], sys.argv[2], sys.argv[3]
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["TERM"] = "xterm-256color"
-    os.execv(exe, [exe, "--key", key])
+    os.execv(exe, [exe, "--key", key, "dashboard"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 46, 140, 0, 0))
 buf = b""
 def pump(sec):

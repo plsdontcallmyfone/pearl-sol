@@ -1,5 +1,6 @@
-//! `pearl`: the dashboard (no command) or one command in plain mode, text or `--json`.
-//! Both run the same `commands::exec`. See docs/CLI.md.
+//! `pearl`: one command in text mode (steps + an info box) or `--json`; with no command,
+//! an overview box; `pearl dashboard` opens the full-screen dashboard. All run the same
+//! `commands::exec`. See docs/CLI.md.
 
 mod brand;
 mod commands;
@@ -8,12 +9,15 @@ mod fmt;
 mod html;
 mod snapshot;
 mod solana;
+#[cfg(test)]
+mod stub;
+mod term;
 mod ui;
 
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "pearl", version, disable_help_subcommand = true, about = "Dashboard and CLI for the agent chain and its Solana bridge (name is a placeholder)")]
+#[command(name = "pearl", version, disable_help_subcommand = true, about = "CLI and dashboard for the agent chain and its Solana bridge (name is a placeholder)")]
 struct Cli {
     #[command(flatten)]
     opts: ctx::Opts,
@@ -24,13 +28,15 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let json = cli.opts.json;
-    let code = match run(cli) {
+    let style = term::Style::detect();
+    let (r, shown) = run(cli, style);
+    let code = match r {
         Ok(()) => 0,
         Err(e) => {
             if json {
                 println!("{}", serde_json::json!({"ok": false, "error": format!("{e:#}")}));
-            } else {
-                eprintln!("error: {e:#}");
+            } else if !shown {
+                eprintln!("{}", style.step_line(false, &format!("error: {e:#}")));
             }
             1
         }
@@ -38,25 +44,44 @@ fn main() {
     std::process::exit(code);
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+/// The result, and whether a step already printed its error.
+fn run(cli: Cli, style: term::Style) -> (anyhow::Result<()>, bool) {
     let json = cli.opts.json;
-    let ctx = ctx::Ctx::new(cli.opts)?;
-    match cli.cmd {
-        None | Some(commands::Cmd::Tui) => ui::run(ctx),
-        Some(cmd) => {
-            let out = commands::exec(&ctx, &cmd, false)?;
-            if json {
-                let mut j = out.json;
-                if let Some(o) = j.as_object_mut() {
-                    o.insert("ok".into(), serde_json::json!(true));
-                }
-                println!("{j}");
-            } else {
-                println!("{}", out.text);
-            }
-            Ok(())
-        }
+    let mut ctx = match ctx::Ctx::new(cli.opts) {
+        Ok(c) => c,
+        Err(e) => return (Err(e), false),
+    };
+    if matches!(cli.cmd, Some(commands::Cmd::Dashboard)) {
+        return (ui::run(ctx), false);
     }
+    if !json {
+        ctx.ui = term::Ui::plain(style);
+    }
+    let r = (|| -> anyhow::Result<()> {
+        let out = match &cli.cmd {
+            Some(cmd) => commands::exec(&ctx, cmd, false)?,
+            // no command: the overview box (JSON: what `status` returns)
+            None => commands::overview_out(&ctx),
+        };
+        if json {
+            let mut j = out.json;
+            if let Some(o) = j.as_object_mut() {
+                o.insert("ok".into(), serde_json::json!(true));
+            }
+            println!("{j}");
+        } else {
+            match out.view {
+                Some(v) => {
+                    let body = v.render(&ctx.ui.style());
+                    println!("{}{body}", if ctx.ui.printed() { "\n" } else { "" });
+                }
+                None => println!("{}", out.text),
+            }
+        }
+        Ok(())
+    })();
+    let shown = ctx.ui.failed_shown();
+    (r, shown)
 }
 
 #[cfg(test)]

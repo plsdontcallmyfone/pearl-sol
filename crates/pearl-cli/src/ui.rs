@@ -661,7 +661,7 @@ pub fn run(ctx: Ctx) -> Result<()> {
             match commands::parse_line(&line) {
                 Err(e) => app.push_log(true, e.to_string()),
                 Ok(Cmd::Quit) => app.quit = true,
-                Ok(Cmd::Tui) => app.push_log(true, "already in the dashboard".into()),
+                Ok(Cmd::Dashboard) => app.push_log(true, "already in the dashboard".into()),
                 Ok(Cmd::Help) => app.detail = Some(("Help".into(), commands::HELP.lines().map(String::from).collect())),
                 Ok(_) if app.busy.is_some() => app.push_log(true, "a command is still running".into()),
                 Ok(cmd) => {
