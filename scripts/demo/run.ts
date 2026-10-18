@@ -288,6 +288,11 @@ async function step1(): Promise<string> {
     })], [payer]);
   }
 
+  // storefront buyback: the vault PDA's pump + PumpSwap volume accumulators (once), and
+  // no minimum interval so the demo can show two buys back to back (default 600 s)
+  console.log(crank(["sf-setup"]).trim());
+  console.log(crank(["sf-set", "--minIntervalSecs", "0"]).trim());
+
   // relayer + storefront service
   start("relayer", "node", ["src/main.ts"], { cwd: RELAYER, env: relayerEnv() });
   start("storefront-x402", "node", ["src/main.ts"], { cwd: resolve(ROOT, "services/storefront-x402"), env: {
@@ -516,6 +521,80 @@ async function step6(): Promise<string> {
 }
 
 /**
+ * Storefront buyback (SYNTHESIS item 2, 2026-10-18): the x402 order of step 5 paid
+ * buyback_bps of its sol_in into the storefront's buyback vault (an on-chain rule in
+ * buy_job, not a promise). The permissionless crank buys the token with it through the
+ * same pump path as the reserve's creator-fee buyback: first half the vault into the
+ * mining reserve (per-call cap, the rest carries), then the rest burned. Each buy's
+ * BuybackExecuted event (SOL in, tokens out, destination, order nonces covered) is read
+ * back from the on-chain tx logs; totals from the config; the bridge vault is untouched.
+ */
+async function stepBuyback(): Promise<string> {
+  if (!order) throw new Error("no order from step 5");
+  const sfStatus = () => JSON.parse(crank(["sf-status"]));
+  const s0 = sfStatus();
+  info("buyback vault after the order", { vault: s0.vault, available: s0.availableLamports, bps: s0.buybackBps, destination: s0.destination,
+    pendingOrders: s0.pendingOrders, pendingFirstNonce: s0.pendingFirstNonce, pendingLastNonce: s0.pendingLastNonce });
+  const solSpent = (await conn.getAccountInfo(orderPda(order.nonce)))!.data.readBigUInt64LE(148); // Order.sol_spent (storefront::layout)
+  const avail = BigInt(s0.availableLamports);
+  if (s0.pendingOrders !== "1" || s0.pendingLastNonce !== order.nonce.toString()) throw new Error(`pending ${JSON.stringify(s0)}`);
+  if (avail === 0n || BigInt(s0.accrued) !== avail) throw new Error(`vault available ${avail}, accrued ${s0.accrued}`);
+  // the order's share = sol_in x bps / 10000, sol_in = the job's spend + the share (x402 grossed it up)
+  if (avail * 10_000n < BigInt(s0.buybackBps) * (solSpent + avail) - 10_000n) throw new Error(`share ${avail} vs order sol_spent ${solSpent}`);
+  const x = (await httpJson(`${STOREFRONT_URL}/buyback`)).body;
+  if (x.available_lamports !== s0.availableLamports || x.pending.last_nonce !== order.nonce.toString()) throw new Error(`GET /buyback ${JSON.stringify(x)}`);
+  const RESERVE_CREATOR = PublicKey.findProgramAddressSync([Buffer.from("creator")], RESERVE_ID)[0];
+  const reserveAta = ata(RESERVE_CREATOR, MINT);
+  if (s0.destinationAccount !== reserveAta.toBase58()) throw new Error(`destination ${s0.destinationAccount} != reserve ATA ${reserveAta.toBase58()}`);
+  const bridgeVault = ata(bridgeConfigPda(), MINT);
+  const vaultSpl0 = tokenAccountAmount((await conn.getAccountInfo(bridgeVault))!.data);
+  const supply = async () => (await conn.getAccountInfo(MINT))!.data.readBigUInt64LE(36);
+  const supply0 = await supply();
+  const reserve0 = await splBalance(RESERVE_CREATOR);
+
+  // buy 1: half the vault (per-call cap) into the mining reserve
+  const half = avail / 2n;
+  console.log(crank(["sf-set", "--maxPerCall", half.toString()]).trim());
+  const b1 = JSON.parse(crank(["sf-buyback"]).trim().split("\n").pop()!);
+  if (!b1.ok || b1.destination !== "reserve" || b1.venue !== "curve") throw new Error(`buy 1: ${JSON.stringify(b1)}`);
+  if (BigInt(b1.solIn) > half || BigInt(b1.carry) !== avail - BigInt(b1.solIn) || b1.orders !== "1" || b1.lastNonce !== order.nonce.toString()) throw new Error(`buy 1 event ${JSON.stringify(b1)}`);
+  const reserve1 = await splBalance(RESERVE_CREATOR);
+  if (reserve1 - reserve0 !== BigInt(b1.routed) || BigInt(b1.tokensOut) === 0n) throw new Error(`reserve +${reserve1 - reserve0}, event routed ${b1.routed}`);
+  // the event comes from the on-chain tx: a storefront crank_buyback instruction with its log
+  const tx1 = await conn.getTransaction(b1.sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  const k1 = tx1!.transaction.message.staticAccountKeys;
+  const isCrank = tx1!.transaction.message.compiledInstructions.some((ci) => k1[ci.programIdIndex].equals(STOREFRONT_PROGRAM_ID) && Buffer.from(ci.data).subarray(0, 8).equals(disc("crank_buyback")));
+  if (!isCrank || !tx1!.meta!.logMessages!.some((l) => l.startsWith("Program data: "))) throw new Error(`tx ${b1.sig} is not a crank_buyback with an event`);
+  info("buy 1 (reserve)", b1);
+
+  // buy 2: the carry, burned
+  console.log(crank(["sf-set", "--dest", "burn", "--maxPerCall", "0"]).trim());
+  const b2 = JSON.parse(crank(["sf-buyback"]).trim().split("\n").pop()!);
+  if (!b2.ok || b2.destination !== "burn" || b2.orders !== "0" || BigInt(b2.availableBefore) !== BigInt(b1.carry)) throw new Error(`buy 2: ${JSON.stringify(b2)}`);
+  const supply2 = await supply();
+  if (supply0 - supply2 !== BigInt(b2.routed) || BigInt(b2.routed) === 0n) throw new Error(`supply ${supply0} -> ${supply2}, burned ${b2.routed}`);
+  info("buy 2 (burn)", b2);
+  // back to the provisional defaults: destination reserve, 1 SOL per call
+  console.log(crank(["sf-set", "--dest", "reserve", "--maxPerCall", "1000000000"]).trim());
+
+  const s2 = sfStatus();
+  if (s2.buys !== "2" || BigInt(s2.toReserve) !== BigInt(b1.routed) || BigInt(s2.burned) !== BigInt(b2.routed) || s2.pendingOrders !== "0") throw new Error(`totals ${JSON.stringify(s2)}`);
+  if (BigInt(s2.spent) !== BigInt(b1.solIn) + BigInt(b2.solIn)) throw new Error(`spent ${s2.spent}`);
+  // bridge vault untouched; after a burn the chain-side supply outside the escrow is still
+  // backed: 1e18 - escrow <= 1000 x mint supply (burned tokens can never be bridged in)
+  const vaultSpl2 = tokenAccountAmount((await conn.getAccountInfo(bridgeVault))!.data);
+  if (vaultSpl2 !== vaultSpl0) throw new Error(`bridge vault moved ${vaultSpl0} -> ${vaultSpl2}`);
+  const esc = await nodeCall("getEscrow");
+  const outside = BigInt(esc.total_supply) - BigInt(esc.escrow_balance);
+  if (outside > supply2 * 1000n) throw new Error(`outside escrow ${outside} > 1000 x supply ${supply2}`);
+  return `order ${order.nonce} paid ${avail} lamports (${s0.buybackBps} bps of sol_in) into vault ${s0.vault}; ` +
+    `buy 1 ${b1.solIn} lamports -> ${b1.tokensOut} SPL to the mining reserve ${reserveAta.toBase58()} (orders ${b1.firstNonce}..${b1.lastNonce}, carry ${b1.carry}, ${b1.sig.slice(0, 16)}...); ` +
+    `buy 2 ${b2.solIn} lamports -> ${b2.tokensOut} SPL burned, mint supply ${supply0} -> ${supply2} (${b2.sig.slice(0, 16)}...); ` +
+    `config totals: ${s2.buys} buys, spent ${s2.spent}, to reserve ${s2.toReserve}, burned ${s2.burned}; GET /buyback agrees; ` +
+    `bridge vault unchanged (${vaultSpl2} SPL), 1e18 - escrow ${outside} <= 1000 x supply`;
+}
+
+/**
  * Refund path (owner decision 2026-10-17): the chain's min protocol fee is raised by
  * AdminConfig above any order's P (an order paid on Solana is now underpaid for the
  * chain), a new x402 order is held back by the relayer (never signed), and once
@@ -700,10 +779,11 @@ try {
   await step("3. plain bridge-in + RegisterAgent", step3);
   await step("4. light client: init from the devnet checkpoint, header-relay, storefront finalize -> proof mode", stepLightClient);
   await step("5. storefront order over x402 -> job on the chain", step4);
-  await step("6. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
-  await step("7. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
-  await step("8. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
-  await step("9. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
+  await step("6. storefront buyback: the order's share bought back by the crank, half to the mining reserve, the rest burned", stepBuyback);
+  await step("7. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
+  await step("8. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
+  await step("9. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
+  await step("10. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
@@ -713,12 +793,12 @@ if (!keepUp) {
   const s = Date.now();
   try {
     const d = await teardown();
-    results.push({ step: "10. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
-    console.log(`\n== 10. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+    results.push({ step: "11. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 11. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
   } catch (e) {
     failed = true;
-    results.push({ step: "10. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
-    console.log(`\n== 10. teardown\n   FAIL: ${(e as Error).message}`);
+    results.push({ step: "11. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 11. teardown\n   FAIL: ${(e as Error).message}`);
   }
 } else {
   console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);

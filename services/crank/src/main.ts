@@ -8,6 +8,14 @@
 //   node src/main.ts run    loop every CRANK_INTERVAL_SECS
 //   node src/main.ts fund --amount BASE_UNITS
 //
+// Storefront buyback (token/programs/storefront, SPEC 5.1 "Buyback"):
+//   node src/main.ts sf-status                   buyback config, vault, totals, pending orders (JSON)
+//   node src/main.ts sf-setup                    vault PDA's pump + PumpSwap volume accumulators (once, anyone pays)
+//   node src/main.ts sf-set [--bps N] [--dest reserve|burn] [--cranker PK|none] [--maxPerCall L] [--minBuy L]
+//                           [--minIntervalSecs S] [--reserveProgram PK]       (admin = KEYPAIR)
+//   node src/main.ts sf-buyback                  one crank_buyback(_amm) attempt, prints the BuybackExecuted fields (JSON)
+//   `run` and `once` also attempt a storefront buyback each tick (SF_BUYBACK=0 turns it off).
+//
 // Env (all optional):
 //   RPC_URL             default http://127.0.0.1:10600 (token localnet)
 //   KEYPAIR             signer, default keys/localnet/payer-keypair.json
@@ -17,12 +25,15 @@
 //   MIN_OUT_BPS         min_tokens_out = fee-free quote x (1 - bps), default 300
 //   FUND_AMOUNT         base units per fund_mining call, default 0 (off)
 //   FUND_INTERVAL_SECS  default 3600
+//   STOREFRONT_IDL      default token/target/idl/storefront.json
+//   SF_BUYBACK          1 (default) = storefront buyback in run/once, 0 = off
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import type { TransactionInstruction, PublicKey as PublicKeyT, Keypair as KeypairT } from '@solana/web3.js';
 import { ReserveKeys, bondingCurve, canonicalPool, pda, ata, PUMP, AMM, WSOL, TOK } from './accounts.ts';
+import { StorefrontBuyback } from './storefront.ts';
 
 // CommonJS builds throughout: the pump SDKs' ESM builds do not load next to
 // anchor's CJS build, and one web3.js copy keeps PublicKey checks working.
@@ -46,6 +57,8 @@ const MAX_SOL_IN = BigInt(env('MAX_SOL_IN', '1000000000'));
 const MIN_OUT_BPS = BigInt(env('MIN_OUT_BPS', '300'));
 const FUND_AMOUNT = BigInt(env('FUND_AMOUNT', '0'));
 const FUND_INTERVAL = Number(env('FUND_INTERVAL_SECS', '3600'));
+const SF_IDL = env('STOREFRONT_IDL', path.join(ROOT, 'token/target/idl/storefront.json'));
+const SF_BUYBACK = env('SF_BUYBACK', '1') !== '0';
 
 const loadKp = (f: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(f, 'utf8'))));
 const signer = loadKp(KEYPAIR);
@@ -54,6 +67,8 @@ const idl = JSON.parse(fs.readFileSync(IDL, 'utf8'));
 const program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(signer), { commitment: 'confirmed' }));
 const keys = new ReserveKeys(new PublicKey(idl.address));
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
+let sfb: StorefrontBuyback | null = null;
+const storefront = () => (sfb ??= new StorefrontBuyback(conn, signer, SF_IDL, (ixs, extra) => send(ixs, extra), MIN_OUT_BPS, MAX_SOL_IN));
 
 const ZERO = PublicKey.default;
 const cpQuote = (base: bigint, quote: bigint, inAmt: bigint) => (quote + inAmt === 0n ? 0n : (base * inAmt) / (quote + inAmt));
@@ -201,6 +216,13 @@ async function tick() {
   } catch (e) {
     log('crank error:', String((e as Error).message ?? e).slice(0, 400));
   }
+  if (SF_BUYBACK) {
+    try {
+      log('storefront buyback', JSON.stringify(await storefront().once(await chainTime())));
+    } catch (e) {
+      log('storefront buyback error:', String((e as Error).message ?? e).slice(0, 400));
+    }
+  }
   if (FUND_AMOUNT > 0n && Date.now() / 1000 - lastFund >= FUND_INTERVAL) {
     try {
       log(await fund(FUND_AMOUNT));
@@ -232,6 +254,18 @@ switch (cmd) {
     break;
   case 'fund':
     log(await fund(BigInt(flags.amount)));
+    break;
+  case 'sf-status':
+    console.log(JSON.stringify(await storefront().status(), null, 2));
+    break;
+  case 'sf-setup':
+    log('storefront vault volume accumulators', JSON.stringify(await storefront().setup()));
+    break;
+  case 'sf-set':
+    log('set_buyback', await storefront().set(flags));
+    break;
+  case 'sf-buyback':
+    console.log(JSON.stringify(await storefront().once(await chainTime())));
     break;
   case 'once':
     await tick();
