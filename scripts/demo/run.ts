@@ -735,11 +735,23 @@ async function stepLien(): Promise<string> {
   const st = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "status"]).trim().split("\n").pop()!);
   const acc = st.accumulator;
   if (!acc || acc.count < 10) throw new Error(`accumulator ${JSON.stringify(acc)}`);
-  const ap = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "acc-proof", String(acc.start_height + 1)]).trim().split("\n").pop()!);
   const accPda = PublicKey.findProgramAddressSync([Buffer.from("acc")], LIGHTCLIENT_ID)[0];
-  const proof = Buffer.from(ap.proof, "hex");
-  const data = Buffer.concat([disc("prove_header"), Buffer.from(ap.header, "hex"), u64le(BigInt(ap.count)), u32le(proof.length), proof]);
-  const sim = await send([new TransactionInstruction({ programId: LIGHTCLIENT_ID, keys: [m(accPda)], data })], [payer]);
+  // acc-proof gives the short form (siblings to the current peaks), valid only while the
+  // accumulator's count is unchanged; the parallel relay can accumulate a header between the
+  // proof and the tx (AccProof 0x177a), so take a fresh proof and retry a few times
+  let ap: any = null;
+  let sim = "";
+  for (let attempt = 0; ; attempt++) {
+    ap = JSON.parse(run(BIN.headerRelay, [...HR_ARGS, "acc-proof", String(acc.start_height + 1)]).trim().split("\n").pop()!);
+    const proof = Buffer.from(ap.proof, "hex");
+    const data = Buffer.concat([disc("prove_header"), Buffer.from(ap.header, "hex"), u64le(BigInt(ap.count)), u32le(proof.length), proof]);
+    try {
+      sim = await send([new TransactionInstruction({ programId: LIGHTCLIENT_ID, keys: [m(accPda)], data })], [payer]);
+      break;
+    } catch (e) {
+      if (attempt >= 5 || !/"Custom":6026/.test(String(e))) throw e;
+    }
+  }
   return `miner key SetRoute ${BPS} bps to lender ${lender.toBase58()} at height ${setHeight}; ${entries.length} lien withdrawal entries ` +
     `(routed ${routed.routed}, withdrawn ${routed.withdrawn} base units) from the miner; lender got ${got - lenderBefore} SPL on Solana by ${how}; ` +
     `ClearRoute by the release key (route_nonce ${route0.route_nonce}) ended it; R1 receipt ${proved} proven to tx_root; ` +
