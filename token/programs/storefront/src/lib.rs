@@ -70,6 +70,27 @@
 //! - Once Finalized, Expired-and-unlocked or Refunded an Order is closed for good
 //!   (replay guard).
 //!
+//! ## Buyback (2026-10-18, SPEC 5.1 "Buyback")
+//! - `buy_job` / `buy_job_amm` move `share = sol_in x config.buyback_bps / 10000` of the
+//!   buyer's `sol_in` into the system-owned, data-less buyback vault PDA `["buyback"]`
+//!   before the trade; the job buys with `sol_in - share` (`Order.sol_spent` is the
+//!   job's part). `BuybackAccrued` logs each order's share. The first share also tops
+//!   the vault up to rent exemption (paid by that buyer, not counted as a share).
+//! - `crank_buyback` (curve) / `crank_buyback_amm` (PumpSwap): permissionless (or
+//!   `config.buyback_cranker` only, when set). Spends `min(vault - rent, max_per_call,
+//!   max_sol_in)` with the vault PDA as the pump `user`, through the same CPIs and the
+//!   same fill check as `buy_job` and the reserve's creator-fee buyback, then routes the
+//!   vault's whole token balance to `config.buyback_dest`: 0 = the mining reserve
+//!   (ATA(PDA(["creator"], config.reserve_program), mint, Token-2022)), 1 = burn
+//!   (Token-2022 BurnChecked; lowers the Solana mint supply). `BuybackExecuted` logs SOL
+//!   in, tokens out, the destination and the order nonces whose shares were collected
+//!   since the previous buy.
+//! - `set_buyback` (admin): share, destination, reserve program, cranker, caps, interval;
+//!   emits `BuybackConfigUpdated` with every value. Defaults are PROVISIONAL (owner
+//!   decision open): 1000 bps, destination reserve, 1 SOL per call, min 0.001 SOL, 600 s.
+//! - One-time setup (anyone pays): pump and PumpSwap `init_user_volume_accumulator` for
+//!   the vault PDA, as for the trader PDA.
+//!
 //! ## USDC (mainnet)
 //! TODO(usdc): `buy_job_usdc` is designed but NOT implemented (localnet is
 //! SOL only). Design: the buyer's USDC goes to a trader-owned USDC ATA; a
@@ -119,6 +140,11 @@ pub const CONFIG_SEED: &[u8] = b"config";
 pub const TRADER_SEED: &[u8] = b"trader";
 pub const DRAFT_SEED: &[u8] = b"draft";
 pub const ORDER_SEED: &[u8] = b"order";
+pub const BUYBACK_VAULT_SEED: &[u8] = b"buyback";
+/// token/programs/reserve: its creator PDA owns the mining reserve ATA.
+pub const RESERVE_CREATOR_SEED: &[u8] = b"creator";
+/// token/programs/reserve `declare_id!` (keys/localnet/reserve-keypair.json).
+pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
 
 pub const MAX_ATTESTERS: usize = 10;
 pub const MAX_EVALUATORS: usize = 8;
@@ -148,12 +174,34 @@ pub const MODE_PROOF: u8 = 2;
 pub const VENUE_CURVE: u8 = 0;
 pub const VENUE_PUMPSWAP: u8 = 1;
 
+/// `Config.buyback_dest`: where bought-back tokens go.
+pub const DEST_RESERVE: u8 = 0;
+pub const DEST_BURN: u8 = 1;
+
+/// Provisional buyback defaults (owner decision open, docs/HANDOFF.md).
+pub const DEFAULT_BUYBACK_BPS: u16 = 1000;
+pub const DEFAULT_BUYBACK_MAX_PER_CALL: u64 = 1_000_000_000;
+pub const DEFAULT_BUYBACK_MIN_BUY: u64 = 1_000_000;
+pub const DEFAULT_BUYBACK_MIN_INTERVAL_SECS: i64 = 600;
+/// Token-2022 / SPL Token mint: decimals byte.
+const MINT_DECIMALS_OFFSET: usize = 44;
+
 /// Bridge `Config.deposit_nonce` offset: disc 8 + admin, mint, vault, token_program.
 const BRIDGE_NONCE_OFFSET: usize = 8 + 32 * 4;
 const RENT_MIN: u64 = 890_880;
 
 pub fn trader_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TRADER_SEED], &ID)
+}
+
+pub fn buyback_vault_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[BUYBACK_VAULT_SEED], &ID)
+}
+
+/// The mining reserve's token account for `mint` (reserve creator PDA's Token-2022 ATA).
+pub fn reserve_ata(reserve_program: &Pubkey, mint: &Pubkey) -> Pubkey {
+    let creator = Pubkey::find_program_address(&[RESERVE_CREATOR_SEED], reserve_program).0;
+    ata(&creator, mint, &TOKEN_2022_ID)
 }
 
 pub fn order_pda(nonce: u64) -> (Pubkey, u8) {
@@ -232,6 +280,13 @@ pub mod storefront {
         c.threshold = threshold;
         c.finalize_modes = MODE_SIGNERS;
         c.light_client = Pubkey::default();
+        c.buyback_bps = DEFAULT_BUYBACK_BPS;
+        c.buyback_dest = DEST_RESERVE;
+        c.reserve_program = DEFAULT_RESERVE_PROGRAM;
+        c.buyback_cranker = Pubkey::default();
+        c.buyback_max_per_call = DEFAULT_BUYBACK_MAX_PER_CALL;
+        c.buyback_min_buy = DEFAULT_BUYBACK_MIN_BUY;
+        c.buyback_min_interval_secs = DEFAULT_BUYBACK_MIN_INTERVAL_SECS;
         c.apply(params)?;
         let have = ctx.accounts.trader.lamports();
         if have < RENT_MIN {
@@ -276,6 +331,24 @@ pub mod storefront {
         Ok(())
     }
 
+    /// Admin: buyback share, destination, reserve program, cranker allowlist, caps and
+    /// interval. Emits every resulting value.
+    pub fn set_buyback(ctx: Context<AdminOnly>, p: BuybackParams) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        c.apply_buyback(p)?;
+        emit!(BuybackConfigUpdated {
+            config: c.key(),
+            buyback_bps: c.buyback_bps,
+            destination: c.buyback_dest,
+            reserve_program: c.reserve_program,
+            cranker: c.buyback_cranker,
+            max_per_call: c.buyback_max_per_call,
+            min_buy: c.buyback_min_buy,
+            min_interval_secs: c.buyback_min_interval_secs,
+        });
+        Ok(())
+    }
+
     /// Step 1: the buyer stores the job spec. `recipient` = the buyer's
     /// agent-chain address (poster of the job; same ed25519 key works on both).
     pub fn open_order(ctx: Context<OpenOrder>, draft_id: u64, recipient: Pubkey, spec: JobSpecArgs) -> Result<()> {
@@ -313,6 +386,7 @@ pub mod storefront {
         let seeds: &[&[u8]] = &[TRADER_SEED, &[a.config.trader_bump]];
         ata_create_idempotent(&a.associated_token_program, &buyer, &a.trader_ata, &trader, &mint, &system, &a.token_2022_program)?;
 
+        let (share, sol_in) = take_buyback_share(&a.config, &buyer, &a.buyback_vault.to_account_info(), &system, sol_in)?;
         let lamports_before = trader.lamports();
         invoke(&system_instruction::transfer(buyer.key, trader.key, sol_in), &[buyer.clone(), trader.clone(), system.clone()])?;
         let quote = cp_quote(curve.virtual_token, curve.virtual_quote, sol_in);
@@ -370,6 +444,7 @@ pub mod storefront {
             system_program: system,
         };
         let trader_bump = o.config.trader_bump;
+        let vault_lamports = o.buyback_vault.lamports();
         place_order(
             pa,
             &mut ctx.accounts.config,
@@ -381,6 +456,8 @@ pub mod storefront {
             spent,
             VENUE_CURVE,
             trader_bump,
+            share,
+            vault_lamports,
         )
     }
 
@@ -409,6 +486,7 @@ pub mod storefront {
         let lamports_before = trader.lamports();
         ata_create_idempotent(&a.associated_token_program, &buyer, &a.trader_ata, &trader, &mint, &system, &a.token_2022_program)?;
         ata_create_idempotent(&a.associated_token_program, &buyer, &a.trader_wsol, &trader, wsol, &system, &a.token_program)?;
+        let (share, sol_in) = take_buyback_share(&a.config, &buyer, &a.buyback_vault.to_account_info(), &system, sol_in)?;
         let wsol_start = token_amount(&a.trader_wsol)?;
         invoke(&system_instruction::transfer(buyer.key, a.trader_wsol.key, sol_in), &[buyer.clone(), a.trader_wsol.to_account_info(), system.clone()])?;
         sync_native(&a.token_program, &a.trader_wsol)?;
@@ -476,6 +554,7 @@ pub mod storefront {
             system_program: system,
         };
         let trader_bump = o.config.trader_bump;
+        let vault_lamports = o.buyback_vault.lamports();
         place_order(
             pa,
             &mut ctx.accounts.config,
@@ -487,6 +566,8 @@ pub mod storefront {
             spent,
             VENUE_PUMPSWAP,
             trader_bump,
+            share,
+            vault_lamports,
         )
     }
 
@@ -625,6 +706,257 @@ pub mod storefront {
         emit!(OrderExpired { order: o.key(), nonce: o.deposit_nonce, job_id: o.job_id });
         Ok(())
     }
+
+    /// Buyback on the bonding curve (see module docs "Buyback"): the vault PDA buys with
+    /// `buy_exact_quote_in_v3`, then the vault's tokens go to `config.buyback_dest`.
+    pub fn crank_buyback(ctx: Context<BuybackCurve>, max_sol_in: u64, min_tokens_out: u64) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let a = &ctx.accounts;
+        a.config.check_crank(&a.cranker.key(), now)?;
+        require_keys_eq!(a.vault_ata.key(), ata(&a.buyback_vault.key(), &a.mint.key(), &TOKEN_2022_ID), StorefrontError::BadAccount);
+        require_keys_eq!(a.bonding_curve.key(), pump::bonding_curve(&a.mint.key()), StorefrontError::BadAccount);
+        let curve = read_curve(&a.bonding_curve)?;
+        require!(!curve.complete, StorefrontError::CurveComplete);
+
+        let vault = a.buyback_vault.to_account_info();
+        let cranker = a.cranker.to_account_info();
+        let mint = a.mint.to_account_info();
+        let system = a.system_program.to_account_info();
+        let available = vault.lamports().saturating_sub(RENT_MIN);
+        let spend = a.config.buyback_spend(available, max_sol_in)?;
+        let bump = ctx.bumps.buyback_vault;
+        let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
+        ata_create_idempotent(&a.associated_token_program, &cranker, &a.vault_ata, &vault, &mint, &system, &a.token_2022_program)?;
+
+        let quote = cp_quote(curve.virtual_token, curve.virtual_quote, spend);
+        let min_out = min_tokens_out.max(slip_floor(quote, a.config.max_slippage_bps)).max(1);
+        let lamports_before = vault.lamports();
+        let tokens_before = token_amount(&a.vault_ata)?;
+        let mut data = IX_BUY_EXACT_QUOTE_IN_V3.to_vec();
+        data.extend_from_slice(&spend.to_le_bytes());
+        data.extend_from_slice(&min_out.to_le_bytes());
+        data.push(0); // partial_fill = false
+        call(
+            &a.pump_program,
+            data,
+            &[
+                (&a.pump_global, false, false),
+                (&mint, false, false),
+                (&a.wsol_mint, false, false),
+                (&a.token_2022_program, false, false),
+                (&a.token_program, false, false),
+                (&a.bonding_curve, true, false),
+                (&a.curve_base_vault, true, false),
+                (&a.curve_quote_vault, true, false),
+                (&vault, true, true),
+                (&a.vault_ata, true, false),
+                (&a.vault_wsol, true, false),
+                (&a.user_volume_accumulator, true, false),
+                (&a.fee_config, false, false),
+                (&a.buyback_fee_recipient, true, false),
+                (&system, false, false),
+                (&a.pump_event_authority, false, false),
+                (&a.pump_program, false, false),
+            ],
+            &[seeds],
+        )?;
+        let spent = lamports_before.saturating_sub(vault.lamports());
+        let got = token_amount(&a.vault_ata)?.saturating_sub(tokens_before);
+        require!(vault.lamports() >= RENT_MIN, StorefrontError::BelowFloor);
+        check_fill(got, spent, spend, quote, min_tokens_out, a.config.max_slippage_bps)?;
+        let r = RouteAccounts {
+            vault,
+            vault_ata: a.vault_ata.to_account_info(),
+            mint,
+            reserve_ata: a.reserve_ata.to_account_info(),
+            token_2022_program: a.token_2022_program.to_account_info(),
+        };
+        finish_buyback(r, &mut ctx.accounts.config, bump, now, VENUE_CURVE, available, spent, got, quote)
+    }
+
+    /// Buyback on PumpSwap after graduation: the spend is wrapped into the vault's wSOL
+    /// ATA, spent with `buy_exact_quote_in_v2` on the canonical pool, the ATA is closed
+    /// (its rent back to the cranker if this call created it), then routed as above.
+    pub fn crank_buyback_amm(ctx: Context<BuybackAmm>, max_sol_in: u64, min_tokens_out: u64) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let a = &ctx.accounts;
+        a.config.check_crank(&a.cranker.key(), now)?;
+        require_keys_eq!(a.vault_ata.key(), ata(&a.buyback_vault.key(), &a.mint.key(), &TOKEN_2022_ID), StorefrontError::BadAccount);
+        require_keys_eq!(a.vault_wsol.key(), ata(&a.buyback_vault.key(), &WSOL_MINT, &TOKEN_ID), StorefrontError::BadAccount);
+        require_keys_eq!(a.pool.key(), canonical_pool(&a.mint.key()), StorefrontError::BadAccount);
+        let pool = read_pool(&a.pool)?;
+        require_keys_eq!(pool.base_mint, a.mint.key(), StorefrontError::BadAccount);
+        require_keys_eq!(pool.quote_mint, WSOL_MINT, StorefrontError::BadAccount);
+        require_keys_eq!(pool.base_vault, a.pool_base_vault.key(), StorefrontError::BadAccount);
+        require_keys_eq!(pool.quote_vault, a.pool_quote_vault.key(), StorefrontError::BadAccount);
+
+        let vault = a.buyback_vault.to_account_info();
+        let cranker = a.cranker.to_account_info();
+        let mint = a.mint.to_account_info();
+        let system = a.system_program.to_account_info();
+        let wsol = &a.wsol_mint;
+        let available = vault.lamports().saturating_sub(RENT_MIN);
+        let spend = a.config.buyback_spend(available, max_sol_in)?;
+        let bump = ctx.bumps.buyback_vault;
+        let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
+        ata_create_idempotent(&a.associated_token_program, &cranker, &a.vault_ata, &vault, &mint, &system, &a.token_2022_program)?;
+        let wsol_existed = a.vault_wsol.lamports() > 0;
+        ata_create_idempotent(&a.associated_token_program, &cranker, &a.vault_wsol, &vault, wsol, &system, &a.token_program)?;
+        let wsol_rent = if wsol_existed { 0 } else { a.vault_wsol.lamports() };
+        let lamports_before = vault.lamports();
+        invoke_signed(&system_instruction::transfer(vault.key, a.vault_wsol.key, spend), &[vault.clone(), a.vault_wsol.to_account_info(), system.clone()], &[seeds])?;
+        sync_native(&a.token_program, &a.vault_wsol)?;
+        let wsol_before = token_amount(&a.vault_wsol)?;
+
+        let base_res = token_amount(&a.pool_base_vault)?;
+        let quote_res = token_amount(&a.pool_quote_vault)?
+            .saturating_sub(pool.protocol_fees)
+            .saturating_sub(pool.creator_fees)
+            .saturating_add(pool.virtual_quote);
+        let quote = cp_quote(base_res, quote_res, spend);
+        let min_out = min_tokens_out.max(slip_floor(quote, a.config.max_slippage_bps)).max(1);
+        let tokens_before = token_amount(&a.vault_ata)?;
+        let mut data = IX_AMM_BUY_EXACT_QUOTE_IN_V2.to_vec();
+        data.extend_from_slice(&spend.to_le_bytes());
+        data.extend_from_slice(&min_out.to_le_bytes());
+        call(
+            &a.amm_program,
+            data,
+            &[
+                (&a.pool, true, false),
+                (&vault, true, true),
+                (&a.amm_global_config, false, false),
+                (&mint, false, false),
+                (wsol, false, false),
+                (&a.vault_ata, true, false),
+                (&a.vault_wsol, true, false),
+                (&a.pool_base_vault, true, false),
+                (&a.pool_quote_vault, true, false),
+                (&a.token_2022_program, false, false),
+                (&a.token_program, false, false),
+                (&system, false, false),
+                (&a.amm_user_volume_accumulator, true, false),
+                (&a.amm_fee_config, false, false),
+                (&a.amm_buyback_fee_recipient, true, false),
+                (&a.amm_event_authority, false, false),
+                (&a.amm_program, false, false),
+            ],
+            &[seeds],
+        )?;
+        let spent = wsol_before.saturating_sub(token_amount(&a.vault_wsol)?);
+        let got = token_amount(&a.vault_ata)?.saturating_sub(tokens_before);
+        // Unspent wSOL and the ATA rent come back to the vault; the rent this call's
+        // cranker paid goes back to the cranker.
+        close_account(&a.token_program, &a.vault_wsol, &vault, &vault, seeds)?;
+        if wsol_rent > 0 {
+            invoke_signed(&system_instruction::transfer(vault.key, cranker.key, wsol_rent), &[vault.clone(), cranker.clone(), system.clone()], &[seeds])?;
+        }
+        require!(vault.lamports() >= RENT_MIN, StorefrontError::BelowFloor);
+        require!(lamports_before.saturating_sub(vault.lamports()) <= spent, StorefrontError::Overspent);
+        check_fill(got, spent, spend, quote, min_tokens_out, a.config.max_slippage_bps)?;
+        let r = RouteAccounts {
+            vault,
+            vault_ata: a.vault_ata.to_account_info(),
+            mint,
+            reserve_ata: a.reserve_ata.to_account_info(),
+            token_2022_program: a.token_2022_program.to_account_info(),
+        };
+        finish_buyback(r, &mut ctx.accounts.config, bump, now, VENUE_PUMPSWAP, available, spent, got, quote)
+    }
+}
+
+/// Moves the order's buyback share (`sol_in x buyback_bps / 10000`) from the buyer to the
+/// buyback vault; returns (share, the SOL left for the job). The first share also tops the
+/// vault up to rent exemption.
+fn take_buyback_share<'info>(config: &Config, buyer: &AccountInfo<'info>, vault: &AccountInfo<'info>, system: &AccountInfo<'info>, sol_in: u64) -> Result<(u64, u64)> {
+    let share = (sol_in as u128 * config.buyback_bps as u128 / 10_000) as u64;
+    let job_sol = sol_in - share;
+    require!(job_sol > 0, StorefrontError::OrderTooSmall);
+    if share > 0 {
+        let amount = share + RENT_MIN.saturating_sub(vault.lamports());
+        invoke(&system_instruction::transfer(buyer.key, vault.key, amount), &[buyer.clone(), vault.clone(), system.clone()])?;
+    }
+    Ok((share, job_sol))
+}
+
+struct RouteAccounts<'info> {
+    vault: AccountInfo<'info>,
+    vault_ata: AccountInfo<'info>,
+    mint: AccountInfo<'info>,
+    reserve_ata: AccountInfo<'info>,
+    token_2022_program: AccountInfo<'info>,
+}
+
+/// Sends the vault's whole token balance to the configured destination, updates the
+/// totals and emits `BuybackExecuted`.
+#[allow(clippy::too_many_arguments)]
+fn finish_buyback<'info>(
+    r: RouteAccounts<'info>,
+    config: &mut Account<'info, Config>,
+    bump: u8,
+    now: i64,
+    venue: u8,
+    available: u64,
+    spent: u64,
+    got: u64,
+    quote: u64,
+) -> Result<()> {
+    let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
+    let routed = token_amount(&r.vault_ata)?;
+    let decimals = {
+        let d = r.mint.try_borrow_data()?;
+        *d.get(MINT_DECIMALS_OFFSET).ok_or(StorefrontError::BadAccount)?
+    };
+    let dest = config.buyback_dest;
+    let dest_account = if dest == DEST_RESERVE {
+        require_keys_neq!(config.reserve_program, Pubkey::default(), StorefrontError::BadConfig);
+        require_keys_eq!(r.reserve_ata.key(), reserve_ata(&config.reserve_program, &r.mint.key()), StorefrontError::BadAccount);
+        let mut data = vec![12u8]; // TransferChecked
+        data.extend_from_slice(&routed.to_le_bytes());
+        data.push(decimals);
+        call(&r.token_2022_program, data, &[(&r.vault_ata, true, false), (&r.mint, false, false), (&r.reserve_ata, true, false), (&r.vault, false, true)], &[seeds])?;
+        r.reserve_ata.key()
+    } else {
+        let mut data = vec![15u8]; // BurnChecked
+        data.extend_from_slice(&routed.to_le_bytes());
+        data.push(decimals);
+        call(&r.token_2022_program, data, &[(&r.vault_ata, true, false), (&r.mint, true, false), (&r.vault, false, true)], &[seeds])?;
+        r.mint.key()
+    };
+    let c = config;
+    let (first, last, orders) = if c.bb_pending_orders > 0 { (c.bb_pending_first_nonce, c.bb_pending_last_nonce, c.bb_pending_orders) } else { (0, 0, 0) };
+    c.bb_last_ts = now;
+    c.bb_buys = c.bb_buys.saturating_add(1);
+    c.bb_spent = c.bb_spent.saturating_add(spent);
+    c.bb_tokens = c.bb_tokens.saturating_add(got);
+    if dest == DEST_RESERVE {
+        c.bb_to_reserve = c.bb_to_reserve.saturating_add(routed);
+    } else {
+        c.bb_burned = c.bb_burned.saturating_add(routed);
+    }
+    c.bb_pending_orders = 0;
+    c.bb_pending_first_nonce = 0;
+    c.bb_pending_last_nonce = 0;
+    emit!(BuybackExecuted {
+        buy: c.bb_buys,
+        venue,
+        sol_in: spent,
+        tokens_out: got,
+        routed,
+        destination: dest,
+        destination_account: dest_account,
+        quote,
+        first_nonce: first,
+        last_nonce: last,
+        orders,
+        available_before: available,
+        carry: available.saturating_sub(spent),
+        total_spent: c.bb_spent,
+        total_tokens: c.bb_tokens,
+        total_to_reserve: c.bb_to_reserve,
+        total_burned: c.bb_burned,
+    });
+    Ok(())
 }
 
 /// `tx` is included under `tx_root` of the (final) header bytes `header`.
@@ -686,6 +1018,8 @@ fn place_order<'info>(
     spent: u64,
     venue: u8,
     trader_bump: u8,
+    buyback_share: u64,
+    vault_lamports: u64,
 ) -> Result<()> {
     let p_spl = (got as u128 * config.protocol_fee_bps as u128 / 10_000) as u64;
     let w_spl = got - p_spl;
@@ -751,6 +1085,21 @@ fn place_order<'info>(
     config.orders = config.orders.saturating_add(1);
     config.total_sol = config.total_sol.saturating_add(spent);
     config.total_tokens = config.total_tokens.saturating_add(got);
+    if buyback_share > 0 {
+        config.bb_accrued = config.bb_accrued.saturating_add(buyback_share);
+        if config.bb_pending_orders == 0 {
+            config.bb_pending_first_nonce = nonce;
+        }
+        config.bb_pending_last_nonce = nonce;
+        config.bb_pending_orders = config.bb_pending_orders.saturating_add(1);
+        emit!(BuybackAccrued {
+            order: order.key(),
+            nonce,
+            lamports: buyback_share,
+            vault_available: vault_lamports.saturating_sub(RENT_MIN),
+            total_accrued: config.bb_accrued,
+        });
+    }
     emit!(OrderPlaced {
         order: order.key(),
         nonce,
@@ -835,6 +1184,45 @@ pub struct Config {
     pub finalize_modes: u8,
     /// Light-client program whose final headers the proof paths accept.
     pub light_client: Pubkey,
+    // ---- buyback (appended 2026-10-18; module docs "Buyback", SPEC 5.1)
+    /// Share of each order's sol_in that goes to the buyback vault (PROVISIONAL default 1000).
+    pub buyback_bps: u16,
+    /// DEST_RESERVE (0) or DEST_BURN (1).
+    pub buyback_dest: u8,
+    /// token/programs/reserve, whose creator PDA's ATA is the reserve destination.
+    pub reserve_program: Pubkey,
+    /// If set, only this key may crank a buyback; zero = permissionless.
+    pub buyback_cranker: Pubkey,
+    /// Most lamports one buyback spends; 0 = no cap.
+    pub buyback_max_per_call: u64,
+    /// Below this a buyback fails with NothingToBuy.
+    pub buyback_min_buy: u64,
+    pub buyback_min_interval_secs: i64,
+    pub bb_last_ts: i64,
+    /// Lamports of order shares paid into the vault, all time.
+    pub bb_accrued: u64,
+    /// Lamports the vault spent on buys, all time.
+    pub bb_spent: u64,
+    /// Tokens (SPL units) the buys returned, all time.
+    pub bb_tokens: u64,
+    pub bb_to_reserve: u64,
+    pub bb_burned: u64,
+    pub bb_buys: u64,
+    /// Orders whose share arrived since the last buy, and their nonce range.
+    pub bb_pending_orders: u64,
+    pub bb_pending_first_nonce: u64,
+    pub bb_pending_last_nonce: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct BuybackParams {
+    pub buyback_bps: Option<u16>,
+    pub destination: Option<u8>,
+    pub reserve_program: Option<Pubkey>,
+    pub cranker: Option<Pubkey>,
+    pub max_per_call: Option<u64>,
+    pub min_buy: Option<u64>,
+    pub min_interval_secs: Option<i64>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -887,6 +1275,52 @@ impl Config {
         }
         require!(self.min_sol_in > 0 && self.min_sol_in <= self.max_sol_in, StorefrontError::BadConfig);
         Ok(())
+    }
+
+    fn apply_buyback(&mut self, p: BuybackParams) -> Result<()> {
+        if let Some(v) = p.buyback_bps {
+            require!(v < 10_000, StorefrontError::BadConfig);
+            self.buyback_bps = v;
+        }
+        if let Some(v) = p.destination {
+            require!(v == DEST_RESERVE || v == DEST_BURN, StorefrontError::BadConfig);
+            self.buyback_dest = v;
+        }
+        if let Some(v) = p.reserve_program {
+            self.reserve_program = v;
+        }
+        if let Some(v) = p.cranker {
+            self.buyback_cranker = v;
+        }
+        if let Some(v) = p.max_per_call {
+            self.buyback_max_per_call = v;
+        }
+        if let Some(v) = p.min_buy {
+            self.buyback_min_buy = v;
+        }
+        if let Some(v) = p.min_interval_secs {
+            require!(v >= 0, StorefrontError::BadConfig);
+            self.buyback_min_interval_secs = v;
+        }
+        require!(self.buyback_dest != DEST_RESERVE || self.reserve_program != Pubkey::default(), StorefrontError::BadConfig);
+        Ok(())
+    }
+
+    fn check_crank(&self, cranker: &Pubkey, now: i64) -> Result<()> {
+        require!(self.buyback_cranker == Pubkey::default() || self.buyback_cranker == *cranker, StorefrontError::Unauthorized);
+        require!(
+            self.bb_last_ts == 0 || now >= self.bb_last_ts.saturating_add(self.buyback_min_interval_secs),
+            StorefrontError::TooSoon
+        );
+        Ok(())
+    }
+
+    /// Lamports one buyback spends out of `available` (vault above rent).
+    fn buyback_spend(&self, available: u64, max_sol_in: u64) -> Result<u64> {
+        let cap = if self.buyback_max_per_call == 0 { u64::MAX } else { self.buyback_max_per_call };
+        let s = available.min(cap).min(max_sol_in);
+        require!(s >= self.buyback_min_buy.max(1), StorefrontError::NothingToBuy);
+        Ok(s)
     }
 
     fn check_buy(&self, sol_in: u64) -> Result<()> {
@@ -1160,6 +1594,9 @@ pub struct BuyJobCurve<'info> {
     /// CHECK: address = config.bridge_program.
     #[account(address = config.bridge_program @ StorefrontError::BadConfig, executable)]
     pub bridge_program: UncheckedAccount<'info>,
+    /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
+    #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
+    pub buyback_vault: SystemAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1239,6 +1676,129 @@ pub struct BuyJobAmm<'info> {
     /// CHECK: address = config.bridge_program.
     #[account(address = config.bridge_program @ StorefrontError::BadConfig, executable)]
     pub bridge_program: UncheckedAccount<'info>,
+    /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
+    #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
+    pub buyback_vault: SystemAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct BuybackCurve<'info> {
+    /// Anyone (or config.buyback_cranker); pays the vault ATA rent if missing.
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
+    pub buyback_vault: SystemAccount<'info>,
+    /// CHECK: address = config.mint; writable for the burn destination.
+    #[account(mut, address = config.mint @ StorefrontError::BadConfig)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: checked = ATA(vault, mint, Token-2022); created if missing.
+    #[account(mut)]
+    pub vault_ata: UncheckedAccount<'info>,
+    /// CHECK: pump validates (ATA(vault, wSOL, SPL), unused for SOL coins).
+    #[account(mut)]
+    pub vault_wsol: UncheckedAccount<'info>,
+    /// CHECK: checked = the reserve ATA when the destination is the reserve; unused for burn.
+    #[account(mut)]
+    pub reserve_ata: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    pub pump_global: UncheckedAccount<'info>,
+    /// CHECK: checked = PDA(["bonding-curve", mint]) and owned by pump.
+    #[account(mut)]
+    pub bonding_curve: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    #[account(mut)]
+    pub curve_base_vault: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    #[account(mut)]
+    pub curve_quote_vault: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    #[account(mut)]
+    pub user_volume_accumulator: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    pub fee_config: UncheckedAccount<'info>,
+    /// CHECK: pump validates.
+    #[account(mut)]
+    pub buyback_fee_recipient: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = WSOL_MINT)]
+    pub wsol_mint: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = TOKEN_2022_ID)]
+    pub token_2022_program: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = ATA_ID)]
+    pub associated_token_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: pump validates.
+    pub pump_event_authority: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = PUMP_ID)]
+    pub pump_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct BuybackAmm<'info> {
+    /// Anyone (or config.buyback_cranker); pays ATA rent if missing (wSOL ATA rent back).
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
+    pub buyback_vault: SystemAccount<'info>,
+    /// CHECK: address = config.mint; writable for the burn destination.
+    #[account(mut, address = config.mint @ StorefrontError::BadConfig)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: checked = ATA(vault, mint, Token-2022); created if missing.
+    #[account(mut)]
+    pub vault_ata: UncheckedAccount<'info>,
+    /// CHECK: checked = ATA(vault, wSOL, SPL); created and closed here.
+    #[account(mut)]
+    pub vault_wsol: UncheckedAccount<'info>,
+    /// CHECK: checked = the reserve ATA when the destination is the reserve; unused for burn.
+    #[account(mut)]
+    pub reserve_ata: UncheckedAccount<'info>,
+    /// CHECK: checked = canonical pool for mint.
+    #[account(mut)]
+    pub pool: UncheckedAccount<'info>,
+    /// CHECK: checked = pool.pool_base_token_account.
+    #[account(mut)]
+    pub pool_base_vault: UncheckedAccount<'info>,
+    /// CHECK: checked = pool.pool_quote_token_account.
+    #[account(mut)]
+    pub pool_quote_vault: UncheckedAccount<'info>,
+    /// CHECK: PumpSwap validates.
+    pub amm_global_config: UncheckedAccount<'info>,
+    /// CHECK: PumpSwap validates.
+    #[account(mut)]
+    pub amm_user_volume_accumulator: UncheckedAccount<'info>,
+    /// CHECK: PumpSwap validates.
+    pub amm_fee_config: UncheckedAccount<'info>,
+    /// CHECK: PumpSwap validates (listed recipient's wSOL ATA).
+    #[account(mut)]
+    pub amm_buyback_fee_recipient: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = WSOL_MINT)]
+    pub wsol_mint: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = TOKEN_2022_ID)]
+    pub token_2022_program: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = ATA_ID)]
+    pub associated_token_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: PumpSwap validates.
+    pub amm_event_authority: UncheckedAccount<'info>,
+    /// CHECK: address.
+    #[account(address = PUMP_AMM_ID)]
+    pub amm_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1348,6 +1908,63 @@ pub struct OrderRefunded {
     pub tokens: u64,
 }
 
+/// One order's buyback share, paid into the vault by `buy_job*`.
+#[event]
+pub struct BuybackAccrued {
+    pub order: Pubkey,
+    pub nonce: u64,
+    pub lamports: u64,
+    /// Vault lamports above rent after this share.
+    pub vault_available: u64,
+    pub total_accrued: u64,
+}
+
+/// One buyback by the crank (curve or PumpSwap).
+#[event]
+pub struct BuybackExecuted {
+    /// 1-based index of this buy (= config.bb_buys).
+    pub buy: u64,
+    /// VENUE_CURVE or VENUE_PUMPSWAP.
+    pub venue: u8,
+    /// Lamports spent.
+    pub sol_in: u64,
+    /// Tokens (SPL units) this buy returned.
+    pub tokens_out: u64,
+    /// Tokens moved to the destination (tokens_out plus anything already in the vault ATA).
+    pub routed: u64,
+    /// DEST_RESERVE or DEST_BURN.
+    pub destination: u8,
+    /// The reserve ATA, or the mint for a burn.
+    pub destination_account: Pubkey,
+    /// Fee-free pre-trade quote for `sol_in`'s cap (the fill check's reference).
+    pub quote: u64,
+    /// Orders whose share arrived since the previous buy (0, 0, 0 when none): bridge
+    /// deposit nonces of the first and last such Order.
+    pub first_nonce: u64,
+    pub last_nonce: u64,
+    pub orders: u64,
+    /// Vault lamports above rent before the buy, and what stays for the next one.
+    pub available_before: u64,
+    pub carry: u64,
+    pub total_spent: u64,
+    pub total_tokens: u64,
+    pub total_to_reserve: u64,
+    pub total_burned: u64,
+}
+
+/// `set_buyback`: every buyback setting after the change.
+#[event]
+pub struct BuybackConfigUpdated {
+    pub config: Pubkey,
+    pub buyback_bps: u16,
+    pub destination: u8,
+    pub reserve_program: Pubkey,
+    pub cranker: Pubkey,
+    pub max_per_call: u64,
+    pub min_buy: u64,
+    pub min_interval_secs: i64,
+}
+
 #[error_code]
 pub enum StorefrontError {
     #[msg("signer is not allowed")]
@@ -1392,4 +2009,8 @@ pub enum StorefrontError {
     ModeDisabled,
     #[msg("chain proof does not verify")]
     BadProof,
+    #[msg("buyback called before buyback_min_interval_secs")]
+    TooSoon,
+    #[msg("nothing to buy back (below buyback_min_buy)")]
+    NothingToBuy,
 }
