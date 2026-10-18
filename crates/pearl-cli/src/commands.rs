@@ -239,16 +239,27 @@ fn tok(units: u64) -> String {
     format!("{} {TICKER}", tokens(units as u128))
 }
 
-/// Next nonce for the connected account: the tip nonce, or one past the last nonce
-/// this process used if that is higher (back-to-back sends before inclusion).
+/// Next nonce for the connected account: past the tip nonce, past any of its txs still
+/// in the node's mempool (another process may have sent them), and past the last nonce
+/// this process used (back-to-back sends before inclusion).
 fn next_nonce(ctx: &Ctx, me: &str) -> Result<u64> {
     let acc = ctx.call("getAccount", json!({"account": me}))?;
-    let tip = u(&acc, "nonce");
+    let mut n = u(&acc, "nonce");
+    // getMempool lists tx hashes; getTx gives each one's sender and nonce
+    if let Ok(mp) = ctx.call("getMempool", json!({})) {
+        for h in mp["txs"].as_array().into_iter().flatten().filter_map(|h| h.as_str()) {
+            let Ok(t) = ctx.call("getTx", json!({"tx_hash": h})) else { continue };
+            if s(&t, "from") == me && s(&t, "status") == "pending" && u(&t, "nonce") >= n {
+                n = u(&t, "nonce") + 1;
+            }
+        }
+    }
     let mut last = NONCE.lock().unwrap();
-    let n = match &*last {
-        Some((who, l)) if who == me && l + 1 > tip => l + 1,
-        _ => tip,
-    };
+    if let Some((who, l)) = &*last {
+        if who == me && l + 1 > n {
+            n = l + 1;
+        }
+    }
     *last = Some((me.to_string(), n));
     Ok(n)
 }

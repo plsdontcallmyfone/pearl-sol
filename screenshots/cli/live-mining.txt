@@ -1,0 +1,46 @@
+PLACEHOLDER                                                                                                                   <placeholder>
+Useful-PoW agent chain + Solana bridge (c) 2026
+
+$$$$$$$$    $$            $$$$$$      $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$          $$$$$$$$    $$$$$$$$$$  $$$$$$$$
+$$      $$  $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$      $$
+$$$$$$$$    $$          $$$$$$$$$$  $$          $$$$$$$$    $$$$$$$$$$  $$      $$  $$          $$      $$  $$$$$$$$    $$$$$$$$
+$$          $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$    $$
+$$          $$$$$$$$$$  $$      $$    $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$$$$$$$$$  $$$$$$$$    $$$$$$$$$$  $$      $$
+********************************************************************************************************************************************
+****This project is a beta version on a local stack, use at your own risk.****
+********************************************************************************************************************************************
+┌/Wallet Balance───────────────┐┌/Market──────────────────────┐┌/Protocol─────────────────────┐┌/Bridge────────────────────────────────────┐
+│8,688,181.0824 TOKEN          ││job from 0.01 SOL            ││height 478                    ││Escrow .............................981.16M│
+│──────────────────────────────││─────────────────────────────││──────────────────────────────││Supply bridged .......................1.88%│
+│0 Pending TOKEN               ││2 orders @ 28.45M TOKEN/SOL  ││final 472  K 6  0x1d01ad1f    ││Vault SPL ...........................18.83M│
+│8.68M TOKEN on Solana         ││no price source              ││job blk up to 100.11K TOKEN   ││Mining pool .........................10.01M│
+└──────────────────────────────┘└─────────────────────────────┘└──────────────────────────────┘│Deposits in ...............4 (+0 in flight)│
+┌/Mining──────────────────────────────────────────────────────────────────────────────────────┐│Withdrawals ...............4 (0 unreleased)│
+│HEIGHT     MINER         WORK          REWARD           TXS   STATUS                         ││vault SPL x 1000 == 1e18 - escrow          │
+│/ 478      AMRX...6PhN   fallback      0                0     pending                        ││Invariant ...............................OK│
+│/ 477      AMRX...6PhN   fallback      0                0     pending                        ││Release path .........................proof│
+│/ 476      AMRX...6PhN   fallback      0                0     pending                        ││                                           │
+│/ 475      AMRX...6PhN   fallback      0                0     pending                        │└───────────────────────────────────────────┘
+│/ 474      AMRX...6PhN   fallback      0                0     pending                        │┌/Agent─────────────────────────────────────┐
+│/ 473      AMRX...6PhN   fallback      0                0     pending                        ││Registered .......................cli-agent│
+│/ 472      AMRX...6PhN   fallback      0                0     final                          ││Payout lien ..........................ended│
+│/ 471      AMRX...6PhN   fallback      0                0     final                          ││Agent Credit .................not connected│
+│/ 470      you           fallback      0                0     final                          ││Pool .........................not connected│
+│/ 469      you           fallback      0                0     final                          ││Miner ..............................stopped│
+│/ 468      AMRX...6PhN   fallback      0                0     final                          ││Peers ....................................2│
+│/ 467      you           fallback      0                0     final                          ││                                           │
+│/ 466      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 465      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 464      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 463      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 462      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 461      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 460      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 459      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+│/ 458      AMRX...6PhN   fallback      0                0     final                          ││                                           │
+└Block(); Tap Enter or [open]  yours 3/24 blocks, 0 TOKEN (0 pending)  pool not connected─────┘└───────────────────────────────────────────┘
+type `help` for commands; [1]-[5] switch the table, arrows + Enter open a row
+snapshot of the live stack, 0 errors
+$ Wallet Connected_ 5was...DKFq ~/Mining
+$
+[1]Jobs [2]Mining [3]Activity [4]Bridge [5]Agent [6]Send [0]Quit

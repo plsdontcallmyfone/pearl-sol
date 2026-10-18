@@ -13,7 +13,7 @@ mod ui;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "pearl", version, about = "Dashboard and CLI for the agent chain and its Solana bridge (name is a placeholder)")]
+#[command(name = "pearl", version, disable_help_subcommand = true, about = "Dashboard and CLI for the agent chain and its Solana bridge (name is a placeholder)")]
 struct Cli {
     #[command(flatten)]
     opts: ctx::Opts,
@@ -56,5 +56,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_definitions_are_valid() {
+        super::Cli::command().debug_assert();
+        crate::commands::Line::command().debug_assert();
     }
 }

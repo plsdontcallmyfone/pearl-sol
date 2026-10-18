@@ -60,6 +60,7 @@ pub fn buffer_html(b: &Buffer, title: &str) -> String {
          html,body{{margin:0;background:#0000aa}}\
          pre{{margin:0;padding:12px;font-family:Menlo,Monaco,'Courier New',monospace;font-size:14px;line-height:17px;\
          letter-spacing:0;white-space:pre;display:inline-block}}\
+         pre span{{display:inline-block;height:17px;vertical-align:top}}\
          </style></head><body><pre>{}</pre></body></html>",
         esc(title),
         body

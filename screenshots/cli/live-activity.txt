@@ -1,0 +1,46 @@
+PLACEHOLDER                                                                                                                   <placeholder>
+Useful-PoW agent chain + Solana bridge (c) 2026
+
+$$$$$$$$    $$            $$$$$$      $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$          $$$$$$$$    $$$$$$$$$$  $$$$$$$$
+$$      $$  $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$      $$
+$$$$$$$$    $$          $$$$$$$$$$  $$          $$$$$$$$    $$$$$$$$$$  $$      $$  $$          $$      $$  $$$$$$$$    $$$$$$$$
+$$          $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$    $$
+$$          $$$$$$$$$$  $$      $$    $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$$$$$$$$$  $$$$$$$$    $$$$$$$$$$  $$      $$
+********************************************************************************************************************************************
+****This project is a beta version on a local stack, use at your own risk.****
+********************************************************************************************************************************************
+┌/Wallet Balance───────────────┐┌/Market──────────────────────┐┌/Protocol─────────────────────┐┌/Bridge────────────────────────────────────┐
+│8,688,181.0824 TOKEN          ││job from 0.01 SOL            ││height 478                    ││Escrow .............................981.16M│
+│──────────────────────────────││─────────────────────────────││──────────────────────────────││Supply bridged .......................1.88%│
+│0 Pending TOKEN               ││2 orders @ 28.45M TOKEN/SOL  ││final 472  K 6  0x1d01ad1f    ││Vault SPL ...........................18.83M│
+│8.68M TOKEN on Solana         ││no price source              ││job blk up to 100.11K TOKEN   ││Mining pool .........................10.01M│
+└──────────────────────────────┘└─────────────────────────────┘└──────────────────────────────┘│Deposits in ...............4 (+0 in flight)│
+┌/Activity────────────────────────────────────────────────────────────────────────────────────┐│Withdrawals ...............4 (0 unreleased)│
+│HEIGHT     KIND           ROLE       FEE        TX            STATUS                         ││vault SPL x 1000 == 1e18 - escrow          │
+│/ 451      Transfer       sender     0          697f...6866   final                          ││Invariant ...............................OK│
+│/ 451      PostJob        sender     0          d4e4...35e9   final                          ││Release path .........................proof│
+│/ 451      PostJob        sender     0          e0cf...30c0   final                          ││                                           │
+│/ 436      PostJob        sender     0          6dbf...b8bc   final                          │└───────────────────────────────────────────┘
+│/ 432      PostJob        sender     0          90df...1cdd   final                          │┌/Agent─────────────────────────────────────┐
+│/ 420      ClearRoute     lien       0          28c0...9d7e   final                          ││Registered .......................cli-agent│
+│/ 418      SetRoute       sender     0          d094...a535   final                          ││Payout lien ..........................ended│
+│/ 379      RegisterAgent  sender     0          93e7...88ea   final                          ││Agent Credit .................not connected│
+│/ 378      BridgeLock     sender     0          2c7d...00e1   final                          ││Pool .........................not connected│
+│/ 376      BridgeUnlock   recipient  0          2901...3306   final                          ││Miner ..............................stopped│
+│/ 371      PostJob        sender     0          389d...96b7   final                          ││Peers ....................................2│
+│/ 364      Transfer       sender     0          a84d...9a59   final                          ││                                           │
+│/ 317      Transfer       sender     2          0c78...5034   final                          ││                                           │
+│/ 301      Transfer       sender     0          7166...17b5   final                          ││                                           │
+│/ 249      Transfer       sender     0          fbd3...fd37   final                          ││                                           │
+│/ 247      RegisterAgent  sender     0          a263...94df   final                          ││                                           │
+│/ 239      BridgeUnlock   recipient  0          80b4...60b2   final                          ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+└Tx(); Tap Enter or [open]  17 txs touch this account─────────────────────────────────────────┘└───────────────────────────────────────────┘
+type `help` for commands; [1]-[5] switch the table, arrows + Enter open a row
+snapshot of the live stack, 0 errors
+$ Wallet Connected_ 5was...DKFq ~/Activity
+$
+[1]Jobs [2]Mining [3]Activity [4]Bridge [5]Agent [6]Send [0]Quit

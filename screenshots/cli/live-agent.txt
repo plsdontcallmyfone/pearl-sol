@@ -1,0 +1,46 @@
+PLACEHOLDER                                                                                                                   <placeholder>
+Useful-PoW agent chain + Solana bridge (c) 2026
+
+$$$$$$$$    $$            $$$$$$      $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$          $$$$$$$$    $$$$$$$$$$  $$$$$$$$
+$$      $$  $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$      $$
+$$$$$$$$    $$          $$$$$$$$$$  $$          $$$$$$$$    $$$$$$$$$$  $$      $$  $$          $$      $$  $$$$$$$$    $$$$$$$$
+$$          $$          $$      $$  $$          $$          $$      $$  $$      $$  $$          $$      $$  $$          $$    $$
+$$          $$$$$$$$$$  $$      $$    $$$$$$$$  $$$$$$$$$$  $$      $$    $$$$$$    $$$$$$$$$$  $$$$$$$$    $$$$$$$$$$  $$      $$
+********************************************************************************************************************************************
+****This project is a beta version on a local stack, use at your own risk.****
+********************************************************************************************************************************************
+┌/Wallet Balance───────────────┐┌/Market──────────────────────┐┌/Protocol─────────────────────┐┌/Bridge────────────────────────────────────┐
+│8,688,181.0824 TOKEN          ││job from 0.01 SOL            ││height 478                    ││Escrow .............................981.16M│
+│──────────────────────────────││─────────────────────────────││──────────────────────────────││Supply bridged .......................1.88%│
+│0 Pending TOKEN               ││2 orders @ 28.45M TOKEN/SOL  ││final 472  K 6  0x1d01ad1f    ││Vault SPL ...........................18.83M│
+│8.68M TOKEN on Solana         ││no price source              ││job blk up to 100.11K TOKEN   ││Mining pool .........................10.01M│
+└──────────────────────────────┘└─────────────────────────────┘└──────────────────────────────┘│Deposits in ...............4 (+0 in flight)│
+┌/Agent───────────────────────────────────────────────────────────────────────────────────────┐│Withdrawals ...............4 (0 unreleased)│
+│FIELD            VALUE                                                                       ││vault SPL x 1000 == 1e18 - escrow          │
+│/ name           cli-agent                                                                   ││Invariant ...............................OK│
+│/ uri            https://example.invalid/cli                                                 ││Release path .........................proof│
+│/ registered     height 247                                                                  ││                                           │
+│/ lien           ended                                                                       │└───────────────────────────────────────────┘
+│/ route          25% to 22RM...bMFK                                                          │┌/Agent─────────────────────────────────────┐
+│/ until          height 10417                                                                ││Registered .......................cli-agent│
+│/ routed         0 TOKEN                                                                     ││Payout lien ..........................ended│
+│/ withdrawn      0 TOKEN                                                                     ││Agent Credit .................not connected│
+│/ cap left       1,000,000,000 TOKEN                                                         ││Pool .........................not connected│
+│/ agent credit   not connected                                                               ││Miner ..............................stopped│
+│                                                                                             ││Peers ....................................2│
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+│                                                                                             ││                                           │
+└Agent(); Tap Enter or [open]  payout lien = SetRoute (SPEC 4.4)──────────────────────────────┘└───────────────────────────────────────────┘
+type `help` for commands; [1]-[5] switch the table, arrows + Enter open a row
+snapshot of the live stack, 0 errors
+$ Wallet Connected_ 5was...DKFq ~/Agent
+$
+[1]Jobs [2]Mining [3]Activity [4]Bridge [5]Agent [6]Send [0]Quit

@@ -414,7 +414,7 @@ fn render_small_panels(f: &mut Frame, sn: &Snapshot, [p1, p2, p3]: [Rect; 3]) {
         None => "storefront n/a".into(),
     };
     let fill = match store {
-        Some(c) if c.total_sol > 0 => format!("{} orders, {} {TICKER}/SOL", c.orders, fmt::compact((c.total_tokens as u128) * 1_000_000_000 / c.total_sol as u128, fmt::SPL_DP)),
+        Some(c) if c.total_sol > 0 => format!("{} orders @ {} {TICKER}/SOL", c.orders, fmt::compact((c.total_tokens as u128) * 1_000_000_000 / c.total_sol as u128, fmt::SPL_DP)),
         Some(c) => format!("{} orders", c.orders),
         None => "-".into(),
     };
