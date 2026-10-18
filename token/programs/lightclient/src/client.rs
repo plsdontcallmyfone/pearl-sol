@@ -127,6 +127,34 @@ pub fn verify_jackpot(authority: Pubkey, work: Pubkey, hash: &[u8; 32], relayer:
     )
 }
 
+/// `verify_jackpot` with the parent header as the remaining account, so a header whose
+/// parent is Verified but not the tip (a side branch) is marked Verified right away.
+pub fn verify_jackpot_with_parent(authority: Pubkey, work: Pubkey, hash: &[u8; 32], parent: &[u8; 32], relayer: Pubkey, count: u32) -> Instruction {
+    let mut i = verify_jackpot(authority, work, hash, relayer, count);
+    i.accounts.push(AccountMeta::new_readonly(header_addr(parent), false));
+    i
+}
+
+/// Promote a WorkDone header (`hash`) whose parent (`parent`) is Verified.
+pub fn connect(parent: &[u8; 32], hash: &[u8; 32], relayer: Pubkey) -> Instruction {
+    ix(
+        accounts::Connect {
+            config: config_pda(),
+            canon: canon_pda(),
+            pool: pool_pda(),
+            parent: header_addr(parent),
+            header: header_addr(hash),
+            relayer,
+        },
+        instruction::Connect {},
+    )
+}
+
+/// Close a work account (lamports back to `authority`).
+pub fn close_work(authority: Pubkey, work: Pubkey) -> Instruction {
+    ix(accounts::CloseWork { authority, work }, instruction::CloseWork {})
+}
+
 /// `path` = the new tip's ancestors newest first, ending with the canonical fork point.
 pub fn reorg(new_tip: &[u8; 32], path: &[[u8; 32]]) -> Instruction {
     let mut i = ix(accounts::Reorg { config: config_pda(), canon: canon_pda(), new_tip: header_addr(new_tip) }, instruction::Reorg {});
@@ -247,6 +275,15 @@ impl Step {
             Step::Jackpot(n) => verify_jackpot(authority, work, hash, relayer, n),
         }
     }
+
+    /// As `instruction`, with the parent passed to the jackpot step (see
+    /// `verify_jackpot_with_parent`).
+    pub fn instruction_with_parent(&self, authority: Pubkey, work: Pubkey, hash: &[u8; 32], parent: &[u8; 32], relayer: Pubkey) -> Instruction {
+        match *self {
+            Step::Jackpot(n) => verify_jackpot_with_parent(authority, work, hash, parent, relayer, n),
+            _ => self.instruction(authority, work, hash, relayer),
+        }
+    }
 }
 
 /// What the plan needs about the block being verified.
@@ -278,6 +315,12 @@ impl Shape {
 /// each tx takes as many units of the current step kind as fit, then continues with
 /// the next kind (resumable kinds are split across txs as needed).
 pub fn plan(s: &Shape, budget: u64) -> Vec<Vec<Step>> {
+    plan_costed(s, budget).into_iter().map(|(t, _)| t).collect()
+}
+
+/// `plan` with each transaction's estimated CU (from `cost`), so a relay can ask for a
+/// compute limit close to what the tx uses (priority fees are charged on the limit).
+pub fn plan_costed(s: &Shape, budget: u64) -> Vec<(Vec<Step>, u64)> {
     use cost::*;
     let leaves = |rows: u32| rows as u64 * (s.k as u64).div_ceil(1024);
     let (dlen, k) = (s.dlen(), s.k as u64);
@@ -302,7 +345,7 @@ pub fn plan(s: &Shape, budget: u64) -> Vec<Vec<Step>> {
         ));
     }
     kinds.push((Box::new(Step::Jackpot), dlen / s.r as u64, JACKPOT_PER_MAC * (s.h * s.w * s.r) as u64, JACKPOT_CALL));
-    let mut txs: Vec<Vec<Step>> = Vec::new();
+    let mut txs: Vec<(Vec<Step>, u64)> = Vec::new();
     let mut cur: Vec<Step> = Vec::new();
     let mut left = budget;
     for (make, mut units, per, fixed) in kinds {
@@ -311,11 +354,11 @@ pub fn plan(s: &Shape, budget: u64) -> Vec<Vec<Step>> {
             if fit == 0 {
                 if cur.is_empty() {
                     // a single unit above the budget still goes alone
-                    txs.push(vec![make(1)]);
+                    txs.push((vec![make(1)], STEP_OVERHEAD + fixed + per));
                     units -= 1;
                     continue;
                 }
-                txs.push(std::mem::take(&mut cur));
+                txs.push((std::mem::take(&mut cur), budget - left));
                 left = budget;
                 continue;
             }
@@ -326,7 +369,7 @@ pub fn plan(s: &Shape, budget: u64) -> Vec<Vec<Step>> {
         }
     }
     if !cur.is_empty() {
-        txs.push(cur);
+        txs.push((cur, budget - left));
     }
     txs
 }

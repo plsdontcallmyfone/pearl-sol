@@ -453,6 +453,17 @@ impl Env {
         client::plan(&shape, client::TX_CU_BUDGET)
     }
 
+    /// Upload + verify an already submitted header (jackpot passes the parent).
+    pub fn relay_steps_only(&mut self, b: &Blk) -> Result<(), TransactionError> {
+        self.upload(b)?;
+        let (pk, w) = (self.payer.pubkey(), self.work.pubkey());
+        for tx in self.plan(b) {
+            let ixs: Vec<Instruction> = tx.iter().map(|s| s.instruction_with_parent(pk, w, &b.hash, &b.h.prev_hash, pk)).collect();
+            self.send(&ixs, &[])?;
+        }
+        Ok(())
+    }
+
     /// Submit + upload + verify one header the way the relay does.
     pub fn relay(&mut self, b: &Blk) -> Result<(), TransactionError> {
         self.submit(b)?;

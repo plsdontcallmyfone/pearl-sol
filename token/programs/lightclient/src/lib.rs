@@ -4,7 +4,8 @@
 //!
 //! Flow per header (all permissionless; a relayer pays rent and fees, gets the rent
 //! back when the header is closed and an optional reward from the pool):
-//! 1. `submit_header(hash, header)`: parent must be a verified header. Checks version,
+//! 1. `submit_header(hash, header)`: parent must be a submitted header (any status, so
+//!    a relay can submit and verify many headers in parallel). Checks version,
 //!    height = parent + 1, prev_hash, `target_bits` = WTEMA(parent) (exact port of
 //!    chain/consensus-pow), timestamp > median of the last 11, timestamp not beyond the
 //!    Solana clock + `max_future_ms`, target within the pow limit. Stores the header
@@ -18,8 +19,13 @@
 //!    ranges), then `verify_opening(A)`, `verify_opening(B^T)`, `verify_jackpot`
 //!    preceded by `verify_noise(A)`, `verify_noise(B^T)` (seeds, noise; then jackpot,
 //!    rank-penalized target; noise and jackpot run in ranges). The last step marks the
-//!    header Verified and, when
-//!    it extends the tip, moves the tip.
+//!    header Verified when its parent is Verified (the parent is the tip, or is passed
+//!    as the one remaining account) and, when it extends the tip, moves the tip;
+//!    otherwise WorkDone (its own work checked, an ancestor still unverified).
+//!    `connect(header)` later promotes a WorkDone header whose parent became Verified.
+//!    Invariant: Verified = own work verified AND parent Verified, so by induction from
+//!    the checkpoint every Verified header has a fully verified ancestry, exactly as
+//!    when headers had to be verified one at a time (SPEC 5.3 "parallel relay").
 //! 4. `reorg(new_tip)`: switch to a heavier verified branch (path headers passed as
 //!    remaining accounts), refused if the fork point is below the final floor
 //!    (tip - K, never decreasing).
@@ -67,6 +73,8 @@ pub const MTP_SPAN: usize = 11;
 
 pub const STATUS_PENDING: u8 = 1;
 pub const STATUS_VERIFIED: u8 = 2;
+/// Own work verified, waiting for its parent to be Verified (`connect`).
+pub const STATUS_WORK_DONE: u8 = 3;
 
 pub const SIDE_A: u8 = 0;
 pub const SIDE_BT: u8 = 1;
@@ -198,7 +206,10 @@ pub mod lightclient {
         require!(h.version() == pv::header::VERSION, LcError::BadHeader);
         let p = &ctx.accounts.config.params;
         let parent = ctx.accounts.parent.load()?;
-        require!(parent.status == STATUS_VERIFIED, LcError::ParentNotVerified);
+        // Any submitted parent: its fields were checked against its own parent when it
+        // was submitted. Nothing here trusts the parent's work; a header only becomes
+        // Verified once its whole ancestry is (see verify_jackpot / connect).
+        require!(matches!(parent.status, STATUS_PENDING | STATUS_VERIFIED | STATUS_WORK_DONE), LcError::ParentNotVerified);
         require!(h.prev_hash() == parent.hash, LcError::BadHeader);
         require!(h.height() == parent.height + 1, LcError::BadHeader);
         // Below the final floor nothing can change.
@@ -372,11 +383,13 @@ pub mod lightclient {
         w.noise_step(s, &Header(&rec.header).pow_digest(), count)
     }
 
-    /// Step 3b: jackpot, `count` rank blocks per call (resumable). The call that
-    /// completes it checks the target, marks the header Verified, extends the tip when
-    /// the parent is the tip, and pays the relay reward from the pool.
-    pub fn verify_jackpot(ctx: Context<VerifyFinal>, count: u32) -> Result<()> {
-        {
+    /// Step 3b: jackpot, `count` rank blocks per call (resumable). The call that completes
+    /// it checks the target. Then, if the parent is Verified (it is the tip, or it is the
+    /// optional remaining account), the header is marked Verified, extends the tip when
+    /// the parent is the tip, and the relay reward is paid; otherwise it is marked
+    /// WorkDone and waits for `connect`.
+    pub fn verify_jackpot<'info>(ctx: Context<'_, '_, 'info, 'info, VerifyFinal<'info>>, count: u32) -> Result<()> {
+        let prev = {
             let rec = ctx.accounts.header.load()?;
             let info = ctx.accounts.work.to_account_info();
             let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
@@ -385,38 +398,52 @@ pub mod lightclient {
             if !w.jackpot_step(&h.pow_digest(), h.target_bits(), count)? {
                 return Ok(());
             }
-        }
-        let slot = Clock::get()?.slot;
-        let (hash, height, prev, cw, relayer) = {
-            let mut rec = ctx.accounts.header.load_mut()?;
-            rec.status = STATUS_VERIFIED;
-            rec.verified_slot = slot;
-            (rec.hash, rec.height, Header(&rec.header).prev_hash(), rec.cum_work, rec.relayer)
+            h.prev_hash()
         };
-        emit!(HeaderVerified { hash, height });
-        let c = &mut ctx.accounts.config;
-        if prev == c.tip_hash && difficulty::u256_from_le(&cw) > difficulty::u256_from_le(&c.tip_work) {
-            let mut canon = ctx.accounts.canon.load_mut()?;
-            canon.hashes[(height as usize) % CANON_LEN] = hash;
-            c.tip_hash = hash;
-            c.tip_height = height;
-            c.tip_work = cw;
-            c.final_floor = c.final_floor.max(height.saturating_sub(c.params.finality_k as u64));
-            emit!(TipChanged { hash, height, reorg_depth: 0 });
+        let parent_verified = prev == ctx.accounts.config.tip_hash
+            || match ctx.remaining_accounts.first() {
+                Some(ai) if *ai.owner == crate::ID => {
+                    let loader = AccountLoader::<HeaderRecord>::try_from(ai)?;
+                    let p = loader.load()?;
+                    p.hash == prev && p.status == STATUS_VERIFIED
+                }
+                _ => false,
+            };
+        if !parent_verified {
+            let mut rec = ctx.accounts.header.load_mut()?;
+            rec.status = STATUS_WORK_DONE;
+            emit!(WorkVerified { hash: rec.hash, height: rec.height });
+            return Ok(());
         }
-        // Relay reward (best effort, never below the pool's rent floor).
-        let reward = c.params.relay_reward;
-        if reward > 0 {
-            let pool = ctx.accounts.pool.to_account_info();
-            let rcpt = ctx.accounts.relayer.to_account_info();
-            require_keys_eq!(rcpt.key(), relayer, LcError::WrongRelayer);
-            let floor = Rent::get()?.minimum_balance(0);
-            let pay = reward.min(pool.lamports().saturating_sub(floor));
-            if pay > 0 {
-                **pool.try_borrow_mut_lamports()? -= pay;
-                **rcpt.try_borrow_mut_lamports()? += pay;
-            }
+        let a = ctx.accounts;
+        promote(&a.header, &mut a.config, &a.canon, &a.pool.to_account_info(), &a.relayer.to_account_info())
+    }
+
+    /// Promote a WorkDone header whose parent is now Verified: marks it Verified, extends
+    /// the tip when the parent is the tip, pays the relay reward. Permissionless; several
+    /// in one tx (parent first) connect a run of headers.
+    pub fn connect(ctx: Context<Connect>) -> Result<()> {
+        {
+            let p = ctx.accounts.parent.load()?;
+            let r = ctx.accounts.header.load()?;
+            require!(r.status == STATUS_WORK_DONE, LcError::NotWorkDone);
+            require!(p.status == STATUS_VERIFIED && Header(&r.header).prev_hash() == p.hash, LcError::ParentNotVerified);
         }
+        let a = ctx.accounts;
+        promote(&a.header, &mut a.config, &a.canon, &a.pool.to_account_info(), &a.relayer.to_account_info())
+    }
+
+    /// Close a relayer-owned work account, lamports back to its authority.
+    pub fn close_work(ctx: Context<CloseWork>) -> Result<()> {
+        let info = ctx.accounts.work.to_account_info();
+        {
+            let _w = Work::load(&info, &ctx.accounts.authority.key())?;
+        }
+        let auth = ctx.accounts.authority.to_account_info();
+        let l = info.lamports();
+        **info.try_borrow_mut_lamports()? = 0;
+        **auth.try_borrow_mut_lamports()? += l;
+        info.try_borrow_mut_data()?.fill(0);
         Ok(())
     }
 
@@ -627,6 +654,46 @@ fn verr(e: pv::Error) -> Error {
 
 fn is_canonical(canon: &Canon, c: &Config, hash: &[u8; 32], height: u64) -> bool {
     height <= c.tip_height && (c.tip_height - height) < CANON_LEN as u64 && canon.hashes[(height as usize) % CANON_LEN] == *hash
+}
+
+/// Mark a header whose work is verified and whose parent is Verified as Verified; extend
+/// the tip when the parent is the tip; pay the relay reward (best effort, never below
+/// the pool's rent floor). Callers check the parent.
+fn promote<'info>(
+    header: &AccountLoader<'info, HeaderRecord>,
+    c: &mut Account<'info, Config>,
+    canon: &AccountLoader<'info, Canon>,
+    pool: &AccountInfo<'info>,
+    rcpt: &AccountInfo<'info>,
+) -> Result<()> {
+    let slot = Clock::get()?.slot;
+    let (hash, height, prev, cw, relayer) = {
+        let mut rec = header.load_mut()?;
+        rec.status = STATUS_VERIFIED;
+        rec.verified_slot = slot;
+        (rec.hash, rec.height, Header(&rec.header).prev_hash(), rec.cum_work, rec.relayer)
+    };
+    emit!(HeaderVerified { hash, height });
+    if prev == c.tip_hash && difficulty::u256_from_le(&cw) > difficulty::u256_from_le(&c.tip_work) {
+        let mut canon = canon.load_mut()?;
+        canon.hashes[(height as usize) % CANON_LEN] = hash;
+        c.tip_hash = hash;
+        c.tip_height = height;
+        c.tip_work = cw;
+        c.final_floor = c.final_floor.max(height.saturating_sub(c.params.finality_k as u64));
+        emit!(TipChanged { hash, height, reorg_depth: 0 });
+    }
+    let reward = c.params.relay_reward;
+    if reward > 0 {
+        require_keys_eq!(rcpt.key(), relayer, LcError::WrongRelayer);
+        let floor = Rent::get()?.minimum_balance(0);
+        let pay = reward.min(pool.lamports().saturating_sub(floor));
+        if pay > 0 {
+            **pool.try_borrow_mut_lamports()? -= pay;
+            **rcpt.try_borrow_mut_lamports()? += pay;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- accounts
@@ -897,6 +964,32 @@ pub struct VerifyFinal<'info> {
 }
 
 #[derive(Accounts)]
+pub struct Connect<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [CANON_SEED], bump)]
+    pub canon: AccountLoader<'info, Canon>,
+    /// CHECK: the reward pool PDA.
+    #[account(mut, seeds = [POOL_SEED], bump = config.pool_bump)]
+    pub pool: UncheckedAccount<'info>,
+    pub parent: AccountLoader<'info, HeaderRecord>,
+    #[account(mut)]
+    pub header: AccountLoader<'info, HeaderRecord>,
+    /// CHECK: must be the header's relayer (checked when a reward is paid).
+    #[account(mut)]
+    pub relayer: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CloseWork<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// CHECK: owner and layout checked in `Work::load`.
+    #[account(mut, owner = crate::ID)]
+    pub work: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
 pub struct Reorg<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
@@ -999,6 +1092,12 @@ pub struct HeaderVerified {
 }
 
 #[event]
+pub struct WorkVerified {
+    pub hash: [u8; 32],
+    pub height: u64,
+}
+
+#[event]
 pub struct TipChanged {
     pub hash: [u8; 32],
     pub height: u64,
@@ -1087,4 +1186,6 @@ pub enum LcError {
     AccRoot,
     #[msg("accumulator proof failed")]
     AccProof,
+    #[msg("header is not WorkDone")]
+    NotWorkDone,
 }

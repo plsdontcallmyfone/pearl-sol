@@ -9,25 +9,22 @@
 //!   header-relay mine     --node URL N (devnet only: N fallback blocks)
 //!   header-relay harvest  --node URL --out FILE (headers, proofs, txs, withdrawal proofs)
 
-mod chain;
-mod settle;
-mod sol;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signer as _, SigningKey};
-use lightclient::client::{self, Step};
+use lightclient::client;
 use pearl_node::tx::{self, Body};
 use pearl_node::NodeApi;
 use serde_json::{json, Value};
-use solana_sdk::signature::{read_keypair_file, write_keypair_file, Keypair, Signer};
-use solana_sdk::system_instruction;
+use solana_sdk::signature::{read_keypair_file, write_keypair_file, Keypair};
 
-use chain::{ChainHeader, Node};
-use sol::Sol;
+use header_relay::chain::{self, Node};
+use header_relay::relay::{Opts, Relay};
+use header_relay::settle;
+use header_relay::sol::Sol;
 
 #[derive(Parser)]
 struct Cli {
@@ -58,13 +55,25 @@ enum Cmd {
         #[arg(long, default_value_t = 64)]
         retain_final: u64,
     },
-    /// Follow the node and relay every canonical header.
+    /// Follow the node and relay every canonical header (pipelined: see src/relay.rs).
     Run {
-        /// Work account keypair (created on first use).
+        /// Work account keypair of slot 0 (created on first use); slot i uses the same
+        /// path with `-i` before the extension.
         #[arg(long, default_value = ".header-relay/work-keypair.json")]
         work: PathBuf,
+        /// Idle poll interval when caught up (busy passes poll every 25 ms).
         #[arg(long, default_value_t = 2000)]
         poll_ms: u64,
+        /// Headers verified at the same time, one work account (about 0.49 SOL rent,
+        /// refundable with close-works) each. 1 = the old one-at-a-time relay.
+        #[arg(long, default_value_t = 8)]
+        parallel: usize,
+        /// Ask for 1.4M CU on every tx instead of the planned amount.
+        #[arg(long)]
+        full_cu: bool,
+        /// Seconds between lag log lines.
+        #[arg(long, default_value_t = 10)]
+        lag_secs: u64,
         /// Relay what is there, then exit.
         #[arg(long)]
         once: bool,
@@ -82,8 +91,16 @@ enum Cmd {
         #[arg(long)]
         withdraw_to: Option<String>,
     },
-    /// Light-client state as one JSON line (tip, final, floor; initialized false if none).
+    /// Light-client state as one JSON line (tip, final, floor, and the lag behind the
+    /// node when it answers; initialized false if none).
     Status,
+    /// Close this relay's work accounts (rent back to the payer).
+    CloseWorks {
+        #[arg(long, default_value = ".header-relay/work-keypair.json")]
+        work: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        parallel: usize,
+    },
     /// Devnet: mine N fallback blocks via getBlockTemplate / submitBlock.
     Mine { n: u64 },
     /// R5: accumulator proof of the final header at HEIGHT (short form, current size) as one
@@ -110,39 +127,67 @@ fn main() -> Result<()> {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
-        Cmd::Run { work, poll_ms, once, settle } => {
+        Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
-            let work = load_or_create_key(&work)?;
-            let mut r = Relay { node, sol: &mut s, work, closed_upto: 0 };
-            r.ensure_work()?;
+            let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
+            let settle_node = Node::new(&cli.node);
+            let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu });
+            r.ensure_works()?;
             let mut st = settle::Settle::new();
+            let (mut last_settle, mut last_lag) = (std::time::Instant::now() - Duration::from_secs(60), std::time::Instant::now());
+            let (mut lag_verified, mut lag_t) = (0u64, std::time::Instant::now());
             loop {
-                let stepped = r.step();
-                if settle {
-                    if let Err(e) = st.tick(&r.node, r.sol) {
+                let busy = match r.pass() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("relay: {e:#}");
+                        true
+                    }
+                };
+                if settle && last_settle.elapsed() > Duration::from_secs(2) {
+                    last_settle = std::time::Instant::now();
+                    if let Err(e) = st.tick(&settle_node, r.ledger) {
                         eprintln!("settle: {e:#}");
                     }
                 }
-                match stepped {
-                    Ok(n) if n > 0 => continue,
-                    Ok(_) => {}
-                    Err(e) => eprintln!("relay: {e:#}"),
+                if last_lag.elapsed() > Duration::from_secs(lag_secs) {
+                    let per_min = (r.stats.verified - lag_verified) as f64 * 60.0 / lag_t.elapsed().as_secs_f64();
+                    println!("lag {}", r.lag_line(per_min));
+                    (lag_verified, lag_t, last_lag) = (r.stats.verified, std::time::Instant::now(), std::time::Instant::now());
                 }
-                if once {
-                    let c = r.sol.config()?;
-                    println!("tip {} {} final_floor {} final {} (txs {})", c.tip_height, hex::encode(c.tip_hash), c.final_floor, c.final_height, r.sol.txs);
+                if once && !busy {
+                    let c = r.config()?;
+                    println!("tip {} {} final_floor {} final {} (txs {})", c.tip_height, hex::encode(c.tip_hash), c.final_floor, c.final_height, r.stats.txs);
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(poll_ms));
+                std::thread::sleep(Duration::from_millis(if busy { 25 } else { poll_ms }));
             }
+        }
+        Cmd::CloseWorks { work, parallel } => {
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            for i in 0..parallel.max(1) {
+                let p = work_path(&work, i);
+                if !p.exists() {
+                    continue;
+                }
+                let w = read_key(&p)?;
+                if s.account(&solana_sdk::signer::Signer::pubkey(&w))?.is_none() {
+                    continue;
+                }
+                s.send(&[client::close_work(s.pk(), solana_sdk::signer::Signer::pubkey(&w))], &[])?;
+                println!("closed work account {}", p.display());
+            }
+            Ok(())
         }
         Cmd::Status => {
             let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
             match s.config() {
                 Ok(c) => {
                     let acc = s.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
+                    let node_h = node.info().ok().and_then(|i| chain::num(&i["height"]).ok());
                     println!("{}", json!({"initialized": true, "tip_height": c.tip_height, "tip_hash": hex::encode(c.tip_hash),
                         "final_height": c.final_height, "final_floor": c.final_floor, "checkpoint_height": c.checkpoint_height,
+                        "node_height": node_h, "lag_blocks": node_h.map(|h| h.saturating_sub(c.tip_height)),
                         "accumulator": acc.map(|(st, n, last)| json!({"start_height": st, "count": n, "next_height": st + n, "last_hash": hex::encode(last)}))}))
                 }
                 Err(_) => println!("{}", json!({"initialized": false})),
@@ -196,6 +241,19 @@ fn acc_proof(node: &Node, s: &mut Sol, height: u64, restore: bool) -> Result<()>
     Ok(())
 }
 
+/// Work keypair file of slot `i`: the given path for 0, `<stem>-<i>.<ext>` otherwise.
+fn work_path(p: &PathBuf, i: usize) -> PathBuf {
+    if i == 0 {
+        return p.clone();
+    }
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let name = match p.extension() {
+        Some(e) => format!("{stem}-{i}.{}", e.to_string_lossy()),
+        None => format!("{stem}-{i}"),
+    };
+    p.with_file_name(name)
+}
+
 fn read_key(p: &PathBuf) -> Result<Keypair> {
     read_keypair_file(p).map_err(|e| anyhow!("read {}: {e}", p.display()))
 }
@@ -231,211 +289,6 @@ fn init(node: &Node, s: &mut Sol, height: Option<u64>, relay_reward: u64, retain
     s.send(&[client::init_accumulator(s.pk())], &[])?;
     println!("light client initialized at height {h} ({}), accumulator started", hex::encode(cp.hash));
     Ok(())
-}
-
-// ---------------------------------------------------------------- relay
-
-struct Relay<'a> {
-    node: Node,
-    sol: &'a mut Sol,
-    work: Keypair,
-    closed_upto: u64,
-}
-
-impl Relay<'_> {
-    fn ensure_work(&mut self) -> Result<()> {
-        let size = client::work_size_for(&self.sol.config()?.params);
-        if self.sol.account(&self.work.pubkey())?.is_none() {
-            let rent = self.sol.rpc.get_minimum_balance_for_rent_exemption(size)?;
-            let create = system_instruction::create_account(&self.sol.pk(), &self.work.pubkey(), rent, size as u64, &lightclient::ID);
-            let w = self.work.insecure_clone();
-            self.sol.send(&[create, client::init_work(self.sol.pk(), self.work.pubkey(), 32 * 1024)], &[&w])?;
-        }
-        Ok(())
-    }
-
-    /// One pass: relay up to the node tip, reorg if needed, mark final, close old.
-    /// Returns the number of headers relayed.
-    fn step(&mut self) -> Result<u64> {
-        let cfg = self.sol.config()?;
-        let canon = self.sol.canon()?;
-        let node_tip = chain::num(&self.node.info()?["height"])?;
-        // Fork point: highest height <= our tip where the node's canonical header is ours.
-        let mut start = cfg.tip_height;
-        loop {
-            let nh = self.node.header_at(start)?.context("node header")?;
-            if canon[(start as usize) % lightclient::CANON_LEN] == nh.hash || start <= cfg.final_floor {
-                break;
-            }
-            start -= 1;
-        }
-        let mut relayed = 0;
-        for h in start + 1..=node_tip {
-            let Some(hd) = self.node.header_at(h)? else { break };
-            self.ensure_verified(&hd)?;
-            relayed += 1;
-            if relayed >= 4 {
-                break; // yield so finality and closing keep up
-            }
-        }
-        self.maybe_reorg()?;
-        self.mark_finals()?;
-        self.accumulate_finals()?;
-        self.close_old()?;
-        Ok(relayed)
-    }
-
-    fn ensure_verified(&mut self, hd: &ChainHeader) -> Result<()> {
-        match self.sol.header_state(&hd.hash)? {
-            Some((lightclient::STATUS_VERIFIED, _, _)) => return Ok(()),
-            Some(_) => {}
-            None => {
-                self.sol.send(&[client::submit_header(self.sol.pk(), hd.bytes)], &[])?;
-            }
-        }
-        let job = if hd.is_fallback() { None } else { Some(hd.job_id()) };
-        // the mining config the block is verified against (sizes the step plan)
-        let mut job_config = None;
-        if let Some(j) = job {
-            let Some(data) = self.sol.account(&client::job_addr(&j))? else {
-                bail!("job block {} at {} needs job {} registered (posted before the checkpoint?)", hex::encode(hd.hash), hd.height, hex::encode(j));
-            };
-            let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut data.as_slice())?;
-            job_config = Some(jc.config);
-        }
-        let (pk, w) = (self.sol.pk(), self.work.pubkey());
-        let first = client::FIRST_CHUNK.min(hd.proof.len());
-        self.sol.send(
-            &[client::begin_verify(pk, w, &hd.hash, job.as_ref(), hd.proof.len() as u32), client::write_proof(pk, w, 0, hd.proof[..first].to_vec())],
-            &[],
-        )?;
-        let mut off = first;
-        let mut chunks = vec![];
-        while off < hd.proof.len() {
-            let n = client::WRITE_CHUNK.min(hd.proof.len() - off);
-            chunks.push(vec![client::write_proof(pk, w, off as u32, hd.proof[off..off + n].to_vec())]);
-            off += n;
-        }
-        self.sol.send_batch(&chunks)?; // disjoint ranges: sent back to back, confirmed together
-        let c = self.sol.config()?;
-        let p = c.params;
-        let shape = client::Shape::new(hd.is_fallback(), p.fallback_m, p.fallback_n, &job_config.unwrap_or(p.fallback_config), hd.proof.len());
-        for tx in client::plan(&shape, client::TX_CU_BUDGET) {
-            let ixs: Vec<_> = tx.iter().map(|s: &Step| s.instruction(pk, w, &hd.hash, pk)).collect();
-            self.sol.send(&ixs, &[])?;
-        }
-        println!("verified {} {}", hd.height, hex::encode(hd.hash));
-        self.register_jobs(hd)?;
-        Ok(())
-    }
-
-    fn register_jobs(&mut self, hd: &ChainHeader) -> Result<()> {
-        let (txs, cb) = self.node.block_body(&hd.hash)?;
-        let jobs = chain::jobs_in(&txs);
-        if jobs.is_empty() {
-            return Ok(());
-        }
-        let (_, paths) = chain::tx_root_paths(&txs, cb.as_deref());
-        for (job_id, i) in jobs {
-            if self.sol.account(&client::job_addr(&job_id))?.is_some() {
-                continue;
-            }
-            self.sol.send(&[client::register_job(self.sol.pk(), &hd.hash, job_id, txs[i].clone(), paths[i].clone())], &[])?;
-            println!("registered job {}", hex::encode(job_id));
-        }
-        Ok(())
-    }
-
-    /// If the node's tip is a verified header heavier than ours on another branch.
-    fn maybe_reorg(&mut self) -> Result<()> {
-        let cfg = self.sol.config()?;
-        let node_tip = self.node.header_at(chain::num(&self.node.info()?["height"])?)?.context("tip")?;
-        if node_tip.hash == cfg.tip_hash || !matches!(self.sol.header_state(&node_tip.hash)?, Some((lightclient::STATUS_VERIFIED, _, _))) {
-            return Ok(());
-        }
-        let canon = self.sol.canon()?;
-        let mut path = vec![];
-        let mut cur = node_tip.prev();
-        let mut h = node_tip.height - 1;
-        loop {
-            path.push(cur);
-            if canon[(h as usize) % lightclient::CANON_LEN] == cur || h == 0 || path.len() > 60 {
-                break;
-            }
-            let hd = self.node.header_by_hash(&cur)?.context("ancestor")?;
-            cur = hd.prev();
-            h -= 1;
-        }
-        self.sol.send(&[client::reorg(&node_tip.hash, &path)], &[])?;
-        println!("reorg to {} (path {})", hex::encode(node_tip.hash), path.len());
-        Ok(())
-    }
-
-    fn mark_finals(&mut self) -> Result<()> {
-        let cfg = self.sol.config()?;
-        let canon = self.sol.canon()?;
-        let lo = cfg.final_height.max(cfg.tip_height.saturating_sub(lightclient::CANON_LEN as u64 - 1)) + 1;
-        for h in lo..=cfg.final_floor {
-            let hash = canon[(h as usize) % lightclient::CANON_LEN];
-            if matches!(self.sol.header_state(&hash)?, Some((_, false, _))) {
-                self.sol.send(&[client::mark_final(&hash)], &[])?;
-            }
-        }
-        Ok(())
-    }
-
-    /// R5: append final headers to the accumulator in height order (batches of 24). A
-    /// light client deployed before the accumulator gets one when this key is its admin.
-    fn accumulate_finals(&mut self) -> Result<()> {
-        let cfg = self.sol.config()?;
-        let Some(data) = self.sol.account(&client::acc_addr())? else {
-            if cfg.admin == self.sol.pk() {
-                self.sol.send(&[client::init_accumulator(self.sol.pk())], &[])?;
-                println!("accumulator started at final height {}", cfg.final_height);
-            }
-            return Ok(());
-        };
-        let (start, count, _) = client::acc_state(&data).context("accumulator layout")?;
-        let mut next = start + count;
-        while next <= cfg.final_floor {
-            let mut batch = vec![];
-            while next <= cfg.final_floor && batch.len() < 24 {
-                let Some(hd) = self.node.header_at(next)? else { break };
-                if !matches!(self.sol.header_state(&hd.hash)?, Some((lightclient::STATUS_VERIFIED, _, _))) {
-                    break;
-                }
-                batch.push(hd.hash);
-                next += 1;
-            }
-            if batch.is_empty() {
-                break;
-            }
-            self.sol.send(&[client::accumulate(&batch)], &[])?;
-        }
-        Ok(())
-    }
-
-    /// Close final headers we paid for once they are `retain_final` below the floor and
-    /// in the accumulator.
-    fn close_old(&mut self) -> Result<()> {
-        let cfg = self.sol.config()?;
-        let acc_next = match self.sol.account(&client::acc_addr())? {
-            Some(d) => client::acc_state(&d).map(|(s, c, _)| s + c).unwrap_or(0),
-            None => 0,
-        };
-        let upto = cfg.final_floor.saturating_sub(cfg.params.retain_final + 1).min(acc_next);
-        let from = self.closed_upto.max(cfg.checkpoint_height + 1);
-        for h in from..upto {
-            let Some(hd) = self.node.header_at(h)? else { break };
-            if let Some((_, true, relayer)) = self.sol.header_state(&hd.hash)? {
-                if relayer == self.sol.pk() && hd.hash != cfg.final_hash {
-                    self.sol.send(&[client::close_header(&hd.hash, relayer)], &[])?;
-                }
-            }
-        }
-        self.closed_upto = self.closed_upto.max(upto);
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------- devnet seeding

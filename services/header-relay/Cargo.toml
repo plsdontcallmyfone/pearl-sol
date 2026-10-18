@@ -8,6 +8,10 @@ description = "Permissionless relay: follows the agent-chain node (RPC 10630) an
 # Standalone (own workspace): pulls solana-client.
 [workspace]
 
+[lib]
+name = "header_relay"
+path = "src/lib.rs"
+
 [[bin]]
 name = "header-relay"
 path = "src/main.rs"
@@ -34,3 +38,7 @@ pearl-job = { path = "../../crates/pearl-job" }
 
 [profile.release]
 opt-level = 3
+
+[dev-dependencies]
+litesvm = "0.6.1"
+lightclient-litesvm-tests = { path = "../../token/tests/lightclient-litesvm" }

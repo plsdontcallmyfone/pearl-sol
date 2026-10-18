@@ -197,3 +197,28 @@ pub fn u256_hex_le(s: &str) -> Result<[u8; 32]> {
     let v = pv::U256::from_str_radix(s, 16).map_err(|e| anyhow!("u256 hex: {e:?}"))?;
     Ok(pv::difficulty::u256_le(&v))
 }
+
+/// The agent-chain side the relay pipeline needs (Node over RPC; a vector of mined
+/// headers in tests/catchup.rs).
+pub trait Src {
+    /// (height, hash) of the canonical tip.
+    fn tip(&self) -> Result<(u64, [u8; 32])>;
+    fn header_at(&self, height: u64) -> Result<Option<ChainHeader>>;
+    /// Block txs and the coinbase receipt (see `Node::block_body`).
+    fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)>;
+}
+
+impl Src for Node {
+    fn tip(&self) -> Result<(u64, [u8; 32])> {
+        let info = self.info()?;
+        let h = num(&info["height"])?;
+        let tip: [u8; 32] = hex::decode(info["tip"].as_str().context("tip")?)?.try_into().map_err(|_| anyhow!("tip hash"))?;
+        Ok((h, tip))
+    }
+    fn header_at(&self, height: u64) -> Result<Option<ChainHeader>> {
+        Node::header_at(self, height)
+    }
+    fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
+        Node::block_body(self, hash)
+    }
+}

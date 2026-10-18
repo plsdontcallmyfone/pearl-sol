@@ -217,9 +217,14 @@ fn bad_pow_is_rejected() {
     let plan = env.plan(&good);
     env.steps(&good, &plan).unwrap();
     assert_eq!(env.status(&good.hash), lightclient::STATUS_VERIFIED);
-    // children of an unverified header are refused
+    // a child of an unverified header (here: one whose work failed) may be submitted
+    // and its own work checked, but it stays WorkDone: never Verified, never the tip
     let orphan = child(&p, &lose, &Work::Fallback, ChildOpts::default());
-    assert!(custom(lc_code(LcError::ParentNotVerified))(&env.submit(&orphan).unwrap_err()));
+    let tip = env.config().tip_hash;
+    env.relay(&orphan).unwrap();
+    assert_eq!(env.status(&orphan.hash), lightclient::STATUS_WORK_DONE);
+    assert!(custom(lc_code(LcError::ParentNotVerified))(&env.send(&[client::connect(&lose.hash, &orphan.hash, pk)], &[]).unwrap_err()));
+    assert_eq!(env.config().tip_hash, tip);
 }
 
 #[test]
@@ -741,4 +746,129 @@ fn prove_header_cu_at_a_million_headers() {
         assert!(cu < 80_000, "{cu}");
         base[i as usize] = keep;
     }
+}
+
+fn small_params() -> lightclient::Params {
+    let mut p = params(4);
+    p.fallback_m = 4;
+    p.fallback_n = 8;
+    p
+}
+
+/// Parallel relay (SPEC 5.3): children are submitted on pending parents, verified out
+/// of order on separate work accounts, and only become Verified (tip, reward) once the
+/// whole ancestry is; `connect` promotes them in order.
+#[test]
+fn parallel_verification_out_of_order_then_connect() {
+    let p = small_params();
+    let g = genesis(0x1e100000);
+    let blks = chain(&p, &g, 4, &[10_000]);
+    let mut env = Env::new(p, &g);
+    let pk = env.payer.pubkey();
+    // submit the whole run first: each child on a Pending parent
+    for b in &blks {
+        env.submit(b).unwrap();
+        assert_eq!(env.status(&b.hash), lightclient::STATUS_PENDING);
+    }
+    let pool0 = env.svm.get_balance(&client::pool_pda()).unwrap();
+    // verify 4, 3, 2 first (each WorkDone: parent not Verified), then 1
+    for b in blks[1..].iter().rev() {
+        env.upload(b).unwrap();
+        let plan = env.plan(b);
+        let w = env.work.pubkey();
+        for tx in &plan {
+            let ixs: Vec<_> = tx.iter().map(|s| s.instruction_with_parent(pk, w, &b.hash, &b.h.prev_hash, pk)).collect();
+            env.send(&ixs, &[]).unwrap();
+        }
+        assert_eq!(env.status(&b.hash), lightclient::STATUS_WORK_DONE);
+        // and cannot be promoted yet
+        assert!(custom(lc_code(LcError::ParentNotVerified))(&env.send(&[client::connect(&b.h.prev_hash, &b.hash, pk)], &[]).unwrap_err()));
+    }
+    assert_eq!(env.config().tip_height, 0);
+    assert_eq!(env.svm.get_balance(&client::pool_pda()).unwrap(), pool0, "no reward before the ancestry is verified");
+    env.relay_steps_only(&blks[0]).unwrap();
+    assert_eq!(env.status(&blks[0].hash), lightclient::STATUS_VERIFIED);
+    assert_eq!(env.config().tip_height, 1);
+    // connect 2..4 in one tx, parent first
+    let ixs: Vec<_> = blks[1..].iter().map(|b| client::connect(&b.h.prev_hash, &b.hash, pk)).collect();
+    let cu = env.send(&ixs, &[]).unwrap();
+    println!("connect x3: {cu} CU");
+    let c = env.config();
+    assert_eq!((c.tip_height, c.tip_hash), (4, blks[3].hash));
+    assert_eq!(pv::difficulty::u256_from_le(&c.tip_work), blks[3].cum_work);
+    assert_eq!(c.final_floor, 0);
+    for b in &blks {
+        assert_eq!(env.status(&b.hash), lightclient::STATUS_VERIFIED);
+    }
+    assert_eq!(env.svm.get_balance(&client::pool_pda()).unwrap(), pool0 - 4 * p.relay_reward);
+    // connecting twice is refused
+    assert!(custom(lc_code(LcError::NotWorkDone))(&env.send(&[client::connect(&blks[0].hash, &blks[1].hash, pk)], &[]).unwrap_err()));
+    // a side-branch child whose parent is Verified (not the tip) is Verified at once when
+    // the jackpot step passes the parent
+    let side = child(&p, &blks[1], &Work::Fallback, ChildOpts { miner: 9, ..Default::default() });
+    env.submit(&side).unwrap();
+    env.upload(&side).unwrap();
+    let w = env.work.pubkey();
+    for tx in env.plan(&side) {
+        let ixs: Vec<_> = tx.iter().map(|s| s.instruction_with_parent(pk, w, &side.hash, &side.h.prev_hash, pk)).collect();
+        env.send(&ixs, &[]).unwrap();
+    }
+    assert_eq!(env.status(&side.hash), lightclient::STATUS_VERIFIED);
+    assert_eq!(env.config().tip_height, 4);
+}
+
+/// The pending-parent rule gives an attacker nothing: a header on a pending parent with
+/// forged (never verified) work can be WorkDone at best, and difficulty / timestamps are
+/// still checked against that parent's fields.
+#[test]
+fn pending_parent_chain_cannot_reach_verified() {
+    let p = small_params();
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let pk = env.payer.pubkey();
+    // a parent whose work does not meet its target, and an honest-work child on it
+    let lose = losing_block(&p, &g);
+    env.submit(&lose).unwrap();
+    let kid = child(&p, &lose, &Work::Fallback, ChildOpts::default());
+    env.submit(&kid).unwrap();
+    // the child cannot claim an easier target than WTEMA(parent) allows
+    let easy = child(&p, &lose, &Work::Fallback, ChildOpts { bits: Some(0x1f00ffff), miner: 3, ..Default::default() });
+    assert!(custom(lc_code(LcError::WrongTarget))(&env.submit(&easy).unwrap_err()));
+    env.relay_steps_only(&kid).unwrap();
+    assert_eq!(env.status(&kid.hash), lightclient::STATUS_WORK_DONE);
+    // the parent's verification fails; the child can never be connected
+    env.upload(&lose).unwrap();
+    let plan = env.plan(&lose);
+    let flat: Vec<Step> = plan.concat();
+    let w = env.work.pubkey();
+    let (last, head) = flat.split_last().unwrap();
+    for s in head {
+        env.send(&[s.instruction(pk, w, &lose.hash, pk)], &[]).unwrap();
+    }
+    assert!(env.send(&[last.instruction(pk, w, &lose.hash, pk)], &[]).is_err());
+    assert!(custom(lc_code(LcError::ParentNotVerified))(&env.send(&[client::connect(&lose.hash, &kid.hash, pk)], &[]).unwrap_err()));
+    let c = env.config();
+    assert_eq!((c.tip_height, c.tip_hash), (0, g.hash));
+    // WorkDone headers on dead branches are closable once at or below the final floor
+    // (here: not yet, the floor is 0)
+    assert!(custom(lc_code(LcError::CannotClose))(&env.send(&[client::close_header(&kid.hash, pk)], &[]).unwrap_err()));
+}
+
+#[test]
+fn close_work_returns_rent() {
+    let p = small_params();
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let pk = env.payer.pubkey();
+    let w = env.work.pubkey();
+    let lamports = env.svm.get_balance(&w).unwrap();
+    assert!(lamports > 0);
+    // only its authority
+    let other = solana_sdk::signature::Keypair::new();
+    env.svm.airdrop(&other.pubkey(), 1_000_000_000).unwrap();
+    assert!(env.send(&[client::close_work(other.pubkey(), w)], &[&other]).is_err());
+    let bal = env.svm.get_balance(&pk).unwrap();
+    env.send(&[client::close_work(pk, w)], &[]).unwrap();
+    assert_eq!(env.svm.get_balance(&w).unwrap_or(0), 0);
+    assert!(env.svm.get_balance(&pk).unwrap() + 10_000 > bal + lamports);
 }

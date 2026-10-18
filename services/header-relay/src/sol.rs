@@ -149,3 +149,52 @@ impl Sol {
         }))
     }
 }
+
+impl crate::ledger::Ledger for Sol {
+    fn payer(&self) -> &Keypair {
+        &self.payer
+    }
+    fn cu_price(&self) -> u64 {
+        self.cu_price
+    }
+    fn accounts(&self, keys: &[Pubkey]) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut out = Vec::with_capacity(keys.len());
+        for c in keys.chunks(100) {
+            let v = self.rpc.get_multiple_accounts_with_commitment(c, CommitmentConfig::confirmed())?.value;
+            out.extend(v.into_iter().map(|a| a.filter(|a| a.lamports > 0).map(|a| a.data)));
+        }
+        Ok(out)
+    }
+    fn blockhash(&self) -> Result<solana_sdk::hash::Hash> {
+        Ok(self.rpc.get_latest_blockhash()?)
+    }
+    fn blockhash_valid(&self, h: &solana_sdk::hash::Hash) -> Result<bool> {
+        Ok(self.rpc.is_blockhash_valid(h, CommitmentConfig::processed())?)
+    }
+    fn submit(&mut self, tx: Transaction) -> Result<solana_sdk::signature::Signature> {
+        let cfg = solana_client::rpc_config::RpcSendTransactionConfig { skip_preflight: true, ..Default::default() };
+        let sig = self.rpc.send_transaction_with_config(&tx, cfg)?;
+        self.txs += 1;
+        Ok(sig)
+    }
+    fn states(&self, sigs: &[solana_sdk::signature::Signature]) -> Result<Vec<crate::ledger::TxState>> {
+        use crate::ledger::TxState;
+        let mut out = Vec::with_capacity(sigs.len());
+        for c in sigs.chunks(256) {
+            for s in self.rpc.get_signature_statuses(c)?.value {
+                out.push(match s {
+                    Some(s) if s.err.is_some() => TxState::Failed(format!("{:?}", s.err.unwrap())),
+                    Some(s) if s.satisfies_commitment(CommitmentConfig::confirmed()) => TxState::Ok,
+                    _ => TxState::Pending,
+                });
+            }
+        }
+        Ok(out)
+    }
+    fn rent(&self, size: usize) -> Result<u64> {
+        Ok(self.rpc.get_minimum_balance_for_rent_exemption(size)?)
+    }
+    fn pause(&mut self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
