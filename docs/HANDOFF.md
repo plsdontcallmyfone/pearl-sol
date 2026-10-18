@@ -366,10 +366,16 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    $0.156/hr) runs the full stack; demo 10/10 PASS (468 s) there with no Linux fixes, and a
    DEMO_KEEP_UP=1 stack left up. Sync, start/stop, tunnel (local 206xx): docs/VPS.md,
    scripts/vps.sh sync|ssh|tunnel|demo|down.
+11. TEST SWEEP (2026-10-18): every suite run, matrix in docs/TEST-REPORT.md. pearl-sol 428
+   tests pass, 0 fail, 1 ignored (miner bench); 8 SBF programs build. Fixed: chain-litesvm e2e
+   and agent-cli selftest --pearl-job still used k 1024 (a113437, a3d85a9); miner HTTP test
+   port moved to 10690-10699 (96131e0). OPEN: token/target/deploy bridge.so + storefront.so
+   are older than their source (fresh builds pass every suite; rebuild into target/deploy and
+   re-pin ~/agent-credit checks/m55 at the next demo restart). Demo e2e: being run on the VPS.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
-PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
-(mirrors the superseded agent/ terms_hash vector; never submitted).
+PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose
+(mirrors the superseded agent/ vector; never submitted); its --pearl-job round trip uses k 2048.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
 emission), name and ticker. If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
