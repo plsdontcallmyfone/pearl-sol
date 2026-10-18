@@ -9,8 +9,9 @@ members = [
     "../services/attester",
     "../services/pool",
 ]
-# Standalone (own [workspace]): pulls solana-sdk + LiteSVM, so it stays out of the main build.
-exclude = ["chain-litesvm"]
+# Standalone (own [workspace]): chain-litesvm pulls solana-sdk + LiteSVM; pearl-cli pulls
+# chain/agent-types (Commonware, Rust 1.95, pinned in its rust-toolchain.toml).
+exclude = ["chain-litesvm", "pearl-cli"]
 
 [workspace.package]
 edition = "2021"

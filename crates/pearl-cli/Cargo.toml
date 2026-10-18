@@ -1,0 +1,41 @@
+[package]
+name = "pearl-cli"
+description = "pearl: terminal dashboard (ratatui) and plain/JSON CLI for the agent chain and its Solana side"
+edition = "2021"
+license = "ISC"
+version = "0.1.0"
+
+# Standalone (own workspace): agent-types needs Rust 1.95 (Commonware), the crates/
+# workspace builds on the machine default. Pinned in rust-toolchain.toml here.
+[workspace]
+
+[[bin]]
+name = "pearl"
+path = "src/main.rs"
+
+[dependencies]
+# Wire types and signing: the chain's own crate (SPEC 2), not a re-implementation.
+agent-types = { path = "../../chain/agent-types" }
+# JSON-RPC transport, key files, lenient JSON readers.
+pearl-node = { path = "../pearl-node" }
+# Matrices, job blobs, commitments (hash_a / hash_b), job key.
+pearl-job = { path = "../pearl-job" }
+# PostJob job id / terms hash / job header from the encoded tx (light-client code).
+pearl-verify-sbf = { path = "../pearl-verify-sbf" }
+anyhow = "1.0"
+serde_json = "1.0"
+hex = "0.4"
+bs58 = "0.5"
+base64 = "0.22"
+sha2 = "0.10"
+ed25519-dalek = "2.2"
+curve25519-dalek = "4.1"
+ureq = { version = "2", default-features = false, features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,4 @@
+# agent-types pulls Commonware 2026.9.0, which needs rustc >= 1.95 (same pin as chain/).
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
