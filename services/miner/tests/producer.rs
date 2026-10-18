@@ -1,5 +1,5 @@
 //! Miner against the in-process mock node (no sockets), plus one JSON-RPC-over-HTTP
-//! run on a free port in 10663-10669 (checked with lsof first).
+//! run on a free port in 10690-10699 (outside the demo stack's 10600-10669) (checked with lsof first).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -246,7 +246,7 @@ fn attester_must_be_an_evaluator() {
 }
 
 fn free_test_port() -> Option<u16> {
-    (10663..=10669).find(|p| {
+    (10690..=10699).find(|p| {
         let out = std::process::Command::new("lsof").args(["-ti", &format!(":{p}")]).output();
         matches!(out, Ok(o) if o.stdout.is_empty())
     })
@@ -256,7 +256,7 @@ fn free_test_port() -> Option<u16> {
 #[test]
 fn over_http_jsonrpc() {
     let Some(port) = free_test_port() else {
-        eprintln!("no free port in 10663-10669, skipping");
+        eprintln!("no free port in 10690-10699, skipping");
         return;
     };
     let dir = tmp("http");
