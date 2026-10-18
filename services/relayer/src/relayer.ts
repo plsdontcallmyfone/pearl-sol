@@ -83,6 +83,8 @@ import {
   expireOrderIx,
   finalizeOrderIx,
   markRefundedIx,
+  settleShareIx,
+  sharePda,
   orderJobId,
   orderPda,
   refundMessage,
@@ -524,7 +526,8 @@ export class Relayer {
    * Refunds held-back order deposits on Solana once their grace period is over
    * (see "Refunds" at the top). Each refund tx: create the buyer's ATA (idempotent),
    * the ed25519 precompile with the bridge signers' refund signatures, bridge
-   * refund_deposit, and storefront mark_refunded when the Order is Pending or Expired.
+   * refund_deposit, storefront mark_refunded when the Order is Pending or Expired, and
+   * storefront settle_share (the order's buyback share back to the buyer) when it has one.
    */
   private async refundDeposits(s: Snapshot, pending: Deposit[], deposits: Map<bigint, Deposit>, res: TickResult): Promise<void> {
     const now = this.o.now();
@@ -539,7 +542,10 @@ export class Relayer {
         const st = decodeOrder(a.data).status;
         if (st !== ORDER_STATUS_PENDING && st !== ORDER_STATUS_EXPIRED) continue;
         try {
-          await this.o.token.send([markRefundedIx(marks[i], this.o.storefrontProgram)], this.o.tokenPayer);
+          const [shareRec] = await this.o.token.getAccounts([sharePda(marks[i], this.o.storefrontProgram)]);
+          const ixs = [markRefundedIx(marks[i], this.o.storefrontProgram)];
+          if (isProgramAccount(shareRec, this.o.storefrontProgram)) ixs.push(settleShareIx(marks[i], decodeOrder(a.data).buyer, this.o.storefrontProgram));
+          await this.o.token.send(ixs, this.o.tokenPayer);
           this.o.log("order marked refunded", { nonce: marks[i].toString() });
         } catch (e) {
           this.fail(`mark_refunded:${marks[i]}`, e, res);
@@ -594,6 +600,9 @@ export class Relayer {
             buyerToken: ata(buyer, s.bcfg.mint, s.bcfg.tokenProgram), tokenProgram: s.bcfg.tokenProgram }),
         ];
         if (order.status === ORDER_STATUS_PENDING || order.status === ORDER_STATUS_EXPIRED) ixs.push(markRefundedIx(d.nonce, this.o.storefrontProgram));
+        // the order's held buyback share goes back to the buyer in the same tx (owner 2026-10-18)
+        const [shareRec] = await this.o.token.getAccounts([sharePda(d.nonce, this.o.storefrontProgram)]);
+        if (isProgramAccount(shareRec, this.o.storefrontProgram)) ixs.push(settleShareIx(d.nonce, buyer, this.o.storefrontProgram));
         const sig = await this.o.token.send(ixs, this.o.tokenPayer);
         this.state.refunds[k].sig = sig;
         delete this.state.needsRefund[k];

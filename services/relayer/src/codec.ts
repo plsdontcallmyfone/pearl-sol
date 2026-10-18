@@ -395,6 +395,20 @@ export function markRefundedIx(nonce: bigint, program = STOREFRONT_PROGRAM_ID): 
   });
 }
 
+/** storefront buyback share record of an order (2026-10-18): ["share", nonce]. */
+export const sharePda = (nonce: bigint, program = STOREFRONT_PROGRAM_ID): PublicKey => pda([Buffer.from("share"), u64le(nonce)], program);
+export const buybackVaultPda = (program = STOREFRONT_PROGRAM_ID): PublicKey => pda([Buffer.from("buyback")], program);
+
+/** storefront `settle_share()` (permissionless): a Refunded / Expired order's held buyback
+ *  share goes back to its buyer (a Finalized one is released to the buyback). */
+export function settleShareIx(nonce: bigint, buyer: PublicKey, program = STOREFRONT_PROGRAM_ID): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: program,
+    keys: [w(storefrontConfigPda(program)), r(orderPda(nonce, program)), w(sharePda(nonce, program)), w(buyer), w(buybackVaultPda(program)), r(SystemProgram.programId)],
+    data: ixDisc("settle_share"),
+  });
+}
+
 /** storefront `initialize(params = all None, attesters, threshold)` (tests and localnet setup). */
 export function storefrontInitializeIx(admin: PublicKey, attesters: PublicKey[], threshold: number,
   program = STOREFRONT_PROGRAM_ID): TransactionInstruction {

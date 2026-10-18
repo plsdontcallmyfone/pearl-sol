@@ -259,12 +259,13 @@ test("GET /buyback reports the vault and the pending orders from chain state", a
   assert.equal(b.destination_account, sf.reserveAta(MINT).toBase58());
   assert.equal(b.reserve_program, sf.RESERVE_ID.toBase58());
   assert.equal(b.cranker, null, "permissionless");
-  assert.equal(b.available_lamports, b.vault_lamports - sf.RENT_MIN);
-  assert.equal(b.totals.accrued_lamports, b.available_lamports, "no buy yet: the vault holds every share");
+  // the order is not finalized yet: its share is held, nothing is crankable
+  assert.equal(b.held_lamports, b.vault_lamports - sf.RENT_MIN);
+  assert.equal(b.available_lamports, 0n);
+  assert.equal(b.totals.accrued_lamports, 0n);
   assert.equal(b.totals.buys, 0n);
-  assert.equal(b.pending.orders, 1n);
-  assert.equal(String(b.pending.first_nonce), jobId);
-  assert.equal(String(b.pending.last_nonce), jobId);
+  assert.equal(b.pending.orders, 0n);
+  assert.ok(svm.getAccount(sf.sharePda(BigInt(jobId))), "the order's share record");
 });
 
 test("GET /jobs/:id returns pending, then the result once finalized", async () => {

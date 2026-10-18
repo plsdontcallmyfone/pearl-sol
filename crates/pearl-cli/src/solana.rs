@@ -239,6 +239,10 @@ pub struct Buyback {
     pub pending_orders: u64,
     pub pending_first_nonce: u64,
     pub pending_last_nonce: u64,
+    /// Shares held for unsettled orders (not crankable; refunded if the order is).
+    pub locked: u64,
+    /// Shares paid back to buyers of refunded / expired orders.
+    pub refunded: u64,
 }
 
 impl Buyback {
@@ -252,7 +256,7 @@ impl Buyback {
         if d.len() < r.1 + 171 {
             return Ok(Self { mint, ..Self::default() });
         }
-        Ok(Self {
+        let mut b = Self {
             mint,
             bps: r.u16()?,
             dest: r.u8()?,
@@ -271,7 +275,14 @@ impl Buyback {
             pending_orders: r.u64()?,
             pending_first_nonce: r.u64()?,
             pending_last_nonce: r.u64()?,
-        })
+            locked: 0,
+            refunded: 0,
+        };
+        if d.len() >= r.1 + 16 {
+            b.locked = r.u64()?;
+            b.refunded = r.u64()?;
+        }
+        Ok(b)
     }
 
     pub fn dest_name(&self) -> &'static str {

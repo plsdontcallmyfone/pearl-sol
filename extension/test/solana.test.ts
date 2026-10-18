@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { b58, fromHex, hex } from "../src/core/bytes";
 import { pubkeyOf, signRaw, verifyRaw } from "../src/core/crypto";
 import {
-  bridgeConfigPda, bridgeDepositIx, buybackVaultPda, buyJobAmmIx, buyJobIx, cancelDraftIx, computeUnitLimit, createAtaIdempotent, decodeBridgeConfig, depositPda, draftPda, openOrderIx,
+  bridgeConfigPda, bridgeDepositIx, buybackVaultPda, sharePda, buyJobAmmIx, buyJobIx, cancelDraftIx, computeUnitLimit, createAtaIdempotent, decodeBridgeConfig, depositPda, draftPda, openOrderIx,
   orderPda, processedPda, systemTransfer, transferChecked, traderPda, StoreJobSpec, BridgeConfig,
 } from "../src/solana/programs";
 import { Instruction, TOKEN_2022, ata, buildSigned, compileLegacy, findPda, insertSignature, parseMessage, parseTransaction, pk, serializeMessage } from "../src/solana/tx";
@@ -89,8 +89,9 @@ describe("storefront IDL", () => {
       checkAccounts(ix, sfIdl, name);
       expect(b58(ix.keys[3].pubkey)).toBe(b58(orderPda(SF, 12n)));
       expect(b58(ix.keys[4].pubkey)).toBe(b58(traderPda(SF)));
-      expect(b58(ix.keys[ix.keys.length - 3].pubkey)).toBe(b58(depositPda(BRIDGE, 12n)));
-      expect(b58(ix.keys[ix.keys.length - 1].pubkey)).toBe(b58(buybackVaultPda(SF)));
+      expect(b58(ix.keys[ix.keys.length - 4].pubkey)).toBe(b58(depositPda(BRIDGE, 12n)));
+      expect(b58(ix.keys[ix.keys.length - 2].pubkey)).toBe(b58(buybackVaultPda(SF)));
+      expect(b58(ix.keys[ix.keys.length - 1].pubkey)).toBe(b58(sharePda(SF, 12n)));
     });
   }
   it("cancel_draft", () => {

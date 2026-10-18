@@ -51,6 +51,8 @@ pub fn store_config_bytes() -> Vec<u8> {
     for v in [1_000_000_000u64, 1_000_000, 600, 1_760_000_000, 300_000_000, 250_000_000, 9_000_000_000, 9_000_000_000, 0, 1, 1, 12, 12] {
         d.extend(v.to_le_bytes());
     }
+    d.extend(20_000_000u64.to_le_bytes()); // bb_locked
+    d.extend(5_000_000u64.to_le_bytes()); // bb_refunded
     d.resize(d.len() + 200, 0);
     d
 }
@@ -83,7 +85,7 @@ fn answer(method: &str, params: &Value) -> Result<Value, String> {
             m[36..44].copy_from_slice(&999_000_000_000_000u64.to_le_bytes());
             json!({"value": {"data": [b64(m), "base64"], "lamports": 1, "owner": crate::solana::TOKEN_2022_PROGRAM}})
         }
-        "getBalance" => json!({"value": 890_880u64 + 50_000_000}),
+        "getBalance" => json!({"value": 890_880u64 + 50_000_000 + 20_000_000}),
         "getSignaturesForAddress" => json!([{"signature": "5sig", "slot": 77, "err": null, "blockTime": 1_760_000_000}]),
         "getTransaction" => json!({"meta": {"logMessages": ["Program DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr invoke [1]", format!("Program data: {}", b64(buyback_event_bytes()))]}}),
         "getChainInfo" => json!({"height": 20, "finalized_height": 14, "finality_k": 6, "chain_id": 7, "peers": 1, "syncing": false, "target_bits": 1}),

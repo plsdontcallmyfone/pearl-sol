@@ -47,6 +47,8 @@ export function addresses(storefront = STOREFRONT_ID, bridge = BRIDGE_ID) {
     bridgeConfig: pda([enc("config")], bridge),
   };
 }
+/** The order's held buyback share (settle_share releases or refunds it). */
+export const sharePda = (nonce: bigint, storefront = STOREFRONT_ID) => pda([enc("share"), u64(nonce)], storefront);
 export const orderPda = (nonce: bigint, storefront = STOREFRONT_ID) => pda([enc("order"), u64(nonce)], storefront);
 export const draftPda = (buyer: PublicKey, id: bigint, storefront = STOREFRONT_ID) => pda([enc("draft"), buyer.toBuffer(), u64(id)], storefront);
 export const depositPda = (nonce: bigint, bridge = BRIDGE_ID) => pda([enc("deposit"), u64(nonce)], bridge);
@@ -140,7 +142,7 @@ export function buyJobIx(buyer: PublicKey, draftId: bigint, nonce: bigint, solIn
       meta(pda([enc("global")], PUMP)), meta(bc, true), meta(ata(bc, p.mint, TOKEN_2022), true), meta(ata(bc, WSOL, TOKEN), true),
       meta(pda([enc("user_volume_accumulator"), a.trader.toBuffer()], PUMP), true), meta(pda([enc("fee_config"), PUMP.toBuffer()], PUMP_FEES)),
       meta(p.curveBuyback, true), meta(WSOL), meta(TOKEN), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SystemProgram.programId),
-      meta(pda([enc("__event_authority")], PUMP)), meta(PUMP), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true),
+      meta(pda([enc("__event_authority")], PUMP)), meta(PUMP), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true), meta(sharePda(nonce, a.storefront), true),
     ],
     data: Buffer.concat([disc("buy_job"), u64(nonce), u64(solIn), u64(minOut)]),
   });
@@ -156,7 +158,7 @@ export function buyJobAmmIx(buyer: PublicKey, draftId: bigint, nonce: bigint, so
       meta(canonicalPool(p.mint), true), meta(p.poolBaseVault, true), meta(p.poolQuoteVault, true), meta(pda([enc("global_config")], AMM)),
       meta(pda([enc("user_volume_accumulator"), a.trader.toBuffer()], AMM), true), meta(pda([enc("fee_config"), AMM.toBuffer()], PUMP_FEES)),
       meta(ata(p.ammBuyback, WSOL, TOKEN), true), meta(WSOL), meta(TOKEN), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SystemProgram.programId),
-      meta(pda([enc("__event_authority")], AMM)), meta(AMM), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true),
+      meta(pda([enc("__event_authority")], AMM)), meta(AMM), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true), meta(sharePda(nonce, a.storefront), true),
     ],
     data: Buffer.concat([disc("buy_job_amm"), u64(nonce), u64(solIn), u64(minOut)]),
   });
@@ -211,6 +213,10 @@ export interface BuybackConfig {
   pendingOrders: bigint;
   pendingFirstNonce: bigint;
   pendingLastNonce: bigint;
+  /** Shares held for unsettled orders (not crankable, refundable). */
+  locked: bigint;
+  /** Shares paid back to buyers of refunded / expired orders. */
+  refunded: bigint;
 }
 
 /** Bytes of Config after the attester vector up to the end of the buyback fields. */
@@ -235,9 +241,10 @@ export function decodeConfig(d: Uint8Array): StoreConfig {
           maxPerCall: rd64(d, b + 67), minBuy: rd64(d, b + 75), minIntervalSecs: i64(b + 83), lastTs: i64(b + 91),
           accrued: rd64(d, b + 99), spent: rd64(d, b + 107), tokens: rd64(d, b + 115), toReserve: rd64(d, b + 123), burned: rd64(d, b + 131),
           buys: rd64(d, b + 139), pendingOrders: rd64(d, b + 147), pendingFirstNonce: rd64(d, b + 155), pendingLastNonce: rd64(d, b + 163),
+          locked: d.length >= b + 187 ? rd64(d, b + 171) : 0n, refunded: d.length >= b + 187 ? rd64(d, b + 179) : 0n,
         }
       : { bps: 0, dest: 0, reserveProgram: z, cranker: z, maxPerCall: 0n, minBuy: 0n, minIntervalSecs: 0n, lastTs: 0n, accrued: 0n, spent: 0n,
-          tokens: 0n, toReserve: 0n, burned: 0n, buys: 0n, pendingOrders: 0n, pendingFirstNonce: 0n, pendingLastNonce: 0n },
+          tokens: 0n, toReserve: 0n, burned: 0n, buys: 0n, pendingOrders: 0n, pendingFirstNonce: 0n, pendingLastNonce: 0n, locked: 0n, refunded: 0n },
   };
 }
 

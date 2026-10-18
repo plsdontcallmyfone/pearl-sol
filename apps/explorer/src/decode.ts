@@ -250,6 +250,10 @@ export interface StoreBuyback {
   buys: number;
   pendingOrders: number;
   lastTs: number;
+  /** Shares held for unsettled orders (0 on a program before settle_share). */
+  locked: string;
+  /** Shares paid back to buyers of refunded / expired orders. */
+  refunded: string;
 }
 
 /** The buyback tail of the storefront Config, or null on a program without it. */
@@ -270,6 +274,8 @@ export function decodeStoreBuyback(d: Uint8Array): StoreBuyback | null {
     burned: rd64(d, b + 131).toString(),
     buys: Number(rd64(d, b + 139)),
     pendingOrders: Number(rd64(d, b + 147)),
+    locked: d.length >= at + 246 ? rd64(d, b + 171).toString() : "0",
+    refunded: d.length >= at + 246 ? rd64(d, b + 179).toString() : "0",
   };
 }
 

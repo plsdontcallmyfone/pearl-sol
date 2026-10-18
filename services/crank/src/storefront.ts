@@ -90,7 +90,8 @@ export class StorefrontBuyback {
     const s = (v: any) => v.toString();
     return {
       initialized: true, vault: this.keys.vault.toBase58(), vaultLamports: s(vaultLamports),
-      availableLamports: s(vaultLamports > RENT_MIN ? vaultLamports - RENT_MIN : 0n), buybackBps: c.buybackBps,
+      availableLamports: s(vaultLamports > RENT_MIN + BigInt(c.bbLocked.toString()) ? vaultLamports - RENT_MIN - BigInt(c.bbLocked.toString()) : 0n),
+      heldLamports: s(c.bbLocked), refunded: s(c.bbRefunded), buybackBps: c.buybackBps,
       destination: DEST_NAMES[dest] ?? `unknown(${dest})`,
       destinationAccount: dest === 0 ? this.keys.reserveAta(c.reserveProgram, c.mint).toBase58() : c.mint.toBase58(),
       reserveProgram: c.reserveProgram.toBase58(), cranker: c.buybackCranker.equals(PublicKey.default) ? null : c.buybackCranker.toBase58(),
@@ -132,6 +133,39 @@ export class StorefrontBuyback {
     return this.send([ix]);
   }
 
+  /**
+   * settle_share for every order that has a held share and is closed: Finalized -> the
+   * share is released to the buyback, Refunded / Expired -> paid back to the buyer.
+   */
+  async settle(): Promise<{ released: string[]; refunded: string[] }> {
+    // ShareRecord: disc 8 + nonce 8 + buyer 32 + lamports 8 + bump 1
+    const recs = await this.conn.getProgramAccounts(this.keys.program, { filters: [{ dataSize: 57 }] });
+    const out = { released: [] as string[], refunded: [] as string[] };
+    for (const { account } of recs) {
+      let rec: any;
+      try {
+        rec = this.program.coder.accounts.decode('shareRecord', account.data);
+      } catch {
+        continue;
+      }
+      const nonce = BigInt(rec.nonce.toString());
+      const n8 = Buffer.alloc(8);
+      n8.writeBigUInt64LE(nonce);
+      const orderKey = pda([Buffer.from('order'), n8], this.keys.program);
+      const oa = await this.conn.getAccountInfo(orderKey);
+      if (!oa) continue;
+      const status = oa.data[9];
+      if (status === 1) continue; // pending: the share stays held
+      const ix = await this.program.methods.settleShare().accountsStrict({
+        config: this.keys.config, order: orderKey, shareRecord: pda([Buffer.from('share'), n8], this.keys.program), buyer: rec.buyer,
+        buybackVault: this.keys.vault, systemProgram: SystemProgram.programId,
+      }).instruction();
+      await this.send([ix]);
+      (status === 2 ? out.released : out.refunded).push(nonce.toString());
+    }
+    return out;
+  }
+
   /** Decoded storefront events of a confirmed tx. */
   async events(sig: string) {
     const tx = await this.conn.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
@@ -146,17 +180,19 @@ export class StorefrontBuyback {
 
   /** One buyback attempt: curve before graduation, PumpSwap after. Returns a JSON-able result. */
   async once(now: number): Promise<Record<string, unknown>> {
+    if (!(await this.config())) return { ok: false, skipped: 'storefront config not initialized' };
+    const settled = await this.settle();
     const c = await this.config();
-    if (!c) return { ok: false, skipped: 'storefront config not initialized' };
     const last = Number(c.bbLastTs);
-    if (last !== 0 && now < last + Number(c.buybackMinIntervalSecs)) return { ok: false, skipped: `wait ${last + Number(c.buybackMinIntervalSecs) - now}s` };
+    if (last !== 0 && now < last + Number(c.buybackMinIntervalSecs)) return { ok: false, settled, skipped: `wait ${last + Number(c.buybackMinIntervalSecs) - now}s` };
     const vault = BigInt(await this.conn.getBalance(this.keys.vault));
     const cap = BigInt(c.buybackMaxPerCall.toString());
-    let spend = vault > RENT_MIN ? vault - RENT_MIN : 0n;
+    const floor = RENT_MIN + BigInt(c.bbLocked.toString()); // held shares are not crankable
+    let spend = vault > floor ? vault - floor : 0n;
     if (cap > 0n && spend > cap) spend = cap;
     if (spend > this.maxSolIn) spend = this.maxSolIn;
     const minBuy = BigInt(c.buybackMinBuy.toString());
-    if (spend < (minBuy > 0n ? minBuy : 1n)) return { ok: false, skipped: `vault has ${spend} lamports to spend (min_buy ${minBuy})` };
+    if (spend < (minBuy > 0n ? minBuy : 1n)) return { ok: false, settled, skipped: `vault has ${spend} crankable lamports (min_buy ${minBuy}, held ${c.bbLocked})` };
     const mint: PublicKey = c.mint;
     const curve = pumpSdk.PUMP_SDK.decodeBondingCurve(await this.conn.getAccountInfo(bondingCurve(mint)));
     let ix: TransactionInstruction;
@@ -192,7 +228,7 @@ export class StorefrontBuyback {
     const d = ev?.data ?? {};
     const g = (k: string, alt: string) => (d[k] ?? d[alt])?.toString();
     return {
-      ok: true, venue, sig, buy: g('buy', 'buy'), solIn: g('solIn', 'sol_in'), tokensOut: g('tokensOut', 'tokens_out'), routed: g('routed', 'routed'),
+      ok: true, settled, venue, sig, buy: g('buy', 'buy'), solIn: g('solIn', 'sol_in'), tokensOut: g('tokensOut', 'tokens_out'), routed: g('routed', 'routed'),
       destination: DEST_NAMES[Number(d.destination)] ?? String(d.destination), destinationAccount: (d.destinationAccount ?? d.destination_account)?.toBase58?.(),
       firstNonce: g('firstNonce', 'first_nonce'), lastNonce: g('lastNonce', 'last_nonce'), orders: g('orders', 'orders'),
       availableBefore: g('availableBefore', 'available_before'), carry: g('carry', 'carry'),

@@ -125,7 +125,7 @@ function curveAccts(draft, nonce, who = buyer.publicKey) {
     pumpGlobal: pda(['global'], PUMP), bondingCurve: BC, curveBaseVault: ata(BC, MINT, T22), curveQuoteVault: ata(BC, WSOL, TOK),
     userVolumeAccumulator: pda(['user_volume_accumulator', TRADER], PUMP), feeConfig: pda(['fee_config', PUMP], FEE), buybackFeeRecipient: BUYBACK,
     wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId,
-    pumpEventAuthority: pumpEvent, pumpProgram: PUMP, ...bridgeAccts(nonce), buybackVault: BB_VAULT,
+    pumpEventAuthority: pumpEvent, pumpProgram: PUMP, ...bridgeAccts(nonce), buybackVault: BB_VAULT, shareRecord: pda(['share', le64(nonce)], SF),
   };
 }
 const off = new swap.PumpAmmSdk();
@@ -138,7 +138,7 @@ function ammAccts(draft, nonce, who = buyer.publicKey) {
     pool, poolBaseVault: pl.poolBaseTokenAccount, poolQuoteVault: pl.poolQuoteTokenAccount, ammGlobalConfig: pda(['global_config'], AMM),
     ammUserVolumeAccumulator: pda(['user_volume_accumulator', TRADER], AMM), ammFeeConfig: pda(['fee_config', AMM], FEE),
     ammBuybackFeeRecipient: ata(gc.buybackFeeRecipients[0], WSOL, TOK), wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22,
-    associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId, ammEventAuthority: ammEvent, ammProgram: AMM, ...bridgeAccts(nonce), buybackVault: BB_VAULT,
+    associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId, ammEventAuthority: ammEvent, ammProgram: AMM, ...bridgeAccts(nonce), buybackVault: BB_VAULT, shareRecord: pda(['share', le64(nonce)], SF),
   };
 }
 const buyIx = (draft, nonce, solIn, minOut = 1) => sf.methods.buyJob(bn(nonce), bn(solIn), bn(minOut)).accountsStrict(curveAccts(draft, nonce)).instruction();
@@ -275,11 +275,15 @@ test('buy_job on the curve: buys, splits W/P, deposits to the bridge, writes the
   assert.ok(spent > 0n && spent <= JOB_SOL, 'the job spends at most sol_in - share');
   assert.ok(b0 - lamports(buyer.publicKey) < SOL_IN + 20_000_000n, 'buyer paid sol_in + rents only');
   assert.equal(lamports(BB_VAULT), RENT_MIN + SHARE, 'vault = rent top-up (first order) + the share');
-  const acc = events(r.logs).filter((e) => e.name === 'buybackAccrued');
-  assert.equal(acc.length, 1, 'one BuybackAccrued');
-  assert.equal(acc[0].data.nonce.toString(), n.toString());
-  assert.equal(acc[0].data.lamports.toString(), SHARE.toString());
-  assert.equal(acc[0].data.vaultAvailable.toString(), SHARE.toString());
+  const held = events(r.logs).filter((e) => e.name === 'buybackShareHeld');
+  assert.equal(held.length, 1, 'one BuybackShareHeld');
+  assert.equal(held[0].data.nonce.toString(), n.toString());
+  assert.equal(held[0].data.lamports.toString(), SHARE.toString());
+  assert.equal(events(r.logs).filter((e) => e.name === 'buybackAccrued').length, 0, 'not released before the job is delivered');
+  const rec = sf.coder.accounts.decode('shareRecord', Buffer.from(svm.getAccount(pda(['share', le64(n)], SF)).data));
+  assert.equal(rec.lamports.toString(), SHARE.toString());
+  assert.equal(rec.buyer.toBase58(), buyer.publicKey.toBase58());
+  assert.equal(config().bbLocked.toString(), SHARE.toString(), 'the share is held, not crankable');
   // fields
   assert.equal(o.version, 1);
   assert.equal(o.status, 1);
@@ -555,18 +559,51 @@ const available = () => lamports(BB_VAULT) - RENT_MIN;
 const cranker = Keypair.generate();
 let clock = 0n;
 const advance = (secs) => { clock += BigInt(secs); setTime(clock); };
-async function placeOrder(solIn) {
+const shareRec = (n) => pda(['share', le64(n)], SF);
+const settleIx = (n, who = order(n).buyer) => sf.methods.settleShare().accountsStrict({ config: CONFIG, order: orderPda(n), shareRecord: shareRec(n), buyer: who, buybackVault: BB_VAULT, systemProgram: SystemProgram.programId }).instruction();
+const locked = () => BigInt(config().bbLocked.toString());
+/** Crankable: vault above rent and the held shares. */
+const crankable = () => lamports(BB_VAULT) - RENT_MIN - locked();
+async function finalize(n) {
+  const d = Keypair.generate().publicKey, rh = sha256(Buffer.from(`result ${n}`));
+  const msg = resultMsg(jobId(n), d, rh);
+  ok([edIx(attesters[0], msg), edIx(attesters[1], msg), await finalizeIx(n, d, rh, '')], [buyer], `finalize ${n}`);
+}
+/** Settles every closed order that still has a share record; returns { released, refunded } lamports. */
+async function settleAll(signer = cranker) {
+  let released = 0n, refunded = 0n;
+  for (let n = nonce0; n < bridgeNonce(); n++) {
+    if (!svm.getAccount(shareRec(n)) || !svm.getAccount(orderPda(n))) continue;
+    const st = order(n).status;
+    if (st === 1) continue;
+    const amt = BigInt(sf.coder.accounts.decode('shareRecord', Buffer.from(svm.getAccount(shareRec(n)).data)).lamports.toString());
+    const r = ok([await settleIx(n)], [signer], `settle_share ${n}`);
+    if (st === 2) {
+      released += amt;
+      if (amt > 0n) assert.ok(events(r.logs).some((e) => e.name === 'buybackAccrued' && e.data.nonce.toString() === n.toString()));
+    } else {
+      refunded += amt;
+      assert.ok(events(r.logs).some((e) => e.name === 'buybackShareRefunded' && e.data.nonce.toString() === n.toString()));
+    }
+  }
+  return { released, refunded };
+}
+async function placeOrder(solIn, { done = true } = {}) {
   const { ix, draft } = await openIx();
   ok([ix], [buyer], 'open');
   const n = bridgeNonce();
   const r = ok([await buyIx(draft, n, solIn)], [buyer], 'buy');
+  if (done) {
+    await finalize(n);
+    ok([await settleIx(n)], [cranker], 'settle_share');
+  }
   return { n, r };
 }
 
-test('buyback: provisional defaults after initialize', () => {
+test('buyback: defaults after initialize (share and destination decided 2026-10-18)', () => {
   const c = config();
-  assert.equal(c.buybackBps, 1000, 'PROVISIONAL default share 10%');
-  assert.equal(c.buybackDest, 0, 'default destination = mining reserve');
+  assert.equal(c.buybackBps, 1000, 'share 10% (owner decision)');
+  assert.equal(c.buybackDest, 0, 'destination = mining reserve (owner decision)');
   assert.equal(c.reserveProgram.toBase58(), RESERVE_ID.toBase58(), 'reserve program = token/programs/reserve');
   assert.equal(c.buybackCranker.toBase58(), PublicKey.default.toBase58(), 'permissionless');
   assert.equal(c.buybackMaxPerCall.toString(), '1000000000');
@@ -592,7 +629,7 @@ test('buyback: set_buyback is admin-only, validated, and emits every value', asy
   ok([await setBbIx({ buybackBps: 1000 })], [admin], 'back to 1000');
 });
 
-test('buyback: setup (reserve ATA, vault volume accumulators); crank to the reserve covers the orders since the last buy', async () => {
+test('buyback: held shares are not crankable; settle_share releases finalized ones and refunds refunded / expired ones', async () => {
   clock = svm.getClock().unixTimestamp;
   svm.airdrop(cranker.publicKey, BigInt(5 * LAMPORTS_PER_SOL));
   // the mining reserve's token account (created by reserve `launch` on a real deploy)
@@ -608,23 +645,49 @@ test('buyback: setup (reserve ATA, vault volume accumulators); crank to the rese
       data: Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]),
     })], [admin], 'vault init_user_volume_accumulator');
   }
-  // two more orders after the ones above: every order since initialize is pending
-  const c0 = config();
+  // every share so far is held: the vault has SOL, none of it crankable
+  assert.equal(lamports(BB_VAULT) - RENT_MIN, locked(), 'vault above rent = held shares');
+  assert.equal(config().bbAccrued.toString(), '0');
+  fails([await crankIx(cranker.publicKey)], [cranker], /NothingToBuy/, 'crank with only held shares');
+  // a pending order cannot settle
+  const { n: pend } = await placeOrder(BigInt(LAMPORTS_PER_SOL / 10), { done: false });
+  fails([await settleIx(pend)], [cranker], /NotPending/, 'settle a pending order');
+  // the buyer named must be the order's buyer
+  fails([await settleIx(nonce0, cranker.publicKey)], [cranker], /BadAccount/, 'settle paying a stranger');
+  // closed orders so far: nonce0 finalized, nonce0+1 expired, the rotation order finalized, the refund order refunded
+  const b0 = lamports(buyer.publicKey), locked0 = locked();
+  const { released, refunded } = await settleAll();
+  assert.ok(released > 0n && refunded > 0n, `released ${released}, refunded ${refunded}`);
+  const recRent = BigInt(svm.minimumBalanceForRentExemption(57n));
+  const gained = lamports(buyer.publicKey) - b0;
+  assert.ok(gained >= refunded + recRent && gained <= refunded + 6n * recRent, `buyer got its refunded shares + record rents back (${gained})`);
+  assert.equal(config().bbRefunded.toString(), refunded.toString());
+  assert.equal(locked(), locked0 - released - refunded, 'only the pending orders stay held');
+  assert.equal(crankable(), released, 'crankable = released shares');
+  // settle twice: the record is closed
+  fails([await settleIx(nonce0)], [cranker], /AccountNotInitialized|not initialized|3012/, 'settle twice');
+  // the pending order finalizes now and releases too
+  await finalize(pend);
+  ok([await settleIx(pend)], [cranker], 'settle the late one');
+});
+
+test('buyback: crank to the reserve spends only released shares and covers the orders since the last buy', async () => {
   const a = await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
   const b = await placeOrder(BigInt(LAMPORTS_PER_SOL / 4));
+  // one more order still pending: its share must survive the crank
+  const p = await placeOrder(BigInt(LAMPORTS_PER_SOL / 10), { done: false });
   const c1 = config();
-  assert.equal(BigInt(c1.bbPendingOrders.toString()), BigInt(c0.bbPendingOrders.toString()) + 2n);
   assert.equal(c1.bbPendingLastNonce.toString(), b.n.toString());
-  assert.equal(c1.bbPendingFirstNonce.toString(), nonce0.toString(), 'first pending = the first order ever');
-  assert.equal(available(), BigInt(c1.bbAccrued.toString()), 'vault above rent = all shares so far');
-  const avail = available();
+  assert.equal(c1.bbPendingFirstNonce.toString(), nonce0.toString(), 'first released = the first order ever');
+  const avail = crankable();
+  assert.equal(avail, BigInt(c1.bbAccrued.toString()), 'crankable = every released share (no buy yet)');
+  const held = locked();
+  assert.ok(held > 0n);
   const bc = curve();
   // fee-free constant-product quote on the curve's virtual reserves, less pump's 1.25% fee
-  // (the SDK helper reads the reserves of a fresh curve only)
   const vt = BigInt(bc.virtualTokenReserves.toString()), vq = BigInt((bc.virtualQuoteReserves ?? bc.virtualSolReserves).toString());
   const expected = ((vt * avail) / (vq + avail) * 9875n) / 10_000n;
   const res0 = tokenAmount(RESERVE_ATA), bridge0 = tokenAmount(VAULT), supply0 = mintSupply();
-  // the caller's min out binds
   fails([await crankIx(cranker.publicKey, 10n ** 12n, expected * 2n)], [cranker], null, 'min_tokens_out above the fill');
   const r = ok([await crankIx(cranker.publicKey, 10n ** 12n, (expected * 98n) / 100n)], [cranker], 'crank_buyback (stranger)');
   CU.crank_buyback = r.cu;
@@ -632,8 +695,8 @@ test('buyback: setup (reserve ATA, vault volume accumulators); crank to the rese
   const e = events(r.logs).find((x) => x.name === 'buybackExecuted');
   assert.ok(e, 'BuybackExecuted emitted');
   const got = BigInt(e.data.tokensOut.toString()), spent = BigInt(e.data.solIn.toString());
-  assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of the whole vault ${avail} (below the 1 SOL cap)`);
-  assert.ok(got >= (expected * 99n) / 100n && got <= (expected * 101n) / 100n, `tokens ${got} vs SDK ${expected}`);
+  assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of the released ${avail}`);
+  assert.ok(got >= (expected * 99n) / 100n && got <= (expected * 101n) / 100n, `tokens ${got} vs quote ${expected}`);
   assert.equal(tokenAmount(RESERVE_ATA) - res0, got, 'tokens landed in the mining reserve');
   assert.equal(BigInt(e.data.routed.toString()), got);
   assert.equal(e.data.destination, 0);
@@ -641,18 +704,23 @@ test('buyback: setup (reserve ATA, vault volume accumulators); crank to the rese
   assert.equal(e.data.firstNonce.toString(), nonce0.toString());
   assert.equal(e.data.lastNonce.toString(), b.n.toString());
   assert.equal(e.data.orders.toString(), c1.bbPendingOrders.toString());
-  assert.equal(e.data.availableBefore.toString(), avail.toString());
   assert.equal(e.data.carry.toString(), (avail - spent).toString());
-  assert.equal(lamports(BB_VAULT), RENT_MIN + avail - spent, 'vault back to rent (+ any unspent lamports)');
+  assert.equal(lamports(BB_VAULT), RENT_MIN + held + avail - spent, 'held shares untouched by the crank');
+  assert.equal(locked(), held);
   assert.equal(tokenAmount(VAULT_ATA), 0n, 'nothing left in the vault ATA');
   assert.equal(tokenAmount(VAULT), bridge0, 'bridge vault untouched (invariant unaffected)');
   assert.equal(mintSupply(), supply0, 'reserve destination does not change the supply');
   const c2 = config();
   assert.equal(c2.bbBuys.toString(), '1');
   assert.equal(c2.bbSpent.toString(), spent.toString());
-  assert.equal(c2.bbTokens.toString(), got.toString());
   assert.equal(c2.bbToReserve.toString(), got.toString());
   assert.equal(c2.bbPendingOrders.toString(), '0');
+  // no double spend: the pending order is then refunded in full from the vault
+  const bAta = ata(buyer.publicKey, MINT, T22);
+  const tok = BigInt(order(p.n).tokens.toString());
+  ok([edIx(bridgeSigner, refundMsg(p.n, buyer.publicKey, tok)), await refundIx(p.n, buyer.publicKey, bAta), await markIx(p.n), await settleIx(p.n)], [buyer], 'refund + settle in one tx');
+  assert.equal(order(p.n).status, 4);
+  assert.equal(lamports(BB_VAULT), RENT_MIN + locked() + avail - spent, 'vault still covers every held share');
   // the min interval (60 s, set above) holds
   await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
   fails([await crankIx(cranker.publicKey)], [cranker], /TooSoon/, 'second crank inside the interval');
@@ -662,7 +730,7 @@ test('buyback: per-call cap carries the rest; an empty vault refuses; cranker al
   advance(61);
   ok([await setBbIx({ maxPerCall: bn(5_000_000) })], [admin], 'cap 0.005 SOL');
   const n1 = bridgeNonce() - 1n; // the order placed at the end of the previous test
-  const avail = available();
+  const avail = crankable();
   assert.ok(avail > 5_000_000n);
   const r = ok([await crankIx(cranker.publicKey)], [cranker], 'capped crank');
   const e = events(r.logs).find((x) => x.name === 'buybackExecuted').data;
@@ -670,8 +738,7 @@ test('buyback: per-call cap carries the rest; an empty vault refuses; cranker al
   assert.equal(e.carry.toString(), (avail - 5_000_000n).toString(), 'the rest carries');
   assert.equal(e.orders.toString(), '1');
   assert.equal(e.firstNonce.toString(), n1.toString());
-  assert.equal(available(), avail - 5_000_000n);
-  // next buy: no new orders, only the carry
+  assert.equal(crankable(), avail - 5_000_000n);
   advance(61);
   const r2 = ok([await crankIx(cranker.publicKey)], [cranker], 'carry crank');
   const e2 = events(r2.logs).find((x) => x.name === 'buybackExecuted').data;
@@ -680,14 +747,12 @@ test('buyback: per-call cap carries the rest; an empty vault refuses; cranker al
   assert.equal(BigInt(e2.availableBefore.toString()), avail - 5_000_000n);
   ok([await setBbIx({ maxPerCall: bn(0) })], [admin], 'no cap');
   advance(61);
-  if (available() > 0n) ok([await crankIx(cranker.publicKey)], [cranker], 'drain');
+  if (crankable() > 0n) ok([await crankIx(cranker.publicKey)], [cranker], 'drain');
   advance(61);
   fails([await crankIx(cranker.publicKey)], [cranker], /NothingToBuy/, 'empty vault');
-  // allowlist
   await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
   ok([await setBbIx({ cranker: admin.publicKey })], [admin], 'cranker = admin');
   fails([await crankIx(cranker.publicKey)], [cranker], /Unauthorized/, 'stranger while an allowlist is set');
-  // slippage tighter than pump's 1.25% fee
   ok([await updateIx({ maxSlippageBps: 50 })], [admin], 'slippage 0.5%');
   fails([await crankIx(admin.publicKey)], [admin], /Slippage|custom program error/, 'buyback slippage');
   ok([await updateIx({ maxSlippageBps: 300 })], [admin], 'restore slippage');
@@ -695,7 +760,7 @@ test('buyback: per-call cap carries the rest; an empty vault refuses; cranker al
   ok([await setBbIx({ cranker: PublicKey.default })], [admin], 'permissionless again');
 });
 
-test('buyback: burn destination lowers the mint supply by exactly the tokens bought; share 0 accrues nothing', async () => {
+test('buyback: burn destination lowers the mint supply by exactly the tokens bought; share 0 holds nothing', async () => {
   advance(61);
   ok([await setBbIx({ destination: 1 })], [admin], 'destination burn');
   const { n } = await placeOrder(BigInt(LAMPORTS_PER_SOL / 2));
@@ -712,13 +777,14 @@ test('buyback: burn destination lowers the mint supply by exactly the tokens bou
   assert.equal(tokenAmount(VAULT), bridge0, 'bridge vault untouched: vault x 1000 == 1e18 - escrow is unaffected');
   assert.equal(config().bbBurned.toString(), got.toString());
   console.log(`  burned ${got} SPL units for ${e.solIn} lamports; supply ${supply0} -> ${mintSupply()}`);
-  // share 0: no transfer, no event, the job gets all of sol_in
   ok([await setBbIx({ buybackBps: 0, destination: 0 })], [admin], 'share 0');
-  const v0 = lamports(BB_VAULT), acc0 = config().bbAccrued.toString();
-  const o = await placeOrder(BigInt(LAMPORTS_PER_SOL / 10));
+  const v0 = lamports(BB_VAULT), lk = locked();
+  const o = await placeOrder(BigInt(LAMPORTS_PER_SOL / 10), { done: false });
   assert.equal(lamports(BB_VAULT), v0);
-  assert.equal(config().bbAccrued.toString(), acc0);
-  assert.equal(events(o.r.logs).filter((x) => x.name === 'buybackAccrued').length, 0);
+  assert.equal(locked(), lk);
+  assert.equal(events(o.r.logs).filter((x) => x.name === 'buybackShareHeld').length, 0);
+  await finalize(o.n);
+  ok([await settleIx(o.n)], [cranker], 'settle a zero share (closes the record)');
   ok([await setBbIx({ buybackBps: 1000 })], [admin], 'share back to 1000');
 });
 
@@ -778,7 +844,9 @@ test('buyback after graduation: curve crank refuses, crank_buyback_amm buys on P
   if (!graduated) return t.skip('no graduation');
   advance(61);
   fails([await crankIx(cranker.publicKey)], [cranker], /CurveComplete/, 'curve crank after graduation');
-  const avail = available();
+  for (let n = nonce0; n < bridgeNonce(); n++) if (svm.getAccount(orderPda(n)) && order(n).status === 1) await finalize(n);
+  await settleAll();
+  const avail = crankable();
   assert.ok(avail > 1_000_000n, `vault has the AMM orders' shares (${avail})`);
   const res0 = tokenAmount(RESERVE_ATA), c0 = lamports(cranker.publicKey), bridge0 = tokenAmount(VAULT);
   const r = ok([await crankAmmIx(cranker.publicKey)], [cranker], 'crank_buyback_amm');
@@ -792,7 +860,7 @@ test('buyback after graduation: curve crank refuses, crank_buyback_amm buys on P
   assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of ${avail}`);
   assert.equal(tokenAmount(RESERVE_ATA) - res0, got);
   assert.equal(svm.getAccount(VAULT_WSOL), null, 'vault wSOL ATA closed');
-  assert.equal(lamports(BB_VAULT), RENT_MIN + avail - spent, 'vault back to rent (+ unspent)');
+  assert.equal(lamports(BB_VAULT), RENT_MIN + locked() + avail - spent, 'vault back to rent + held (+ unspent)');
   assert.ok(c0 - lamports(cranker.publicKey) <= 10_000n, 'cranker got the wSOL ATA rent back (paid only the fee)');
   assert.equal(tokenAmount(VAULT), bridge0);
 });

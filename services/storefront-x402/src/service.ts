@@ -358,7 +358,9 @@ export class Service {
     return {
       vault: this.a.buybackVault.toBase58(),
       vault_lamports: lamports,
-      available_lamports: lamports > sf.RENT_MIN ? lamports - sf.RENT_MIN : 0n,
+      // crankable: above rent and the shares still held for unsettled orders
+      available_lamports: lamports > sf.RENT_MIN + b.locked ? lamports - sf.RENT_MIN - b.locked : 0n,
+      held_lamports: b.locked,
       buyback_bps: b.bps,
       destination: sf.DEST[b.dest] ?? `unknown(${b.dest})`,
       destination_account: b.dest === 0 ? sf.reserveAta(cfg.mint, b.reserveProgram).toBase58() : cfg.mint.toBase58(),
@@ -368,9 +370,9 @@ export class Service {
       min_buy_lamports: b.minBuy,
       min_interval_secs: b.minIntervalSecs,
       last_buy_ts: b.lastTs,
-      totals: { accrued_lamports: b.accrued, spent_lamports: b.spent, tokens_bought_spl: b.tokens, to_reserve_spl: b.toReserve, burned_spl: b.burned, buys: b.buys },
+      totals: { refunded_lamports: b.refunded, accrued_lamports: b.accrued, spent_lamports: b.spent, tokens_bought_spl: b.tokens, to_reserve_spl: b.toReserve, burned_spl: b.burned, buys: b.buys },
       pending: { orders: b.pendingOrders, first_nonce: b.pendingOrders > 0n ? b.pendingFirstNonce : null, last_nonce: b.pendingOrders > 0n ? b.pendingLastNonce : null },
-      events: "BuybackAccrued (per order, in buy_job*) and BuybackExecuted (per buy) in the storefront program's logs",
+      events: "BuybackShareHeld (buy_job*), BuybackAccrued / BuybackShareRefunded (settle_share) and BuybackExecuted (per buy) in the storefront program's logs",
     };
   }
 

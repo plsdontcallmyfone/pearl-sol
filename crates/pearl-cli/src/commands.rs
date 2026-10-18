@@ -1249,7 +1249,7 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
     let b = solana::Buyback::parse(&d)?;
     let vault = solana::buyback_vault_pda();
     let lamports = ctx.sol.balance(&vault)?;
-    let available = lamports.saturating_sub(890_880);
+    let available = lamports.saturating_sub(890_880).saturating_sub(b.locked);
     let supply = ctx.sol.account(&b.mint)?.map(|m| solana::mint_supply(&m)).transpose()?;
     let dest_account = if b.dest == 0 { solana::reserve_ata(&b.reserve_program, &b.mint) } else { b.mint };
     // events: newest txs touching the vault (orders pay into it, buys spend from it)
@@ -1292,11 +1292,11 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
         .collect();
     let zero = [0u8; 32];
     let j = json!({
-        "vault": b58(&vault), "vault_lamports": lamports.to_string(), "available_lamports": available.to_string(),
+        "vault": b58(&vault), "vault_lamports": lamports.to_string(), "available_lamports": available.to_string(), "held_lamports": b.locked.to_string(),
         "buyback_bps": b.bps, "destination": b.dest_name(), "destination_account": b58(&dest_account), "reserve_program": b58(&b.reserve_program),
         "cranker": if b.cranker == zero { None } else { Some(b58(&b.cranker)) },
         "max_per_call_lamports": b.max_per_call.to_string(), "min_buy_lamports": b.min_buy.to_string(), "min_interval_secs": b.min_interval_secs, "last_buy_ts": b.last_ts,
-        "totals": {"accrued_lamports": b.accrued.to_string(), "spent_lamports": b.spent.to_string(), "tokens_bought_spl": b.tokens.to_string(),
+        "totals": {"refunded_lamports": b.refunded.to_string(), "accrued_lamports": b.accrued.to_string(), "spent_lamports": b.spent.to_string(), "tokens_bought_spl": b.tokens.to_string(),
                    "to_reserve_spl": b.to_reserve.to_string(), "burned_spl": b.burned.to_string(), "buys": b.buys},
         "pending": {"orders": b.pending_orders, "first_nonce": if b.pending_orders > 0 { Some(b.pending_first_nonce) } else { None },
                     "last_nonce": if b.pending_orders > 0 { Some(b.pending_last_nonce) } else { None }},
@@ -1319,10 +1319,12 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
         .kv("Share of order SOL", format!("{:.2}% ({} bps)", b.bps as f64 / 100.0, b.bps))
         .kv("Destination", if b.dest == 0 { format!("mining reserve {}", short(&b58(&dest_account))) } else { "burn".to_string() })
         .kv("Vault", format!("{} SOL to spend ({})", fmt::sol(available as u128), short(&b58(&vault))))
+        .kv("Held for open orders", format!("{} SOL (refunded if the order is)", fmt::sol(b.locked as u128)))
         .kv("Cranker", if b.cranker == zero { "anyone".to_string() } else { short(&b58(&b.cranker)) })
         .kv("Per call", if b.max_per_call == 0 { "no cap".to_string() } else { format!("{} SOL max", fmt::sol(b.max_per_call as u128)) })
         .section("Totals")
-        .kv("Order shares in", format!("{} SOL", fmt::sol(b.accrued as u128)))
+        .kv("Shares released", format!("{} SOL (finalized orders)", fmt::sol(b.accrued as u128)))
+        .kv("Shares refunded", format!("{} SOL", fmt::sol(b.refunded as u128)))
         .kv("Spent on buys", format!("{} SOL in {} buys", fmt::sol(b.spent as u128), b.buys))
         .kv("Bought", format!("{} {TICKER}", fmt::spl(b.tokens as u128)))
         .kv("To the reserve", format!("{} {TICKER}", fmt::spl(b.to_reserve as u128)))
@@ -1740,7 +1742,9 @@ mod tests {
         let reserve = solana::pk("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
         assert_eq!(j["destination_account"], b58(&solana::reserve_ata(&reserve, &solana::pk(crate::stub::OTHER))));
         assert_eq!(j["vault"], b58(&solana::buyback_vault_pda()));
-        assert_eq!(j["available_lamports"], "50000000");
+        assert_eq!(j["available_lamports"], "50000000", "held shares are not counted");
+        assert_eq!(j["held_lamports"], "20000000");
+        assert_eq!(j["totals"]["refunded_lamports"], "5000000");
         assert_eq!(j["cranker"], Value::Null);
         assert_eq!(j["totals"]["accrued_lamports"], "300000000");
         assert_eq!(j["totals"]["spent_lamports"], "250000000");

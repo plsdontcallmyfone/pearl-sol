@@ -74,20 +74,28 @@
 //! - `buy_job` / `buy_job_amm` move `share = sol_in x config.buyback_bps / 10000` of the
 //!   buyer's `sol_in` into the system-owned, data-less buyback vault PDA `["buyback"]`
 //!   before the trade; the job buys with `sol_in - share` (`Order.sol_spent` is the
-//!   job's part). `BuybackAccrued` logs each order's share. The first share also tops
-//!   the vault up to rent exemption (paid by that buyer, not counted as a share).
+//!   job's part). The share is HELD for the order in a `ShareRecord ["share", nonce]`
+//!   (`BuybackShareHeld`); held shares count in `config.bb_locked` and no crank can spend
+//!   them. The first share also tops the vault up to rent exemption (paid by that buyer,
+//!   not counted as a share).
+//! - `settle_share()` (permissionless, once the Order is closed): Finalized -> the share is
+//!   released to the buyback (`BuybackAccrued`, now crankable); Refunded or Expired -> the
+//!   share goes back from the vault to `order.buyer` (`BuybackShareRefunded`): the buyer
+//!   pays for a buyback only when the job was delivered. The record is closed (rent to the
+//!   buyer), so a share settles exactly once.
 //! - `crank_buyback` (curve) / `crank_buyback_amm` (PumpSwap): permissionless (or
-//!   `config.buyback_cranker` only, when set). Spends `min(vault - rent, max_per_call,
-//!   max_sol_in)` with the vault PDA as the pump `user`, through the same CPIs and the
+//!   `config.buyback_cranker` only, when set). Spends `min(vault - rent - bb_locked,
+//!   max_per_call, max_sol_in)` with the vault PDA as the pump `user`, through the same CPIs and the
 //!   same fill check as `buy_job` and the reserve's creator-fee buyback, then routes the
 //!   vault's whole token balance to `config.buyback_dest`: 0 = the mining reserve
 //!   (ATA(PDA(["creator"], config.reserve_program), mint, Token-2022)), 1 = burn
 //!   (Token-2022 BurnChecked; lowers the Solana mint supply). `BuybackExecuted` logs SOL
-//!   in, tokens out, the destination and the order nonces whose shares were collected
+//!   in, tokens out, the destination and the order nonces whose shares were released
 //!   since the previous buy.
 //! - `set_buyback` (admin): share, destination, reserve program, cranker, caps, interval;
-//!   emits `BuybackConfigUpdated` with every value. Defaults are PROVISIONAL (owner
-//!   decision open): 1000 bps, destination reserve, 1 SOL per call, min 0.001 SOL, 600 s.
+//!   emits `BuybackConfigUpdated` with every value. Defaults: 1000 bps and destination
+//!   reserve (owner decision 2026-10-18); 1 SOL per call, min 0.001 SOL, 600 s, cranker
+//!   anyone (provisional).
 //! - One-time setup (anyone pays): pump and PumpSwap `init_user_volume_accumulator` for
 //!   the vault PDA, as for the trader PDA.
 //!
@@ -141,6 +149,7 @@ pub const TRADER_SEED: &[u8] = b"trader";
 pub const DRAFT_SEED: &[u8] = b"draft";
 pub const ORDER_SEED: &[u8] = b"order";
 pub const BUYBACK_VAULT_SEED: &[u8] = b"buyback";
+pub const SHARE_SEED: &[u8] = b"share";
 /// token/programs/reserve: its creator PDA owns the mining reserve ATA.
 pub const RESERVE_CREATOR_SEED: &[u8] = b"creator";
 /// token/programs/reserve `declare_id!` (keys/localnet/reserve-keypair.json).
@@ -202,6 +211,10 @@ pub fn buyback_vault_pda() -> (Pubkey, u8) {
 pub fn reserve_ata(reserve_program: &Pubkey, mint: &Pubkey) -> Pubkey {
     let creator = Pubkey::find_program_address(&[RESERVE_CREATOR_SEED], reserve_program).0;
     ata(&creator, mint, &TOKEN_2022_ID)
+}
+
+pub fn share_pda(nonce: u64) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[SHARE_SEED, &nonce.to_le_bytes()], &ID)
 }
 
 pub fn order_pda(nonce: u64) -> (Pubkey, u8) {
@@ -458,6 +471,8 @@ pub mod storefront {
             trader_bump,
             share,
             vault_lamports,
+            &mut ctx.accounts.share_record,
+            ctx.bumps.share_record,
         )
     }
 
@@ -568,6 +583,8 @@ pub mod storefront {
             trader_bump,
             share,
             vault_lamports,
+            &mut ctx.accounts.share_record,
+            ctx.bumps.share_record,
         )
     }
 
@@ -707,6 +724,63 @@ pub mod storefront {
         Ok(())
     }
 
+    /// Settles one order's held buyback share once the Order is closed (permissionless):
+    /// Finalized -> released to the buyback (crankable); Refunded or Expired -> paid back
+    /// from the vault to `order.buyer`. Closes the ShareRecord (rent to the buyer).
+    pub fn settle_share(ctx: Context<SettleShare>) -> Result<()> {
+        let o = &ctx.accounts.order;
+        let rec = &ctx.accounts.share_record;
+        require!(rec.nonce == o.deposit_nonce, StorefrontError::BadAccount);
+        require_keys_eq!(ctx.accounts.buyer.key(), o.buyer, StorefrontError::BadAccount);
+        let lamports = rec.lamports;
+        let status = o.status;
+        let order_key = o.key();
+        let nonce = o.deposit_nonce;
+        let buyer = o.buyer;
+        let vault_lamports = ctx.accounts.buyback_vault.lamports();
+        let c = &mut ctx.accounts.config;
+        require!(c.bb_locked >= lamports, StorefrontError::BadAccount);
+        match status {
+            STATUS_FINALIZED => {
+                c.bb_locked -= lamports;
+                if lamports > 0 {
+                    c.bb_accrued = c.bb_accrued.saturating_add(lamports);
+                    if c.bb_pending_orders == 0 {
+                        c.bb_pending_first_nonce = nonce;
+                    }
+                    c.bb_pending_last_nonce = nonce;
+                    c.bb_pending_orders = c.bb_pending_orders.saturating_add(1);
+                    emit!(BuybackAccrued {
+                        order: order_key,
+                        nonce,
+                        lamports,
+                        vault_available: vault_lamports.saturating_sub(RENT_MIN).saturating_sub(c.bb_locked),
+                        total_accrued: c.bb_accrued,
+                    });
+                }
+            }
+            STATUS_REFUNDED | STATUS_EXPIRED => {
+                c.bb_locked -= lamports;
+                c.bb_refunded = c.bb_refunded.saturating_add(lamports);
+                if lamports > 0 {
+                    let bump = ctx.bumps.buyback_vault;
+                    let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
+                    let vault = ctx.accounts.buyback_vault.to_account_info();
+                    let to = ctx.accounts.buyer.to_account_info();
+                    invoke_signed(
+                        &system_instruction::transfer(vault.key, to.key, lamports),
+                        &[vault.clone(), to, ctx.accounts.system_program.to_account_info()],
+                        &[seeds],
+                    )?;
+                    require!(vault.lamports() >= RENT_MIN.saturating_add(c.bb_locked), StorefrontError::BelowFloor);
+                }
+                emit!(BuybackShareRefunded { order: order_key, nonce, buyer, lamports, status, total_refunded: c.bb_refunded });
+            }
+            _ => return err!(StorefrontError::NotPending),
+        }
+        Ok(())
+    }
+
     /// Buyback on the bonding curve (see module docs "Buyback"): the vault PDA buys with
     /// `buy_exact_quote_in_v3`, then the vault's tokens go to `config.buyback_dest`.
     pub fn crank_buyback(ctx: Context<BuybackCurve>, max_sol_in: u64, min_tokens_out: u64) -> Result<()> {
@@ -722,7 +796,7 @@ pub mod storefront {
         let cranker = a.cranker.to_account_info();
         let mint = a.mint.to_account_info();
         let system = a.system_program.to_account_info();
-        let available = vault.lamports().saturating_sub(RENT_MIN);
+        let available = vault.lamports().saturating_sub(RENT_MIN).saturating_sub(a.config.bb_locked);
         let spend = a.config.buyback_spend(available, max_sol_in)?;
         let bump = ctx.bumps.buyback_vault;
         let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
@@ -762,7 +836,7 @@ pub mod storefront {
         )?;
         let spent = lamports_before.saturating_sub(vault.lamports());
         let got = token_amount(&a.vault_ata)?.saturating_sub(tokens_before);
-        require!(vault.lamports() >= RENT_MIN, StorefrontError::BelowFloor);
+        require!(vault.lamports() >= RENT_MIN.saturating_add(a.config.bb_locked), StorefrontError::BelowFloor);
         check_fill(got, spent, spend, quote, min_tokens_out, a.config.max_slippage_bps)?;
         let r = RouteAccounts {
             vault,
@@ -795,7 +869,7 @@ pub mod storefront {
         let mint = a.mint.to_account_info();
         let system = a.system_program.to_account_info();
         let wsol = &a.wsol_mint;
-        let available = vault.lamports().saturating_sub(RENT_MIN);
+        let available = vault.lamports().saturating_sub(RENT_MIN).saturating_sub(a.config.bb_locked);
         let spend = a.config.buyback_spend(available, max_sol_in)?;
         let bump = ctx.bumps.buyback_vault;
         let seeds: &[&[u8]] = &[BUYBACK_VAULT_SEED, &[bump]];
@@ -851,7 +925,7 @@ pub mod storefront {
         if wsol_rent > 0 {
             invoke_signed(&system_instruction::transfer(vault.key, cranker.key, wsol_rent), &[vault.clone(), cranker.clone(), system.clone()], &[seeds])?;
         }
-        require!(vault.lamports() >= RENT_MIN, StorefrontError::BelowFloor);
+        require!(vault.lamports() >= RENT_MIN.saturating_add(a.config.bb_locked), StorefrontError::BelowFloor);
         require!(lamports_before.saturating_sub(vault.lamports()) <= spent, StorefrontError::Overspent);
         check_fill(got, spent, spend, quote, min_tokens_out, a.config.max_slippage_bps)?;
         let r = RouteAccounts {
@@ -1020,6 +1094,8 @@ fn place_order<'info>(
     trader_bump: u8,
     buyback_share: u64,
     vault_lamports: u64,
+    share: &mut Account<'info, ShareRecord>,
+    share_bump: u8,
 ) -> Result<()> {
     let p_spl = (got as u128 * config.protocol_fee_bps as u128 / 10_000) as u64;
     let w_spl = got - p_spl;
@@ -1085,20 +1161,13 @@ fn place_order<'info>(
     config.orders = config.orders.saturating_add(1);
     config.total_sol = config.total_sol.saturating_add(spent);
     config.total_tokens = config.total_tokens.saturating_add(got);
+    share.nonce = nonce;
+    share.buyer = draft.buyer;
+    share.lamports = buyback_share;
+    share.bump = share_bump;
     if buyback_share > 0 {
-        config.bb_accrued = config.bb_accrued.saturating_add(buyback_share);
-        if config.bb_pending_orders == 0 {
-            config.bb_pending_first_nonce = nonce;
-        }
-        config.bb_pending_last_nonce = nonce;
-        config.bb_pending_orders = config.bb_pending_orders.saturating_add(1);
-        emit!(BuybackAccrued {
-            order: order.key(),
-            nonce,
-            lamports: buyback_share,
-            vault_available: vault_lamports.saturating_sub(RENT_MIN),
-            total_accrued: config.bb_accrued,
-        });
+        config.bb_locked = config.bb_locked.saturating_add(buyback_share);
+        emit!(BuybackShareHeld { order: order.key(), nonce, lamports: buyback_share, total_locked: config.bb_locked, vault_lamports });
     }
     emit!(OrderPlaced {
         order: order.key(),
@@ -1212,6 +1281,20 @@ pub struct Config {
     pub bb_pending_orders: u64,
     pub bb_pending_first_nonce: u64,
     pub bb_pending_last_nonce: u64,
+    /// Shares held for orders not settled yet (settle_share): not crankable, refundable.
+    pub bb_locked: u64,
+    /// Shares paid back to buyers of refunded or expired orders, all time.
+    pub bb_refunded: u64,
+}
+
+/// One order's buyback share, held until `settle_share` (PDA ["share", deposit nonce]).
+#[account]
+#[derive(InitSpace)]
+pub struct ShareRecord {
+    pub nonce: u64,
+    pub buyer: Pubkey,
+    pub lamports: u64,
+    pub bump: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -1597,6 +1680,9 @@ pub struct BuyJobCurve<'info> {
     /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
     #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
     pub buyback_vault: SystemAccount<'info>,
+    /// The order's held share (settle_share releases or refunds it).
+    #[account(init, payer = buyer, space = 8 + ShareRecord::INIT_SPACE, seeds = [SHARE_SEED, &nonce.to_le_bytes()], bump)]
+    pub share_record: Box<Account<'info, ShareRecord>>,
 }
 
 #[derive(Accounts)]
@@ -1679,6 +1765,25 @@ pub struct BuyJobAmm<'info> {
     /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
     #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
     pub buyback_vault: SystemAccount<'info>,
+    /// The order's held share (settle_share releases or refunds it).
+    #[account(init, payer = buyer, space = 8 + ShareRecord::INIT_SPACE, seeds = [SHARE_SEED, &nonce.to_le_bytes()], bump)]
+    pub share_record: Box<Account<'info, ShareRecord>>,
+}
+
+#[derive(Accounts)]
+pub struct SettleShare<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [ORDER_SEED, &order.deposit_nonce.to_le_bytes()], bump = order.bump)]
+    pub order: Box<Account<'info, Order>>,
+    #[account(mut, close = buyer, seeds = [SHARE_SEED, &order.deposit_nonce.to_le_bytes()], bump = share_record.bump)]
+    pub share_record: Box<Account<'info, ShareRecord>>,
+    /// CHECK: = order.buyer (checked); gets a refunded share and the record's rent.
+    #[account(mut)]
+    pub buyer: UncheckedAccount<'info>,
+    #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
+    pub buyback_vault: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1908,15 +2013,36 @@ pub struct OrderRefunded {
     pub tokens: u64,
 }
 
-/// One order's buyback share, paid into the vault by `buy_job*`.
+/// One order's buyback share released to the buyback by `settle_share` (Order finalized).
 #[event]
 pub struct BuybackAccrued {
     pub order: Pubkey,
     pub nonce: u64,
     pub lamports: u64,
-    /// Vault lamports above rent after this share.
+    /// Crankable vault lamports (above rent and held shares) after this release.
     pub vault_available: u64,
     pub total_accrued: u64,
+}
+
+/// One order's share held in the vault by `buy_job*` (not crankable until settled).
+#[event]
+pub struct BuybackShareHeld {
+    pub order: Pubkey,
+    pub nonce: u64,
+    pub lamports: u64,
+    pub total_locked: u64,
+    pub vault_lamports: u64,
+}
+
+/// `settle_share` on a Refunded (4) or Expired (3) order: the share went back to the buyer.
+#[event]
+pub struct BuybackShareRefunded {
+    pub order: Pubkey,
+    pub nonce: u64,
+    pub buyer: Pubkey,
+    pub lamports: u64,
+    pub status: u8,
+    pub total_refunded: u64,
 }
 
 /// One buyback by the crank (curve or PumpSwap).
@@ -1938,12 +2064,12 @@ pub struct BuybackExecuted {
     pub destination_account: Pubkey,
     /// Fee-free pre-trade quote for `sol_in`'s cap (the fill check's reference).
     pub quote: u64,
-    /// Orders whose share arrived since the previous buy (0, 0, 0 when none): bridge
+    /// Orders whose share was released since the previous buy (0, 0, 0 when none): bridge
     /// deposit nonces of the first and last such Order.
     pub first_nonce: u64,
     pub last_nonce: u64,
     pub orders: u64,
-    /// Vault lamports above rent before the buy, and what stays for the next one.
+    /// Crankable vault lamports (above rent and held shares) before the buy, and what stays.
     pub available_before: u64,
     pub carry: u64,
     pub total_spent: u64,

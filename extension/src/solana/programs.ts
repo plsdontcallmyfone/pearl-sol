@@ -128,6 +128,8 @@ export const storeConfigPda = (sf: Pubkey) => pda([utf8("config")], sf);
 export const traderPda = (sf: Pubkey) => pda([utf8("trader")], sf);
 /** Buyback vault (2026-10-18): buy_job* pays `buyback_bps` of sol_in into it. */
 export const buybackVaultPda = (sf: Pubkey) => pda([utf8("buyback")], sf);
+/** The order's held buyback share record (["share", nonce]); refunded if the order is. */
+export const sharePda = (sf: Pubkey, nonce: bigint) => pda([utf8("share"), u64(nonce)], sf);
 export const draftPda = (sf: Pubkey, buyer: Pubkey, draftId: bigint) => pda([utf8("draft"), buyer, u64(draftId)], sf);
 export const orderPda = (sf: Pubkey, nonce: bigint) => pda([utf8("order"), u64(nonce)], sf);
 export const bondingCurvePda = (mint: Pubkey) => pda([utf8("bonding-curve"), mint], PUMP);
@@ -172,7 +174,7 @@ export function buyJobIx(sf: Pubkey, bridge: Pubkey, buyer: Pubkey, draftId: big
       meta(pda([utf8("global")], PUMP)), meta(bc, true), meta(ata(bc, p.mint, TOKEN_2022), true), meta(ata(bc, WSOL, TOKEN_PROGRAM), true),
       meta(pda([utf8("user_volume_accumulator"), trader], PUMP), true), meta(pda([utf8("fee_config"), PUMP], PUMP_FEES)),
       meta(p.curveBuyback, true), meta(WSOL), meta(TOKEN_PROGRAM), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SYSTEM_PROGRAM),
-      meta(pda([utf8("__event_authority")], PUMP)), meta(PUMP), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true),
+      meta(pda([utf8("__event_authority")], PUMP)), meta(PUMP), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true), meta(sharePda(sf, nonce), true),
     ],
     data: concat(disc("buy_job"), u64(nonce), u64(solIn), u64(minOut)),
   };
@@ -189,7 +191,7 @@ export function buyJobAmmIx(sf: Pubkey, bridge: Pubkey, buyer: Pubkey, draftId: 
       meta(canonicalPool(p.mint), true), meta(p.poolBaseVault, true), meta(p.poolQuoteVault, true), meta(pda([utf8("global_config")], AMM)),
       meta(pda([utf8("user_volume_accumulator"), trader], AMM), true), meta(pda([utf8("fee_config"), AMM], PUMP_FEES)),
       meta(ata(p.ammBuyback, WSOL, TOKEN_PROGRAM), true), meta(WSOL), meta(TOKEN_PROGRAM), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SYSTEM_PROGRAM),
-      meta(pda([utf8("__event_authority")], AMM)), meta(AMM), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true),
+      meta(pda([utf8("__event_authority")], AMM)), meta(AMM), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true), meta(sharePda(sf, nonce), true),
     ],
     data: concat(disc("buy_job_amm"), u64(nonce), u64(solIn), u64(minOut)),
   };

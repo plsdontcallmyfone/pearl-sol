@@ -13,7 +13,8 @@
 //   node src/main.ts sf-setup                    vault PDA's pump + PumpSwap volume accumulators (once, anyone pays)
 //   node src/main.ts sf-set [--bps N] [--dest reserve|burn] [--cranker PK|none] [--maxPerCall L] [--minBuy L]
 //                           [--minIntervalSecs S] [--reserveProgram PK]       (admin = KEYPAIR)
-//   node src/main.ts sf-buyback                  one crank_buyback(_amm) attempt, prints the BuybackExecuted fields (JSON)
+//   node src/main.ts sf-settle                   settle_share for every closed order (finalized: released; refunded/expired: paid back)
+//   node src/main.ts sf-buyback                  sf-settle, then one crank_buyback(_amm) attempt; prints the BuybackExecuted fields (JSON)
 //   `run` and `once` also attempt a storefront buyback each tick (SF_BUYBACK=0 turns it off).
 //
 // Env (all optional):
@@ -263,6 +264,9 @@ switch (cmd) {
     break;
   case 'sf-set':
     log('set_buyback', await storefront().set(flags));
+    break;
+  case 'sf-settle':
+    console.log(JSON.stringify(await storefront().settle()));
     break;
   case 'sf-buyback':
     console.log(JSON.stringify(await storefront().once(await chainTime())));
