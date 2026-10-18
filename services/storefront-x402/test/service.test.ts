@@ -95,7 +95,7 @@ test("setup: pump coin, bridge, storefront, service", () => {
         data: Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]),
       })], [admin]);
     }
-    service = new Service({ chain, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing: { baseLamports: 10_000_000n, lamportsPerGflop: 100_000n, overheadLamports: 12_000_000n } });
+    service = new Service({ chain, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing: { baseLamports: 10_000_000n, lamportsPerGflop: 100_000n, overheadLamports: 14_000_000n } });
   })();
 });
 
@@ -121,7 +121,7 @@ test("GET /quote prices a job from its size", async () => {
   assert.equal(q.buyback_lamports, (q.sol_in_lamports * 1000n) / 10_000n, "the program's floor split");
   assert.equal(q.job_lamports, q.sol_in_lamports - q.buyback_lamports);
   assert.ok(q.job_lamports >= job && q.job_lamports - job <= 1n, "the job part covers the job price");
-  assert.equal(q.price_lamports, q.sol_in_lamports + 12_000_000n);
+  assert.equal(q.price_lamports, q.sol_in_lamports + 14_000_000n);
   assert.equal(q.venue, "curve");
   assert.ok(q.estimate.tokens_spl > 0n && q.estimate.min_tokens_out_spl < q.estimate.tokens_spl);
   assert.equal((await call("GET", "/quote?m=0&n=1&k=1")).status, 400);
@@ -239,7 +239,7 @@ test("POST /jobs: 402 without payment, 201 with an x402 payment; the Order is on
   assert.equal(o.bodyHash, sf.sha256(sf.postJobBody(spec, o.workerPay, o.protocolFee)).toString("hex"));
   assert.equal(sf.tokenAmount(svm.getAccount(VAULT)!.data), o.tokens);
   // the buyback share sits in the vault: sol_in x 1000 / 10000, plus the one-time rent top-up
-  const solIn = price - 12_000_000n;
+  const solIn = price - 14_000_000n;
   const share = (solIn * 1000n) / 10_000n;
   assert.equal(BigInt(svm.getBalance(A.buybackVault)!), sf.RENT_MIN + share);
   assert.ok(o.solSpent <= solIn - share, "the job spent at most sol_in - share");

@@ -8,7 +8,7 @@
 //   PUBLIC_URL                http://127.0.0.1:<port>
 //   PRICE_BASE_LAMPORTS       10000000   (config defaults, not a market price; set per deployment)
 //   PRICE_LAMPORTS_PER_GFLOP  100000
-//   OVERHEAD_LAMPORTS         12000000   (Order + Deposit rent, tx fees)
+//   OVERHEAD_LAMPORTS         14000000   (Order + Deposit + buyback ShareRecord rent, tx fees; the record rent comes back at settle_share)
 //   STATE_FILE                .data/state.json (used payments, for replay protection)
 //
 // Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads).
@@ -35,7 +35,7 @@ const service = new Service({
   pricing: {
     baseLamports: BigInt(env.PRICE_BASE_LAMPORTS ?? 10_000_000),
     lamportsPerGflop: BigInt(env.PRICE_LAMPORTS_PER_GFLOP ?? 100_000),
-    overheadLamports: BigInt(env.OVERHEAD_LAMPORTS ?? 12_000_000),
+    overheadLamports: BigInt(env.OVERHEAD_LAMPORTS ?? 14_000_000),
   },
   stateFile: env.STATE_FILE ?? resolve(here, "../.data/state.json"),
 });

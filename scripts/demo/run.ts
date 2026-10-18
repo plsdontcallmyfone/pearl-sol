@@ -17,7 +17,7 @@ import {
 } from "./lib.ts";
 import {
   BRIDGE_PROGRAM_ID, ORDER_LAYOUT, ORDER_STATUS_FINALIZED, ORDER_STATUS_REFUNDED, STOREFRONT_PROGRAM_ID, ata, bridgeRefundPda, bridgeConfigPda, decodeBridgeConfig,
-  decodeOrder, orderPda, storefrontConfigPda, tokenAccountAmount, traderPda, u16le, u32le, u64le,
+  decodeOrder, orderPda, sharePda, storefrontConfigPda, tokenAccountAmount, traderPda, u16le, u32le, u64le,
 } from "../../services/relayer/src/codec.ts";
 import { KIND, signTx, transferBody } from "../../services/relayer/src/agent-tx.ts";
 import { NodeRpc } from "../../services/relayer/src/node.ts";
@@ -398,6 +398,12 @@ async function step4(): Promise<string> {
   if (job.job_key !== c.job_key) throw new Error(`node job_key ${job.job_key} != buyer's ${c.job_key}`);
   const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
   order = { nonce, jobId: job.job_id, P: BigInt(job.protocol_fee), W: BigInt(job.worker_pay), postedHeight: job.posted_height };
+  // its buyback share is held for it (refunded if the order is), not crankable yet
+  const sh = (await conn.getAccountInfo(sharePda(nonce)))!;
+  const held = sh.data.readBigUInt64LE(48); // ShareRecord: disc, nonce, buyer [32], lamports
+  const ss = JSON.parse(crank(["sf-status"]));
+  if (held === 0n || BigInt(ss.heldLamports) < held || ss.availableLamports !== "0") throw new Error(`share not held: ${held} ${JSON.stringify(ss)}`);
+  info("buyback share held", { nonce: nonce.toString(), lamports: held.toString(), crankable: ss.availableLamports });
   writeFileSync(resolve(DEMO, "order.json"), JSON.stringify({ ...order, nonce: nonce.toString(), P: order.P.toString(), W: order.W.toString() }));
   return `order ${nonce} (Solana Order ${orderPda(nonce).toBase58()}, ${o.tokens} SPL bought) unlocked at height ${d.height}: ` +
     `job ${job.job_id.slice(0, 16)} ${job.status} W=${job.worker_pay} P=${job.protocol_fee} cap=${job.cap_remaining} ` +
@@ -533,6 +539,9 @@ async function step6(): Promise<string> {
 async function stepBuyback(): Promise<string> {
   if (!order) throw new Error("no order from step 5");
   const sfStatus = () => JSON.parse(crank(["sf-status"]));
+  // settle_share: the order is finalized (step 7), so its share is released to the buyback
+  const settled = JSON.parse(crank(["sf-settle"]).trim().split("\n").pop()!);
+  if (!settled.released.includes(order.nonce.toString())) throw new Error(`settle: ${JSON.stringify(settled)}`);
   const s0 = sfStatus();
   info("buyback vault after the order", { vault: s0.vault, available: s0.availableLamports, bps: s0.buybackBps, destination: s0.destination,
     pendingOrders: s0.pendingOrders, pendingFirstNonce: s0.pendingFirstNonce, pendingLastNonce: s0.pendingLastNonce });
@@ -619,6 +628,8 @@ async function stepRefund(): Promise<string> {
   const o = decodeOrder((await conn.getAccountInfo(orderPda(nonce)))!.data);
   if (o.body.protocolFee >= HIGH) throw new Error(`order P ${o.body.protocolFee} not below the raised floor`);
   const buyerAta = ata(o.buyer, MINT);
+  const share = (await conn.getAccountInfo(sharePda(nonce)))!.data.readBigUInt64LE(48);
+  const refunded0 = BigInt(JSON.parse(crank(["sf-status"])).refunded);
   const before = (await conn.getAccountInfo(buyerAta)) ? tokenAccountAmount((await conn.getAccountInfo(buyerAta))!.data) : 0n;
   const held = await waitFor("relayer holds the order back (needsRefund)", async () => {
     const h = (await httpJson(RELAYER_HEALTH)).body;
@@ -635,6 +646,10 @@ async function stepRefund(): Promise<string> {
   if (!how?.startsWith("refund_deposit")) throw new Error(`refund record written by ${how}`);
   const after = tokenAccountAmount((await conn.getAccountInfo(buyerAta))!.data);
   if (after - before !== o.tokens) throw new Error(`buyer got ${after - before} SPL back, want ${o.tokens}`);
+  // the relayer's refund tx also settled the buyback share: back to the buyer, record closed
+  if (await conn.getAccountInfo(sharePda(nonce))) throw new Error("share record still open after the refund");
+  const refunded1 = BigInt(JSON.parse(crank(["sf-status"])).refunded);
+  if (refunded1 - refunded0 !== share) throw new Error(`buyback refunded ${refunded1 - refunded0}, want the order's share ${share}`);
   // restore the floor: the refunded deposit must still never be unlocked
   await sendChainTx(admin, KIND.AdminConfig, adminConfig(BigInt(p0.min_protocol_fee)));
   await waitFor("floor restored", async () => (BigInt((await nodeCall("getParams")).min_protocol_fee_effective) === BigInt(p0.min_protocol_fee_effective) ? true : null), 60_000);
@@ -644,7 +659,7 @@ async function stepRefund(): Promise<string> {
   const inv = await invariant();
   if (!/ in_flight_deposits_spl=0 .*delta=0 strict=true/.test(inv)) throw new Error(`invariant not exact after the refund: ${inv}`);
   return `chain min_protocol_fee raised to ${HIGH} by AdminConfig; x402 order ${nonce} (P=${o.body.protocolFee}) held back ` +
-    `(${held.reason}), refunded after REFUND_GRACE_MS by ${how}: ${o.tokens} SPL back to the Order's buyer ${o.buyer.toBase58()} ` +
+    `(${held.reason}), refunded after REFUND_GRACE_MS by ${how}: ${o.tokens} SPL and its ${share}-lamport buyback share back to the Order's buyer ${o.buyer.toBase58()} ` +
     `(storefront wallet), Order status Refunded; floor restored, deposit still not unlocked; invariant exact`;
 }
 
@@ -781,8 +796,8 @@ try {
   await step("3. plain bridge-in + RegisterAgent", step3);
   await step("4. light client: init from the devnet checkpoint, header-relay, storefront finalize -> proof mode", stepLightClient);
   await step("5. storefront order over x402 -> job on the chain", step4);
-  await step("6. storefront buyback: the order's share bought back by the crank, half to the mining reserve, the rest burned", stepBuyback);
-  await step("7. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
+  await step("6. job + fallback mining, delivery, CompleteJob, finalize_order_proof on Solana", step5);
+  await step("7. storefront buyback: the finalized order's share released (settle_share) and bought back, half to the mining reserve, the rest burned", stepBuyback);
   await step("8. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
   await step("9. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
   await step("10. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
