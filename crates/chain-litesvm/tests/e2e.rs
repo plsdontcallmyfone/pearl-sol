@@ -130,13 +130,14 @@ fn share_and_delivery_flow_with_pearl_chain_transactions() {
     svm.set_account(pool, pa).unwrap();
 
     // --- a real job: matrices, header, commitments ---
-    let (m, n, k) = (64u32, 64u32, 1024u32);
+    // k follows the job config (localnet_default is k 2048, rank 128 since the rank penalty).
+    let config = MiningConfig::localnet_default();
+    let (m, n, k) = (64u32, 64u32, config.common_dim);
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-job");
     let (a, b) = data::random_matrices(m as usize, n as usize, k as usize, Some(5));
     let manifest = data::save(&dir, m, n, k, &a, &b).unwrap();
     let job_id = 7u64;
     let job_pda = SdkPk::find_program_address(&[b"job", poster.pubkey().as_ref(), &job_id.to_le_bytes()], &jobs::ID).0;
-    let config = MiningConfig::localnet_default();
     let created_slot = 1_000u64;
     let mut params = jobs::PostJobParams {
         job_id,
