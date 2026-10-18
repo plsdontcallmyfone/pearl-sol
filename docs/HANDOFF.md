@@ -326,6 +326,23 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
      no state or encoding change. Chain 82 (+1).
      Existing light clients need `init_accumulator` (admin) before `close_header` works
      again; existing .devnet data must be reset (block encoding changed).
+10. PEARL CLI / TERMINAL DASHBOARD: DONE (947b5c5, 8e1a3ce; docs/CLI.md). `crates/pearl-cli`,
+   binary `pearl` (own workspace, Rust 1.95 pinned; excluded from crates/). Retro blue ratatui
+   dashboard after the owner's "Reloaded Finance" reference (block wordmark, red beta banner,
+   slash-titled panels, green-selected table, black shell strip with a real command line and
+   hotkeys) plus the same commands in plain mode with `--json` for agents. Name is a
+   placeholder: NAME / TICKER / wordmark all come from `src/brand.rs` (one-line rename; the
+   crate and binary names change with it). Every figure is an RPC read; no price source, so
+   none shown (/Market = storefront min job price, realised fill, "no price source").
+   Reuses agent-types (tx encode/sign), pearl-verify-sbf (PostJob job id/terms), pearl-job
+   (data, commitments), pearl-node (RPC, key files); Solana deposit is a raw legacy tx.
+   Tests: 21 unit + TestBackend render. Live on the demo stack: balance, send, 5 job posts
+   (all mined + completed), bridge in (relayer unlock) and out (released by proof), register,
+   lien set/clear, pty-driven dashboard incl. mine start/stop. Screenshots
+   screenshots/cli/live-*.png. Gaps: Agent Credit only as a reachability probe (`--credit-url`),
+   no price source by design, pool panel only reads /stats, invariant in-flight scan covers the
+   last 64 nonces each way, mine start in plain mode runs in the foreground, no real-terminal
+   (ANSI) capture, only the TestBackend render.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
