@@ -359,6 +359,10 @@ async function stepLightClient(): Promise<string> {
   // job can be registered from its posting tx); then relay + settle by proof
   const out = run(BIN.headerRelay, [...HR_ARGS, "init"]).trim();
   console.log(out);
+  // localnet only: the --ticks-per-slot validator's clock falls behind wall time under load and
+  // the light client refuses headers more than max_future_ms (120 s, the production default)
+  // ahead of it, which caps the relay at ~19 headers/min; allow an hour here
+  console.log(run(BIN.headerRelay, [...HR_ARGS, "set-params", "--max-future-ms", "3600000"]).trim());
   start("header-relay", BIN.headerRelay, [...HR_ARGS, "run", "--settle", "--poll-ms", "1000", "--work", resolve(DEMO, "header-relay-work.json")]);
   await setProofMode(STOREFRONT_PROGRAM_ID, "set_finalize_modes", storefrontConfigPda());
   const lc0 = (await lcHeights())!;
