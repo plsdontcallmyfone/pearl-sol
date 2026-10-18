@@ -157,7 +157,10 @@ pub fn serve() -> String {
 }
 
 fn key_file() -> PathBuf {
-    let p = std::env::temp_dir().join(format!("pearl-cli-test-key-{}.json", std::process::id()));
+    // one file per call: tests run in parallel and a shared file can be read half-written
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("pearl-cli-test-key-{}-{n}.json", std::process::id()));
     let sk = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let mut b = sk.to_bytes().to_vec();
     b.extend_from_slice(&sk.verifying_key().to_bytes());
