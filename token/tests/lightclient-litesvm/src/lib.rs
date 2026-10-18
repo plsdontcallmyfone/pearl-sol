@@ -440,7 +440,9 @@ impl Env {
     pub fn steps(&mut self, b: &Blk, plan: &[Vec<Step>]) -> Result<(), TransactionError> {
         let (pk, w) = (self.payer.pubkey(), self.work.pubkey());
         for tx in plan {
-            let ixs: Vec<Instruction> = tx.iter().map(|s| s.instruction(pk, w, &b.hash, pk)).collect();
+            // the jackpot step passes the parent, as header-relay does (a header on a
+            // Verified parent that is not the tip is Verified at once)
+            let ixs: Vec<Instruction> = tx.iter().map(|s| s.instruction_with_parent(pk, w, &b.hash, &b.h.prev_hash, pk)).collect();
             let label = tx.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join("+");
             self.send_labeled(&label, &ixs, &[])?;
         }
