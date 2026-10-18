@@ -21,7 +21,7 @@ use litesvm::LiteSVM;
 use solana_sdk::{
     hash::Hash,
     pubkey::Pubkey,
-    signature::{Keypair, Signature, Signer},
+    signature::{Keypair, Signature},
     transaction::Transaction,
 };
 
@@ -103,7 +103,7 @@ fn bincode_size(tx: &Transaction) -> usize {
 /// The agent chain as seen by the relay: the first `visible` mined blocks.
 #[derive(Clone)]
 struct Chain {
-    blocks: Rc<Vec<Blk>>,
+    blocks: Rc<RefCell<Vec<Blk>>>,
     visible: Rc<Cell<usize>>,
     fetches: Rc<RefCell<u64>>,
 }
@@ -111,14 +111,14 @@ struct Chain {
 impl Src for Chain {
     fn tip(&self) -> Result<(u64, [u8; 32])> {
         let n = self.visible.get();
-        Ok(((n - 1) as u64, self.blocks[n - 1].hash))
+        Ok(((n - 1) as u64, self.blocks.borrow()[n - 1].hash))
     }
     fn header_at(&self, h: u64) -> Result<Option<ChainHeader>> {
         *self.fetches.borrow_mut() += 1;
         if h as usize >= self.visible.get() {
             return Ok(None);
         }
-        let b = &self.blocks[h as usize];
+        let b = &self.blocks.borrow()[h as usize];
         Ok(Some(ChainHeader { bytes: b.bytes, hash: b.hash, height: h, proof: b.proof.clone(), cum_work: None }))
     }
     fn block_body(&self, _: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
@@ -162,7 +162,7 @@ fn run(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_s
     let env = Env::new(p, &blocks[0]);
     let mut sim = Sim { svm: env.svm, payer: env.payer, queue: vec![], results: HashMap::new(), slot: 0, rng: 0x9e3779b97f4a7c15, max_tx: 0 };
     let total = blocks.len();
-    let chain = Chain { blocks: blocks.clone(), visible: Rc::new(Cell::new(backlog + 1)), fetches: Rc::new(RefCell::new(0)) };
+    let chain = Chain { blocks: Rc::new(RefCell::new(blocks.to_vec())), visible: Rc::new(Cell::new(backlog + 1)), fetches: Rc::new(RefCell::new(0)) };
     let visible = chain.visible.clone();
     let works = (0..parallel).map(|_| Keypair::new()).collect();
     let mut r = Relay::new(chain, &mut sim, works, Opts { parallel, exact_cu: true });
@@ -228,4 +228,57 @@ fn sequential_relay_falls_behind_at_the_same_rate() {
     println!("parallel 1, one block / 4 slots: lag after {} slots = {last} (tip {})", r.slots, r.lc_tip);
     // 24 blocks in 96 slots; one at a time is about 12 slots per header
     assert!(last >= 10, "sequential relay kept up: lag {last}");
+}
+
+/// The node switches to a heavier branch that forks below the light client's tip: the
+/// relay abandons its flights on the old branch, verifies the new one (children of a
+/// Verified non-tip parent are Verified at once), and reorgs the light client to it.
+#[test]
+fn follows_a_node_reorg() {
+    let p = small_params();
+    let a = mine(&p, 20);
+    let mut b: Vec<Blk> = a[..16].to_vec();
+    for _ in 0..10 {
+        let parent = b.last().unwrap().clone();
+        b.push(child(&p, &parent, &Work::Fallback, ChildOpts { miner: 0x77, ..Default::default() }));
+    }
+    let env = Env::new(p, &a[0]);
+    let mut sim = Sim { svm: env.svm, payer: env.payer, queue: vec![], results: HashMap::new(), slot: 0, rng: 7, max_tx: 0 };
+    let blocks = Rc::new(RefCell::new(a.clone()));
+    let chain = Chain { blocks: blocks.clone(), visible: Rc::new(Cell::new(a.len())), fetches: Rc::new(RefCell::new(0)) };
+    let visible = chain.visible.clone();
+    let works = (0..6).map(|_| Keypair::new()).collect();
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 6, exact_cu: true });
+    r.ensure_works().unwrap();
+    for _ in 0..200 {
+        r.pass().unwrap();
+        r.ledger.pause(0);
+        if r.config().unwrap().tip_height == 20 {
+            break;
+        }
+    }
+    let c = r.config().unwrap();
+    assert_eq!((c.tip_height, c.tip_hash), (20, a[20].hash));
+    assert!(c.final_floor <= 15, "floor {} would refuse the fork at 15", c.final_floor);
+    // the node reorgs to b (fork after height 15, tip 25)
+    *blocks.borrow_mut() = b.clone();
+    visible.set(b.len());
+    let mut slots = 0;
+    for _ in 0..300 {
+        r.pass().unwrap();
+        r.ledger.pause(0);
+        slots += 1;
+        let c = r.config().unwrap();
+        if c.tip_hash == b[25].hash && c.final_height + 7 >= c.tip_height {
+            break;
+        }
+    }
+    let c = r.config().unwrap();
+    println!("reorg 20 -> 25 (fork at 15) followed in {slots} slots; final {}", c.final_height);
+    assert_eq!((c.tip_height, c.tip_hash), (25, b[25].hash));
+    assert!(c.final_height >= 18, "final {}", c.final_height);
+    // the final headers are b's, not a's
+    let canon = r.ledger.account(&lightclient::client::canon_pda()).unwrap().unwrap();
+    let at = |h: usize| -> [u8; 32] { canon[8 + 32 * h..8 + 32 * h + 32].try_into().unwrap() };
+    assert_eq!(at(17), b[17].hash);
 }

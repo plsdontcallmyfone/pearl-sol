@@ -431,6 +431,18 @@ relay services/header-relay):
   in 67 slots and then stays within 3 blocks. A `lag {...}` JSON line (node tip, light
   client tip and final, `lag_blocks`, in flight, headers/min) is logged every 10 s;
   `header-relay status` prints `lag_blocks` too.
+- Solana clock and `max_future_ms` (found 2026-10-18): `submit_header` refuses a
+  header more than `max_future_ms` (chain value 120 s) ahead of the Solana Clock
+  sysvar. That is right on real Solana, whose clock tracks wall time. A
+  `solana-test-validator --ticks-per-slot 8` (50 ms nominal slots) running 256-366 ms
+  slots under load caps its clock at about 125 ms per slot and falls behind wall time
+  by about 30 s per minute (measured on the test VPS: 224 s, then 255 s a minute
+  later), so the light client can only follow as fast as that clock (about 19 of the
+  demo's 40 headers/min): the second reason the VPS relay fell behind once it was
+  fast. Not a protocol change: on a localnet raise the limit (`header-relay set-params
+  --max-future-ms`, admin; the VPS stack runs 24 h since 2026-10-18 16:48 UTC) or run
+  the validator at its default ticks per slot. The relay logs each wait and counts
+  `clock_waits`.
 - Relay cost on real Solana (per header, measured CU, 5,000 lamports per signature):
   a fallback header is 37 signatures = 185,000 lamports base (0.000185 SOL) plus
   priority fees on about 12.2M CU of requested limit (was 20.6M when every tx asked
