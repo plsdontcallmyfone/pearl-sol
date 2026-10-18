@@ -436,10 +436,13 @@ export async function postJob(address: string, i: PostJobInput) {
 
 // ---------------------------------------------------------------- storefront
 
-async function market(c: Ctx, solIn: bigint) {
+async function market(c: Ctx, orderSol: bigint) {
   const cfgAcc = await c.sol.account(storeConfigPda(c.storefront));
   if (!cfgAcc) throw new Error(`storefront not initialized at ${c.net.programs.storefront}`);
   const cfg = decodeStoreConfig(cfgAcc.data);
+  // buy_job moves buyback_bps of sol_in into the buyback vault first and trades the rest
+  const buyback = (orderSol * BigInt(cfg.buybackBps)) / 10_000n;
+  const solIn = orderSol - buyback;
   const mint = cfg.mint;
   const [curveAcc, globalAcc, ammCfgAcc, poolAcc] = await c.sol.accounts([bondingCurvePda(mint), pda([utf8("global")], PUMP), pda([utf8("global_config")], AMM), canonicalPool(mint)]);
   if (!curveAcc || !globalAcc) throw new Error("pump coin or pump Global missing on this Solana RPC");
@@ -462,7 +465,7 @@ async function market(c: Ctx, solIn: bigint) {
   }
   const minOut = (quote * BigInt(10_000 - cfg.maxSlippageBps)) / 10_000n;
   const p_ = (quote * BigInt(cfg.protocolFeeBps)) / 10_000n;
-  return { cfg, venue, quote, minOut: minOut > 0n ? minOut : 1n, accounts: p, protocolFee: p_, workerPay: quote - p_ };
+  return { cfg, venue, quote, minOut: minOut > 0n ? minOut : 1n, accounts: p, protocolFee: p_, workerPay: quote - p_, buyback, jobSol: solIn };
 }
 
 export async function storefrontQuote(solIn: bigint) {
@@ -470,7 +473,8 @@ export async function storefrontQuote(solIn: bigint) {
   const m = await market(c, solIn);
   return {
     venue: m.venue, quoteSpl: m.quote.toString(), minOutSpl: m.minOut.toString(), workerPaySpl: m.workerPay.toString(), protocolFeeSpl: m.protocolFee.toString(),
-    protocolFeeBps: m.cfg.protocolFeeBps, maxSlippageBps: m.cfg.maxSlippageBps, minSolIn: m.cfg.minSolIn.toString(), maxSolIn: m.cfg.maxSolIn.toString(),
+    protocolFeeBps: m.cfg.protocolFeeBps, maxSlippageBps: m.cfg.maxSlippageBps,
+    buybackBps: m.cfg.buybackBps, buybackLamports: m.buyback.toString(), jobLamports: m.jobSol.toString(), buybackDestination: m.cfg.buybackDest === 1 ? "burn" : "reserve", minSolIn: m.cfg.minSolIn.toString(), maxSolIn: m.cfg.maxSolIn.toString(),
     paused: m.cfg.paused, maxDim: m.cfg.maxDim, maxBlocksCap: m.cfg.maxBlocksCap, maxDeadlineBlocks: m.cfg.maxDeadlineBlocks.toString(),
   };
 }

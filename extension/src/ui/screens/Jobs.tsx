@@ -352,6 +352,9 @@ interface Quote {
   protocolFeeSpl: string;
   protocolFeeBps: number;
   maxSlippageBps: number;
+  buybackBps: number;
+  buybackLamports: string;
+  buybackDestination: string;
   minSolIn: string;
   maxSolIn: string;
   paused: boolean;
@@ -453,6 +456,7 @@ function Storefront({ st, toast }: { st: WalletState; toast: (m: string) => void
         {quote.error ? <div style={{ padding: 12 }}><Notice kind="warn">{quote.error}</Notice></div> : (
           <>
             <KV k="Venue" v={q ? (q.venue === "curve" ? "pump curve" : "PumpSwap") : "-"} />
+            <KV k={`Buyback (${q ? q.buybackBps / 100 : "-"}%, on chain)`} v={q ? `${formatUnits(q.buybackLamports, SOL_DECIMALS, 4)} SOL to ${q.buybackDestination === "burn" ? "burn" : "the mining reserve"}` : "-"} />
             <KV k="Tokens (fee-free quote)" v={q ? `${formatUnits(q.quoteSpl, SPL_DECIMALS, 2)} ${TOKEN_SYMBOL}` : "-"} />
             <KV k={`Worker pay W (${q ? 100 - q.protocolFeeBps / 100 : "-"}%)`} v={q ? `${formatUnits(q.workerPaySpl, SPL_DECIMALS, 2)}` : "-"} />
             <KV k="Protocol fee P" v={q ? `${formatUnits(q.protocolFeeSpl, SPL_DECIMALS, 2)}` : "-"} />

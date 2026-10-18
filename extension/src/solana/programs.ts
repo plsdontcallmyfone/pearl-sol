@@ -126,6 +126,8 @@ export function encodeJobSpecArgs(s: StoreJobSpec): Uint8Array {
 
 export const storeConfigPda = (sf: Pubkey) => pda([utf8("config")], sf);
 export const traderPda = (sf: Pubkey) => pda([utf8("trader")], sf);
+/** Buyback vault (2026-10-18): buy_job* pays `buyback_bps` of sol_in into it. */
+export const buybackVaultPda = (sf: Pubkey) => pda([utf8("buyback")], sf);
 export const draftPda = (sf: Pubkey, buyer: Pubkey, draftId: bigint) => pda([utf8("draft"), buyer, u64(draftId)], sf);
 export const orderPda = (sf: Pubkey, nonce: bigint) => pda([utf8("order"), u64(nonce)], sf);
 export const bondingCurvePda = (mint: Pubkey) => pda([utf8("bonding-curve"), mint], PUMP);
@@ -170,7 +172,7 @@ export function buyJobIx(sf: Pubkey, bridge: Pubkey, buyer: Pubkey, draftId: big
       meta(pda([utf8("global")], PUMP)), meta(bc, true), meta(ata(bc, p.mint, TOKEN_2022), true), meta(ata(bc, WSOL, TOKEN_PROGRAM), true),
       meta(pda([utf8("user_volume_accumulator"), trader], PUMP), true), meta(pda([utf8("fee_config"), PUMP], PUMP_FEES)),
       meta(p.curveBuyback, true), meta(WSOL), meta(TOKEN_PROGRAM), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SYSTEM_PROGRAM),
-      meta(pda([utf8("__event_authority")], PUMP)), meta(PUMP), ...bridgeTail(bridge, p.mint, nonce),
+      meta(pda([utf8("__event_authority")], PUMP)), meta(PUMP), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true),
     ],
     data: concat(disc("buy_job"), u64(nonce), u64(solIn), u64(minOut)),
   };
@@ -187,7 +189,7 @@ export function buyJobAmmIx(sf: Pubkey, bridge: Pubkey, buyer: Pubkey, draftId: 
       meta(canonicalPool(p.mint), true), meta(p.poolBaseVault, true), meta(p.poolQuoteVault, true), meta(pda([utf8("global_config")], AMM)),
       meta(pda([utf8("user_volume_accumulator"), trader], AMM), true), meta(pda([utf8("fee_config"), AMM], PUMP_FEES)),
       meta(ata(p.ammBuyback, WSOL, TOKEN_PROGRAM), true), meta(WSOL), meta(TOKEN_PROGRAM), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SYSTEM_PROGRAM),
-      meta(pda([utf8("__event_authority")], AMM)), meta(AMM), ...bridgeTail(bridge, p.mint, nonce),
+      meta(pda([utf8("__event_authority")], AMM)), meta(AMM), ...bridgeTail(bridge, p.mint, nonce), meta(buybackVaultPda(sf), true),
     ],
     data: concat(disc("buy_job_amm"), u64(nonce), u64(solIn), u64(minOut)),
   };
@@ -215,6 +217,10 @@ export interface StoreConfig {
   maxDeadlineBlocks: bigint;
   threshold: number;
   attesters: Pubkey[];
+  /** Share of sol_in that buy_job* pays into the buyback vault (0 on a config from before 2026-10-18). */
+  buybackBps: number;
+  /** 0 = mining reserve, 1 = burn */
+  buybackDest: number;
 }
 
 export function decodeStoreConfig(d: Uint8Array): StoreConfig {
@@ -226,10 +232,14 @@ export function decodeStoreConfig(d: Uint8Array): StoreConfig {
     protocolFeeBps: v.getUint16(105, true), maxSlippageBps: v.getUint16(107, true), minSolIn: v.getBigUint64(109, true), maxSolIn: v.getBigUint64(117, true),
     maxDim: v.getUint32(125, true), maxBlocksCap: v.getUint32(129, true), maxDeadlineBlocks: v.getBigUint64(133, true), threshold: d[141],
     attesters: Array.from({ length: n }, (_, i) => d.slice(146 + 32 * i, 178 + 32 * i)),
+    // after attesters: orders, total_sol, total_tokens (u64), bump, trader_bump, finalize_modes (u8), light_client [32], buyback_bps u16, buyback_dest u8
+    ...(d.length >= 146 + 32 * n + 62
+      ? { buybackBps: v.getUint16(146 + 32 * n + 59, true), buybackDest: d[146 + 32 * n + 61] }
+      : { buybackBps: 0, buybackDest: 0 }),
   };
 }
 
-export const ORDER_STATUS: Record<number, string> = { 1: "pending", 2: "finalized", 3: "expired" };
+export const ORDER_STATUS: Record<number, string> = { 1: "pending", 2: "finalized", 3: "expired", 4: "refunded" };
 export interface OrderView {
   status: string;
   venue: "curve" | "pumpswap";
