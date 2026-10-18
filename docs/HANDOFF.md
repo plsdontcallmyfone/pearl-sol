@@ -385,8 +385,8 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    tunnel: 8 of ~24,700 blocks on paid jobs; 3 x402 orders bought with tools/buy-jobs.mjs and
    captured live. Screenshots screenshots/explorer/. Findings: local Solana keeps ~75 s of
    history, so the indexer records signatures as it sees them (older ones "not recorded"); the
-   box's header-relay is ~12,000 blocks behind (1.4 s/header vs 1.5 s blocks at load 19), so
-   new Orders stay pending there.
+   box's header-relay was ~12,000 blocks behind (fixed 2026-10-18, item 14), so new Orders
+   stayed pending there.
 13. STOREFRONT BUYBACK (SYNTHESIS item #2): DONE 2026-10-18 (commits 3afa7c5..; SPEC 5.1
    "Buyback"). Before: all of x402 `sol_in` bought W + P, the `overhead` only paid rents and
    fees, so there was no margin. Now `buy_job*` pays `buyback_bps` of `sol_in` into the
@@ -416,17 +416,68 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    both copied to token/target/deploy + IDLs; ~/agent-credit m55 re-pinned and PASS (pushed
    091dd57). Gotcha: LiteSVM's node binding aborts (std::bad_alloc) on the VPS, so the JS
    LiteSVM suites ran on the Mac.
-   OPEN OWNER DECISIONS (defaults PROVISIONAL): the share (`buyback_bps`, 1000 = 10% of
-   order SOL), the destination (mining reserve or burn; default reserve), per-call cap (1
-   SOL), min buy (0.001 SOL), interval (600 s), whether to allowlist the cranker (sandwich
-   risk as for the reserve's buyback), and whether a refunded order should also refund its
-   share (today: no, like P).
+   OWNER DECISIONS 2026-10-18: share 10% (1000 bps) and destination mining reserve are
+   DECIDED; a refunded order also refunds its share (built, below). Still PROVISIONAL / open:
+   per-call cap (1 SOL), min buy (0.001 SOL), interval (600 s), whether to allowlist the
+   cranker (sandwich risk as for the reserve's buyback).
+   SHARE REFUND (follow-up, 2026-10-18, f9b9f44..): each order's share is HELD in a
+   `ShareRecord ["share", nonce]` (new last account of buy_job*, after the vault) and counted
+   in `bb_locked`; cranks spend only `vault - rent - bb_locked`. Permissionless
+   `settle_share` once the order closes: Finalized -> released to the buyback; Refunded or
+   Expired -> back to the buyer from the vault; record closed (no double settle). Chosen over
+   a refundable reserve because the vault then always covers every unsettled share. The
+   relayer's refund tx now also calls settle_share; the crank settles closed orders before
+   each buy (`sf-settle`). New events BuybackShareHeld / BuybackShareRefunded; BuybackAccrued
+   now fires at release. Config grows by bb_locked + bb_refunded (readers updated: x402
+   `/buyback` held/refunded, `pearl buyback`, explorer decoder, both wallets). x402 overhead
+   default 12M -> 14M (record rent). storefront.so `57067ffa...fc1f`. Tests: storefront
+   LiteSVM 22 (held shares not crankable, settle on pending refused, finalized released,
+   refunded/expired paid back + record rent, settle twice refused, crank leaves held shares,
+   refund after a crank still paid in full), x402 11, relayer 33, extension 63, pearl-cli 36,
+   explorer 20, light client 14 + 2, pearl-wallet 103 + checks (8a37729). agent-credit pins no
+   storefront.so, so no re-pin. Demo: DEMO2_PLACEHOLDER
+14. HEADER-RELAY CATCH-UP (bug, owner "fix any bugs" 2026-10-18): DONE 2026-10-18 (commits
+   e02eaf1..; SPEC 5.3 "Parallel relay", "Relay cost on real Solana", "Solana clock").
+   Symptom: on the long-running VPS stack the relay verified ~12,600 of ~24,460 headers, 8-9
+   headers/min against 40 blocks/min (1.5 s demo blocks), so no proof-mode bridge-out was
+   released. Root cause 1 (protocol + relay): `submit_header` required a Verified parent, so
+   headers were verified strictly one at a time, each a chain of ~12 confirmation rounds (37
+   txs: submit, begin + chunk, 26 chunks as one batch, 9 steps, plus mark_final / close);
+   at the box's load-30 slots (366 ms, not the nominal 50 ms) that was 7.5 s per header;
+   idle it was 1.4 s, already zero margin against 1.5 s blocks. Root cause 2 (environment):
+   the `--ticks-per-slot 8` validator's clock lags wall time ~30 s/min under load and the
+   light client refuses headers > max_future_ms (120 s) ahead of it, so even a fast relay
+   is capped at ~19 headers/min there. Fix: lightclient takes children of merely submitted
+   parents and marks Verified only with a Verified parent (else WorkDone, `connect` later),
+   same invariant and security (reasoning in SPEC); header-relay pipelines `--parallel 8`
+   headers (src/relay.rs), batches polls/reads, fire-and-forget global ops, planned CU
+   limits, `lag {...}` JSON line every 10 s, `status` lag_blocks, `set-params`,
+   `close-works`, clock-wait notes. Tests: lightclient LiteSVM 14 (+3: out-of-order verify +
+   connect, forged pending parent never Verified, close_work), header-relay catchup 3
+   (sequential falls 15 behind in 96 slots at 1 block / 4 slots; parallel 8 drains a 30-block
+   backlog in 67 slots, then lag <= 3; follows a node reorg below the LC tip).
+   LIVE (VPS): stack restarted by this agent via `scripts/vps.sh demo` at 16:36 UTC
+   (buyback agent DONE, stack was down; DEMO_KEEP_UP, stack left UP); demo 10/10 PASS
+   (295.8 s) with the new relay. Then the
+   relay hit the clock cap (lag 130); 16:48:42 UTC relay restarted (PID file updated) and
+   `set-params --max-future-ms 86400000` on the VPS light client: lag 129 -> 1 in about 3
+   minutes (50-70 headers/min); `pearl bridge out 1` at 16:51:39 -> withdrawal #3 released
+   by release_proof 18 s later (final header 659). Sustained 16:51-17:18 UTC at load ~26
+   (int7 experiment + stack): node 641 -> 1654 (38 blocks/min), 160 lag samples, max lag 9,
+   mean 2.9, failed txs 0, clock waits 0. 17:18:28 UTC relay restarted once more (counter
+   fix 2f.., same args, PID file updated); stack left UP, light-client max_future_ms 24 h.
+   Cost on real Solana per fallback header: 37 signatures (0.000185 SOL) + priority on
+   ~12.2M CU limit; ~0.27-0.44 SOL/day at 60 s blocks; 0.49 SOL refundable rent per work
+   account. Follow-ups (not done): demo validator at default ticks per slot or init with a
+   big max_future_ms on localnet (scripts/ owner); fallback blocks could skip the 24.7 KB
+   proof upload (A, B derive from the header; ~70% of fees); demo block time 1.5 s is 40x
+   the spec's 60 s.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose
 (mirrors the superseded agent/ vector; never submitted); its --pearl-job round trip uses k 2048.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
-emission), name and ticker, storefront buyback share and destination (item 13). If a session dies, check git log per path and
+emission), name and ticker, storefront buyback cap / min buy / interval / cranker (item 13). If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
 
 ## M1 components (SPEC v2, all DONE)
