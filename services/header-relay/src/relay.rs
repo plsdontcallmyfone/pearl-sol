@@ -338,7 +338,22 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         self.skip.retain(|_, t| t.elapsed() < Duration::from_secs(30));
 
         // finished / failed / abandoned flights
-        let status_of = |hash: &[u8; 32]| want.iter().position(|w| w.hash == *hash).map(|i| recs[i]);
+        // flights outside the window (finished and now at or below the tip, or on a branch
+        // the node left): read their records directly
+        let outside: Vec<[u8; 32]> = self.flights.iter().map(|f| f.hd.hash).filter(|h| !want.iter().any(|w| w.hash == *h)).collect();
+        let outside_recs: Vec<Option<Rec>> = if outside.is_empty() {
+            vec![]
+        } else {
+            self.ledger.accounts(&outside.iter().map(client::header_addr).collect::<Vec<_>>())?.into_iter().map(|d| d.and_then(|d| rec_of(&d))).collect()
+        };
+        let status_of = |hash: &[u8; 32]| -> Option<Option<Rec>> {
+            if let Some(i) = want.iter().position(|w| w.hash == *hash) {
+                return Some(recs[i]);
+            }
+            let i = outside.iter().position(|h| h == hash)?;
+            // done elsewhere: report it; still pending off the window: abandon
+            outside_recs[i].filter(|r| r.0 != lightclient::STATUS_PENDING).map(Some)
+        };
         let inflight = self.flights.len();
         let mut i = 0;
         while i < self.flights.len() {

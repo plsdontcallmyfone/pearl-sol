@@ -152,6 +152,7 @@ struct Run {
     acc_next: u64,
     txs: u64,
     failed: u64,
+    verified: u64,
     max_tx: usize,
 }
 
@@ -190,7 +191,7 @@ fn run(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_s
     }
     let c = r.config().unwrap();
     let acc = r.ledger.account(&lightclient::client::acc_addr()).unwrap().and_then(|d| lightclient::client::acc_state(&d)).unwrap();
-    Run { lag, slots: slot, lc_tip: c.tip_height, lc_final: c.final_height, acc_next: acc.0 + acc.1, txs: r.stats.txs, failed: r.stats.failed_txs, max_tx: r.ledger.max_tx }
+    Run { lag, slots: slot, lc_tip: c.tip_height, lc_final: c.final_height, acc_next: acc.0 + acc.1, txs: r.stats.txs, failed: r.stats.failed_txs, verified: r.stats.verified, max_tx: r.ledger.max_tx }
 }
 
 #[test]
@@ -209,6 +210,7 @@ fn pipelined_relay_drains_a_backlog_and_keeps_up() {
     );
     println!("lag by slot (every 10th): {:?}", r.lag.iter().step_by(10).collect::<Vec<_>>());
     assert_eq!(r.lc_tip, 70);
+    assert_eq!(r.verified, 70, "every header counted once as verified by this relay");
     assert!(max_lag >= 30);
     // 30 blocks drained while 1 block / 4 slots kept arriving
     assert!(drained < 160, "drain took {drained} slots");
