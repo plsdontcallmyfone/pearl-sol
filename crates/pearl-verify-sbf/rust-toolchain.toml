@@ -1,0 +1,6 @@
+# The commonware dev-dependencies pull sysinfo 0.39.6, which needs rustc >= 1.95 (same pin
+# as chain/ and crates/pearl-cli). Host builds and `cargo test` only: the SBF build of
+# token/programs/lightclient runs from token/ on the Solana toolchain and does not read it.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
