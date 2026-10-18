@@ -371,7 +371,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    and agent-cli selftest --pearl-job still used k 1024 (a113437, a3d85a9); miner HTTP test
    port moved to 10690-10699 (96131e0). OPEN: token/target/deploy bridge.so + storefront.so
    are older than their source (fresh builds pass every suite; rebuild into target/deploy and
-   re-pin ~/agent-credit checks/m55 at the next demo restart). Demo e2e: being run on the VPS.
+   re-pin ~/agent-credit checks/m55 at the next demo restart): DONE in item 13. Demo e2e: being run on the VPS.
 12. EXPLORER ("every block was paid for", SYNTHESIS item #1): DONE 2026-10-18. apps/explorer
    (no deps, Node 22 built-ins; :10670), docs/EXPLORER.md. Per block: job mined or FALLBACK,
    who paid (storefront Order + buy tx + x402 payment, or PostJob), W, P, subsidy and the job's
@@ -387,12 +387,46 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    history, so the indexer records signatures as it sees them (older ones "not recorded"); the
    box's header-relay is ~12,000 blocks behind (1.4 s/header vs 1.5 s blocks at load 19), so
    new Orders stay pending there.
+13. STOREFRONT BUYBACK (SYNTHESIS item #2): DONE 2026-10-18 (commits 3afa7c5..; SPEC 5.1
+   "Buyback"). Before: all of x402 `sol_in` bought W + P, the `overhead` only paid rents and
+   fees, so there was no margin. Now `buy_job*` pays `buyback_bps` of `sol_in` into the
+   buyback vault PDA `["buyback"]` (an on-chain rule; the x402 service grosses `sol_in` up so
+   the job keeps its price) and a permissionless `crank_buyback` / `crank_buyback_amm` buys
+   the token through the reserve's pump path (curve, PumpSwap after graduation) and sends
+   it to the mining reserve ATA or burns it. `set_buyback` (admin) edits share,
+   destination, reserve program, cranker allowlist, cap, min buy, interval
+   (`BuybackConfigUpdated`); every buy emits `BuybackExecuted` (SOL in, tokens out,
+   destination, order nonces covered, carry), every order `BuybackAccrued`. Bridge invariant
+   unaffected; after a burn the bound is `1e18 - escrow <= 1000 x mint supply`.
+   Surfaces: storefront-x402 quote fields + `GET /buyback`; crank `sf-status | sf-setup |
+   sf-set | sf-buyback` (and `run`/`once` crank it); `pearl buyback [--json]`; extension/
+   and ~/pearl-wallet (ae2c36d) pass the new buy_job account and quote on sol_in - share;
+   apps/explorer already decodes the same layout.
+   Tests: storefront LiteSVM 21 (+8 buyback), storefront-x402 11 (+1), reserve 16,
+   relayer 33, bridge LiteSVM 13, light client 11 + fixture 2, pearl-cli 36 (+1),
+   extension 63, pearl-wallet unit 103 + `pnpm checks`. Demo on the VPS: 11/11 PASS (1138 s, 2026-10-18,
+   restarts at 14:31, 14:34 and 14:36 UTC; stack left DOWN). New step 6: order 2 paid
+   1,112,043 lamports (1000 bps of sol_in) into the vault; buy 1 556,021 lamports -> 15.82M
+   SPL to the mining reserve (orders 2..2, carry 556,022), buy 2 the carry -> 15.82M SPL
+   burned (mint supply 1,000,000,000 -> 999,984,178.8 tokens); totals and GET /buyback
+   agree; bridge vault unchanged; final invariant OK, delta 0. The demo sets min interval 0
+   and min buy 0.0001 SOL (the demo order is small).
+   Builds (VPS, same program ids, keypairs unchanged): storefront.so `a8e5ef65...ac80`,
+   bridge.so `1ca30604...0a39` (rebuilt from current source; was stale `599467df...`),
+   both copied to token/target/deploy + IDLs; ~/agent-credit m55 re-pinned and PASS (pushed
+   091dd57). Gotcha: LiteSVM's node binding aborts (std::bad_alloc) on the VPS, so the JS
+   LiteSVM suites ran on the Mac.
+   OPEN OWNER DECISIONS (defaults PROVISIONAL): the share (`buyback_bps`, 1000 = 10% of
+   order SOL), the destination (mining reserve or burn; default reserve), per-call cap (1
+   SOL), min buy (0.001 SOL), interval (600 s), whether to allowlist the cranker (sandwich
+   risk as for the reserve's buyback), and whether a refunded order should also refund its
+   share (today: no, like P).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose
 (mirrors the superseded agent/ vector; never submitted); its --pearl-job round trip uses k 2048.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
-emission), name and ticker. If a session dies, check git log per path and
+emission), name and ticker, storefront buyback share and destination (item 13). If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
 
 ## M1 components (SPEC v2, all DONE)
