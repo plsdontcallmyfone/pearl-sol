@@ -435,7 +435,16 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    refunded/expired paid back + record rent, settle twice refused, crank leaves held shares,
    refund after a crank still paid in full), x402 11, relayer 33, extension 63, pearl-cli 36,
    explorer 20, light client 14 + 2, pearl-wallet 103 + checks (8a37729). agent-credit pins no
-   storefront.so, so no re-pin. Demo: DEMO2_PLACEHOLDER
+   storefront.so; it pins lightclient.so, re-pinned to the parallel-relay build `8d13918c...7882`
+   (m55 + m56 80 steps PASS, pushed 3e7d991; Mac token/target/deploy/lightclient.so updated
+   too). Demo on the VPS 11/11 PASS (216.5 s, 2026-10-18 17:21-17:25 UTC; restarted at 17:20
+   after the header-relay agent finished, then kept up again from 17:30): step 5 checks the
+   share is held and not crankable; step 7 (after finalize) settle_share releases it, buy 1
+   half to the mining reserve, buy 2 the carry burned; step 9 the refunded order gets its
+   1,112,043-lamport share back in the relayer's refund tx (record closed, bb_refunded up by
+   exactly the share). Demo fixes: light client max_future_ms 1 h on localnet (header-relay
+   set-params; production 120 s kept), and step 10 retries prove_header with a fresh proof
+   when the faster relay grew the accumulator in between (AccProof).
 14. HEADER-RELAY CATCH-UP (bug, owner "fix any bugs" 2026-10-18): DONE 2026-10-18 (commits
    e02eaf1..; SPEC 5.3 "Parallel relay", "Relay cost on real Solana", "Solana clock").
    Symptom: on the long-running VPS stack the relay verified ~12,600 of ~24,460 headers, 8-9
