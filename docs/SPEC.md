@@ -391,10 +391,65 @@ As built (f5caf0f..50bf84c, token/programs/lightclient, ID
 BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5; verifier crates/pearl-verify-sbf;
 relay services/header-relay):
 - Verification is split into many steps (proof upload in chunks, then proof hash,
-  fallback rebuild for fallback blocks, openings, noise, jackpot). Measured: job
-  block about 3.5M CU / 19 txs; fallback block about 5.1M CU / 20 txs at the 4x8
-  fallback default (18.9M at 64x64). About 0.0001 SOL in fees per header plus
-  0.0042 SOL rent, refunded on close_header. Relayers can be paid from a pool.
+  fallback rebuild for fallback blocks, openings, noise, jackpot). Measured after the
+  rank-penalty port (k 2048, r 128, 4x8 tile, proof 24,724 bytes): fallback block
+  10.24M CU / 37 txs (submit 31.7k, begin + first chunk 24.9k, 26 chunks of 950
+  bytes at 1.5k each, 9 verify-step txs of up to 1.23M); job block about 7.25M CU /
+  34 txs. Fees: see "Relay cost on real Solana" below; 0.0042 SOL rent per header
+  record, refunded on close_header. Relayers can be paid from a pool.
+- Parallel relay (2026-10-18). Problem: one header is a chain of about 12 dependent,
+  each-confirmed transactions on one work account, and `submit_header` required a
+  Verified parent, so a relay could verify only one header at a time: about 12
+  confirmation rounds per header. On the loaded test VPS (366 ms slots instead of 50
+  ms) that was 7.5 s per header against 1.5 s demo blocks; it fell 12,000 blocks
+  behind and never released proof-mode withdrawals. Fix (lightclient + header-relay):
+  `submit_header` accepts any submitted parent (Pending, WorkDone or Verified; WTEMA
+  target, MTP and future-time checks still use the parent's stored fields); the
+  completing `verify_jackpot` marks the header Verified only if its parent is Verified
+  (the parent is the tip, or the parent's record is passed as the one remaining
+  account), else `WorkDone` (status 3: own work checked, not part of the verified
+  chain, no tip change, no reward); `connect(parent, header)` promotes a WorkDone
+  header once its parent is Verified (tip extension and reward as before; several per
+  tx, parent first). Invariant unchanged: Verified = own work verified AND parent
+  Verified, so by induction from the checkpoint every Verified header (and therefore
+  the tip, finality, `mark_final`, `register_job`, `accumulate`, every proof reader)
+  has a fully verified ancestry, exactly as before. What the relaxation allows: anyone
+  may create Pending / WorkDone records on unverified parents; each costs them rent
+  (refundable once at or below the final floor) and touches no shared state; a forged
+  ancestor (fake timestamps lowering the WTEMA target) can make an easy child WorkDone
+  but never Verified, because the forged ancestor's own work never verifies. Rewards
+  are paid only at Verified, so easy WorkDone headers earn nothing. Also
+  `close_work` (rent of a work account back to its authority). header-relay keeps
+  `--parallel N` (default 8) headers in flight, one work account each, and advances all
+  of them every confirmation round: submit frontier (two headers per tx), begin +
+  first chunk, the other chunks as one batch, the planned steps; status polls and
+  account reads are batched; connect / reorg / mark_final / accumulate / close run as
+  fire-and-forget batches; txs ask for the planned CU, not 1.4M. Throughput is about N
+  headers per 12 rounds instead of 1. LiteSVM catch-up test (services/header-relay
+  tests/catchup.rs, one slot per round, one block per 4 slots): the sequential relay
+  is 15 blocks behind after 96 slots and growing; parallel 8 drains a 30-block backlog
+  in 67 slots and then stays within 3 blocks. A `lag {...}` JSON line (node tip, light
+  client tip and final, `lag_blocks`, in flight, headers/min) is logged every 10 s;
+  `header-relay status` prints `lag_blocks` too.
+- Relay cost on real Solana (per header, measured CU, 5,000 lamports per signature):
+  a fallback header is 37 signatures = 185,000 lamports base (0.000185 SOL) plus
+  priority fees on about 12.2M CU of requested limit (was 20.6M when every tx asked
+  for 1.4M): +12,200 lamports at 1,000 micro-lamports/CU, +122,000 at 10,000. At the
+  60 s target that is 1,440 headers/day: 0.27 SOL/day base, about 0.44 SOL/day at
+  10,000 micro-lamports/CU, roughly 100-160 SOL a year for one relay, all paid by the
+  relayer (reimbursable from the pool via `relay_reward`). Locked but refundable: 0.49
+  SOL per work account (69,632 bytes; `--parallel 8` = 3.9 SOL, `close-works` returns
+  it) and 0.0042 SOL per live header record (window + K + retain_final). Throughput is
+  not the constraint at 60 s: 37 txs/min = 0.6 tx/s and 10M CU/min on a chain with
+  60M CU per 400 ms block; latency is: at about 1 s per confirmed round on mainnet one
+  header takes about 12 s, so a sequential relay keeps up at 60 s (5x headroom) but
+  drains a backlog at only about 4 headers/min net, a day of backlog in about 6 hours;
+  `--parallel 4` (about 2 SOL refundable rent) drains it in about 1.3 hours. Biggest
+  remaining saving, not built: for fallback blocks A and B are derived from the header
+  (pow_digest), so the program could rebuild the opened rows itself and skip the
+  24.7 KB proof upload and the openings (about 27 of 37 txs and 70% of the fees); job
+  blocks still need the upload. The demo's 1.5 s blocks (40x the spec rate) need
+  40 headers/min sustained; that is what the test VPS stack exercises.
 - Job commitments: `register_job` proves the job's posting tx (PostJob or order
   BridgeUnlock) by tx_root inclusion in a verified canonical header below the job
   block. No state proof needed (blocks are all-or-nothing).

@@ -94,6 +94,17 @@ enum Cmd {
     /// Light-client state as one JSON line (tip, final, floor, and the lag behind the
     /// node when it answers; initialized false if none).
     Status,
+    /// Admin: change light-client params (the rest stay as they are). Localnet note: a
+    /// `--ticks-per-slot 8` test validator under load has a Solana clock that lags wall
+    /// time, and headers more than max_future_ms ahead of it are refused (README).
+    SetParams {
+        #[arg(long)]
+        max_future_ms: Option<u64>,
+        #[arg(long)]
+        relay_reward: Option<u64>,
+        #[arg(long)]
+        retain_final: Option<u64>,
+    },
     /// Close this relay's work accounts (rent back to the payer).
     CloseWorks {
         #[arg(long, default_value = ".header-relay/work-keypair.json")]
@@ -162,6 +173,16 @@ fn main() -> Result<()> {
                 }
                 std::thread::sleep(Duration::from_millis(if busy { 25 } else { poll_ms }));
             }
+        }
+        Cmd::SetParams { max_future_ms, relay_reward, retain_final } => {
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut p = s.config()?.params;
+            p.max_future_ms = max_future_ms.unwrap_or(p.max_future_ms);
+            p.relay_reward = relay_reward.unwrap_or(p.relay_reward);
+            p.retain_final = retain_final.unwrap_or(p.retain_final);
+            s.send(&[client::set_params(s.pk(), p)], &[])?;
+            println!("{}", json!({"max_future_ms": p.max_future_ms, "relay_reward": p.relay_reward, "retain_final": p.retain_final}));
+            Ok(())
         }
         Cmd::CloseWorks { work, parallel } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);

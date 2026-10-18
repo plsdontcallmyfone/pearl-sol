@@ -118,6 +118,8 @@ pub struct Stats {
     pub connected: u64,
     pub txs: u64,
     pub failed_txs: u64,
+    /// Submits refused because the header is too far ahead of the Solana clock.
+    pub clock_waits: u64,
 }
 
 impl Stats {
@@ -151,6 +153,11 @@ pub struct Relay<'a, L: Ledger, S: Src> {
     cache: BTreeMap<u64, ChainHeader>,
     submit: Option<Tx>,
     submit_retry: Option<Instant>,
+    /// The pair failed on its second header: submit one at a time until one lands.
+    submit_single: bool,
+    /// (height, timestamp ms) of the first header in the submit tx in flight.
+    submit_hd: (u64, u64),
+    last_clock_note: Option<Instant>,
     global: Vec<Tx>,
     /// Headers we submitted that left the node's canonical chain: closed below the floor.
     abandoned: Vec<(u64, [u8; 32])>,
@@ -176,6 +183,9 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             cache: BTreeMap::new(),
             submit: None,
             submit_retry: None,
+            submit_single: false,
+            submit_hd: (0, 0),
+            last_clock_note: None,
             global: vec![],
             abandoned: vec![],
             skip: HashMap::new(),
@@ -388,12 +398,14 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             if let Some(i) = recs.iter().position(|r| r.is_none()) {
                 let pk = self.ledger.pk();
                 let mut ixs = vec![client::submit_header(pk, want[i].bytes)];
-                if i + 1 < want.len() && recs[i + 1].is_none() {
+                if i + 1 < want.len() && recs[i + 1].is_none() && !self.submit_single {
                     ixs.push(client::submit_header(pk, want[i + 1].bytes));
                 }
+                let n = ixs.len();
                 let mut t = Tx::new(ixs, self.cu(CU_SUBMIT2));
                 Self::fire(self.ledger, &mut t, bh, &mut self.stats)?;
                 self.submit = Some(t);
+                self.submit_hd = (want[i + n - 1].height, want[i + n - 1].timestamp_ms());
             }
         }
 
@@ -487,6 +499,29 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         Ok(!self.flights.is_empty() || self.submit.is_some() || !self.global.is_empty() || cfg.tip_height < node_tip.0)
     }
 
+    /// A submit refused by the timestamp rule: say how far the header is ahead of the
+    /// Solana clock (once per 30 s). A test validator whose slots run slower than its
+    /// nominal slot time (`--ticks-per-slot 8` under load) has a clock that falls behind
+    /// wall time, and the light client then waits for it.
+    fn clock_note(&mut self) -> Result<()> {
+        self.stats.clock_waits += 1;
+        if self.last_clock_note.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+            return Ok(());
+        }
+        self.last_clock_note = Some(Instant::now());
+        let Some(d) = self.ledger.account(&solana_sdk::sysvar::clock::ID)? else { return Ok(()) };
+        let clock_s = i64::from_le_bytes(d[32..40].try_into().unwrap());
+        let max_future = self.config()?.params.max_future_ms / 1000;
+        let (h, ts) = self.submit_hd;
+        let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        eprintln!(
+            "relay: header {h} is {} s ahead of the Solana clock (limit max_future_ms = {max_future} s): waiting for the clock; Solana clock is {} s behind this machine's",
+            ts as i64 / 1000 - clock_s,
+            wall - clock_s
+        );
+        Ok(())
+    }
+
     fn step_tx(&self, fi: usize, s: usize) -> Tx {
         let f = &self.flights[fi];
         let pk = self.ledger.pk();
@@ -541,9 +576,19 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         if let Some(t) = self.submit.as_mut() {
             let r = check(t, self.ledger, &mut self.stats)?;
             if r.is_some() || t.done {
-                if let Some(e) = r {
-                    eprintln!("relay: submit failed: {e}");
-                    self.submit_retry = Some(Instant::now() + Duration::from_secs(2));
+                match r {
+                    Some(e) => {
+                        // ix 0 is the CU limit: InstructionError(2, ..) is the pair's second header
+                        self.submit_single = e.contains("InstructionError(2,");
+                        self.submit_retry = Some(Instant::now() + Duration::from_millis(if self.submit_single { 0 } else { 2000 }));
+                        let timestamp = e.contains(&format!("Custom({})", u32::from(lightclient::LcError::Timestamp)));
+                        if timestamp {
+                            self.clock_note()?;
+                        } else {
+                            eprintln!("relay: submit failed: {e}");
+                        }
+                    }
+                    None => self.submit_single = false,
                 }
                 self.submit = None;
             }
@@ -730,7 +775,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         serde_json::json!({
             "node_tip": s.node_tip, "lc_tip": s.lc_tip, "lc_final": s.lc_final, "lag_blocks": s.lag(),
             "inflight": s.inflight, "parallel": self.works.len(), "headers_per_min": (headers_per_min * 10.0).round() / 10.0,
-            "verified": s.verified, "connected": s.connected, "txs": s.txs, "failed_txs": s.failed_txs,
+            "verified": s.verified, "connected": s.connected, "txs": s.txs, "failed_txs": s.failed_txs, "clock_waits": s.clock_waits,
         })
         .to_string()
     }
