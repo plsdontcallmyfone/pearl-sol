@@ -60,7 +60,18 @@ type Send = (ixs: TransactionInstruction[], extra?: KeypairT[]) => Promise<strin
 export class StorefrontBuyback {
   readonly program: any;
   readonly keys: StorefrontKeys;
-  constructor(readonly conn: ConnectionT, readonly signer: KeypairT, idlFile: string, readonly send: Send, readonly minOutBps: bigint, readonly maxSolIn: bigint) {
+  readonly conn: ConnectionT;
+  readonly signer: KeypairT;
+  readonly send: Send;
+  readonly minOutBps: bigint;
+  readonly maxSolIn: bigint;
+  // plain fields, not parameter properties: node's type stripping does not support those
+  constructor(conn: ConnectionT, signer: KeypairT, idlFile: string, send: Send, minOutBps: bigint, maxSolIn: bigint) {
+    this.conn = conn;
+    this.signer = signer;
+    this.send = send;
+    this.minOutBps = minOutBps;
+    this.maxSolIn = maxSolIn;
     const idl = JSON.parse(fs.readFileSync(path.resolve(idlFile), 'utf8'));
     this.program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(signer), { commitment: 'confirmed' }));
     this.keys = new StorefrontKeys(new PublicKey(idl.address));
