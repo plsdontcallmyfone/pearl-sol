@@ -362,6 +362,10 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    CLI together, so its summary box shows only when the miner exits on its own; register and
    lien set / clear were not re-run live (user account in use; covered by the stub test path
    for the tx box, and by the earlier live run of the same tx code).
+11. TEST VPS: DONE 2026-10-18. Owner's BitLaunch box pearl-sol-test (64.95.13.106, user pearl,
+   $0.156/hr) runs the full stack; demo 10/10 PASS (468 s) there with no Linux fixes, and a
+   DEMO_KEEP_UP=1 stack left up. Sync, start/stop, tunnel (local 206xx): docs/VPS.md,
+   scripts/vps.sh sync|ssh|tunnel|demo|down.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
