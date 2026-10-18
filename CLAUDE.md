@@ -77,3 +77,4 @@ explicitly; never touch `solana config`.
 | Research subagent (virality narrative) | 2026-10-17 | research/narratives/VIRALITY.md only (DONE, uncommitted) |
 | Research subagent (flows and pumps) | 2026-10-17 | research/narratives/FLOWS-AND-PUMPS.md only (DONE, uncommitted) |
 | Research subagent (crypto compute narratives) | 2026-10-17 | research/narratives/CRYPTO-COMPUTE.md only (DONE, uncommitted) |
+| Claude subagent (explorer) | 2026-10-18 | apps/explorer (new: indexer + web + JSON API, "every block was paid for"), docs/EXPLORER.md, screenshots/explorer/, HANDOFF line; reads the test VPS via scripts/vps.sh tunnel (read-only; may run demo/CLI on the box), ports 10670-10679 (IN PROGRESS) |
