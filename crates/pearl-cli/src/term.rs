@@ -185,7 +185,7 @@ impl Panel {
 
     pub fn kv(mut self, label: &str, value: impl Into<String>) -> Self {
         let v: String = value.into();
-        let tone = if v == "-" || v.is_empty() { Tone::Dim } else { Tone::Plain };
+        let tone = if v == "-" || v == "none" || v.is_empty() { Tone::Dim } else { Tone::Plain };
         self.rows.push(Row::Kv(label.into(), if v.is_empty() { "-".into() } else { v }, tone));
         self
     }

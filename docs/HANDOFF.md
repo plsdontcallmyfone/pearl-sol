@@ -326,7 +326,7 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
      no state or encoding change. Chain 82 (+1).
      Existing light clients need `init_accumulator` (admin) before `close_header` works
      again; existing .devnet data must be reset (block encoding changed).
-10. PEARL CLI / TERMINAL DASHBOARD: DONE (947b5c5, 8e1a3ce; docs/CLI.md). `crates/pearl-cli`,
+10. PEARL CLI / TERMINAL DASHBOARD: DONE (947b5c5, 8e1a3ce, inline restyle see below; docs/CLI.md). `crates/pearl-cli`,
    binary `pearl` (own workspace, Rust 1.95 pinned; excluded from crates/). Retro blue ratatui
    dashboard after the owner's "Reloaded Finance" reference (block wordmark, red beta banner,
    slash-titled panels, green-selected table, black shell strip with a real command line and
@@ -341,8 +341,27 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    lien set/clear, pty-driven dashboard incl. mine start/stop. Screenshots
    screenshots/cli/live-*.png. Gaps: Agent Credit only as a reachability probe (`--credit-url`),
    no price source by design, pool panel only reads /stats, invariant in-flight scan covers the
-   last 64 nonces each way, mine start in plain mode runs in the foreground, no real-terminal
-   (ANSI) capture, only the TestBackend render.
+   last 64 nonces each way.
+   INLINE RESTYLE (2026-10-17, owner's Daytona-CLI reference): text mode is now plain inline
+   output: one `✓` step per real event (signed, submitted, included in block N, K-deep final,
+   Solana deposit confirmed, relayer unlock, withdrawal released, job mined / delivered /
+   completed, blocks found by `mine start`), spinner on the step in progress, red `✗` with the
+   error, green progress bar + elapsed time for waits, and every command ends in a gray
+   rounded box with a white title chip (dim labels, white values, colored states). `pearl`
+   with no command prints an overview box + hint line; the dashboard moved to
+   `pearl dashboard` (alias `tui`, unchanged). Text mode follows writes to the end
+   (`--no-wait` to stop at submit); `--json` output and wait behavior unchanged. NO_COLOR or
+   no TTY: no colors or spinners. Renderers in `src/term.rs` (hand-rolled ANSI, no new deps).
+   Tests 35 (renderers with / without color, every command's text + JSON path against a
+   canned loopback JSON-RPC node). Live on the running demo stack (not restarted): overview,
+   balance, send, job post to completion, job show by prefix, bridge out (released by the
+   proof path, 5m 43s), bridge in, bridge status, lien show, status, jobs. Real ANSI
+   screenshots: screenshots/cli/inline-*.png (crates/pearl-cli/tools/inline-screens.sh).
+   Gaps: the job lifecycle bar is 3 stages (mined / delivered / completed), unlock and
+   release are 0/1 bars (no finer real measure); `mine start` Ctrl-C stops the miner and the
+   CLI together, so its summary box shows only when the miner exits on its own; register and
+   lien set / clear were not re-run live (user account in use; covered by the stub test path
+   for the tx box, and by the earlier live run of the same tx code).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest keeps the old k on purpose
