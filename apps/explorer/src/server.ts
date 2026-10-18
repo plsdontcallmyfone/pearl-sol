@@ -1,0 +1,145 @@
+// HTTP server: HTML pages, their JSON twins under /api, static assets. GET only.
+
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Indexer } from "./indexer.ts";
+import * as M from "./models.ts";
+import * as V from "./views.ts";
+import { readBuyback } from "./buyback.ts";
+import { solTxPage } from "./soltx.ts";
+
+const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+const TYPES: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
+
+type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
+const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
+const html = (body: string, status = 200): Res => ({ status, type: "text/html; charset=utf-8", body });
+
+export async function route(ix: Indexer, method: string, rawUrl: string): Promise<Res> {
+  if (method !== "GET" && method !== "HEAD") return json({ error: "read-only: GET only" }, 405);
+  const u = new URL(rawUrl, "http://x");
+  const p = u.pathname.replace(/\/+$/, "") || "/";
+  const q = u.searchParams;
+  const sm = M.summaryModel(ix);
+  const parts = p.split("/").filter(Boolean).map(decodeURIComponent);
+
+  if (p === "/health") return json({ ok: ix.status.nodeOk, polls: ix.status.polls });
+  if (parts[0] === "assets" || parts[0] === "fonts") {
+    const f = normalize(join(PUBLIC, ...parts));
+    if (!f.startsWith(PUBLIC) || !existsSync(f)) return json({ error: "not found" }, 404);
+    const ext = f.slice(f.lastIndexOf("."));
+    return { status: 200, type: TYPES[ext] ?? "application/octet-stream", body: readFileSync(f), headers: { "cache-control": ext === ".woff2" ? "public, max-age=31536000, immutable" : "no-cache" } };
+  }
+
+  const api = parts[0] === "api";
+  const rest = api ? parts.slice(1) : parts;
+  const filter = (["all", "paid", "fallback"].includes(q.get("filter") ?? "") ? q.get("filter") : "all") as "all" | "paid" | "fallback";
+  const before = q.get("before") ? Number(q.get("before")) : undefined;
+  const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+
+  // ---- api
+  if (api) {
+    switch (rest[0]) {
+      case undefined:
+        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback"] });
+      case "summary":
+        return json(sm);
+      case "feed":
+        return json(await M.feedModel(ix, { filter, before, limit }));
+      case "block": {
+        if (!rest[1]) break;
+        if (rest[2] === "proof") return proof(ix, rest[1], q.get("format") === "bin");
+        const b = await M.blockModel(ix, rest[1]);
+        return b ? json(b) : json({ error: "block not found" }, 404);
+      }
+      case "jobs":
+        return json(M.jobsModel(ix));
+      case "job": {
+        const j = rest[1] ? await M.jobModel(ix, rest[1]) : null;
+        return j ? json(j) : json({ error: "job not found" }, 404);
+      }
+      case "orders":
+        return json(M.ordersModel(ix));
+      case "order": {
+        const o = rest[1] ? M.orderPageModel(ix, rest[1]) : null;
+        return o ? json(o) : json({ error: "order not found" }, 404);
+      }
+      case "sol":
+        if (rest[1] === "tx" && rest[2]) {
+          const t = await ix.sol.getTransaction(rest[2]).catch((e) => ({ error: (e as Error).message }));
+          return t ? json(t) : json({ error: "not in the Solana RPC's ledger (pruned or unknown)" }, 404);
+        }
+        break;
+      case "payers":
+        return json(M.payersModel(ix));
+      case "buyback":
+        return json(await readBuyback(ix));
+    }
+    return json({ error: "unknown endpoint", see: "/api" }, 404);
+  }
+
+  // ---- fragments for live refresh
+  const frag = q.get("fragment");
+  if (frag === "stats") return html(V.heroAndStats(sm));
+  if (frag === "status") return html(V.statusPill(sm));
+  if (frag === "feed") return html(V.feedList(await M.feedModel(ix, { filter, before, limit })));
+  if (frag === "rail") return html(V.rail(sm, M.jobsModel(ix), M.ordersModel(ix), await readBuyback(ix)));
+
+  // ---- pages
+  switch (rest[0]) {
+    case undefined:
+      return html(V.homePage(sm, await M.feedModel(ix, { filter: "all", before, limit }), M.jobsModel(ix), M.ordersModel(ix), await readBuyback(ix), M.payersModel(ix)));
+    case "blocks":
+      return html(V.blocksPage(sm, await M.feedModel(ix, { filter, before, limit })));
+    case "block": {
+      const b = rest[1] ? await M.blockModel(ix, rest[1]) : null;
+      return b ? html(V.blockPage(sm, b)) : html(V.notFound(sm, "Block"), 404);
+    }
+    case "jobs":
+      return html(V.jobsPage(sm, M.jobsModel(ix)));
+    case "job": {
+      const j = rest[1] ? await M.jobModel(ix, rest[1]) : null;
+      return j ? html(V.jobPage(sm, j)) : html(V.notFound(sm, "Job"), 404);
+    }
+    case "orders":
+      return html(V.ordersPage(sm, M.ordersModel(ix)));
+    case "order": {
+      const o = rest[1] ? M.orderPageModel(ix, rest[1]) : null;
+      return o ? html(V.orderPage(sm, o)) : html(V.notFound(sm, "Order"), 404);
+    }
+    case "sol":
+      if (rest[1] === "tx" && rest[2]) {
+        const t = await ix.sol.getTransaction(rest[2]).catch(() => null);
+        return t ? html(solTxPage(sm, rest[2], t)) : html(V.notFound(sm, "Solana tx (pruned from the RPC's ledger, or unknown)"), 404);
+      }
+      break;
+    case "api":
+      return html(V.apiPage(sm));
+  }
+  if (p === "/docs") return html(V.apiPage(sm));
+  return html(V.notFound(sm, "Page"), 404);
+}
+
+async function proof(ix: Indexer, id: string, bin: boolean): Promise<Res> {
+  const h = await ix.node.call<any>("getHeader", /^\d+$/.test(id) ? { height: Number(id) } : { hash: id }).catch(() => null);
+  if (!h) return json({ error: "block not found" }, 404);
+  if (bin) return { status: 200, type: "application/octet-stream", body: Buffer.from(h.proof, "base64"), headers: { "content-disposition": `attachment; filename="proof-${h.header_fields.height}.bin"` } };
+  return json({ height: h.header_fields.height, hash: h.hash, proof_hash: h.header_fields.proof_hash, proof_hash_rule: "proof_hash = blake3(proof bytes), committed in the header", bytes: Buffer.from(h.proof, "base64").length, proof: h.proof });
+}
+
+export function serve(ix: Indexer, port: number, host = "127.0.0.1") {
+  const srv = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const r = await route(ix, req.method ?? "GET", req.url ?? "/");
+      res.writeHead(r.status, { "content-type": r.type, "x-content-type-options": "nosniff", ...(r.type.startsWith("application/json") ? { "access-control-allow-origin": "*" } : {}), ...r.headers });
+      res.end(req.method === "HEAD" ? undefined : r.body);
+    } catch (e) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: (e as Error).message }));
+    }
+  });
+  srv.listen(port, host);
+  return srv;
+}

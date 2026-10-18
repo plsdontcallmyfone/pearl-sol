@@ -1,0 +1,13 @@
+{
+  "name": "@pearl-sol/explorer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Public paid-work explorer: every agent-chain block with the job it mined, who paid, P, subsidy vs alpha x P, the proof and the Solana light client's verdict. Read-only. No dependencies.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test test/*.test.ts",
+    "screens": "node tools/screens.mjs"
+  }
+}

@@ -372,6 +372,21 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    port moved to 10690-10699 (96131e0). OPEN: token/target/deploy bridge.so + storefront.so
    are older than their source (fresh builds pass every suite; rebuild into target/deploy and
    re-pin ~/agent-credit checks/m55 at the next demo restart). Demo e2e: being run on the VPS.
+12. EXPLORER ("every block was paid for", SYNTHESIS item #1): DONE 2026-10-18. apps/explorer
+   (no deps, Node 22 built-ins; :10670), docs/EXPLORER.md. Per block: job mined or FALLBACK,
+   who paid (storefront Order + buy tx + x402 payment, or PostJob), W, P, subsidy and the job's
+   cumulative subsidy vs alpha x P, proof hash + raw proof, Solana light-client verdict and its
+   txs, settlement mode (finalize_order_proof / release_proof vs signers). Totals: paid vs
+   fallback share, SOL settled, P (into the mining pool: nothing is burned on the chain, the
+   UI says so), subsidy vs P, unique payers + top-payer share, buyback panel from the
+   storefront's bb_* counters and BuybackExecuted events (hidden until the deployed program has
+   them). JSON twin for every page under /api. 20 tests (math, decoders/PDAs, indexer reorg +
+   genesis reset + persistence + routes on a fake node/Solana). Live on the test VPS via the
+   tunnel: 8 of ~24,700 blocks on paid jobs; 3 x402 orders bought with tools/buy-jobs.mjs and
+   captured live. Screenshots screenshots/explorer/. Findings: local Solana keeps ~75 s of
+   history, so the indexer records signatures as it sees them (older ones "not recorded"); the
+   box's header-relay is ~12,000 blocks behind (1.4 s/header vs 1.5 s blocks at load 19), so
+   new Orders stay pending there.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose
