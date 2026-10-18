@@ -21,6 +21,7 @@ pub const BRIDGE_PROGRAM: &str = "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8";
 /// token/programs/storefront `declare_id!`.
 pub const STOREFRONT_PROGRAM: &str = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr";
 pub const ATA_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+pub const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const SYSTEM_PROGRAM: Pubkey = [0; 32];
 
 /// Bridge `Processed` seed chain ids (bridge lib.rs).
@@ -67,6 +68,16 @@ pub fn storefront_config_pda() -> Pubkey {
     find_pda(&[b"config"], &pk(STOREFRONT_PROGRAM)).0
 }
 
+/// Storefront buyback vault (system-owned, data-less): holds the order shares until a buy.
+pub fn buyback_vault_pda() -> Pubkey {
+    find_pda(&[b"buyback"], &pk(STOREFRONT_PROGRAM)).0
+}
+
+/// The mining reserve's token account: ATA(reserve creator PDA, mint, Token-2022).
+pub fn reserve_ata(reserve_program: &Pubkey, mint: &Pubkey) -> Pubkey {
+    ata(&find_pda(&[b"creator"], reserve_program).0, mint, &pk(TOKEN_2022_PROGRAM))
+}
+
 pub fn deposit_pda(nonce: u64) -> Pubkey {
     find_pda(&[b"deposit", &nonce.to_le_bytes()], &pk(BRIDGE_PROGRAM)).0
 }
@@ -105,6 +116,9 @@ impl<'a> Rd<'a> {
     }
     fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    fn i64(&mut self) -> Result<i64> {
+        Ok(i64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
     fn keys(&mut self) -> Result<Vec<Pubkey>> {
         let n = self.u32()? as usize;
@@ -198,6 +212,159 @@ impl StorefrontConfig {
             total_tokens,
         })
     }
+}
+
+/// Storefront buyback settings and totals (Config fields appended 2026-10-18, storefront
+/// lib.rs "Buyback"). A config from before that reads as zeros: share 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Buyback {
+    pub mint: Pubkey,
+    pub bps: u16,
+    /// 0 = the mining reserve, 1 = burn.
+    pub dest: u8,
+    pub reserve_program: Pubkey,
+    /// Zero = permissionless.
+    pub cranker: Pubkey,
+    /// 0 = no cap.
+    pub max_per_call: u64,
+    pub min_buy: u64,
+    pub min_interval_secs: i64,
+    pub last_ts: i64,
+    pub accrued: u64,
+    pub spent: u64,
+    pub tokens: u64,
+    pub to_reserve: u64,
+    pub burned: u64,
+    pub buys: u64,
+    pub pending_orders: u64,
+    pub pending_first_nonce: u64,
+    pub pending_last_nonce: u64,
+}
+
+impl Buyback {
+    pub fn parse(d: &[u8]) -> Result<Self> {
+        let mut r = Rd(d, 8);
+        let _admin = r.key()?;
+        let mint = r.key()?;
+        r.take(32 + 1 + 2 + 2 + 8 + 8 + 4 + 4 + 8 + 1)?; // bridge .. threshold
+        let _attesters = r.keys()?;
+        r.take(8 * 3 + 3 + 32)?; // orders, total_sol, total_tokens, bump, trader_bump, finalize_modes, light_client
+        if d.len() < r.1 + 171 {
+            return Ok(Self { mint, ..Self::default() });
+        }
+        Ok(Self {
+            mint,
+            bps: r.u16()?,
+            dest: r.u8()?,
+            reserve_program: r.key()?,
+            cranker: r.key()?,
+            max_per_call: r.u64()?,
+            min_buy: r.u64()?,
+            min_interval_secs: r.i64()?,
+            last_ts: r.i64()?,
+            accrued: r.u64()?,
+            spent: r.u64()?,
+            tokens: r.u64()?,
+            to_reserve: r.u64()?,
+            burned: r.u64()?,
+            buys: r.u64()?,
+            pending_orders: r.u64()?,
+            pending_first_nonce: r.u64()?,
+            pending_last_nonce: r.u64()?,
+        })
+    }
+
+    pub fn dest_name(&self) -> &'static str {
+        match self.dest {
+            0 => "reserve",
+            1 => "burn",
+            _ => "unknown",
+        }
+    }
+}
+
+/// Anchor event discriminator `sha256("event:<Name>")[..8]`.
+pub fn event_disc(name: &str) -> [u8; 8] {
+    let h: [u8; 32] = Sha256::digest(format!("event:{name}").as_bytes()).into();
+    h[..8].try_into().unwrap()
+}
+
+/// Storefront `BuybackExecuted` event (one crank buy).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuybackExecuted {
+    pub buy: u64,
+    pub venue: u8,
+    pub sol_in: u64,
+    pub tokens_out: u64,
+    pub routed: u64,
+    pub destination: u8,
+    pub destination_account: Pubkey,
+    pub quote: u64,
+    pub first_nonce: u64,
+    pub last_nonce: u64,
+    pub orders: u64,
+    pub available_before: u64,
+    pub carry: u64,
+    pub total_spent: u64,
+    pub total_tokens: u64,
+    pub total_to_reserve: u64,
+    pub total_burned: u64,
+}
+
+/// Storefront `BuybackAccrued` event (one order's share).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuybackAccrued {
+    pub order: Pubkey,
+    pub nonce: u64,
+    pub lamports: u64,
+    pub vault_available: u64,
+    pub total_accrued: u64,
+}
+
+pub enum StoreEvent {
+    Executed(BuybackExecuted),
+    Accrued(BuybackAccrued),
+}
+
+/// Decodes a `Program data:` payload (event disc + Borsh fields) if it is a buyback event.
+pub fn decode_store_event(b: &[u8]) -> Option<StoreEvent> {
+    if b.len() < 8 {
+        return None;
+    }
+    let mut r = Rd(b, 8);
+    if b[..8] == event_disc("BuybackExecuted") {
+        let e = BuybackExecuted {
+            buy: r.u64().ok()?,
+            venue: r.u8().ok()?,
+            sol_in: r.u64().ok()?,
+            tokens_out: r.u64().ok()?,
+            routed: r.u64().ok()?,
+            destination: r.u8().ok()?,
+            destination_account: r.key().ok()?,
+            quote: r.u64().ok()?,
+            first_nonce: r.u64().ok()?,
+            last_nonce: r.u64().ok()?,
+            orders: r.u64().ok()?,
+            available_before: r.u64().ok()?,
+            carry: r.u64().ok()?,
+            total_spent: r.u64().ok()?,
+            total_tokens: r.u64().ok()?,
+            total_to_reserve: r.u64().ok()?,
+            total_burned: r.u64().ok()?,
+        };
+        return Some(StoreEvent::Executed(e));
+    }
+    if b[..8] == event_disc("BuybackAccrued") {
+        let e = BuybackAccrued { order: r.key().ok()?, nonce: r.u64().ok()?, lamports: r.u64().ok()?, vault_available: r.u64().ok()?, total_accrued: r.u64().ok()? };
+        return Some(StoreEvent::Accrued(e));
+    }
+    None
+}
+
+/// Mint supply (SPL Token / Token-2022 base layout: supply u64 at 36).
+pub fn mint_supply(d: &[u8]) -> Result<u64> {
+    let mut r = Rd(d, 36);
+    r.u64()
 }
 
 /// Bridge `Deposit`: `nonce u64, sender [32], recipient [32], amount u64, slot u64, bump u8`.

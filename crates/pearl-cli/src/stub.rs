@@ -21,8 +21,71 @@ fn job() -> Value {
            "cap_remaining": "0", "subsidy_paid": "800000000"})
 }
 
+/// A storefront Config with the buyback fields (1 attester), as the program writes it.
+pub fn store_config_bytes() -> Vec<u8> {
+    let mint = crate::solana::pk(OTHER);
+    let mut d = vec![0u8; 8];
+    d.extend([1u8; 32]); // admin
+    d.extend(mint); // mint
+    d.extend([2u8; 32]); // bridge
+    d.push(0); // paused
+    d.extend(2000u16.to_le_bytes());
+    d.extend(300u16.to_le_bytes());
+    d.extend(10_000_000u64.to_le_bytes());
+    d.extend(10_000_000_000u64.to_le_bytes());
+    d.extend(8192u32.to_le_bytes());
+    d.extend(10_000u32.to_le_bytes());
+    d.extend(100_000u64.to_le_bytes());
+    d.push(1); // threshold
+    d.extend(1u32.to_le_bytes());
+    d.extend([3u8; 32]); // attester
+    d.extend(4u64.to_le_bytes()); // orders
+    d.extend(2_000_000_000u64.to_le_bytes()); // total_sol
+    d.extend(7u64.to_le_bytes()); // total_tokens
+    d.extend([254, 253, 2]); // bump, trader_bump, finalize_modes
+    d.extend([4u8; 32]); // light_client
+    d.extend(1000u16.to_le_bytes()); // buyback_bps
+    d.push(0); // dest reserve
+    d.extend(crate::solana::pk("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p"));
+    d.extend([0u8; 32]); // cranker: anyone
+    for v in [1_000_000_000u64, 1_000_000, 600, 1_760_000_000, 300_000_000, 250_000_000, 9_000_000_000, 9_000_000_000, 0, 1, 1, 12, 12] {
+        d.extend(v.to_le_bytes());
+    }
+    d.resize(d.len() + 200, 0);
+    d
+}
+
+/// One BuybackExecuted event payload (disc + Borsh), as the program logs it.
+pub fn buyback_event_bytes() -> Vec<u8> {
+    let mut d = crate::solana::event_disc("BuybackExecuted").to_vec();
+    d.extend(1u64.to_le_bytes()); // buy
+    d.push(0); // venue curve
+    d.extend(250_000_000u64.to_le_bytes()); // sol_in
+    d.extend(9_000_000_000u64.to_le_bytes()); // tokens_out
+    d.extend(9_000_000_000u64.to_le_bytes()); // routed
+    d.push(0); // destination reserve
+    d.extend([5u8; 32]);
+    d.extend(9_100_000_000u64.to_le_bytes()); // quote
+    for v in [3u64, 9, 3, 300_000_000, 50_000_000, 250_000_000, 9_000_000_000, 9_000_000_000, 0] {
+        d.extend(v.to_le_bytes());
+    }
+    d
+}
+
 fn answer(method: &str, params: &Value) -> Result<Value, String> {
+    let b64 = |b: Vec<u8>| base64::engine::general_purpose::STANDARD.encode(b);
     Ok(match method {
+        "getAccountInfo" if params[0].as_str() == Some(&crate::solana::b58(&crate::solana::storefront_config_pda())) => {
+            json!({"value": {"data": [b64(store_config_bytes()), "base64"], "lamports": 1, "owner": crate::solana::STOREFRONT_PROGRAM}})
+        }
+        "getAccountInfo" if params[0].as_str() == Some(OTHER) => {
+            let mut m = vec![0u8; 82];
+            m[36..44].copy_from_slice(&999_000_000_000_000u64.to_le_bytes());
+            json!({"value": {"data": [b64(m), "base64"], "lamports": 1, "owner": crate::solana::TOKEN_2022_PROGRAM}})
+        }
+        "getBalance" => json!({"value": 890_880u64 + 50_000_000}),
+        "getSignaturesForAddress" => json!([{"signature": "5sig", "slot": 77, "err": null, "blockTime": 1_760_000_000}]),
+        "getTransaction" => json!({"meta": {"logMessages": ["Program DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr invoke [1]", format!("Program data: {}", b64(buyback_event_bytes()))]}}),
         "getChainInfo" => json!({"height": 20, "finalized_height": 14, "finality_k": 6, "chain_id": 7, "peers": 1, "syncing": false, "target_bits": 1}),
         "getParams" => json!({"min_fee": "1000", "attesters": [OTHER], "emission_ppm": 1000, "min_protocol_fee_effective": "1"}),
         "getEscrow" => json!({"escrow_balance": "999000000000000000", "pool_balance": "100", "total_supply": "1000000000000000000", "outside_escrow": "1000000000000000"}),
