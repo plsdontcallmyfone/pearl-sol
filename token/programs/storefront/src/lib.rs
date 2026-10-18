@@ -458,6 +458,7 @@ pub mod storefront {
         };
         let trader_bump = o.config.trader_bump;
         let vault_lamports = o.buyback_vault.lamports();
+        let share_info = o.share_record.to_account_info();
         place_order(
             pa,
             &mut ctx.accounts.config,
@@ -471,8 +472,7 @@ pub mod storefront {
             trader_bump,
             share,
             vault_lamports,
-            &mut ctx.accounts.share_record,
-            ctx.bumps.share_record,
+            &share_info,
         )
     }
 
@@ -570,6 +570,7 @@ pub mod storefront {
         };
         let trader_bump = o.config.trader_bump;
         let vault_lamports = o.buyback_vault.lamports();
+        let share_info = o.share_record.to_account_info();
         place_order(
             pa,
             &mut ctx.accounts.config,
@@ -583,8 +584,7 @@ pub mod storefront {
             trader_bump,
             share,
             vault_lamports,
-            &mut ctx.accounts.share_record,
-            ctx.bumps.share_record,
+            &share_info,
         )
     }
 
@@ -939,6 +939,27 @@ pub mod storefront {
     }
 }
 
+/// Creates the order's `ShareRecord ["share", nonce]` (payer = buyer) and writes it.
+#[inline(never)]
+fn create_share_record<'info>(payer: &AccountInfo<'info>, rec: &AccountInfo<'info>, system: &AccountInfo<'info>, nonce: u64, buyer: Pubkey, lamports: u64) -> Result<()> {
+    let (want, bump) = share_pda(nonce);
+    require_keys_eq!(rec.key(), want, StorefrontError::BadAccount);
+    require!(rec.lamports() == 0 && rec.data_is_empty(), StorefrontError::BadAccount);
+    let space = 8 + ShareRecord::INIT_SPACE;
+    let rent = Rent::get()?.minimum_balance(space);
+    let n = nonce.to_le_bytes();
+    let seeds: &[&[u8]] = &[SHARE_SEED, &n, &[bump]];
+    invoke_signed(
+        &system_instruction::create_account(payer.key, rec.key, rent, space as u64, &ID),
+        &[payer.clone(), rec.clone(), system.clone()],
+        &[seeds],
+    )?;
+    let r = ShareRecord { nonce, buyer, lamports, bump };
+    let mut d = rec.try_borrow_mut_data()?;
+    r.try_serialize(&mut &mut d[..])?;
+    Ok(())
+}
+
 /// Moves the order's buyback share (`sol_in x buyback_bps / 10000`) from the buyer to the
 /// buyback vault; returns (share, the SOL left for the job). The first share also tops the
 /// vault up to rent exemption.
@@ -1094,8 +1115,7 @@ fn place_order<'info>(
     trader_bump: u8,
     buyback_share: u64,
     vault_lamports: u64,
-    share: &mut Account<'info, ShareRecord>,
-    share_bump: u8,
+    share_info: &AccountInfo<'info>,
 ) -> Result<()> {
     let p_spl = (got as u128 * config.protocol_fee_bps as u128 / 10_000) as u64;
     let w_spl = got - p_spl;
@@ -1161,10 +1181,7 @@ fn place_order<'info>(
     config.orders = config.orders.saturating_add(1);
     config.total_sol = config.total_sol.saturating_add(spent);
     config.total_tokens = config.total_tokens.saturating_add(got);
-    share.nonce = nonce;
-    share.buyer = draft.buyer;
-    share.lamports = buyback_share;
-    share.bump = share_bump;
+    create_share_record(&a.buyer, share_info, &a.system_program, nonce, draft.buyer, buyback_share)?;
     if buyback_share > 0 {
         config.bb_locked = config.bb_locked.saturating_add(buyback_share);
         emit!(BuybackShareHeld { order: order.key(), nonce, lamports: buyback_share, total_locked: config.bb_locked, vault_lamports });
@@ -1680,9 +1697,10 @@ pub struct BuyJobCurve<'info> {
     /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
     #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
     pub buyback_vault: SystemAccount<'info>,
-    /// The order's held share (settle_share releases or refunds it).
-    #[account(init, payer = buyer, space = 8 + ShareRecord::INIT_SPACE, seeds = [SHARE_SEED, &nonce.to_le_bytes()], bump)]
-    pub share_record: Box<Account<'info, ShareRecord>>,
+    /// CHECK: the order's held share record PDA ["share", nonce]; created in the handler
+    /// (an Anchor `init` here overflows the 4 KB SBF stack frame of try_accounts).
+    #[account(mut)]
+    pub share_record: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1765,9 +1783,10 @@ pub struct BuyJobAmm<'info> {
     /// Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18).
     #[account(mut, seeds = [BUYBACK_VAULT_SEED], bump)]
     pub buyback_vault: SystemAccount<'info>,
-    /// The order's held share (settle_share releases or refunds it).
-    #[account(init, payer = buyer, space = 8 + ShareRecord::INIT_SPACE, seeds = [SHARE_SEED, &nonce.to_le_bytes()], bump)]
-    pub share_record: Box<Account<'info, ShareRecord>>,
+    /// CHECK: the order's held share record PDA ["share", nonce]; created in the handler
+    /// (an Anchor `init` here overflows the 4 KB SBF stack frame of try_accounts).
+    #[account(mut)]
+    pub share_record: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
