@@ -10,6 +10,8 @@
 //   PRICE_LAMPORTS_PER_GFLOP  100000
 //   OVERHEAD_LAMPORTS         12000000   (Order + Deposit rent, tx fees)
 //   STATE_FILE                .data/state.json (used payments, for replay protection)
+//
+// Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads).
 
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";

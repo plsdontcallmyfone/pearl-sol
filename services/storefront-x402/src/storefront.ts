@@ -17,7 +17,11 @@ export const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpP
 export const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 export const IX_SYSVAR = new PublicKey("Sysvar1nstructions1111111111111111111111111");
 
-export const STATUS = { 1: "pending", 2: "finalized", 3: "expired" } as Record<number, string>;
+export const STATUS = { 1: "pending", 2: "finalized", 3: "expired", 4: "refunded" } as Record<number, string>;
+export const RESERVE_ID = new PublicKey("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
+/** storefront Config.buyback_dest */
+export const DEST = { 0: "reserve", 1: "burn" } as Record<number, string>;
+export const RENT_MIN = 890_880n;
 export const MAX_URI = 200;
 export const MAX_EVALUATORS = 8;
 
@@ -38,12 +42,16 @@ export function addresses(storefront = STOREFRONT_ID, bridge = BRIDGE_ID) {
     bridge,
     config: pda([enc("config")], storefront),
     trader: pda([enc("trader")], storefront),
+    /** System-owned buyback vault: buy_job* pays `buyback_bps` of sol_in into it. */
+    buybackVault: pda([enc("buyback")], storefront),
     bridgeConfig: pda([enc("config")], bridge),
   };
 }
 export const orderPda = (nonce: bigint, storefront = STOREFRONT_ID) => pda([enc("order"), u64(nonce)], storefront);
 export const draftPda = (buyer: PublicKey, id: bigint, storefront = STOREFRONT_ID) => pda([enc("draft"), buyer.toBuffer(), u64(id)], storefront);
 export const depositPda = (nonce: bigint, bridge = BRIDGE_ID) => pda([enc("deposit"), u64(nonce)], bridge);
+/** The mining reserve's token account: ATA(reserve creator PDA, mint, Token-2022). */
+export const reserveAta = (mint: PublicKey, reserve = RESERVE_ID) => ata(pda([enc("creator")], reserve), mint, TOKEN_2022);
 export const orderJobId = (nonce: bigint) => sha256(enc("pearl-sol:order-job:v1"), u64(nonce));
 
 // ---------------------------------------------------------------- job spec
@@ -132,7 +140,7 @@ export function buyJobIx(buyer: PublicKey, draftId: bigint, nonce: bigint, solIn
       meta(pda([enc("global")], PUMP)), meta(bc, true), meta(ata(bc, p.mint, TOKEN_2022), true), meta(ata(bc, WSOL, TOKEN), true),
       meta(pda([enc("user_volume_accumulator"), a.trader.toBuffer()], PUMP), true), meta(pda([enc("fee_config"), PUMP.toBuffer()], PUMP_FEES)),
       meta(p.curveBuyback, true), meta(WSOL), meta(TOKEN), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SystemProgram.programId),
-      meta(pda([enc("__event_authority")], PUMP)), meta(PUMP), ...bridgeMetas(a, p.mint, nonce),
+      meta(pda([enc("__event_authority")], PUMP)), meta(PUMP), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true),
     ],
     data: Buffer.concat([disc("buy_job"), u64(nonce), u64(solIn), u64(minOut)]),
   });
@@ -148,7 +156,7 @@ export function buyJobAmmIx(buyer: PublicKey, draftId: bigint, nonce: bigint, so
       meta(canonicalPool(p.mint), true), meta(p.poolBaseVault, true), meta(p.poolQuoteVault, true), meta(pda([enc("global_config")], AMM)),
       meta(pda([enc("user_volume_accumulator"), a.trader.toBuffer()], AMM), true), meta(pda([enc("fee_config"), AMM.toBuffer()], PUMP_FEES)),
       meta(ata(p.ammBuyback, WSOL, TOKEN), true), meta(WSOL), meta(TOKEN), meta(TOKEN_2022), meta(ATA_PROGRAM), meta(SystemProgram.programId),
-      meta(pda([enc("__event_authority")], AMM)), meta(AMM), ...bridgeMetas(a, p.mint, nonce),
+      meta(pda([enc("__event_authority")], AMM)), meta(AMM), ...bridgeMetas(a, p.mint, nonce), meta(a.buybackVault, true),
     ],
     data: Buffer.concat([disc("buy_job_amm"), u64(nonce), u64(solIn), u64(minOut)]),
   });
@@ -175,17 +183,66 @@ export interface StoreConfig {
   maxDeadlineBlocks: bigint;
   threshold: number;
   attesters: PublicKey[];
+  orders: bigint;
+  totalSol: bigint;
+  totalTokens: bigint;
+  /** Buyback (appended 2026-10-18); zeros on a config written before it (share 0). */
+  buyback: BuybackConfig;
 }
+
+export interface BuybackConfig {
+  bps: number;
+  /** 0 = the mining reserve, 1 = burn */
+  dest: number;
+  reserveProgram: PublicKey;
+  /** zero key = permissionless */
+  cranker: PublicKey;
+  /** 0 = no cap */
+  maxPerCall: bigint;
+  minBuy: bigint;
+  minIntervalSecs: bigint;
+  lastTs: bigint;
+  accrued: bigint;
+  spent: bigint;
+  tokens: bigint;
+  toReserve: bigint;
+  burned: bigint;
+  buys: bigint;
+  pendingOrders: bigint;
+  pendingFirstNonce: bigint;
+  pendingLastNonce: bigint;
+}
+
+/** Bytes of Config after the attester vector up to the end of the buyback fields. */
+const CONFIG_TAIL = 8 * 3 + 3 + 32 + 2 + 1 + 32 + 32 + 8 * 13; // = 230
 
 export function decodeConfig(d: Uint8Array): StoreConfig {
   const n = rd32(d, 142);
+  const at = 146 + 32 * n; // orders, total_sol, total_tokens, bump, trader_bump, finalize_modes, light_client, buyback...
+  const b = at + 59;
+  const has = d.length >= at + CONFIG_TAIL;
+  const i64 = (o: number) => Buffer.from(d.buffer, d.byteOffset, d.byteLength).readBigInt64LE(o);
+  const z = new PublicKey(new Uint8Array(32));
   return {
     admin: pk(d, 8), mint: pk(d, 40), bridgeProgram: pk(d, 72), paused: d[104] !== 0,
     protocolFeeBps: rd16(d, 105), maxSlippageBps: rd16(d, 107), minSolIn: rd64(d, 109), maxSolIn: rd64(d, 117),
     maxDim: rd32(d, 125), maxBlocksCap: rd32(d, 129), maxDeadlineBlocks: rd64(d, 133), threshold: d[141],
     attesters: Array.from({ length: n }, (_, i) => pk(d, 146 + 32 * i)),
+    orders: rd64(d, at), totalSol: rd64(d, at + 8), totalTokens: rd64(d, at + 16),
+    buyback: has
+      ? {
+          bps: rd16(d, b), dest: d[b + 2], reserveProgram: pk(d, b + 3), cranker: pk(d, b + 35),
+          maxPerCall: rd64(d, b + 67), minBuy: rd64(d, b + 75), minIntervalSecs: i64(b + 83), lastTs: i64(b + 91),
+          accrued: rd64(d, b + 99), spent: rd64(d, b + 107), tokens: rd64(d, b + 115), toReserve: rd64(d, b + 123), burned: rd64(d, b + 131),
+          buys: rd64(d, b + 139), pendingOrders: rd64(d, b + 147), pendingFirstNonce: rd64(d, b + 155), pendingLastNonce: rd64(d, b + 163),
+        }
+      : { bps: 0, dest: 0, reserveProgram: z, cranker: z, maxPerCall: 0n, minBuy: 0n, minIntervalSecs: 0n, lastTs: 0n, accrued: 0n, spent: 0n,
+          tokens: 0n, toReserve: 0n, burned: 0n, buys: 0n, pendingOrders: 0n, pendingFirstNonce: 0n, pendingLastNonce: 0n },
   };
 }
+
+/** The buyer's share split exactly as buy_job does it: share = sol_in x bps / 10000 (floor). */
+export const buybackShare = (solIn: bigint, bps: number) => (solIn * BigInt(bps)) / 10_000n;
 
 /** Bridge Config.deposit_nonce (disc + admin, mint, vault, token_program). */
 export const bridgeNonce = (d: Uint8Array) => rd64(d, 8 + 32 * 4);

@@ -117,6 +117,7 @@ export class Service {
       const u = new URL(req.url, "http://x");
       if (req.method === "GET" && u.pathname === "/health") return json(200, { ok: true, wallet: this.o.wallet.publicKey.toBase58(), network: this.o.network });
       if (req.method === "GET" && u.pathname === "/quote") return json(200, await this.quote(Object.fromEntries(u.searchParams)));
+      if (req.method === "GET" && u.pathname === "/buyback") return json(200, await this.buyback());
       if (req.method === "POST" && u.pathname === "/jobs") return await this.postJob(req);
       const m = u.pathname.match(/^\/jobs\/([^/]+)$/);
       if (req.method === "GET" && m) return await this.getJob(m[1]);
@@ -169,13 +170,22 @@ export class Service {
 
   // ------------------------------------------------------------ pricing
 
+  /**
+   * The job's own price (base + work) is what buys W + P. On chain, buy_job moves
+   * `buyback_bps` of sol_in into the buyback vault first, so sol_in is grossed up until
+   * sol_in - share covers the job: the buyback is a markup on top of the job, not a cut
+   * of it. price = sol_in + overhead (rents and fees the service pays).
+   */
   price(cfg: sf.StoreConfig, m: number, n: number, k: number, maxBlocks: number) {
     const flops = 2n * BigInt(m) * BigInt(n) * BigInt(k) * BigInt(maxBlocks);
     const work = (flops * this.o.pricing.lamportsPerGflop + 999_999_999n) / 1_000_000_000n;
-    let solIn = this.o.pricing.baseLamports + work;
+    const job = this.o.pricing.baseLamports + work;
+    const bps = BigInt(cfg.buyback.bps);
+    let solIn = (job * 10_000n + (10_000n - bps) - 1n) / (10_000n - bps);
     if (solIn < cfg.minSolIn) solIn = cfg.minSolIn;
     if (solIn > cfg.maxSolIn) throw new BadRequest(`job needs ${solIn} lamports, above the per-order cap ${cfg.maxSolIn}`);
-    return { flops, solIn, price: solIn + this.o.pricing.overheadLamports };
+    const buyback = sf.buybackShare(solIn, cfg.buyback.bps);
+    return { flops, solIn, jobLamports: solIn - buyback, buybackLamports: buyback, price: solIn + this.o.pricing.overheadLamports };
   }
 
   private checkDims(cfg: sf.StoreConfig, q: Record<string, unknown>) {
@@ -188,17 +198,21 @@ export class Service {
     const cfg = await this.storeConfig();
     const { m, n, k, maxBlocks } = this.checkDims(cfg, q);
     const pr = this.price(cfg, m, n, k, maxBlocks);
-    const mk = await this.market(cfg, pr.solIn);
+    const mk = await this.market(cfg, pr.jobLamports);
     const p = (mk.quote * BigInt(cfg.protocolFeeBps)) / 10_000n;
     return {
       m, n, k, max_blocks: maxBlocks,
       work_flops: pr.flops,
       sol_in_lamports: pr.solIn,
+      job_lamports: pr.jobLamports,
+      buyback_lamports: pr.buybackLamports,
+      buyback_bps: cfg.buyback.bps,
+      buyback_destination: sf.DEST[cfg.buyback.dest] ?? `unknown(${cfg.buyback.dest})`,
       overhead_lamports: this.o.pricing.overheadLamports,
       price_lamports: pr.price,
       venue: mk.venue,
       estimate: {
-        note: "fee-free constant-product quote before pump fees; the fill is lower by pump's fee (1.25% on the curve) and bounded by max_slippage_bps",
+        note: "fee-free constant-product quote for job_lamports before pump fees; the fill is lower by pump's fee (1.25% on the curve) and bounded by max_slippage_bps",
         tokens_spl: mk.quote,
         min_tokens_out_spl: mk.minOut,
         worker_pay_chain: (mk.quote - p) * 1000n,
@@ -215,7 +229,7 @@ export class Service {
       network: this.o.network,
       maxAmountRequired: price.toString(),
       resource: `${this.o.publicUrl}/jobs`,
-      description: "pearl-sol AI job: the payment buys the token, bridges W + P to the agent chain and posts the job",
+      description: "pearl-sol AI job: the payment buys the token, bridges W + P to the agent chain and posts the job; buyback_bps of it goes to the on-chain buyback vault",
       mimeType: "application/json",
       payTo: this.o.wallet.publicKey.toBase58(),
       maxTimeoutSeconds: 120,
@@ -311,7 +325,9 @@ export class Service {
       const [bc] = await this.o.chain.getAccounts([this.a.bridgeConfig]);
       if (!bc) throw new Error("bridge config missing");
       const nonce = sf.bridgeNonce(bc.data);
-      const mk = await this.market(cfg, solIn);
+      // buy_job moves the buyback share first and trades sol_in - share
+      const live = await this.storeConfig();
+      const mk = await this.market(live, solIn - sf.buybackShare(solIn, live.buyback.bps));
       const ix = mk.venue === "curve"
         ? sf.buyJobIx(w.publicKey, draftId, nonce, solIn, mk.minOut, mk.accounts, this.a)
         : sf.buyJobAmmIx(w.publicKey, draftId, nonce, solIn, mk.minOut, mk.accounts, this.a);
@@ -330,6 +346,32 @@ export class Service {
       /* draft rent stays; harmless */
     }
     throw lastErr ?? new Error("buy_job failed");
+  }
+
+  /** Buyback state, all read from chain: the storefront config's buyback fields and the vault. */
+  async buyback() {
+    const cfg = await this.storeConfig();
+    const b = cfg.buyback;
+    const [vault] = await this.o.chain.getAccounts([this.a.buybackVault]);
+    const lamports = vault?.lamports ?? 0n;
+    const zero = (k: PublicKey) => k.equals(PublicKey.default);
+    return {
+      vault: this.a.buybackVault.toBase58(),
+      vault_lamports: lamports,
+      available_lamports: lamports > sf.RENT_MIN ? lamports - sf.RENT_MIN : 0n,
+      buyback_bps: b.bps,
+      destination: sf.DEST[b.dest] ?? `unknown(${b.dest})`,
+      destination_account: b.dest === 0 ? sf.reserveAta(cfg.mint, b.reserveProgram).toBase58() : cfg.mint.toBase58(),
+      reserve_program: b.reserveProgram.toBase58(),
+      cranker: zero(b.cranker) ? null : b.cranker.toBase58(),
+      max_per_call_lamports: b.maxPerCall,
+      min_buy_lamports: b.minBuy,
+      min_interval_secs: b.minIntervalSecs,
+      last_buy_ts: b.lastTs,
+      totals: { accrued_lamports: b.accrued, spent_lamports: b.spent, tokens_bought_spl: b.tokens, to_reserve_spl: b.toReserve, burned_spl: b.burned, buys: b.buys },
+      pending: { orders: b.pendingOrders, first_nonce: b.pendingOrders > 0n ? b.pendingFirstNonce : null, last_nonce: b.pendingOrders > 0n ? b.pendingLastNonce : null },
+      events: "BuybackAccrued (per order, in buy_job*) and BuybackExecuted (per buy) in the storefront program's logs",
+    };
   }
 
   private async getJob(id: string): Promise<HttpRes> {

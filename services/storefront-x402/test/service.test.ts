@@ -112,8 +112,15 @@ test("GET /quote prices a job from its size", async () => {
   assert.equal(r.status, 200);
   const q = r.body as any;
   assert.equal(q.work_flops, 2n * 1024n ** 3n * 10n);
-  // 10M base + ceil(21.47 GFLOP x 100k)
-  assert.equal(q.sol_in_lamports, 10_000_000n + 2_147_484n);
+  // job = 10M base + ceil(21.47 GFLOP x 100k); sol_in grossed up so that sol_in minus the
+  // on-chain buyback share (default 1000 bps) still covers the job
+  const job = 10_000_000n + 2_147_484n;
+  assert.equal(q.buyback_bps, 1000);
+  assert.equal(q.buyback_destination, "reserve");
+  assert.equal(q.sol_in_lamports, (job * 10_000n + 8_999n) / 9_000n);
+  assert.equal(q.buyback_lamports, (q.sol_in_lamports * 1000n) / 10_000n, "the program's floor split");
+  assert.equal(q.job_lamports, q.sol_in_lamports - q.buyback_lamports);
+  assert.ok(q.job_lamports >= job && q.job_lamports - job <= 1n, "the job part covers the job price");
   assert.equal(q.price_lamports, q.sol_in_lamports + 12_000_000n);
   assert.equal(q.venue, "curve");
   assert.ok(q.estimate.tokens_spl > 0n && q.estimate.min_tokens_out_spl < q.estimate.tokens_spl);
@@ -231,10 +238,33 @@ test("POST /jobs: 402 without payment, 201 with an x402 payment; the Order is on
   const spec: sf.JobSpec = { m: 256, n: 256, k: 512, config: Buffer.alloc(52, 0x11), hashA: Buffer.alloc(32, 0xaa), hashB: Buffer.alloc(32, 0xbb), dataUri: "ipfs://job-a-b", deadlineBlocks: 600n, maxBlocks: 20, evaluators: attesters.map((k) => k.publicKey), threshold: 2 };
   assert.equal(o.bodyHash, sf.sha256(sf.postJobBody(spec, o.workerPay, o.protocolFee)).toString("hex"));
   assert.equal(sf.tokenAmount(svm.getAccount(VAULT)!.data), o.tokens);
+  // the buyback share sits in the vault: sol_in x 1000 / 10000, plus the one-time rent top-up
+  const solIn = price - 12_000_000n;
+  const share = (solIn * 1000n) / 10_000n;
+  assert.equal(BigInt(svm.getBalance(A.buybackVault)!), sf.RENT_MIN + share);
+  assert.ok(o.solSpent <= solIn - share, "the job spent at most sol_in - share");
 
   // replay of the same payment
   const again = await call("POST", "/jobs", { "x-payment": header }, jobBody());
   assert.equal(again.status, 409);
+});
+
+test("GET /buyback reports the vault and the pending orders from chain state", async () => {
+  const r = await call("GET", "/buyback");
+  assert.equal(r.status, 200);
+  const b = r.body as any;
+  assert.equal(b.vault, A.buybackVault.toBase58());
+  assert.equal(b.buyback_bps, 1000);
+  assert.equal(b.destination, "reserve");
+  assert.equal(b.destination_account, sf.reserveAta(MINT).toBase58());
+  assert.equal(b.reserve_program, sf.RESERVE_ID.toBase58());
+  assert.equal(b.cranker, null, "permissionless");
+  assert.equal(b.available_lamports, b.vault_lamports - sf.RENT_MIN);
+  assert.equal(b.totals.accrued_lamports, b.available_lamports, "no buy yet: the vault holds every share");
+  assert.equal(b.totals.buys, 0n);
+  assert.equal(b.pending.orders, 1n);
+  assert.equal(String(b.pending.first_nonce), jobId);
+  assert.equal(String(b.pending.last_nonce), jobId);
 });
 
 test("GET /jobs/:id returns pending, then the result once finalized", async () => {
