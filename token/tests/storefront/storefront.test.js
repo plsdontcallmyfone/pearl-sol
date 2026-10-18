@@ -32,7 +32,9 @@ const bn = (x) => new BN(x.toString());
 const sfIdl = JSON.parse(fs.readFileSync(path.join(TARGET, 'idl/storefront.json')));
 const brIdl = JSON.parse(fs.readFileSync(path.join(TARGET, 'idl/bridge.json')));
 const SF = P(sfIdl.address), BRIDGE = P(brIdl.address);
-const CONFIG = pda(['config'], SF), TRADER = pda(['trader'], SF);
+const CONFIG = pda(['config'], SF), TRADER = pda(['trader'], SF), BB_VAULT = pda(['buyback'], SF);
+const RESERVE_ID = P('4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p');
+const RENT_MIN = 890_880n;
 const BCFG = pda(['config'], BRIDGE);
 
 const svm = new LiteSVM();
@@ -123,7 +125,7 @@ function curveAccts(draft, nonce, who = buyer.publicKey) {
     pumpGlobal: pda(['global'], PUMP), bondingCurve: BC, curveBaseVault: ata(BC, MINT, T22), curveQuoteVault: ata(BC, WSOL, TOK),
     userVolumeAccumulator: pda(['user_volume_accumulator', TRADER], PUMP), feeConfig: pda(['fee_config', PUMP], FEE), buybackFeeRecipient: BUYBACK,
     wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId,
-    pumpEventAuthority: pumpEvent, pumpProgram: PUMP, ...bridgeAccts(nonce),
+    pumpEventAuthority: pumpEvent, pumpProgram: PUMP, ...bridgeAccts(nonce), buybackVault: BB_VAULT,
   };
 }
 const off = new swap.PumpAmmSdk();
@@ -136,7 +138,7 @@ function ammAccts(draft, nonce, who = buyer.publicKey) {
     pool, poolBaseVault: pl.poolBaseTokenAccount, poolQuoteVault: pl.poolQuoteTokenAccount, ammGlobalConfig: pda(['global_config'], AMM),
     ammUserVolumeAccumulator: pda(['user_volume_accumulator', TRADER], AMM), ammFeeConfig: pda(['fee_config', AMM], FEE),
     ammBuybackFeeRecipient: ata(gc.buybackFeeRecipients[0], WSOL, TOK), wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22,
-    associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId, ammEventAuthority: ammEvent, ammProgram: AMM, ...bridgeAccts(nonce),
+    associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId, ammEventAuthority: ammEvent, ammProgram: AMM, ...bridgeAccts(nonce), buybackVault: BB_VAULT,
   };
 }
 const buyIx = (draft, nonce, solIn, minOut = 1) => sf.methods.buyJob(bn(nonce), bn(solIn), bn(minOut)).accountsStrict(curveAccts(draft, nonce)).instruction();
@@ -185,6 +187,22 @@ function readOrderRaw(d) {
 }
 
 const CU = {};
+/** Anchor events from a tx's logs ("Program data: <base64>"). */
+function events(logs) {
+  const out = [];
+  for (const l of logs) {
+    const m = l.match(/^Program data: (.+)$/);
+    if (!m) continue;
+    const e = sf.coder.events.decode(m[1]);
+    if (!e) continue;
+    // name and field case differ across anchor versions: normalise to camelCase
+    const camel = (k) => k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    const data = {};
+    for (const [k, v] of Object.entries(e.data)) data[camel(k)] = v;
+    out.push({ name: camel(e.name.charAt(0).toLowerCase() + e.name.slice(1)), data });
+  }
+  return out;
+}
 
 // ---------- tests (sequential, shared chain state)
 test('setup: fixtures, coin on pump, bridge, storefront config, trader volume accumulators', async () => {
@@ -238,8 +256,11 @@ test('buy_job on the curve: buys, splits W/P, deposits to the bridge, writes the
   const n = bridgeNonce();
   nonce0 = n;
   const bc = curve();
-  const expected = BigInt(sdk.getBuyTokenAmountFromSolAmount({ global, feeConfig: sdk.PUMP_SDK.decodeFeeConfig(info(pda(['fee_config', PUMP], FEE))), mintSupply: null, bondingCurve: bc, amount: bn(SOL_IN), quoteMint: WSOL }).toString());
+  // default buyback share 1000 bps: the job buys with 90% of sol_in
+  const SHARE = (SOL_IN * 1000n) / 10_000n, JOB_SOL = SOL_IN - SHARE;
+  const expected = BigInt(sdk.getBuyTokenAmountFromSolAmount({ global, feeConfig: sdk.PUMP_SDK.decodeFeeConfig(info(pda(['fee_config', PUMP], FEE))), mintSupply: null, bondingCurve: bc, amount: bn(JOB_SOL), quoteMint: WSOL }).toString());
   const b0 = lamports(buyer.publicKey), t0 = lamports(TRADER);
+  assert.equal(lamports(BB_VAULT), 0n, 'vault empty before the first order');
   const r = ok([await buyIx(draft, n, SOL_IN, (expected * 98n) / 100n)], [buyer], 'buy_job');
   CU.buy_job = r.cu;
   console.log(`  buy_job CU ${r.cu}, tx ${r.size} bytes`);
@@ -251,8 +272,14 @@ test('buy_job on the curve: buys, splits W/P, deposits to the bridge, writes the
   assert.equal(tokenAmount(VAULT), tokens, 'all bought tokens in the bridge vault');
   assert.ok(tokens >= (expected * 99n) / 100n && tokens <= (expected * 101n) / 100n, `tokens ${tokens} vs SDK ${expected}`);
   const spent = BigInt(o.solSpent.toString());
-  assert.ok(spent > 0n && spent <= SOL_IN);
+  assert.ok(spent > 0n && spent <= JOB_SOL, 'the job spends at most sol_in - share');
   assert.ok(b0 - lamports(buyer.publicKey) < SOL_IN + 20_000_000n, 'buyer paid sol_in + rents only');
+  assert.equal(lamports(BB_VAULT), RENT_MIN + SHARE, 'vault = rent top-up (first order) + the share');
+  const acc = events(r.logs).filter((e) => e.name === 'buybackAccrued');
+  assert.equal(acc.length, 1, 'one BuybackAccrued');
+  assert.equal(acc[0].data.nonce.toString(), n.toString());
+  assert.equal(acc[0].data.lamports.toString(), SHARE.toString());
+  assert.equal(acc[0].data.vaultAvailable.toString(), SHARE.toString());
   // fields
   assert.equal(o.version, 1);
   assert.equal(o.status, 1);
@@ -491,6 +518,207 @@ test('refund: an Expired order can be refunded too; a refund to someone else is 
   assert.equal(order(n2).status, 3);
 });
 
+
+// ---------- buyback (2026-10-18): a share of every order's SOL into the vault, then a
+// permissionless crank buys the token through the same pump path and sends it to the
+// mining reserve or burns it.
+const RESERVE_CREATOR = pda(['creator'], RESERVE_ID);
+const RESERVE_ATA = ata(RESERVE_CREATOR, MINT, T22);
+const VAULT_ATA = ata(BB_VAULT, MINT, T22), VAULT_WSOL = ata(BB_VAULT, WSOL, TOK);
+const bbParams = (p = {}) => ({ buybackBps: null, destination: null, reserveProgram: null, cranker: null, maxPerCall: null, minBuy: null, minIntervalSecs: null, ...p });
+const setBbIx = (p, who = admin.publicKey) => sf.methods.setBuyback(bbParams(p)).accountsStrict({ admin: who, config: CONFIG }).instruction();
+function bbCurveAccts(who) {
+  return {
+    cranker: who, config: CONFIG, buybackVault: BB_VAULT, mint: MINT, vaultAta: VAULT_ATA, vaultWsol: VAULT_WSOL, reserveAta: RESERVE_ATA,
+    pumpGlobal: pda(['global'], PUMP), bondingCurve: BC, curveBaseVault: ata(BC, MINT, T22), curveQuoteVault: ata(BC, WSOL, TOK),
+    userVolumeAccumulator: pda(['user_volume_accumulator', BB_VAULT], PUMP), feeConfig: pda(['fee_config', PUMP], FEE), buybackFeeRecipient: BUYBACK,
+    wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId,
+    pumpEventAuthority: pumpEvent, pumpProgram: PUMP,
+  };
+}
+function bbAmmAccts(who) {
+  const pool = sdk.canonicalPumpPoolPda(MINT);
+  const pl = off.decodePool(info(pool));
+  const gc = off.decodeGlobalConfig(info(pda(['global_config'], AMM)));
+  return {
+    cranker: who, config: CONFIG, buybackVault: BB_VAULT, mint: MINT, vaultAta: VAULT_ATA, vaultWsol: VAULT_WSOL, reserveAta: RESERVE_ATA,
+    pool, poolBaseVault: pl.poolBaseTokenAccount, poolQuoteVault: pl.poolQuoteTokenAccount, ammGlobalConfig: pda(['global_config'], AMM),
+    ammUserVolumeAccumulator: pda(['user_volume_accumulator', BB_VAULT], AMM), ammFeeConfig: pda(['fee_config', AMM], FEE),
+    ammBuybackFeeRecipient: ata(gc.buybackFeeRecipients[0], WSOL, TOK), wsolMint: WSOL, tokenProgram: TOK, token2022Program: T22,
+    associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId, ammEventAuthority: ammEvent, ammProgram: AMM,
+  };
+}
+const crankIx = (who, maxSolIn = 10n ** 12n, minOut = 1n) => sf.methods.crankBuyback(bn(maxSolIn), bn(minOut)).accountsStrict(bbCurveAccts(who)).instruction();
+const crankAmmIx = (who, maxSolIn = 10n ** 12n, minOut = 1n) => sf.methods.crankBuybackAmm(bn(maxSolIn), bn(minOut)).accountsStrict(bbAmmAccts(who)).instruction();
+const mintSupply = () => Buffer.from(svm.getAccount(MINT).data).readBigUInt64LE(36);
+const available = () => lamports(BB_VAULT) - RENT_MIN;
+const cranker = Keypair.generate();
+let clock = 0n;
+const advance = (secs) => { clock += BigInt(secs); setTime(clock); };
+async function placeOrder(solIn) {
+  const { ix, draft } = await openIx();
+  ok([ix], [buyer], 'open');
+  const n = bridgeNonce();
+  const r = ok([await buyIx(draft, n, solIn)], [buyer], 'buy');
+  return { n, r };
+}
+
+test('buyback: provisional defaults after initialize', () => {
+  const c = config();
+  assert.equal(c.buybackBps, 1000, 'PROVISIONAL default share 10%');
+  assert.equal(c.buybackDest, 0, 'default destination = mining reserve');
+  assert.equal(c.reserveProgram.toBase58(), RESERVE_ID.toBase58(), 'reserve program = token/programs/reserve');
+  assert.equal(c.buybackCranker.toBase58(), PublicKey.default.toBase58(), 'permissionless');
+  assert.equal(c.buybackMaxPerCall.toString(), '1000000000');
+  assert.equal(c.buybackMinBuy.toString(), '1000000');
+  assert.equal(c.buybackMinIntervalSecs.toString(), '600');
+});
+
+test('buyback: set_buyback is admin-only, validated, and emits every value', async () => {
+  fails([await setBbIx({ buybackBps: 500 }, buyer.publicKey)], [buyer], /Unauthorized/, 'stranger set_buyback');
+  fails([await setBbIx({ buybackBps: 10_000 })], [admin], /BadConfig/, 'share 100%');
+  fails([await setBbIx({ destination: 2 })], [admin], /BadConfig/, 'unknown destination');
+  fails([await setBbIx({ reserveProgram: PublicKey.default })], [admin], /BadConfig/, 'reserve destination without a reserve program');
+  fails([await setBbIx({ minIntervalSecs: bn(-1) })], [admin], /BadConfig/, 'negative interval');
+  const r = ok([await setBbIx({ buybackBps: 1500, minIntervalSecs: bn(60) })], [admin], 'set_buyback');
+  const e = events(r.logs).find((x) => x.name === 'buybackConfigUpdated');
+  assert.ok(e, 'BuybackConfigUpdated emitted');
+  assert.equal(e.data.buybackBps, 1500);
+  assert.equal(e.data.destination, 0);
+  assert.equal(e.data.reserveProgram.toBase58(), RESERVE_ID.toBase58());
+  assert.equal(e.data.minIntervalSecs.toString(), '60');
+  assert.equal(e.data.maxPerCall.toString(), '1000000000');
+  assert.equal(config().buybackBps, 1500);
+  ok([await setBbIx({ buybackBps: 1000 })], [admin], 'back to 1000');
+});
+
+test('buyback: setup (reserve ATA, vault volume accumulators); crank to the reserve covers the orders since the last buy', async () => {
+  clock = svm.getClock().unixTimestamp;
+  svm.airdrop(cranker.publicKey, BigInt(5 * LAMPORTS_PER_SOL));
+  // the mining reserve's token account (created by reserve `launch` on a real deploy)
+  ok([spl.createAssociatedTokenAccountIdempotentInstruction(admin.publicKey, RESERVE_ATA, RESERVE_CREATOR, MINT, T22)], [admin], 'reserve ata');
+  for (const [prog, ev] of [[PUMP, pumpEvent], [AMM, ammEvent]]) {
+    ok([new TransactionInstruction({
+      programId: prog,
+      keys: [
+        { pubkey: admin.publicKey, isSigner: true, isWritable: true }, { pubkey: BB_VAULT, isSigner: false, isWritable: false },
+        { pubkey: pda(['user_volume_accumulator', BB_VAULT], prog), isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, { pubkey: ev, isSigner: false, isWritable: false }, { pubkey: prog, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]),
+    })], [admin], 'vault init_user_volume_accumulator');
+  }
+  // two more orders after the ones above: every order since initialize is pending
+  const c0 = config();
+  const a = await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  const b = await placeOrder(BigInt(LAMPORTS_PER_SOL / 4));
+  const c1 = config();
+  assert.equal(BigInt(c1.bbPendingOrders.toString()), BigInt(c0.bbPendingOrders.toString()) + 2n);
+  assert.equal(c1.bbPendingLastNonce.toString(), b.n.toString());
+  assert.equal(c1.bbPendingFirstNonce.toString(), nonce0.toString(), 'first pending = the first order ever');
+  assert.equal(available(), BigInt(c1.bbAccrued.toString()), 'vault above rent = all shares so far');
+  const avail = available();
+  const bc = curve();
+  const expected = BigInt(sdk.getBuyTokenAmountFromSolAmount({ global, feeConfig: sdk.PUMP_SDK.decodeFeeConfig(info(pda(['fee_config', PUMP], FEE))), mintSupply: null, bondingCurve: bc, amount: bn(avail), quoteMint: WSOL }).toString());
+  const res0 = tokenAmount(RESERVE_ATA), bridge0 = tokenAmount(VAULT), supply0 = mintSupply();
+  // the caller's min out binds
+  fails([await crankIx(cranker.publicKey, 10n ** 12n, expected * 2n)], [cranker], null, 'min_tokens_out above the fill');
+  const r = ok([await crankIx(cranker.publicKey, 10n ** 12n, (expected * 98n) / 100n)], [cranker], 'crank_buyback (stranger)');
+  CU.crank_buyback = r.cu;
+  console.log(`  crank_buyback CU ${r.cu}, tx ${r.size} bytes`);
+  const e = events(r.logs).find((x) => x.name === 'buybackExecuted');
+  assert.ok(e, 'BuybackExecuted emitted');
+  const got = BigInt(e.data.tokensOut.toString()), spent = BigInt(e.data.solIn.toString());
+  assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of the whole vault ${avail} (below the 1 SOL cap)`);
+  assert.ok(got >= (expected * 99n) / 100n && got <= (expected * 101n) / 100n, `tokens ${got} vs SDK ${expected}`);
+  assert.equal(tokenAmount(RESERVE_ATA) - res0, got, 'tokens landed in the mining reserve');
+  assert.equal(BigInt(e.data.routed.toString()), got);
+  assert.equal(e.data.destination, 0);
+  assert.equal(e.data.destinationAccount.toBase58(), RESERVE_ATA.toBase58());
+  assert.equal(e.data.firstNonce.toString(), nonce0.toString());
+  assert.equal(e.data.lastNonce.toString(), b.n.toString());
+  assert.equal(e.data.orders.toString(), c1.bbPendingOrders.toString());
+  assert.equal(e.data.availableBefore.toString(), avail.toString());
+  assert.equal(e.data.carry.toString(), (avail - spent).toString());
+  assert.equal(lamports(BB_VAULT), RENT_MIN + avail - spent, 'vault back to rent (+ any unspent lamports)');
+  assert.equal(tokenAmount(VAULT_ATA), 0n, 'nothing left in the vault ATA');
+  assert.equal(tokenAmount(VAULT), bridge0, 'bridge vault untouched (invariant unaffected)');
+  assert.equal(mintSupply(), supply0, 'reserve destination does not change the supply');
+  const c2 = config();
+  assert.equal(c2.bbBuys.toString(), '1');
+  assert.equal(c2.bbSpent.toString(), spent.toString());
+  assert.equal(c2.bbTokens.toString(), got.toString());
+  assert.equal(c2.bbToReserve.toString(), got.toString());
+  assert.equal(c2.bbPendingOrders.toString(), '0');
+  // the min interval (60 s, set above) holds
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  fails([await crankIx(cranker.publicKey)], [cranker], /TooSoon/, 'second crank inside the interval');
+});
+
+test('buyback: per-call cap carries the rest; an empty vault refuses; cranker allowlist; slippage bound', async () => {
+  advance(61);
+  ok([await setBbIx({ maxPerCall: bn(5_000_000) })], [admin], 'cap 0.005 SOL');
+  const n1 = bridgeNonce() - 1n; // the order placed at the end of the previous test
+  const avail = available();
+  assert.ok(avail > 5_000_000n);
+  const r = ok([await crankIx(cranker.publicKey)], [cranker], 'capped crank');
+  const e = events(r.logs).find((x) => x.name === 'buybackExecuted').data;
+  assert.equal(e.solIn.toString(), '5000000');
+  assert.equal(e.carry.toString(), (avail - 5_000_000n).toString(), 'the rest carries');
+  assert.equal(e.orders.toString(), '1');
+  assert.equal(e.firstNonce.toString(), n1.toString());
+  assert.equal(available(), avail - 5_000_000n);
+  // next buy: no new orders, only the carry
+  advance(61);
+  const r2 = ok([await crankIx(cranker.publicKey)], [cranker], 'carry crank');
+  const e2 = events(r2.logs).find((x) => x.name === 'buybackExecuted').data;
+  assert.equal(e2.orders.toString(), '0');
+  assert.equal(e2.firstNonce.toString(), '0');
+  assert.equal(BigInt(e2.availableBefore.toString()), avail - 5_000_000n);
+  ok([await setBbIx({ maxPerCall: bn(0) })], [admin], 'no cap');
+  advance(61);
+  if (available() > 0n) ok([await crankIx(cranker.publicKey)], [cranker], 'drain');
+  advance(61);
+  fails([await crankIx(cranker.publicKey)], [cranker], /NothingToBuy/, 'empty vault');
+  // allowlist
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  ok([await setBbIx({ cranker: admin.publicKey })], [admin], 'cranker = admin');
+  fails([await crankIx(cranker.publicKey)], [cranker], /Unauthorized/, 'stranger while an allowlist is set');
+  // slippage tighter than pump's 1.25% fee
+  ok([await updateIx({ maxSlippageBps: 50 })], [admin], 'slippage 0.5%');
+  fails([await crankIx(admin.publicKey)], [admin], /Slippage|custom program error/, 'buyback slippage');
+  ok([await updateIx({ maxSlippageBps: 300 })], [admin], 'restore slippage');
+  ok([await crankIx(admin.publicKey)], [admin], 'allowlisted cranker');
+  ok([await setBbIx({ cranker: PublicKey.default })], [admin], 'permissionless again');
+});
+
+test('buyback: burn destination lowers the mint supply by exactly the tokens bought; share 0 accrues nothing', async () => {
+  advance(61);
+  ok([await setBbIx({ destination: 1 })], [admin], 'destination burn');
+  const { n } = await placeOrder(BigInt(LAMPORTS_PER_SOL / 2));
+  const supply0 = mintSupply(), res0 = tokenAmount(RESERVE_ATA), bridge0 = tokenAmount(VAULT);
+  const r = ok([await crankIx(cranker.publicKey)], [cranker], 'crank burn');
+  const e = events(r.logs).find((x) => x.name === 'buybackExecuted').data;
+  const got = BigInt(e.tokensOut.toString());
+  assert.ok(got > 0n);
+  assert.equal(e.destination, 1);
+  assert.equal(e.destinationAccount.toBase58(), MINT.toBase58());
+  assert.equal(e.lastNonce.toString(), n.toString());
+  assert.equal(supply0 - mintSupply(), got, 'supply down by the burn');
+  assert.equal(tokenAmount(RESERVE_ATA), res0, 'reserve untouched');
+  assert.equal(tokenAmount(VAULT), bridge0, 'bridge vault untouched: vault x 1000 == 1e18 - escrow is unaffected');
+  assert.equal(config().bbBurned.toString(), got.toString());
+  console.log(`  burned ${got} SPL units for ${e.solIn} lamports; supply ${supply0} -> ${mintSupply()}`);
+  // share 0: no transfer, no event, the job gets all of sol_in
+  ok([await setBbIx({ buybackBps: 0, destination: 0 })], [admin], 'share 0');
+  const v0 = lamports(BB_VAULT), acc0 = config().bbAccrued.toString();
+  const o = await placeOrder(BigInt(LAMPORTS_PER_SOL / 10));
+  assert.equal(lamports(BB_VAULT), v0);
+  assert.equal(config().bbAccrued.toString(), acc0);
+  assert.equal(events(o.r.logs).filter((x) => x.name === 'buybackAccrued').length, 0);
+  ok([await setBbIx({ buybackBps: 1000 })], [admin], 'share back to 1000');
+});
+
 let graduated = false;
 test('graduation: curve completes + migrate_v2; buy_job then refuses', async () => {
   const { ix: open, draft } = await openIx();
@@ -525,7 +753,9 @@ test('buy_job_amm after graduation: PumpSwap buy, W/P split, deposit, Order venu
   assert.equal(svm.getAccount(TRADER_WSOL), null, 'wSOL ATA closed');
   const spent = BigInt(o.solSpent.toString());
   assert.ok(spent > 0n && spent <= SOL_IN);
-  assert.ok(b0 - lamports(buyer.publicKey) < spent + 20_000_000n, 'unspent SOL and ATA rent back to the buyer');
+  const share = (SOL_IN * BigInt(config().buybackBps)) / 10_000n;
+  assert.ok(spent <= SOL_IN - share, 'the job spends at most sol_in - share');
+  assert.ok(b0 - lamports(buyer.publicKey) < spent + share + 20_000_000n, 'unspent SOL and ATA rent back to the buyer');
   assert.equal(BigInt(o.workerPay.toString()) + BigInt(o.protocolFee.toString()), tokens * 1000n);
   const d = br.coder.accounts.decode('deposit', Buffer.from(svm.getAccount(pda(['deposit', le64(n)], BRIDGE)).data));
   assert.equal(d.sender.toBase58(), TRADER.toBase58());
@@ -538,6 +768,30 @@ test('buy_job_amm after graduation: PumpSwap buy, W/P split, deposit, Order venu
   ok([await updateIx({ maxSlippageBps: 300 })], [admin], 'restore');
   ok([await buyAmmIx(d2, bridgeNonce(), LAMPORTS_PER_SOL / 10)], [buyer], 'amm small buy');
   console.log(`  amm order: ${tokens} SPL units for ${spent} lamports`);
+});
+
+
+test('buyback after graduation: curve crank refuses, crank_buyback_amm buys on PumpSwap into the reserve', async (t) => {
+  if (!graduated) return t.skip('no graduation');
+  advance(61);
+  fails([await crankIx(cranker.publicKey)], [cranker], /CurveComplete/, 'curve crank after graduation');
+  const avail = available();
+  assert.ok(avail > 1_000_000n, `vault has the AMM orders' shares (${avail})`);
+  const res0 = tokenAmount(RESERVE_ATA), c0 = lamports(cranker.publicKey), bridge0 = tokenAmount(VAULT);
+  const r = ok([await crankAmmIx(cranker.publicKey)], [cranker], 'crank_buyback_amm');
+  CU.crank_buyback_amm = r.cu;
+  console.log(`  crank_buyback_amm CU ${r.cu}, tx ${r.size} bytes`);
+  const e = events(r.logs).find((x) => x.name === 'buybackExecuted').data;
+  assert.equal(e.venue, 1);
+  const got = BigInt(e.tokensOut.toString());
+  assert.ok(got > 0n);
+  const spent = BigInt(e.solIn.toString());
+  assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of ${avail}`);
+  assert.equal(tokenAmount(RESERVE_ATA) - res0, got);
+  assert.equal(svm.getAccount(VAULT_WSOL), null, 'vault wSOL ATA closed');
+  assert.equal(lamports(BB_VAULT), RENT_MIN + avail - spent, 'vault back to rent (+ unspent)');
+  assert.ok(c0 - lamports(cranker.publicKey) <= 10_000n, 'cranker got the wSOL ATA rent back (paid only the fee)');
+  assert.equal(tokenAmount(VAULT), bridge0);
 });
 
 test('cancel_draft returns the rent', async () => {
