@@ -376,6 +376,11 @@ minimum order size so that `amount x protocol_fee_bps / 10000 x 1000 >=
 min_protocol_fee_effective`: a raised `min_protocol_fee` holds paid orders back until the
 grace period passes and they are refunded (the buyer gets tokens back, not a job).
 
+Storefront buyback (2026-10-18, SPEC 5.1 "Buyback"): `buy_job*` also pays `buyback_bps`
+(provisional 1000) of `sol_in` into the storefront's buyback vault; the job buys with the
+rest, so P and W above come from `sol_in - share`. Nothing changes on the chain: the
+buyback is all on Solana (storefront-x402 `GET /buyback`, `pearl buyback`).
+
 ### getMempool `{}`
 `{"size": 2, "txs": ["hex"]}`
 

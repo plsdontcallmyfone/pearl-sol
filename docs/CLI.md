@@ -159,6 +159,7 @@ pearl lien set <solana-recipient> <bps> [--until H --cap T --release-key ADDR]
 pearl lien clear --release-key-file F [--account A] | lien show
 pearl register <name> [uri] | agent [address]
 pearl mine start [--threads 2] | mine stop | mine status
+pearl buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
 pearl snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
 ```
 
@@ -171,6 +172,11 @@ as payout in the background (log in `$TMPDIR/pearl-cli-miner-<pid>.log`), stoppe
 `mine stop` or on quit; only that child is ever stopped. In text mode it runs in the
 foreground, one line per block found, Ctrl-C stops it; with `--json` the miner's own JSON
 log lines go to stdout as before.
+
+`buyback` reads only Solana: the storefront Config's buyback fields (share, destination,
+reserve program, cranker, caps, totals, pending orders), the vault PDA's balance, the mint
+supply, and the latest `BuybackExecuted` events from the txs touching the vault (SOL in,
+tokens out, destination, the order nonces each buy covered). No price source.
 
 `--json` prints one object per command; errors print `{"ok": false, "error": "..."}` and exit 1.
 

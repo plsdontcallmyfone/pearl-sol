@@ -20,7 +20,8 @@ Solana's four jobs:
 4. Light client (M2): a Solana program follows our PoW headers and verifies the work, so withdrawals and job results are proved, not signed by a committee.
 
 Supply rule: 1 SPL base unit = 1000 base units on the chain. Genesis allocates the
-whole supply (1e18) to the bridge escrow. Nothing is minted or burned on the chain
+whole supply (1e18) to the bridge escrow (a storefront buyback set to burn lowers the Solana
+supply; see 5.1 "Buyback"). Nothing is minted or burned on the chain
 (tx fees go to miners). Invariant: `vault SPL x 1000 == 1e18 - escrow balance`
 (relayer adjusts for in-flight transfers).
 
@@ -303,6 +304,71 @@ Order closed on Solana before any unlock) is refunded ON SOLANA, in tokens:
 - An expired job (unlocked, posted, never delivered) still refunds W the normal way:
   ExpireJob on the chain returns W to the poster, then BridgeLock + release.
 
+Buyback (as built 2026-10-18, SYNTHESIS item 2; token/programs/storefront "Buyback"):
+Why: research/narratives/FLOWS-AND-PUMPS.md: buybacks held where they were continuous,
+on chain and fed by real fees (Hyperliquid, Venice); webpage-only or discretionary ones did
+not (StonkFun, Aster). So the share is a program rule inside `buy_job`, and every buy is an
+event anyone can read.
+- Where storefront SOL went before: the x402 price is `sol_in + overhead`. `overhead`
+  (default 12M lamports) stays with the service wallet and pays the Order and Deposit rent
+  and tx fees, so it is a cost, not margin. All of `sol_in` bought the token (pump's 1.25%
+  fee, of which 0.30% creator fee comes back to the reserve's creator-fee buyback); the
+  tokens became W (job pay, 80%) and P (to the mining pool, 20%). There was no margin.
+- Now: `buy_job` / `buy_job_amm` first move `share = sol_in x config.buyback_bps / 10000`
+  (floor) from the buyer to the buyback vault, a system-owned data-less PDA `["buyback"]`
+  (appended as the last account of both instructions), and the job buys with
+  `sol_in - share`; `Order.sol_spent` is the job's part. The first share also tops the vault
+  up to rent exemption (890,880 lamports, not counted as a share). The x402 service grosses
+  `sol_in` up so that `sol_in - share` still covers the job's own price: the buyback is a
+  markup on top of the job (quote fields `job_lamports`, `buyback_lamports`).
+- Crank: `crank_buyback(max_sol_in, min_tokens_out)` (curve, `buy_exact_quote_in_v3`) and
+  `crank_buyback_amm` (PumpSwap after graduation, `buy_exact_quote_in_v2`, wSOL ATA
+  wrapped and closed, its rent back to the cranker). The vault PDA is the pump `user`,
+  exactly as the reserve's creator PDA is for creator-fee buybacks. Permissionless unless
+  `buyback_cranker` is set. Spend = `min(vault - rent, buyback_max_per_call (0 = no cap),
+  max_sol_in)`, at least `buyback_min_buy`, at most once per `buyback_min_interval_secs`;
+  fill checked like `buy_job` (caller's `min_tokens_out`, and `max_slippage_bps` against
+  the program's fee-free quote). Then the vault ATA's whole balance goes to
+  `buyback_dest`: 0 = the mining reserve (TransferChecked to
+  ATA(PDA(["creator"], reserve_program), mint, Token-2022), the reserve's own token
+  account, so `fund_mining` can pay it out), 1 = burn (Token-2022 BurnChecked).
+- Admin: `set_buyback(BuybackParams { buyback_bps, destination, reserve_program, cranker,
+  max_per_call, min_buy, min_interval_secs })` (each optional; bps < 10000; destination
+  reserve needs a reserve program); emits `BuybackConfigUpdated` with every value.
+  PROVISIONAL defaults at `initialize` (owner decision open, HANDOFF): 1000 bps,
+  destination reserve, reserve program `4FkQcoCM...LY6p`, cranker anyone, 1 SOL per call,
+  min 0.001 SOL, 600 s.
+- Config fields appended after `light_client`: `buyback_bps u16, buyback_dest u8,
+  reserve_program [32], buyback_cranker [32], buyback_max_per_call u64, buyback_min_buy u64,
+  buyback_min_interval_secs i64, bb_last_ts i64, bb_accrued, bb_spent, bb_tokens,
+  bb_to_reserve, bb_burned, bb_buys, bb_pending_orders, bb_pending_first_nonce,
+  bb_pending_last_nonce (u64)` (171 bytes, starting 59 bytes after the attester vector).
+  The Order layout is unchanged (1070 bytes). A config written before this reads as zeros
+  (share 0) as long as the attester vector leaves 171 bytes of slack (4 attesters or fewer);
+  a fuller one needs a fresh initialize (localnet only so far).
+- Events (Anchor `Program data:` logs; discriminator `sha256("event:<Name>")[..8]`, Borsh):
+  `BuybackAccrued { order, nonce, lamports, vault_available, total_accrued }` per order;
+  `BuybackExecuted { buy, venue, sol_in, tokens_out, routed, destination,
+  destination_account, quote, first_nonce, last_nonce, orders, available_before, carry,
+  total_spent, total_tokens, total_to_reserve, total_burned }` per buy. `first_nonce ..
+  last_nonce` / `orders` = the Orders (bridge deposit nonces) whose share arrived since the
+  previous buy; `carry` = what a per-call cap left for the next buy (a later buy can then
+  show `orders = 0`). Sum of accrued shares = sum of `sol_in` + vault above rent (less any
+  donation sent straight to the vault, which is bought back too).
+- Supply: the bridge invariant `vault SPL x 1000 == 1e18 - escrow` is unaffected (the
+  buyback never touches the bridge vault or the escrow; tested). A burn lowers the Solana
+  mint supply below 1B; the escrow lamports matching burned tokens can never be unlocked, so
+  the chain-side bound is `1e18 - escrow <= 1000 x mint supply` (demo step 6 checks it).
+  "Supply stays 1B across both chains" now reads: 1B minus what the buyback burned.
+- Not refunded: a later refund of an order (bridge `refund_deposit`) returns its tokens,
+  not its buyback share (like P).
+- Measured (LiteSVM): buy_job 175.7k CU (tx 1100 bytes), buy_job_amm 211k, crank_buyback
+  128.7k (894 bytes), crank_buyback_amm 187k.
+- Sandwich risk is the reserve's: the on-chain quote is read inside the tx, so the caller's
+  `min_tokens_out`, the per-call cap and the optional cranker allowlist are the protection.
+- Readers: `GET /buyback` (storefront-x402), `node services/crank/src/main.ts sf-status`,
+  `pearl buyback [--json]` (config, vault, totals, latest `BuybackExecuted`).
+
 ### 5.2 x402 endpoint (M1)
 `services/storefront-x402` (port 10662): an HTTP service that prices a job,
 accepts x402 payment on Solana, calls `buy_job`, and serves the result once
@@ -420,5 +486,7 @@ randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
 
 ## 9. Open questions for the owner
 - Dev buy size (sets the starting reserve).
+- Storefront buyback share (`buyback_bps`, provisional 1000) and destination (mining
+  reserve or burn, provisional reserve); per-call cap and interval (5.1 "Buyback").
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
 - Name and ticker.
