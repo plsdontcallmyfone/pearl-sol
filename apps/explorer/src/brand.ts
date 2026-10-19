@@ -1,6 +1,6 @@
-// The product name and ticker live here and nowhere else (placeholders: the final name
-// is not decided, and it is not "PEARL").
+// The product name and ticker live here and nowhere else (owner chose Lode / LODE,
+// 2026-10-18).
 export const BRAND = {
-  name: "PLACEHOLDER",
-  ticker: "TOKEN",
+  name: "LODE",
+  ticker: "LODE",
 } as const;
