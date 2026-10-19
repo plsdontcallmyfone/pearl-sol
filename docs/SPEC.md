@@ -374,9 +374,17 @@ W, P, deadline, evaluators, threshold as for any job
 
 **`PostSegments` (kind 12)**, sent by the ticket's server:
 ```
-ticket_id [32] | round u16 | count u8 (1..=64)
-| (matrix u16 | m u32 | max_blocks u32 | hash_a [32] | c_hash [32] | a_uri (u16 len, blob:)) * count
+ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_pattern [6] | count u8 (1..=64)
+| (matrix u16 | m u32 | k u32 | n u32 | max_blocks u32 | hash_a [32] | hash_b [32] | c_hash [32] | a_uri (u16 len, blob:)) * count
 ```
+- The model id, mining config and each matrix's `k, n, hash_b` repeat the registry (the chain
+  refuses any mismatch) so the Solana light client can rebuild every segment job from this tx
+  alone: `register_job(job_id = segment id, tx, path)` accepts a PostSegments tx
+  (pearl-verify-sbf `chaintx::job_by_id`), and header-relay registers each segment from its
+  posting block. A Solana tx carries one such chain tx with its path, so the gateway posts one
+  segment per PostSegments (measured: 322-byte chain tx, register_job 52,995 CU in LiteSVM).
+  Cost on real Solana: one register_job tx and one JobCommit account (rent, about 0.003 SOL)
+  per segment, 96 per round on Llama-3.2-1B; a model-level commit would cut this (follow-up).
 - Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
   The server serves requests off chain against the ticket's row budget R and posts their GEMMs
   in rounds: round r stacks the rows of every request served in that period (each request's

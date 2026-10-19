@@ -449,7 +449,7 @@ Result `{"subscribed": [...]}`. Notifications:
 | 9 SetRoute | `solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]` (zero key = no early release) |
 | 10 ClearRoute | `account [32], route_nonce u64, sig [64]` (raw ed25519 by the lien's release key over the route-clear message) |
 | 11 RegisterModel | `name_len u8, name, manifest_uri_len u16, manifest_uri (blob:), recipe u8 (=1), rank u16, rows_pattern [6], cols_pattern [6], count u16, (k u32, n u32, hash_b [32])*` (SPEC 4.5) |
-| 12 PostSegments | `ticket_id [32], round u16, count u8, (matrix u16, m u32, max_blocks u32, hash_a [32], c_hash [32], a_uri_len u16, a_uri)*` (the ticket's server; SPEC 4.5) |
+| 12 PostSegments | `ticket_id [32], round u16, model_id [32], rank u16, rows_pattern [6], cols_pattern [6], count u8, (matrix u16, m u32, k u32, n u32, max_blocks u32, hash_a [32], hash_b [32], c_hash [32], a_uri_len u16, a_uri)*` (the ticket's server; registry fields repeated and checked; SPEC 4.5) |
 | 13 RejectResult | `job_id [32], deliverer [32], result_hash [32], count u8, (pubkey [32], sig [64])*` (job evaluators, raw ed25519 over the reject message; reopens the job) |
 
 Rules worth knowing:
