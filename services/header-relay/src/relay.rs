@@ -236,6 +236,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
     }
 
     fn fire(ledger: &mut L, t: &mut Tx, bh: Hash, stats: &mut Stats) -> Result<()> {
+        let bh = ledger.fresh_blockhash(bh)?;
         let tx = ledger::build(ledger, &t.ixs, &[], t.cu, bh);
         t.sig = Some(ledger.submit(tx)?);
         t.bh = bh;

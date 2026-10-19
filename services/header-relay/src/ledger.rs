@@ -40,6 +40,13 @@ pub trait Ledger {
         Ok(self.accounts(&[*key])?.pop().flatten())
     }
     fn blockhash(&self) -> Result<Hash>;
+    /// The blockhash to sign the next tx with, given the pass's `bh`. Default: `bh`. The RPC
+    /// ledger renews it once it is a few seconds old: with paced sends a long pass would
+    /// otherwise sign its last txs with a blockhash about to expire (they then expire
+    /// unconfirmed and are re-fired every pass).
+    fn fresh_blockhash(&mut self, bh: Hash) -> Result<Hash> {
+        Ok(bh)
+    }
     fn blockhash_valid(&self, h: &Hash) -> Result<bool>;
     /// Send without waiting (no preflight); the signature is tracked with `states`.
     fn submit(&mut self, tx: Transaction) -> Result<Signature>;

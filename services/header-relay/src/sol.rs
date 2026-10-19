@@ -30,12 +30,14 @@ pub struct Sol {
     /// whole passes, so the devnet paces sends at a few hundred ms.
     pub send_gap: std::time::Duration,
     last_send: std::sync::Mutex<Option<std::time::Instant>>,
+    /// (blockhash, first seen) handed out by `fresh_blockhash`.
+    bh_cache: Option<(solana_sdk::hash::Hash, std::time::Instant)>,
 }
 
 impl Sol {
     pub fn new(url: &str, payer: Keypair, cu_price: u64) -> Self {
         Self { rpc: RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed()), payer, txs: 0, cu: 0, cu_price,
-               poll: std::time::Duration::from_millis(50), send_gap: std::time::Duration::ZERO, last_send: std::sync::Mutex::new(None) }
+               poll: std::time::Duration::from_millis(50), send_gap: std::time::Duration::ZERO, last_send: std::sync::Mutex::new(None), bh_cache: None }
     }
 
     /// Sets the confirm poll interval (`--confirm-poll-ms`).
@@ -207,6 +209,17 @@ impl crate::ledger::Ledger for Sol {
     }
     fn blockhash(&self) -> Result<solana_sdk::hash::Hash> {
         Ok(self.rpc.get_latest_blockhash()?)
+    }
+    fn fresh_blockhash(&mut self, _bh: solana_sdk::hash::Hash) -> Result<solana_sdk::hash::Hash> {
+        let now = std::time::Instant::now();
+        if let Some((c, t)) = self.bh_cache {
+            if now.duration_since(t) < std::time::Duration::from_secs(15) {
+                return Ok(c);
+            }
+        }
+        let fresh = self.rpc.get_latest_blockhash()?;
+        self.bh_cache = Some((fresh, now));
+        Ok(fresh)
     }
     fn blockhash_valid(&self, h: &solana_sdk::hash::Hash) -> Result<bool> {
         Ok(self.rpc.is_blockhash_valid(h, CommitmentConfig::processed())?)
