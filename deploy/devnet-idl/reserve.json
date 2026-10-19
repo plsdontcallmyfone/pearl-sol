@@ -439,10 +439,13 @@
     {
       "name": "fund_mining",
       "docs": [
-        "Admin or `config.funder`: deposit `amount` reserve tokens into the",
+        "Permissionless, rate limited: deposit `amount` reserve tokens into the",
         "bridge with `config.mining_pool` (agent chain) as recipient. CPI into",
         "the token-side bridge `deposit(amount, agent_recipient)` (SPEC 2.3),",
-        "with the creator PDA as `sender` and the caller as rent `payer`."
+        "with the creator PDA as `sender` and the caller as rent `payer`.",
+        "Refused while `fund_paused`, above `max_fund_per_call`, inside",
+        "`fund_min_interval_secs` of the last funding, or past `fund_max_per_window`",
+        "in the current `fund_window_secs` window."
       ],
       "discriminator": [
         199,
@@ -458,7 +461,7 @@
         {
           "name": "authority",
           "docs": [
-            "Admin or config.funder; pays the bridge Deposit record rent."
+            "Anyone (fund_mining is permissionless); pays the bridge Deposit record rent."
           ],
           "writable": true,
           "signer": true
@@ -795,6 +798,57 @@
       ]
     },
     {
+      "name": "migrate_config",
+      "docs": [
+        "Admin: grow a config written before the fund-limit fields (layout 0) to the current",
+        "size and set those fields to the defaults. No-op on a current config."
+      ],
+      "discriminator": [
+        92,
+        131,
+        58,
+        105,
+        210,
+        154,
+        224,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "docs": [
+            "discriminator and admin are checked in the handler."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "set_admin",
       "discriminator": [
         251,
@@ -838,6 +892,60 @@
         {
           "name": "new_admin",
           "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_fund_limits",
+      "docs": [
+        "Admin: fund_mining pause and rate limits. Emits every resulting value."
+      ],
+      "discriminator": [
+        225,
+        30,
+        158,
+        194,
+        195,
+        146,
+        160,
+        5
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "p",
+          "type": {
+            "defined": {
+              "name": "FundLimitParams"
+            }
+          }
         }
       ]
     },
@@ -937,6 +1045,19 @@
         19,
         198,
         194
+      ]
+    },
+    {
+      "name": "FundLimitsUpdated",
+      "discriminator": [
+        84,
+        159,
+        23,
+        162,
+        129,
+        19,
+        161,
+        61
       ]
     },
     {
@@ -1051,6 +1172,31 @@
       "code": 6016,
       "name": "Overflow",
       "msg": "overflow"
+    },
+    {
+      "code": 6017,
+      "name": "FundPaused",
+      "msg": "fund_mining is paused"
+    },
+    {
+      "code": 6018,
+      "name": "FundTooSoon",
+      "msg": "fund_mining called before fund_min_interval_secs"
+    },
+    {
+      "code": 6019,
+      "name": "OverWindowCap",
+      "msg": "amount above fund_max_per_window for this window"
+    },
+    {
+      "code": 6020,
+      "name": "DestinationFrozen",
+      "msg": "mining_pool / bridge_program are frozen after the first fund_mining"
+    },
+    {
+      "code": 6021,
+      "name": "NeedsMigration",
+      "msg": "config predates the fund limits: run migrate_config"
     }
   ],
   "types": [
@@ -1111,7 +1257,7 @@
           {
             "name": "funder",
             "docs": [
-              "Besides the admin, the key allowed to call `fund_mining` (crank service)."
+              "UNUSED since fund_mining became permissionless (2026-10-19); kept for the layout."
             ],
             "type": "pubkey"
           },
@@ -1125,7 +1271,8 @@
           {
             "name": "mining_pool",
             "docs": [
-              "Agent-chain `mining_pool` PDA, the `agent_recipient` of every deposit."
+              "Agent-chain `mining_pool` PDA, the `agent_recipient` of every deposit. Frozen",
+              "(with bridge_program) once total_funded > 0."
             ],
             "type": "pubkey"
           },
@@ -1192,6 +1339,57 @@
           {
             "name": "creator_bump",
             "type": "u8"
+          },
+          {
+            "name": "layout",
+            "docs": [
+              "CONFIG_LAYOUT once the fields below are set (0 = an unmigrated config)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "fund_paused",
+            "docs": [
+              "Admin pause of fund_mining."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "fund_min_interval_secs",
+            "docs": [
+              "Minimum seconds between two fund_mining calls."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "fund_window_secs",
+            "docs": [
+              "Rolling window for fund_max_per_window; 0 = no window cap."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "fund_max_per_window",
+            "docs": [
+              "Most tokens fund_mining may move per window; 0 = no window cap."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fund_last_ts",
+            "type": "i64"
+          },
+          {
+            "name": "fund_window_start",
+            "type": "i64"
+          },
+          {
+            "name": "fund_window_used",
+            "type": "u64"
+          },
+          {
+            "name": "fund_calls",
+            "type": "u64"
           }
         ]
       }
@@ -1283,6 +1481,79 @@
       }
     },
     {
+      "name": "FundLimitParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "paused",
+            "type": {
+              "option": "bool"
+            }
+          },
+          {
+            "name": "max_per_call",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_interval_secs",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "window_secs",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "max_per_window",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FundLimitsUpdated",
+      "docs": [
+        "`set_fund_limits`: every fund_mining limit after the change."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "max_per_call",
+            "type": "u64"
+          },
+          {
+            "name": "min_interval_secs",
+            "type": "i64"
+          },
+          {
+            "name": "window_secs",
+            "type": "i64"
+          },
+          {
+            "name": "max_per_window",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "Launched",
       "type": {
         "kind": "struct",
@@ -1321,6 +1592,29 @@
           },
           {
             "name": "total_funded",
+            "type": "u64"
+          },
+          {
+            "name": "caller",
+            "docs": [
+              "Appended 2026-10-19 (older decoders stop after total_funded)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "reserve_left",
+            "type": "u64"
+          },
+          {
+            "name": "window_start",
+            "type": "i64"
+          },
+          {
+            "name": "window_used",
+            "type": "u64"
+          },
+          {
+            "name": "calls",
             "type": "u64"
           }
         ]

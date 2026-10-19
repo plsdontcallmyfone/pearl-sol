@@ -797,8 +797,9 @@
     {
       "name": "register_job",
       "docs": [
-        "Record a job's commitments from the tx that created it (PostJob, or a",
-        "storefront-order BridgeUnlock), proved against a verified canonical header."
+        "Record a job's commitments from the tx that created it (PostJob, a storefront-order",
+        "BridgeUnlock, or a PostSegments for a standing job), proved against a verified",
+        "canonical header."
       ],
       "discriminator": [
         87,
