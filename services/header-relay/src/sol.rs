@@ -24,18 +24,45 @@ pub struct Sol {
     /// public RPC (Solana devnet: about 40 calls of one method per 10 s per IP) throttles
     /// that with 429 backoff, which stalls the relay, so the devnet runs with a few hundred ms.
     pub poll: std::time::Duration,
+    /// Minimum spacing between sendTransaction calls (`--send-gap-ms`, default none). The
+    /// pipelined relay sends every slot's chunk txs back to back; on Solana devnet's public
+    /// RPC (about 40 sendTransaction per 10 s per IP) such bursts get 429 backoff that stalls
+    /// whole passes, so the devnet paces sends at a few hundred ms.
+    pub send_gap: std::time::Duration,
+    last_send: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl Sol {
     pub fn new(url: &str, payer: Keypair, cu_price: u64) -> Self {
         Self { rpc: RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed()), payer, txs: 0, cu: 0, cu_price,
-               poll: std::time::Duration::from_millis(50) }
+               poll: std::time::Duration::from_millis(50), send_gap: std::time::Duration::ZERO, last_send: std::sync::Mutex::new(None) }
     }
 
     /// Sets the confirm poll interval (`--confirm-poll-ms`).
     pub fn with_poll(mut self, ms: u64) -> Self {
         self.poll = std::time::Duration::from_millis(ms.max(10));
         self
+    }
+
+    /// Sets the minimum spacing between sendTransaction calls (`--send-gap-ms`).
+    pub fn with_send_gap(mut self, ms: u64) -> Self {
+        self.send_gap = std::time::Duration::from_millis(ms);
+        self
+    }
+
+    /// Waits until `send_gap` has passed since the previous sendTransaction.
+    fn pace(&self) {
+        if self.send_gap.is_zero() {
+            return;
+        }
+        let mut last = self.last_send.lock().unwrap();
+        if let Some(t) = *last {
+            let since = t.elapsed();
+            if since < self.send_gap {
+                std::thread::sleep(self.send_gap - since);
+            }
+        }
+        *last = Some(std::time::Instant::now());
     }
 
     pub fn pk(&self) -> Pubkey {
@@ -91,6 +118,7 @@ impl Sol {
             }
             all.extend_from_slice(ixs);
             let tx = Transaction::new_signed_with_payer(&all, Some(&self.payer.pubkey()), &[&self.payer], bh);
+            self.pace();
             sigs.push(self.rpc.send_transaction(&tx)?);
         }
         let t0 = std::time::Instant::now();
@@ -118,6 +146,7 @@ impl Sol {
     }
 
     fn send_confirm(&self, tx: &Transaction, bh: &solana_sdk::hash::Hash) -> Result<String> {
+        self.pace();
         let sig = self.rpc.send_transaction(tx)?;
         let t0 = std::time::Instant::now();
         loop {
@@ -184,6 +213,7 @@ impl crate::ledger::Ledger for Sol {
     }
     fn submit(&mut self, tx: Transaction) -> Result<solana_sdk::signature::Signature> {
         let cfg = solana_client::rpc_config::RpcSendTransactionConfig { skip_preflight: true, ..Default::default() };
+        self.pace();
         let sig = self.rpc.send_transaction_with_config(&tx, cfg)?;
         self.txs += 1;
         Ok(sig)

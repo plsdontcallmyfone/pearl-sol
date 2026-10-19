@@ -43,6 +43,9 @@ struct Cli {
     /// Signature-status poll interval (ms) while confirming txs; raise it on a public RPC.
     #[arg(long, global = true, default_value_t = 50)]
     confirm_poll_ms: u64,
+    /// Minimum spacing (ms) between sendTransaction calls; set it on a rate-limited public RPC.
+    #[arg(long, global = true, default_value_t = 0)]
+    send_gap_ms: u64,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -138,11 +141,11 @@ fn main() -> Result<()> {
     let node = Node::new(&cli.node);
     match cli.cmd {
         Cmd::Init { height, relay_reward, retain_final } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
         Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
             let settle_node = Node::new(&cli.node);
             let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu });
@@ -178,7 +181,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::SetParams { max_future_ms, relay_reward, retain_final } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             let mut p = s.config()?.params;
             p.max_future_ms = max_future_ms.unwrap_or(p.max_future_ms);
             p.relay_reward = relay_reward.unwrap_or(p.relay_reward);
@@ -188,7 +191,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::CloseWorks { work, parallel } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             for i in 0..parallel.max(1) {
                 let p = work_path(&work, i);
                 if !p.exists() {
@@ -204,7 +207,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Status => {
-            let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             match s.config() {
                 Ok(c) => {
                     let acc = s.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
@@ -228,7 +231,7 @@ fn main() -> Result<()> {
         }
         Cmd::Harvest { out, to } => harvest(&node, &out, to),
         Cmd::AccProof { height, restore } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             acc_proof(&node, &mut s, height, restore)
         }
     }
