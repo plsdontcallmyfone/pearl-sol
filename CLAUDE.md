@@ -41,6 +41,41 @@ these two validators and stop them when idle.
 `lsof -ti :<port>` before binding. Kill by PID only. Always pass `-u` and `-k`
 explicitly; never touch `solana config`.
 
+## Cadre web asks (from ~/cadre-web, Cadre website app row)
+
+The site reads only the cadre-api typed client and signs only in the Cadre Wallet
+(`window.pearl`, Wallet Standard on Solana). Endpoints it needs; anything missing shows
+"unavailable" in the UI (behind `NEXT_PUBLIC_CADRE_PENDING_API=1`, never fake data).
+Prefer amounts as decimal strings of base units, as the explorer does. Status per line:
+OPEN = not in openapi.yaml yet.
+
+- OPEN `GET /v1/summary`: paid-block ratio (paid, indexed), totals (P, subsidy, SOL settled,
+  unique payers, top payer share), buyback (vault SOL, bought, to reserve, burned,
+  bb_reserve_cap), reserve ATA balance, mint supply / circulating, light client (tip,
+  final, chain height, lag).
+- OPEN `GET /v1/feed?filter=paid&limit=N`: recent paid work (block, job or ticket, payer,
+  P, subsidy, light-client verdict). Plus block / job / order / tx detail as the explorer has.
+- OPEN `GET /v1/accounts/{addr}`: chain balance + nonce, Solana SOL + CADRE SPL, agent
+  profile, lien (getRoute), Agent Credit line if any, mining earnings (coinbase receipts:
+  fees, subsidy, matured), history (getAccountTxs + Solana signatures).
+- OPEN `GET /v1/bridge/transfers?owner=ADDR`: deposits (Solana -> chain) and withdrawals
+  (chain -> Solana) with stage (submitted, seen, unlocked/released, final) and tx links.
+- OPEN `GET /v1/pump/quote?sol_in=L` and `POST /v1/tx/pump-buy {buyer, sol_in,
+  slippage_bps}` -> unsigned Solana tx (base64) + quote (curve or PumpSwap after graduation).
+- OPEN `POST /v1/tx/bridge-deposit {owner, amount_spl, recipient}` -> unsigned Solana tx.
+  (Bridge out is a chain BridgeLock the wallet already builds.)
+- OPEN gateway: `GET /v1/models` with prices, `POST /v1/chat/completions` streaming (SSE),
+  prepaid `GET /v1/prepaid/{account}` + top-up (unsigned tx or the exact transfer to make),
+  API keys or signed-request auth (message format to sign), `GET /v1/receipts?account=`
+  and `GET /v1/receipts/{id}` (paid, ticket, order, blocks mined, proof hash, explorer link).
+- OPEN `GET /v1/agents?sort=paid` (ranked by paid volume from distinct payers, never counts)
+  and `GET /v1/agents/{account}` (REPUTATION profile, card URI + probe).
+- OPEN `GET /v1/mining`: params (difficulty, block time, subsidy now, K), pool endpoints;
+  `GET /v1/miners/{addr}` earnings (coinbase receipts + pool payouts).
+- OPEN crank: `GET /v1/crank` (buyback vault, last BuybackExecuted, min buy / interval,
+  fund_mining availability + rate limit) and `POST /v1/tx/crank-buyback {payer}`,
+  `POST /v1/tx/fund-mining {payer}` -> unsigned Solana txs.
+
 ## Who is working on what
 
 | Who | Started | Scope |
@@ -92,39 +127,4 @@ explicitly; never touch `solana config`.
 | Claude subagent (token-side buyback/burn + public numbers) | 2026-10-19 | token/programs/{storefront,reserve} (buyback to reserve under bb_reserve_cap else SPL burn, events; permissionless rate-limited fund_mining, admin pause), token/tests/{storefront,reserve}*, services/crank, crates/pearl-cli buyback read, tools/defillama (new), apps/explorer (circulating-supply endpoint + revenue view only), ~/pearl-wallet storefront client + IDL fixture, ~/agent-credit pins, docs SPEC 5.1 + HANDOFF + TEST-REPORT (+ DEVNET upgrade steps); heavy builds on the VPS; storefront edits kept in separate instructions from the prepaid top-up work (IN PROGRESS) |
 | Claude subagent (agent layer: RejectResult + open evaluation + profiles) | 2026-10-19 | chain/agent-types + executor + state + rpc (RejectResult tx only, separate fns), chain vectors, docs/EVALUATORS.md (new), services/attester evaluator mode, services/storefront-x402 + services/agent-cli (buyer-named evaluators), apps/explorer agent page + card probe (new files), crates/pearl-cli `pearl agent`, services/cadre-proxy (new), extension/src/chain + ~/pearl-wallet src/shared/pearl codecs, docs SPEC/RPC/CLI/HANDOFF/TEST-REPORT; heavy builds on VPS; Mac test ports 10690-10699 (IN PROGRESS) |
 | Claude subagent (cadre-api, public site backend) | 2026-10-19 | services/cadre-api (new: /v1 JSON API over the explorer indexer + gateway pass-through + wallet helpers, openapi.yaml, client/), docs/API.md (new), HANDOFF line; read-only imports from apps/explorer (additive exports only if needed); public on TEST box 64.95.13.106 via caddy https (sslip.io) on 443 only; Mac ports 10685-10689; does NOT touch devnet boxes or instance-backend (IN PROGRESS) |
-| Claude subagent (Cadre website app) | 2026-10-19 | ~/cadre-web (new repo: Next.js site, pages home/buy+bridge/AI/dashboard/mine/agents/explorer/crank), scripts/install-miner.sh (new), this row + the 10710 port line; ~/pearl-wallet AI screen + site approvals; in ~/pearl-sol otherwise READ ONLY; Mac ports 10710-10719 (IN PROGRESS). API asks for cadre-api / gateway: see "Cadre web asks" below |
-
-## Cadre web asks (from ~/cadre-web, Cadre website app row)
-
-The site reads only the cadre-api typed client and signs only in the Cadre Wallet
-(`window.pearl`, Wallet Standard on Solana). Endpoints it needs; anything missing shows
-"unavailable" in the UI (behind `NEXT_PUBLIC_CADRE_PENDING_API=1`, never fake data).
-Prefer amounts as decimal strings of base units, as the explorer does. Status per line:
-OPEN = not in openapi.yaml yet.
-
-- OPEN `GET /v1/summary`: paid-block ratio (paid, indexed), totals (P, subsidy, SOL settled,
-  unique payers, top payer share), buyback (vault SOL, bought, to reserve, burned,
-  bb_reserve_cap), reserve ATA balance, mint supply / circulating, light client (tip,
-  final, chain height, lag).
-- OPEN `GET /v1/feed?filter=paid&limit=N`: recent paid work (block, job or ticket, payer,
-  P, subsidy, light-client verdict). Plus block / job / order / tx detail as the explorer has.
-- OPEN `GET /v1/accounts/{addr}`: chain balance + nonce, Solana SOL + CADRE SPL, agent
-  profile, lien (getRoute), Agent Credit line if any, mining earnings (coinbase receipts:
-  fees, subsidy, matured), history (getAccountTxs + Solana signatures).
-- OPEN `GET /v1/bridge/transfers?owner=ADDR`: deposits (Solana -> chain) and withdrawals
-  (chain -> Solana) with stage (submitted, seen, unlocked/released, final) and tx links.
-- OPEN `GET /v1/pump/quote?sol_in=L` and `POST /v1/tx/pump-buy {buyer, sol_in,
-  slippage_bps}` -> unsigned Solana tx (base64) + quote (curve or PumpSwap after graduation).
-- OPEN `POST /v1/tx/bridge-deposit {owner, amount_spl, recipient}` -> unsigned Solana tx.
-  (Bridge out is a chain BridgeLock the wallet already builds.)
-- OPEN gateway: `GET /v1/models` with prices, `POST /v1/chat/completions` streaming (SSE),
-  prepaid `GET /v1/prepaid/{account}` + top-up (unsigned tx or the exact transfer to make),
-  API keys or signed-request auth (message format to sign), `GET /v1/receipts?account=`
-  and `GET /v1/receipts/{id}` (paid, ticket, order, blocks mined, proof hash, explorer link).
-- OPEN `GET /v1/agents?sort=paid` (ranked by paid volume from distinct payers, never counts)
-  and `GET /v1/agents/{account}` (REPUTATION profile, card URI + probe).
-- OPEN `GET /v1/mining`: params (difficulty, block time, subsidy now, K), pool endpoints;
-  `GET /v1/miners/{addr}` earnings (coinbase receipts + pool payouts).
-- OPEN crank: `GET /v1/crank` (buyback vault, last BuybackExecuted, min buy / interval,
-  fund_mining availability + rate limit) and `POST /v1/tx/crank-buyback {payer}`,
-  `POST /v1/tx/fund-mining {payer}` -> unsigned Solana txs.
+| Claude subagent (Cadre website app) | 2026-10-19 | ~/cadre-web (new repo: Next.js site, pages home/buy+bridge/AI/dashboard/mine/agents/explorer/crank), scripts/install-miner.sh (new), this row + the 10710 port line; ~/pearl-wallet AI screen + site approvals; in ~/pearl-sol otherwise READ ONLY; Mac ports 10710-10719 (IN PROGRESS). API asks for cadre-api / gateway: see "Cadre web asks" above |
