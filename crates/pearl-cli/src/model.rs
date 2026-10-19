@@ -159,7 +159,10 @@ pub fn prepare(dir: &Path, registrant: &[u8; 32], name: &str) -> Result<(Manifes
     man.registrant = b58(registrant);
     man.files = standing::list_files(dir)?;
     let bytes = serde_json::to_vec_pretty(&man)?;
-    std::fs::write(dir.join("manifest.json"), &bytes)?;
+    // new inode (tmp + rename): a hardlinked copy of the model directory keeps its own manifest
+    let tmp = dir.join("manifest.json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, dir.join("manifest.json"))?;
     Ok((man, bytes))
 }
 

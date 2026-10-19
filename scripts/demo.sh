@@ -10,7 +10,10 @@
 #   scripts/demo.sh down     stop whatever a previous run left (DEMO_KEEP_UP=1), by recorded PIDs
 #
 # Env: DEMO_TICKS_PER_SLOT (token validator, default 8 = 50 ms slots), DEMO_KEEP_UP=1 (leave the stack running), DEMO_K (finality depth, default 6),
-#      DEMO_BLOCK_MS (target block time, default 1500), DEMO_MINER_THREADS (default 4).
+#      DEMO_BLOCK_MS (target block time, default 1500), DEMO_MINER_THREADS (default 4),
+#      CADRE_MODEL_DIR (quantized model for the inference step, default ~/cadre-models/llama-3.2-1b-w7a7;
+#      tools/cadre/quantize.py makes it), CADRE_PYTHON (python with torch + transformers for the worker),
+#      DEMO_STEPS (comma list of step numbers to run, default all; 1-6 are the setup the later steps need).
 # Kills by PID only (never by pattern). Never touches `solana config`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,7 +26,7 @@ down() {
     [[ -f $f ]] || continue
     pid="$(cat "$f")"
     # only our own processes: check what the PID is now before killing it
-    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|header-relay|src/main.ts"; then
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|header-relay|cadre-gateway|tools/cadre/worker.py|src/main.ts"; then
       kill "$pid" && echo "stopped $(basename "$f" .pid) ($pid)"
     fi
     rm -f "$f"
@@ -36,7 +39,7 @@ if [[ ${1:-} == down ]]; then down; exit 0; fi
 
 # --- preflight: our ports must be free (a previous run may still be up)
 busy=""
-for p in 10600 10601 10602 10603 10630 10631 10632 10633 10634 10635 10640 10641 10642 10660 10661 10662; do
+for p in 10600 10601 10602 10603 10630 10631 10632 10633 10634 10635 10640 10641 10642 10660 10661 10662 10664 10665; do
   if [[ -n "$(lsof -ti :$p 2>/dev/null)" ]]; then busy+=" $p(pid $(lsof -ti :$p | tr '\n' ' '))"; fi
 done
 if [[ -n $busy ]]; then
@@ -53,8 +56,10 @@ mkdir -p "$DEMO"
 t=$(date +%s)
 echo "building agent-node (chain/, pinned toolchain)..."
 (cd "$ROOT/chain" && cargo build --release -q -p agent-node)
-echo "building pearl-job, pearl-miner, pearl-attester (crates/)..."
-(cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester)
+echo "building pearl-job, pearl-miner, pearl-attester, cadre-gateway (crates/)..."
+(cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester -p cadre-gateway)
+echo "building the pearl CLI (crates/pearl-cli)..."
+(cd "$ROOT/crates/pearl-cli" && cargo build --release -q)
 echo "building header-relay (services/header-relay)..."
 (cd "$ROOT/services/header-relay" && cargo build --release -q)
 for d in relayer crank storefront-x402; do

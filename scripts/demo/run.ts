@@ -5,7 +5,8 @@
 
 import { blake3 } from "@noble/hashes/blake3";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   ComputeBudgetProgram, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction,
@@ -71,11 +72,22 @@ const BIN = {
   attester: resolve(ROOT, "crates/target/release/pearl-attester"),
   job: resolve(ROOT, "crates/target/release/pearl-job"),
   headerRelay: resolve(ROOT, "services/header-relay/target/release/header-relay"),
+  gateway: resolve(ROOT, "crates/target/release/cadre-gateway"),
+  pearl: resolve(ROOT, "crates/pearl-cli/target/release/pearl"),
 };
+// Cadre inference (SPEC 4.5 / 5.4): the quantized model (tools/cadre/quantize.py), the worker's python,
+// the model store the miner, attester and gateway read registered matrices from
+const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-w7a7");
+const CADRE_PYTHON = process.env.CADRE_PYTHON ?? resolve(homedir(), "int7-exp/venv/bin/python");
+const MODEL_STORE = resolve(DEMO, "models");
+const GATEWAY_URL = "http://127.0.0.1:10664";
+const WORKER_URL = "http://127.0.0.1:10665";
+// node blob limits: room for a registered model (about 1.7 GB for Llama-3.2-1B) and a fast local upload
+const DEVNET_BLOBS = { max_total_bytes: 8_000_000_000, put_rate_bytes_per_s: 2_000_000_000, put_burst_bytes: 256 << 20 };
 const HR_ARGS = ["--node", NODE_RPC, "--solana", TOKEN_RPC, "--payer", resolve(ROOT, KEYS.payer)];
 const CRANK = resolve(ROOT, "services/crank");
 const RELAYER = resolve(ROOT, "services/relayer");
-const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS) };
+const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS), DEVNET_BLOBS: JSON.stringify(DEVNET_BLOBS) };
 
 const crank = (args: string[]) => run("node", ["src/main.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC, KEYPAIR: resolve(ROOT, KEYS.payer) } });
 const trade = (args: string[]) => lastJson(run("node", ["src/trade.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC } }));
@@ -110,7 +122,13 @@ async function invariant(): Promise<string> {
     `in_flight_deposits_spl=${inv.pendingDepositSpl} in_flight_withdrawals_spl=${inv.pendingWithdrawalSpl} delta=${inv.delta} strict=${inv.strictFormHolds}`;
 }
 
+const ONLY = process.env.DEMO_STEPS ? new Set(process.env.DEMO_STEPS.split(",").map((x) => x.trim())) : null;
+
 async function step(name: string, f: () => Promise<string>): Promise<void> {
+  if (ONLY && !ONLY.has(name.split(".")[0])) {
+    console.log(`\n== ${name}\n   SKIP (DEMO_STEPS)`);
+    return;
+  }
   const s = Date.now();
   console.log(`\n== ${name}`);
   let ok = true;
@@ -252,9 +270,10 @@ async function step1(): Promise<string> {
   const pool = new PublicKey(esc.pool);
 
   // services that do not need Solana state yet
-  start("attester", BIN.attester, ["--keypair", KEYS.attester, "--port", "10661", "--rpc", NODE_RPC, "--mode", "node"]);
+  mkdirSync(MODEL_STORE, { recursive: true });
+  start("attester", BIN.attester, ["--keypair", KEYS.attester, "--port", "10661", "--rpc", NODE_RPC, "--mode", "node", "--models", MODEL_STORE]);
   start("miner", BIN.miner, ["--rpc", NODE_RPC, "--payout", KEYS.miner, "--deliver", "--attester", ATTESTER_URL,
-    "--results-dir", resolve(DEMO, "results"), "--threads", MINER_THREADS, "--stats-secs", "30"]);
+    "--results-dir", resolve(DEMO, "results"), "--threads", MINER_THREADS, "--stats-secs", "30", "--models", MODEL_STORE]);
   await waitFor("attester /health", async () => (await httpJson(`${ATTESTER_URL}/health`)).body?.ok === true, 30_000);
   await waitFor("first mined blocks", async () => (await node.getChainInfo()).height >= 3, 120_000);
 
@@ -297,7 +316,7 @@ async function step1(): Promise<string> {
   // relayer + storefront service
   start("relayer", "node", ["src/main.ts"], { cwd: RELAYER, env: relayerEnv() });
   start("storefront-x402", "node", ["src/main.ts"], { cwd: resolve(ROOT, "services/storefront-x402"), env: {
-    TOKEN_RPC, STOREFRONT_PORT: "10662", STOREFRONT_WALLET: sfWallet.file, STATE_FILE: resolve(DEMO, "storefront-state.json") } });
+    TOKEN_RPC, STOREFRONT_PORT: "10662", STOREFRONT_WALLET: sfWallet.file, STATE_FILE: resolve(DEMO, "storefront-state.json"), AGENT_RPC: NODE_RPC } });
   await waitFor("relayer /health ok", async () => (await httpJson(RELAYER_HEALTH)).body?.ok === true, 60_000);
   await waitFor("storefront /health", async () => (await httpJson(`${STOREFRONT_URL}/health`)).body?.ok === true, 30_000);
   const ci = await node.getChainInfo();
@@ -758,6 +777,116 @@ async function stepLien(): Promise<string> {
     `R5 accumulator ${acc.count} final headers from ${acc.start_height}, prove_header of height ${ap.height} on chain (${sim.slice(0, 16)}...)`;
 }
 
+/**
+ * Cadre inference (SYNTHESIS item 3, SPEC 4.5 / 5.4): the quantized Llama-3.2-1B is registered
+ * (RegisterModel + its blobs), the buyer pays for a completion over x402 at the inference
+ * gateway, the int7 worker answers with tokens, and the request's 96 weight GEMMs become
+ * standing jobs (PostSegments) that the miner mines from its model store: blocks tied to that
+ * payment. The ticket completes (attester recomputes every segment's C = A B), W goes to the
+ * server, and the Order is finalized on Solana by the light client.
+ */
+async function stepInference(): Promise<string> {
+  if (!existsSync(resolve(CADRE_MODEL_DIR, "manifest.json"))) throw new Error(`no quantized model at ${CADRE_MODEL_DIR} (python tools/cadre/quantize.py --model HF_DIR --out ${CADRE_MODEL_DIR})`);
+  // a hardlinked copy: registration writes its own manifest.json (new inode), the weights are shared
+  const modelDir = resolve(DEMO, "model");
+  run("cp", ["-al", CADRE_MODEL_DIR, modelDir]);
+  const registrant = payer; // localnet payer: a stable model id across demo runs
+  const gwKey = demoKey("gateway");
+  // fees: the registrant, the gateway (server) key
+  await sendChainTx(user.kp, KIND.Transfer, transferBody(registrant.publicKey, 1_000_000_000n));
+  await sendChainTx(user.kp, KIND.Transfer, transferBody(gwKey.kp.publicKey, 1_000_000_000n));
+  const pearl = (args: string[], key: string, timeoutMs = 300_000) => lastJson(run(BIN.pearl, ["--network", "localnet", "--rpc", NODE_RPC, "--key", key, "--json", "--wait", ...args], { timeoutMs }));
+  const reg = pearl(["model", "register", modelDir, "--store", MODEL_STORE], resolve(ROOT, KEYS.payer), 3_600_000);
+  info("model registered", { model_id: reg.model_id, matrices: reg.matrices, macs_per_row: reg.macs_per_row, chunks: reg.chunks, bytes: reg.bytes, upload_s: reg.upload_s, height: reg.included_height });
+  const model = await nodeCall("getModel", { model_id: reg.model_id });
+  if (!model || model.matrix_count !== reg.matrices) throw new Error(`getModel ${JSON.stringify(model)?.slice(0, 300)}`);
+  // worker + gateway
+  start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665"], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
+  await waitFor("worker /health", async () => (await httpJson(`${WORKER_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 180_000);
+  start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL,
+    "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400"]);
+  await waitFor("gateway /health", async () => (await httpJson(`${GATEWAY_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 60_000);
+  // the buyer pays for a completion (x402 through the gateway, settled by storefront-x402)
+  const prompt = process.env.CADRE_PROMPT ?? "The capital of France is";
+  const maxTokens = Number(process.env.CADRE_MAX_TOKENS ?? 12);
+  const body = JSON.stringify({ prompt, max_tokens: maxTokens });
+  const r402 = await httpJson(`${GATEWAY_URL}/v1/completions`, { method: "POST", headers: { "content-type": "application/json" }, body });
+  if (r402.status !== 402) throw new Error(`expected 402, got ${r402.status} ${JSON.stringify(r402.body)}`);
+  const req = r402.body.accepts[0];
+  info("quote", { price_lamports: req.maxAmountRequired, prompt_tokens: r402.body.cadre.prompt_tokens, rows: r402.body.cadre.rows, mined_macs_max: r402.body.cadre.mined_macs_max });
+  const { blockhash } = await conn.getLatestBlockhash();
+  const msg = new TransactionMessage({ payerKey: new PublicKey(req.extra.feePayer), recentBlockhash: blockhash, instructions: [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 }),
+    SystemProgram.transfer({ fromPubkey: buyer.kp.publicKey, toPubkey: new PublicKey(req.payTo), lamports: BigInt(req.maxAmountRequired) }),
+  ] }).compileToV0Message();
+  const vtx = new VersionedTransaction(msg);
+  vtx.sign([buyer.kp]);
+  const xPayment = Buffer.from(JSON.stringify({ x402Version: 1, scheme: "exact", network: req.network,
+    payload: { transaction: Buffer.from(vtx.serialize()).toString("base64") } })).toString("base64");
+  const tPay = Date.now();
+  const r = await httpJson(`${GATEWAY_URL}/v1/completions`, { method: "POST", headers: { "content-type": "application/json", "x-payment": xPayment }, body });
+  if (r.status !== 201) throw new Error(`paid completion: ${r.status} ${JSON.stringify(r.body).slice(0, 800)}`);
+  const answerS = (Date.now() - tPay) / 1000;
+  const ticket: string = r.body.ticket_id;
+  const nonce = BigInt(r.body.order.id);
+  info("completion", { text: r.body.text, tokens: r.body.output_ids.length, rows: r.body.rows, ticket, order: r.body.order.id, answer_s: answerS, timing: r.body.timing });
+  if (!r.body.output_ids?.length) throw new Error("no tokens generated");
+  // settlement: ticket on chain, segments, every segment mined, ticket completed
+  const tk = await waitFor("ticket completed and every segment mined", async () => {
+    const t = await nodeCall("getTicket", { ticket_id: ticket }).catch(() => null);
+    if (!t) return null;
+    const segs = t.segment_list as any[];
+    return t.status === "completed" && segs.length === model.matrix_count && segs.every((g) => g.blocks_mined >= 1) ? t : null;
+  }, 3_600_000, 5000);
+  const settleS = (Date.now() - tPay) / 1000;
+  const p = await nodeCall("getParams");
+  const capTotal = BigInt(tk.standing.cap_total);
+  if (capTotal !== (BigInt(tk.protocol_fee) * BigInt(p.alpha_ppm)) / 1_000_000n) throw new Error(`cap_total ${capTotal} vs alpha x P`);
+  // every block mined on the ticket's segments: tied to this payment
+  const segIds = new Set((tk.segment_list as any[]).map((g) => g.segment_id));
+  const ci = await node.getChainInfo();
+  let blocks = 0, sub = 0n;
+  const heights: number[] = [];
+  const posted = tk.posted_height as number;
+  for (let h = posted; h <= ci.height; h++) {
+    const b = await nodeCall("getBlock", { height: h });
+    if (segIds.has(b.header_fields.job_id)) {
+      blocks++;
+      sub += BigInt(b.subsidy);
+      heights.push(h);
+    }
+  }
+  if (blocks !== tk.standing.blocks_mined || sub !== BigInt(tk.standing.subsidy_paid)) throw new Error(`blocks ${blocks}/${tk.standing.blocks_mined} subsidy ${sub}/${tk.standing.subsidy_paid}`);
+  if (sub === 0n || sub > capTotal) throw new Error(`ticket subsidy ${sub} vs alpha x P ${capTotal}`);
+  if (tk.deliverer !== gwKey.kp.publicKey.toBase58()) throw new Error(`deliverer ${tk.deliverer}`);
+  // the response blob is the ticket's result
+  const resp = await nodeCall("getBlob", { uri: tk.result_uri });
+  const rj = JSON.parse(Buffer.from(resp.data, "base64").toString());
+  if (rj.text !== r.body.text || rj.ticket_id !== ticket) throw new Error(`response blob ${JSON.stringify(rj).slice(0, 300)}`);
+  // Solana: the Order is finalized by proof with the response's hash
+  const pda_ = orderPda(nonce);
+  const acc = await waitFor("ticket Order finalized on Solana", async () => {
+    const a = await conn.getAccountInfo(pda_);
+    return a && a.data[ORDER_LAYOUT.STATUS] === ORDER_STATUS_FINALIZED ? a : null;
+  }, 900_000, 2000);
+  const how = await lastIxName(pda_, STOREFRONT_PROGRAM_ID, ["finalize_order_proof", "finalize_order"]);
+  if (!how?.startsWith("finalize_order_proof")) throw new Error(`ticket Order finalized by ${how}`);
+  const rh = Buffer.from(acc.data.subarray(ORDER_LAYOUT.RESULT_HASH, ORDER_LAYOUT.RESULT_HASH + 32)).toString("hex");
+  if (rh !== tk.result_hash) throw new Error(`Order result_hash ${rh} != ticket ${tk.result_hash}`);
+  // CLI reads of the same state
+  const cliTicket = pearl(["ticket", ticket], resolve(ROOT, KEYS.payer));
+  const cliModel = pearl(["model", "show", reg.model_id], resolve(ROOT, KEYS.payer));
+  if (cliTicket.standing.blocks_mined !== tk.standing.blocks_mined || cliModel.tickets < 1) throw new Error("pearl ticket / model show disagree with the node");
+  const mined = BigInt(model.macs_per_row) * BigInt(tk.segment_list[0].m);
+  writeFileSync(resolve(DEMO, "inference.json"), JSON.stringify({ model_id: reg.model_id, ticket, order: nonce.toString(), text: r.body.text, output_ids: r.body.output_ids,
+    rows: r.body.rows, timing: r.body.timing, answer_s: answerS, settle_s: settleS, blocks, heights, subsidy: sub.toString(), cap_total: capTotal.toString(),
+    price_lamports: req.maxAmountRequired, registration: reg }, null, 1));
+  return `model ${reg.model_id.slice(0, 12)} registered (${reg.matrices} matrices, ${reg.chunks} blobs in ${Number(reg.upload_s).toFixed(1)} s); paid ${req.maxAmountRequired} lamports over x402 ` +
+    `-> "${r.body.text}" (${r.body.output_ids.length} tokens in ${answerS.toFixed(1)} s); ticket ${ticket.slice(0, 12)}: ${segIds.size} standing jobs ` +
+    `(${tk.segment_list[0].m} rows, ${mined} mined MACs), ${blocks} blocks at ${heights[0]}..${heights[heights.length - 1]}, subsidy ${sub} <= alpha x P ${capTotal}; ` +
+    `completed (W to the gateway), Order ${pda_.toBase58()} finalized by ${how}; settled ${settleS.toFixed(0)} s after payment`;
+}
+
 // ------------------------------------------------------------ teardown
 
 function stopPid(name: string, pid: number) {
@@ -794,7 +923,7 @@ async function teardown(): Promise<string> {
   } catch (e) {
     console.log(String(e).slice(0, 300));
   }
-  const ports = [10600, 10601, 10602, 10603, 10630, 10631, 10632, 10633, 10634, 10635, 10640, 10641, 10642, 10660, 10661, 10662];
+  const ports = [10600, 10601, 10602, 10603, 10630, 10631, 10632, 10633, 10634, 10635, 10640, 10641, 10642, 10660, 10661, 10662, 10664, 10665];
   const busy = await waitFor("ports free", async () => {
     const b = ports.filter((p) => portBusy(p));
     return b.length === 0 ? [] : null;
@@ -817,6 +946,7 @@ try {
   await step("8. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
   await step("9. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
   await step("10. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
+  await step("11. paid inference (Cadre): RegisterModel Llama-3.2-1B int7, x402 completion at the gateway, its 96 weight GEMMs mined as standing jobs, ticket completed, Order finalized by proof", stepInference);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
@@ -826,12 +956,12 @@ if (!keepUp) {
   const s = Date.now();
   try {
     const d = await teardown();
-    results.push({ step: "11. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
-    console.log(`\n== 11. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
+    results.push({ step: "12. teardown", ok: true, secs: (Date.now() - s) / 1000, detail: d, invariant: "" });
+    console.log(`\n== 12. teardown\n   PASS (${((Date.now() - s) / 1000).toFixed(1)} s): ${d}`);
   } catch (e) {
     failed = true;
-    results.push({ step: "11. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
-    console.log(`\n== 11. teardown\n   FAIL: ${(e as Error).message}`);
+    results.push({ step: "12. teardown", ok: false, secs: (Date.now() - s) / 1000, detail: String((e as Error).message), invariant: "" });
+    console.log(`\n== 12. teardown\n   FAIL: ${(e as Error).message}`);
   }
 } else {
   console.log(`\nDEMO_KEEP_UP=1: leaving everything running (PIDs in ${resolve(DEMO, "pids")}); stop with scripts/demo.sh down`);

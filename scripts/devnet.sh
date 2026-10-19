@@ -27,6 +27,8 @@
 #   DEVNET_NET      static (default) or open; `open` as the first argument sets it
 #   DEVNET_NODES    node count (default 3 static, 5 open; open allows at most 5)
 #   DEVNET_MINE_NODE  node index `mine` talks to (default 0)
+#   DEVNET_BLOBS    JSON object for every static node's "blobs" limits (docs/NODE.md), e.g.
+#                   '{"max_total_bytes": 8000000000}' to hold a registered model (SPEC 4.5)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -127,7 +129,8 @@ EOF
 }
 
 init_static_nodes() {
-  local peers="" i seed key
+  local peers="" i seed key blobs="${DEVNET_BLOBS:-}"
+  [[ -n "$blobs" ]] || blobs='{}'
   for ((i = 0; i < N; i++)); do
     seed="$(node_seed $i)"
     key="$("$BIN" pubkey "$seed")"
@@ -146,7 +149,8 @@ init_static_nodes() {
   "ws_listen": "127.0.0.1:$((RPC_BASE + 2 * i + 1))",
   "peers": [$peers],
   "verifier": "pearl",
-  "tip_interval_ms": 2000
+  "tip_interval_ms": 2000,
+  "blobs": $blobs
 }
 EOF
   done
