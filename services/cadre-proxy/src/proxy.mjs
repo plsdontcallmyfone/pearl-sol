@@ -218,7 +218,11 @@ export class Proxy {
   }
 
   close() {
-    return new Promise((ok) => (this.server ? this.server.close(() => ok()) : ok()));
+    return new Promise((ok) => {
+      if (!this.server) return ok();
+      this.server.close(() => ok());
+      this.server.closeAllConnections();
+    });
   }
 }
 
