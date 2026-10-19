@@ -156,3 +156,47 @@ test("agent card: parse, private-address refusal, probe health and stale hiding"
     srv.close();
   }
 });
+
+test("routes: /api/agent, /agent, /agents over a real indexer on a fake node", async () => {
+  const { fakeNode, fakeSolana, A, J } = await import("./agent-fixture.ts");
+  const { Indexer } = await import("../src/indexer.ts");
+  const { route } = await import("../src/server.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const node = fakeNode(), sol = fakeSolana();
+  const listen = (s: any) => new Promise<number>((r) => s.listen(0, "127.0.0.1", () => r(s.address().port)));
+  const [np, sp] = await Promise.all([listen(node), listen(sol)]);
+  const dir = mkdtempSync(join(tmpdir(), "explorer-agent-"));
+  try {
+    const ix = new Indexer({ nodeUrl: `http://127.0.0.1:${np}`, solUrl: `http://127.0.0.1:${sp}`, stateDir: dir, log: () => {} });
+    await ix.poll();
+    const p = JSON.parse((await route(ix, "GET", `/api/agent/${A.seller}`)).body as string);
+    assert.equal(p.agent.name, "summarizer-7");
+    assert.equal(p.headline.p_behind_completed_work, "7500000000", "a + b + c; d is self-dealt");
+    assert.equal(p.server.self_dealt_excluded.protocol_fees, "3000000000");
+    assert.equal(p.server.delivered_then_expired.protocol_fees, "800000000");
+    assert.equal(p.server.independent_evaluation.protocol_fees, "5000000000", "b was signed by its own buyer");
+    assert.equal(p.card.health, "none");
+    const g = JSON.parse((await route(ix, "GET", `/api/agent/${A.griefer}`)).body as string);
+    assert.equal(g.server.rejected.jobs, 1);
+    assert.equal(g.server.rejected.chain_tally.rejected, 1);
+    assert.equal(g.server.rejected.list[0].job_id, J.f);
+    const ev = JSON.parse((await route(ix, "GET", `/api/agent/${A.evaluator}`)).body as string);
+    assert.equal(ev.evaluator.jobs_signed, 3);
+    assert.equal(ev.evaluator.rejects_signed, 1);
+    const l = JSON.parse((await route(ix, "GET", "/api/agents")).body as string);
+    assert.equal(l.agents[0].account, A.seller, "listed: it delivered within the active window");
+    assert.ok(!l.agents.some((x: any) => x.account === A.griefer) || l.agents.find((x: any) => x.account === A.griefer).listed);
+    for (const path of [`/agent/${A.seller}`, `/agent/${A.griefer}`, `/agent/${A.evaluator}`, "/agents", "/agents?all=1"]) {
+      const r = await route(ix, "GET", path);
+      assert.equal(r.status, 200, path);
+      assert.doesNotMatch(r.body as string, /—/, "no em dashes");
+    }
+    assert.equal((await route(ix, "GET", "/api/agent/not-an-address")).status, 400);
+  } finally {
+    node.close();
+    sol.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
