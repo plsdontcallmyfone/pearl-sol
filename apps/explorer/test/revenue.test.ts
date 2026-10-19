@@ -46,6 +46,12 @@ test("self-dealing: payer = deliverer or a miner of its job is excluded; concent
   assert.equal(BigInt(r.screened.protocol_fees) + BigInt(r.self_dealt_excluded.protocol_fees), BigInt(r.gross.protocol_fees));
 });
 
+test("reserve ATA matches the one the programs use on the test VPS (spl-token getAssociatedTokenAddressSync)", () => {
+  const creator = findPda([utf8("creator")], "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p")[0];
+  assert.equal(creator, "Bspy5czBMnzWJfYJoLkzxni1Ah7Do2EbErSFvp57i1of");
+  assert.equal(ata(creator, "BRtyAHcjS55k99sfPrLFNgAyhqfgwmrrjdhPgdiaE9s8"), "CNsyLAnDWAo9F9rNiboGYDrzgV9AJkw3BdiVH5T5xSPF");
+});
+
 test("circulating supply = mint supply - reserve - pool - transit; burned = 1B - supply", () => {
   const c = circulating({
     mintSupply: INITIAL_SUPPLY_SPL - 5_000_000n,

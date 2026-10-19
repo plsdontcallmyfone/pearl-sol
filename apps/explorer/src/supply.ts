@@ -21,7 +21,7 @@ import type { Indexer } from "./indexer.ts";
 export const INITIAL_SUPPLY_SPL = 1_000_000_000_000_000n; // 1B x 1e6 (pump create_v2, research/NOTES-pump.md)
 export const RESERVE_ID = process.env.RESERVE_PROGRAM || "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p";
 const TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hYZzvDvVkJNj2tAhRSAHvgsB9z";
+const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 export const ata = (owner: string, mint: string) => findPda([b58decode(owner), b58decode(TOKEN_2022), b58decode(mint)], ATA_PROGRAM)[0];
 const tokenAmount = (a: { data: Uint8Array } | null) => (a && a.data.length >= 72 ? rd64(a.data, 64) : 0n);
