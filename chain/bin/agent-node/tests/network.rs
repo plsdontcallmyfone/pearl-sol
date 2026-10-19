@@ -840,14 +840,14 @@ fn standing_jobs_over_rpc_and_model_blobs_pinned() {
         api.mine(9).await;
         let tid = schema_job_id(&pk(3), 0);
         let seg = Segment { matrix: 0, m: 4, max_blocks: 2, hash_a: [6; 32], c_hash: [7; 32], a_uri: a.into_bytes() };
-        api.send(&Tx::signed(&seed(4), CHAIN, 0, 10, TxBody::PostSegments { ticket_id: tid, segments: vec![seg] })).await.unwrap();
+        api.send(&Tx::signed(&seed(4), CHAIN, 0, 10, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg] })).await.unwrap();
         api.mine(9).await;
         let t = api.call("getTicket", json!({"ticket_id": hex::encode(tid)})).await;
         assert_eq!(t["kind"], json!("ticket"));
         assert_eq!(t["mineable"], json!(false));
         assert_eq!(t["standing"]["server"], json!(bs58::encode(pk(4)).into_string()));
         assert_eq!(t["segment_list"].as_array().unwrap().len(), 1);
-        let sid = hex::encode(standing::segment_id(&tid, 0));
+        let sid = hex::encode(standing::segment_id(&tid, 0, 0));
         // the template's auto choice is the segment
         let (tpl, _) = api.mine_with(9, None).await;
         assert_eq!(tpl["job"]["job_id"], json!(sid));

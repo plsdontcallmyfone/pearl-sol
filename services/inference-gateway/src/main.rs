@@ -1,19 +1,15 @@
-//! cadre-gateway HTTP server (SPEC 5.4). 127.0.0.1:10664 by default.
-//!
-//!   GET  /health, GET /v1/models
-//!   POST /v1/completions {prompt | prompt_ids, max_tokens, recipient?}   (x402: X-PAYMENT header)
-//!   GET  /v1/requests/<ticket_id>
+//! cadre-gateway HTTP server (SPEC 5.4, API v1). 127.0.0.1:10664 by default.
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use serde_json::json;
 
-use cadre_gateway::{Config, Gateway, HttpEvaluator, HttpStorefront, HttpWorker, ModelInfo};
+use cadre_gateway::{Config, Gateway, HttpEvaluator, HttpStorefront, HttpWorker, ModelInfo, Payload};
 use pearl_node::{read_key_file, HttpNode};
 
 #[derive(Parser)]
@@ -41,13 +37,54 @@ struct Args {
     port: u16,
     #[arg(long, default_value = ".cadre-gateway")]
     work_dir: PathBuf,
-    /// Ticket deadline, blocks after the unlock (the segments are mineable until then).
+    /// Deadline of a one-request ticket, blocks after the unlock.
     #[arg(long, default_value_t = 400)]
     deadline_blocks: u64,
+    /// Deadline of a prepaid balance ticket.
+    #[arg(long, default_value_t = 10_000)]
+    balance_deadline_blocks: u64,
+    #[arg(long, default_value_t = 4096)]
+    balance_rows: u64,
     #[arg(long, default_value_t = 1)]
     blocks_per_segment: u32,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 256)]
     max_new_tokens: u32,
+    /// Post a round when the oldest served request is this old.
+    #[arg(long, default_value_t = 60)]
+    round_secs: u64,
+    #[arg(long, default_value_t = 64)]
+    min_free_rows: u64,
+    #[arg(long, default_value_t = 50)]
+    close_margin_blocks: u64,
+    #[arg(long, default_value = "http://127.0.0.1:10670")]
+    explorer_url: String,
+    #[arg(long)]
+    public_url: Option<String>,
+}
+
+/// Feeds an SSE channel to tiny_http as a Read.
+struct ChanReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for ChanReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.buf.len() {
+            match self.rx.recv() {
+                Ok(b) => {
+                    self.buf = b;
+                    self.pos = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
 }
 
 fn main() -> Result<()> {
@@ -62,8 +99,15 @@ fn main() -> Result<()> {
     let cfg = Config {
         work_dir: a.work_dir.clone(),
         deadline_blocks: a.deadline_blocks,
+        balance_deadline_blocks: a.balance_deadline_blocks,
+        balance_rows: a.balance_rows,
         blocks_per_segment: a.blocks_per_segment,
         max_new_tokens: a.max_new_tokens,
+        round_every: Duration::from_secs(a.round_secs),
+        min_free_rows: a.min_free_rows,
+        close_margin_blocks: a.close_margin_blocks,
+        explorer_url: a.explorer_url.clone(),
+        public_url: a.public_url.clone().unwrap_or(format!("http://{}:{}", a.host, a.port)),
         ..Config::default()
     };
     std::fs::create_dir_all(&cfg.work_dir)?;
@@ -80,27 +124,37 @@ fn main() -> Result<()> {
     let addr = format!("{}:{}", a.host, a.port);
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;
     println!("{}", json!({"msg": "cadre-gateway started", "url": format!("http://{addr}"), "server": pearl_node::b58(&gw.server()),
-        "model_id": hex::encode(gw.model.model_id), "matrices": gw.model.matrices.len(), "pid": std::process::id()}));
+        "model_id": hex::encode(gw.model.model_id), "model": gw.model.name, "matrices": gw.model.matrices.len(), "pid": std::process::id()}));
+    let g2 = Arc::clone(&gw);
+    std::thread::spawn(move || g2.run_rounds());
     for mut req in server.incoming_requests() {
         let gw = Arc::clone(&gw);
         std::thread::spawn(move || {
             let mut body = Vec::new();
-            let _ = req.as_reader().take(1 << 20).read_to_end(&mut body);
+            let _ = req.as_reader().take(4 << 20).read_to_end(&mut body);
             let method = req.method().as_str().to_uppercase();
-            let path = req.url().split('?').next().unwrap_or("").to_string();
+            let path = req.url().to_string();
             let headers: Vec<(String, String)> = req.headers().iter().map(|h| (h.field.as_str().as_str().to_string(), h.value.as_str().to_string())).collect();
             let r = gw.handle(&method, &path, &headers, &body);
-            let mut resp = tiny_http::Response::from_string(r.body.to_string())
-                .with_status_code(r.status)
-                .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap());
-            for (k, v) in r.headers {
-                if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
-                    resp = resp.with_header(h);
+            let mut hs: Vec<tiny_http::Header> = r.headers.iter().filter_map(|(k, v)| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok()).collect();
+            hs.push("Access-Control-Expose-Headers: x-cadre-request, x-cadre-ticket, x-cadre-order, x-cadre-rows, x-cadre-charged-lamports, x-cadre-receipt, x-cadre-explorer, x-payment-response".parse().unwrap());
+            match r.body {
+                Payload::Json(v) => {
+                    if !r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                        hs.push("Content-Type: application/json".parse().unwrap());
+                    }
+                    let mut resp = tiny_http::Response::from_string(v.to_string()).with_status_code(r.status);
+                    for h in hs {
+                        resp = resp.with_header(h);
+                    }
+                    let _ = req.respond(resp);
+                }
+                Payload::Stream(rx) => {
+                    let resp = tiny_http::Response::new(tiny_http::StatusCode(r.status), hs, ChanReader { rx, buf: vec![], pos: 0 }, None, None);
+                    let _ = req.respond(resp);
                 }
             }
-            let _ = req.respond(resp);
         });
-        std::thread::sleep(Duration::from_millis(1));
     }
     Ok(())
 }

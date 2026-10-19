@@ -44,7 +44,7 @@ fn segment(dir: &std::path::Path, node: &MockNode, ticket: [u8; 32], c_hash_ok: 
     let c = matmul_bt(&a, &bt, m as usize, n as usize, k as usize);
     let uri = node.put_blob(&standing::encode_activation_blob(m, k, &a).unwrap()).unwrap();
     JobInfo {
-        job_id: standing::segment_id(&ticket, 0),
+        job_id: standing::segment_id(&ticket, 0, 0),
         header_id: model_id,
         poster: [0x10; 32],
         terms_hash: header.terms_hash,

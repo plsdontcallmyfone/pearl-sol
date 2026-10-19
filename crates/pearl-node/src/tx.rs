@@ -61,8 +61,8 @@ pub enum Body {
     SubmitResult { job_id: [u8; 32], result_hash: [u8; 32], uri: String },
     CompleteJob { job_id: [u8; 32], sigs: Vec<([u8; 32], [u8; 64])> },
     ExpireJob { job_id: [u8; 32] },
-    /// `ticket_id [32] | count u8 | (matrix u16 | m u32 | max_blocks u32 | hash_a | c_hash | a_uri (u16 len))*`
-    PostSegments { ticket_id: [u8; 32], segments: Vec<SegmentSpec> },
+    /// `ticket_id [32] | round u16 | count u8 | (matrix u16 | m u32 | max_blocks u32 | hash_a | c_hash | a_uri (u16 len))*`
+    PostSegments { ticket_id: [u8; 32], round: u16, segments: Vec<SegmentSpec> },
     /// Any kind, body bytes as given.
     Raw { kind: u8, body: Vec<u8> },
 }
@@ -103,9 +103,10 @@ impl Body {
                 }
             }
             Body::ExpireJob { job_id } => v.extend_from_slice(job_id),
-            Body::PostSegments { ticket_id, segments } => {
+            Body::PostSegments { ticket_id, round, segments } => {
                 ensure!(!segments.is_empty() && segments.len() <= pearl_job::standing::MAX_SEGMENTS_PER_TX, "1..=64 segments per tx");
                 v.extend_from_slice(ticket_id);
+                v.extend_from_slice(&round.to_le_bytes());
                 v.push(segments.len() as u8);
                 for g in segments {
                     ensure!(g.a_uri.len() <= 512, "a_uri too long");

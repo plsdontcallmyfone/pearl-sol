@@ -205,22 +205,22 @@ fn ticket_segments_mine_within_alpha_p() {
     assert!(c.block(Some(tid), &[]).unwrap_err().to_string().contains("not mineable"));
 
     // segment rules
-    assert!(c.send(BUYER, TxBody::PostSegments { ticket_id: tid, segments: vec![seg(0, 12, 1)] }).unwrap_err().contains("server"));
-    for (g, why) in [(seg(2, 12, 1), "no matrix"), (seg(0, 10, 1), "multiple"), (seg(0, 16, 1), "multiple"), (seg(0, 12, 5), "blocks"), (seg(0, 12, 0), "max_blocks")] {
-        let e = c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![g] }).unwrap_err();
+    assert!(c.send(BUYER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 12, 1)] }).unwrap_err().contains("server"));
+    for (g, why) in [(seg(2, 12, 1), "no matrix"), (seg(0, 10, 1), "multiple"), (seg(0, 16, 1), "budget"), (seg(0, 12, 5), "blocks"), (seg(0, 12, 0), "max_blocks")] {
+        let e = c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![g] }).unwrap_err();
         assert!(e.contains(why), "{why}: {e}");
     }
     let mut g = seg(0, 12, 1);
     g.a_uri = b"ipfs://a".to_vec();
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![g] }).unwrap_err().contains("blob"));
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![g] }).unwrap_err().contains("blob"));
     // SubmitResult by anyone but the server is refused
     c.fund(pk(8), 1000);
     assert!(c.send(8, TxBody::SubmitResult { job_id: tid, result_hash: [1; 32], uri: blob(0x52) }).unwrap_err().contains("server"));
 
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![seg(0, 12, 1), seg(1, 12, 3)] }).unwrap();
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![seg(1, 12, 1)] }).is_err(), "one segment per matrix");
-    let s0 = standing::segment_id(&tid, 0);
-    let s1 = standing::segment_id(&tid, 1);
+    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 12, 1), seg(1, 12, 3)] }).unwrap();
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 12, 1)] }).is_err(), "one segment per matrix per round");
+    let s0 = standing::segment_id(&tid, 0, 0);
+    let s1 = standing::segment_id(&tid, 1, 0);
     let (j0, j1) = (c.job(&s0), c.job(&s1));
     let macs = 2048u64 * 3072 + 8192 * 2048;
     assert_eq!(j0.cap_remaining, (te.cap_total as u128 * 12 * 2048 * 3072 / (12 * macs as u128)) as u64);
@@ -261,9 +261,9 @@ fn ticket_segments_mine_within_alpha_p() {
     let msg = result_message(&tid, &pk(SERVER), &rh);
     let before = c.bal(&pk(SERVER));
     c.send(SERVER, TxBody::CompleteJob { job_id: tid, sigs: vec![AttesterSig { pubkey: pk(EVAL), sig: sign_plain(&seed(EVAL), &msg) }] }).unwrap();
-    assert_eq!(c.bal(&pk(SERVER)), before + w - 1000);
+    assert_eq!(c.bal(&pk(SERVER)), before + w - 1000, "every row was used: all of W");
     assert_eq!(c.job(&tid).status, JobStatus::Completed);
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![seg(1, 4, 1)] }).unwrap_err().contains("closed"));
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 1, segments: vec![seg(1, 4, 1)] }).unwrap_err().contains("closed"));
 }
 
 #[test]
@@ -278,22 +278,22 @@ fn order_ticket_server_claimed_by_first_poster_and_partial_rows_earn_less() {
     assert_eq!(t.poster, pk(BUYER));
     assert_eq!(t.ticket().unwrap().server, [0; 32]);
     // the first PostSegments claims the server; the request stopped early (8 of 16 rows)
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, segments: vec![seg(0, 8, 1), seg(1, 8, 1)] }).unwrap();
+    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 8, 1), seg(1, 8, 1)] }).unwrap();
     assert_eq!(c.job(&tid).ticket().unwrap().server, pk(SERVER));
-    let caps = c.job(&standing::segment_id(&tid, 0)).cap_remaining + c.job(&standing::segment_id(&tid, 1)).cap_remaining;
+    let caps = c.job(&standing::segment_id(&tid, 0, 0)).cap_remaining + c.job(&standing::segment_id(&tid, 1, 0)).cap_remaining;
     let cap_total = p * 8 / 10;
     assert!(caps <= cap_total / 2 && caps + 2 >= cap_total / 2, "half the rows, half the cap: {caps}");
     // past the deadline the segments stop being mineable
     while c.height <= t.deadline_height {
         c.block(None, &[]).unwrap();
     }
-    assert!(c.block(Some(standing::segment_id(&tid, 0)), &[]).unwrap_err().to_string().contains("expired"));
+    assert!(c.block(Some(standing::segment_id(&tid, 0, 0)), &[]).unwrap_err().to_string().contains("expired"));
     // ExpireJob on the ticket refunds W to the buyer; on a segment it just closes it
     let before = c.bal(&pk(BUYER));
     c.send(SERVER, TxBody::ExpireJob { job_id: tid }).unwrap();
     assert_eq!(c.bal(&pk(BUYER)), before + w);
-    c.send(SERVER, TxBody::ExpireJob { job_id: standing::segment_id(&tid, 0) }).unwrap();
-    assert_eq!(c.job(&standing::segment_id(&tid, 0)).status, JobStatus::Expired);
+    c.send(SERVER, TxBody::ExpireJob { job_id: standing::segment_id(&tid, 0, 0) }).unwrap();
+    assert_eq!(c.job(&standing::segment_id(&tid, 0, 0)).status, JobStatus::Expired);
 }
 
 #[test]
@@ -311,4 +311,44 @@ fn job_records_with_extensions_round_trip() {
     assert_eq!(JobRecord::decode(&enc).unwrap(), plain);
     let m = c.model(&model);
     assert_eq!(Model::decode(&m.encode()).unwrap(), m);
+}
+
+#[test]
+fn balance_ticket_rounds_and_pay_for_rows_used() {
+    let (mut c, model) = setup();
+    let (w, p) = (8_000_000u64, 4_000_000u64);
+    let n = *c.nonces.get(&BUYER).unwrap_or(&0);
+    // a prepaid balance: R = round_up(m + n) = 64 rows
+    c.send(BUYER, TxBody::PostJob(ticket_body(&model, 63, 1, pk(SERVER), w, p, c.height + 100, 10))).unwrap();
+    let tid = schema::job_id_for_post(&pk(BUYER), n);
+    assert_eq!(c.job(&tid).ticket().unwrap().rows, 64);
+    // round 0: 8 rows over both matrices, in two txs (the second continues the round)
+    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 8, 1)] }).unwrap();
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 12, 1)] }).unwrap_err().contains("has m 8"));
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 2, segments: vec![seg(1, 8, 1)] }).unwrap_err().contains("round 2"));
+    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 8, 1)] }).unwrap();
+    // round 1: 16 more rows; a second segment for matrix 0 in a new round
+    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 1, segments: vec![seg(0, 16, 1), seg(1, 16, 1)] }).unwrap();
+    let te = *c.job(&tid).ticket().unwrap();
+    assert_eq!((te.rounds, te.round_rows, te.rows_used, te.segments), (2, 16, 24, 4));
+    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 2, segments: vec![seg(0, 44, 1)] }).unwrap_err().contains("budget"));
+    let r1 = standing::segment_id(&tid, 0, 1);
+    assert_ne!(r1, standing::segment_id(&tid, 0, 0));
+    assert_eq!(c.job(&r1).m, 16);
+    // caps over all rounds stay under alpha x P x rows_used / R
+    let caps: u64 = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(m, r)| c.job(&standing::segment_id(&tid, m, r)).cap_remaining).sum();
+    assert!(caps <= te.cap_total * 24 / 64, "{caps}");
+    c.block(Some(r1), &[]).unwrap();
+    // complete: the server gets W x 24 / 64, the buyer W x 40 / 64 + P x 40 / 64 from the pool
+    let rh = [0x77; 32];
+    c.send(SERVER, TxBody::SubmitResult { job_id: tid, result_hash: rh, uri: blob(0x52) }).unwrap();
+    let msg = result_message(&tid, &pk(SERVER), &rh);
+    let (srv0, buy0, pool0) = (c.bal(&pk(SERVER)), c.bal(&pk(BUYER)), c.bal(&pool_address()));
+    let t = Tx::signed(&seed(SERVER), CHAIN, *c.nonces.get(&SERVER).unwrap(), 1000,
+        TxBody::CompleteJob { job_id: tid, sigs: vec![AttesterSig { pubkey: pk(EVAL), sig: sign_plain(&seed(EVAL), &msg) }] });
+    let s = c.block(None, &[t]).unwrap();
+    c.nonces.insert(SERVER, c.nonces[&SERVER] + 1);
+    assert_eq!(c.bal(&pk(SERVER)), srv0 + w * 24 / 64 - 1000);
+    assert_eq!(c.bal(&pk(BUYER)), buy0 + w * 40 / 64 + p * 40 / 64);
+    assert_eq!(c.bal(&pool_address()) + p * 40 / 64, pool0 + s.subsidy, "P share back from the pool");
 }

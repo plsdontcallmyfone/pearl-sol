@@ -296,14 +296,24 @@ impl Attester {
         ensure!(r["model_id"].as_str() == Some(model_hex.as_str()), "response names another model");
         ensure!(r["request_hash"].as_str() == st["request_hash"].as_str(), "response answers another request");
         ensure!(r["ticket_id"].as_str() == Some(hex::encode(ticket_id).as_str()), "response names another ticket");
-        let rows = r["rows"].as_u64().ok_or_else(|| anyhow!("response has no rows"))?;
-        ensure!(rows > 0 && rows <= st["rows"].as_u64().unwrap_or(0), "response rows {rows} outside the ticket's");
-        let m_pad = rows.div_ceil(period) * period;
+        // rounds (SPEC 4.5): the response's rounds match the chain's, every round covers every
+        // registered matrix with one m, and each round's requests fit in its m
         let segs = t["segment_list"].as_array().cloned().unwrap_or_default();
-        ensure!(segs.len() == count, "ticket has {} segments, the model registers {count} matrices", segs.len());
-        for s in &segs {
-            ensure!(s["m"].as_u64() == Some(m_pad), "segment {} has m {}, expected {m_pad}", s["matrix"], s["m"]);
+        let rounds = st["rounds"].as_u64().unwrap_or(0) as usize;
+        ensure!(rounds > 0, "the ticket has no segment rounds");
+        let rr = r["rounds"].as_array().cloned().unwrap_or_default();
+        ensure!(rr.len() == rounds, "response lists {} rounds, the chain has {rounds}", rr.len());
+        let mut total = 0u64;
+        for (i, x) in rr.iter().enumerate() {
+            let in_round: Vec<&Value> = segs.iter().filter(|g| g["round"].as_u64() == Some(i as u64)).collect();
+            ensure!(in_round.len() == count, "round {i} has {} segments, the model registers {count} matrices", in_round.len());
+            let m = in_round[0]["m"].as_u64().unwrap_or(0);
+            ensure!(in_round.iter().all(|g| g["m"].as_u64() == Some(m)) && x["m"].as_u64() == Some(m), "round {i}: segments and response disagree on m");
+            let used: u64 = x["requests"].as_array().into_iter().flatten().map(|q| q["rows"].as_u64().unwrap_or(0)).sum();
+            ensure!(used <= m && m - used < period, "round {i}: requests use {used} of {m} rows (only the last period may be padding)");
+            total += m;
         }
+        ensure!(total == st["rows_used"].as_u64().unwrap_or(0), "rounds add up to {total} rows, the ticket used {}", st["rows_used"]);
         let store = pearl_job::standing::ModelStore::new(&self.models_dir);
         let ids: Vec<[u8; 32]> = segs.iter().map(|s| parse_key32(s["segment_id"].as_str().unwrap_or(""))).collect::<Result<_>>()?;
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4);

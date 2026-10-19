@@ -9,8 +9,11 @@ which posts them as the ticket's segments.
 
 HTTP (127.0.0.1 only):
   GET  /health
-  POST /tokenize {"text"}                      -> {"ids"}
-  POST /generate {"prompt_ids", "max_new_tokens", "out_dir"}
+  POST /tokenize {"text"} | {"messages", "tools"?}   -> {"ids"} (messages: the model's chat
+       template, or the Llama 3 header format when the tokenizer has none)
+  POST /generate {"prompt_ids", "max_new_tokens", "out_dir", "stop"?, "stream"?, "pad"?}
+       stream: NDJSON lines {"token", "text"} per token, then the final object below;
+       pad false: A/C keep exactly `rows` rows (the gateway stacks requests into rounds)
        -> {"output_ids", "text", "rows", "rows_padded", "matrices": [{"index", "m", "k", "n", "a", "c"}], "timing"}
           writes out_dir/a/<i>.i8 (rows_padded x k int8) and out_dir/c/<i>.i32 (rows_padded x n int32 LE)
 CLI checks:
@@ -162,8 +165,25 @@ class Model:
     def new_cache(self):
         return [[None, None] for _ in range(self.L)]
 
+    def chat_ids(self, messages, tools=None):
+        """Prompt ids for chat messages: the tokenizer's chat template, else the Llama 3 format."""
+        tok = self.tokenizer()
+        if getattr(tok, "chat_template", None):
+            return tok.apply_chat_template(messages, tools=tools, add_generation_prompt=True)
+        parts = ["<|begin_of_text|>"]
+        if tools:
+            parts.append("<|start_header_id|>system<|end_header_id|>\n\nYou can call these tools. To call one, answer with only a JSON object "
+                         "{\"name\": ..., \"parameters\": {...}}.\n" + json.dumps(tools) + "<|eot_id|>")
+        for m in messages:
+            c = m.get("content") or ""
+            if isinstance(c, list):
+                c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
+            parts.append(f"<|start_header_id|>{m.get('role', 'user')}<|end_header_id|>\n\n{c}<|eot_id|>")
+        parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+        return tok("".join(parts), add_special_tokens=False).input_ids
+
     @torch.no_grad()
-    def generate(self, prompt_ids, max_new, out_dir=None):
+    def generate(self, prompt_ids, max_new, out_dir=None, stop=None, on_token=None, pad=True):
         with self.lock:
             cap = {m.index: ([], []) for m in self.mats}
             cache = self.new_cache()
@@ -175,16 +195,31 @@ class Model:
             out = []
             nxt = int(logits[-1].argmax())
             t1 = time.time()
+            tok = self.tokenizer()
+            stop = [x for x in (stop or []) if x]
+            finish = "length"
+            text_so_far = ""
             while True:
                 out.append(nxt)
-                if len(out) >= max_new or nxt in eos:
+                if on_token is not None or stop:
+                    full = tok.decode(out, skip_special_tokens=True)
+                    if on_token is not None:
+                        on_token(nxt, full[len(text_so_far):])
+                    text_so_far = full
+                    if any(x in full for x in stop):
+                        finish = "stop"
+                        break
+                if nxt in eos:
+                    finish = "stop"
+                    break
+                if len(out) >= max_new:
                     break
                 logits = self.forward([nxt], cache, cap)
                 nxt = int(logits[-1].argmax())
             t_decode = time.time() - t1
             rows = len(prompt_ids) + len(out) - 1
             period = len(self.man["rows_pattern"])
-            padded = -(-rows // period) * period
+            padded = -(-rows // period) * period if pad else rows
             mats = []
             if out_dir:
                 os.makedirs(os.path.join(out_dir, "a"), exist_ok=True)
@@ -203,12 +238,16 @@ class Model:
                     A.numpy().tofile(rec["a"])
                     C.numpy().astype("<i4").tofile(rec["c"])
                 mats.append(rec)
-            text = self.tokenizer().decode(out, skip_special_tokens=True) if self.dir else ""
+            text = tok.decode(out, skip_special_tokens=True)
+            for x in stop:
+                if x in text:
+                    text = text[: text.index(x)]
             macs = sum(m.k * m.n for m in self.mats)
             return {
                 "output_ids": out, "text": text, "rows": rows, "rows_padded": padded, "prompt_tokens": len(prompt_ids),
+                "completion_tokens": len(out), "finish_reason": finish,
                 "matrices": mats,
-                "timing": {"prefill_s": round(t_prefill, 3), "decode_s": round(t_decode, 3),
+                "timing": {"prefill_s": round(t_prefill, 3), "decode_s": round(t_decode, 3), "first_token_s": round(t_prefill, 3),
                            "decode_tokens_per_s": round((len(out) - 1) / t_decode, 3) if len(out) > 1 and t_decode > 0 else None,
                            "mined_macs": macs * rows, "threads": torch.get_num_threads()},
             }
@@ -244,12 +283,28 @@ def serve(model, host, port):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
                 if self.path == "/tokenize":
+                    if "messages" in body:
+                        return self.reply(200, {"ids": list(model.chat_ids(body["messages"], body.get("tools")))})
                     return self.reply(200, {"ids": model.tokenizer()(body["text"]).input_ids})
                 if self.path == "/generate":
                     ids = [int(x) for x in body["prompt_ids"]]
                     n = int(body.get("max_new_tokens", 16))
                     assert ids and 1 <= n <= 4096, "prompt_ids and max_new_tokens required"
-                    return self.reply(200, model.generate(ids, n, body.get("out_dir")))
+                    stop = body.get("stop") or []
+                    stop = [stop] if isinstance(stop, str) else list(stop)
+                    pad = bool(body.get("pad", True))
+                    if not body.get("stream"):
+                        return self.reply(200, model.generate(ids, n, body.get("out_dir"), stop=stop, pad=pad))
+                    self.send_response(200)
+                    self.send_header("content-type", "application/x-ndjson")
+                    self.end_headers()
+                    def emit(token, delta):
+                        self.wfile.write((json.dumps({"token": token, "text": delta}) + "\n").encode())
+                        self.wfile.flush()
+                    r = model.generate(ids, n, body.get("out_dir"), stop=stop, on_token=emit, pad=pad)
+                    self.wfile.write((json.dumps({"done": True, **r}) + "\n").encode())
+                    self.wfile.flush()
+                    return
                 self.reply(404, {"error": "not found"})
             except Exception as e:  # noqa: BLE001
                 self.reply(400, {"error": f"{type(e).__name__}: {e}"})

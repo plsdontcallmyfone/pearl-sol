@@ -815,16 +815,15 @@ async function stepInference(): Promise<string> {
   start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665"], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
   await waitFor("worker /health", async () => (await httpJson(`${WORKER_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 180_000);
   start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL,
-    "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400"]);
+    "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400", "--round-secs", "5", "--balance-deadline-blocks", "2000"]);
   await waitFor("gateway /health", async () => (await httpJson(`${GATEWAY_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 60_000);
-  // the buyer pays for a completion (x402 through the gateway, settled by storefront-x402)
-  const prompt = process.env.CADRE_PROMPT ?? "The capital of France is";
-  const maxTokens = Number(process.env.CADRE_MAX_TOKENS ?? 12);
-  const body = JSON.stringify({ prompt, max_tokens: maxTokens });
-  const r402 = await httpJson(`${GATEWAY_URL}/v1/completions`, { method: "POST", headers: { "content-type": "application/json" }, body });
+  // prepaid balance (owner decision 2026-10-18): one x402 top-up, then wallet-signed requests
+  const rowsBudget = Number(process.env.CADRE_BALANCE_ROWS ?? 256);
+  const topBody = JSON.stringify({ rows: rowsBudget });
+  const r402 = await httpJson(`${GATEWAY_URL}/v1/balance/topup`, { method: "POST", headers: { "content-type": "application/json" }, body: topBody });
   if (r402.status !== 402) throw new Error(`expected 402, got ${r402.status} ${JSON.stringify(r402.body)}`);
   const req = r402.body.accepts[0];
-  info("quote", { price_lamports: req.maxAmountRequired, prompt_tokens: r402.body.cadre.prompt_tokens, rows: r402.body.cadre.rows, mined_macs_max: r402.body.cadre.mined_macs_max });
+  info("top-up quote", { price_lamports: req.maxAmountRequired, rows: rowsBudget });
   const { blockhash } = await conn.getLatestBlockhash();
   const msg = new TransactionMessage({ payerKey: new PublicKey(req.extra.feePayer), recentBlockhash: blockhash, instructions: [
     ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 }),
@@ -835,19 +834,54 @@ async function stepInference(): Promise<string> {
   const xPayment = Buffer.from(JSON.stringify({ x402Version: 1, scheme: "exact", network: req.network,
     payload: { transaction: Buffer.from(vtx.serialize()).toString("base64") } })).toString("base64");
   const tPay = Date.now();
-  const r = await httpJson(`${GATEWAY_URL}/v1/completions`, { method: "POST", headers: { "content-type": "application/json", "x-payment": xPayment }, body });
-  if (r.status !== 201) throw new Error(`paid completion: ${r.status} ${JSON.stringify(r.body).slice(0, 800)}`);
-  const answerS = (Date.now() - tPay) / 1000;
-  const ticket: string = r.body.ticket_id;
-  const nonce = BigInt(r.body.order.id);
-  info("completion", { text: r.body.text, tokens: r.body.output_ids.length, rows: r.body.rows, ticket, order: r.body.order.id, answer_s: answerS, timing: r.body.timing });
-  if (!r.body.output_ids?.length) throw new Error("no tokens generated");
-  // settlement: ticket on chain, segments, every segment mined, ticket completed
-  const tk = await waitFor("ticket completed and every segment mined", async () => {
+  const top = await httpJson(`${GATEWAY_URL}/v1/balance/topup`, { method: "POST", headers: { "content-type": "application/json", "x-payment": xPayment }, body: topBody });
+  if (top.status !== 201) throw new Error(`top-up: ${top.status} ${JSON.stringify(top.body).slice(0, 800)}`);
+  const ticket: string = top.body.ticket_id;
+  const nonce = BigInt(top.body.order);
+  info("balance", { ticket, order: top.body.order, rows: top.body.rows, wallet: top.body.wallet });
+  // wallet-signed OpenAI requests (cadre-auth-v1)
+  const { ed25519 } = await import("@noble/curves/ed25519");
+  const signedPost = async (path: string, b: string) => {
+    const ts = Date.now();
+    const m = `cadre-auth-v1\nPOST\n${path}\n${ts}\n${createHash("sha256").update(b).digest("hex")}`;
+    const sig = Buffer.from(ed25519.sign(Buffer.from(m), buyer.kp.secretKey.subarray(0, 32))).toString("hex");
+    const res = await fetch(`${GATEWAY_URL}${path}`, { method: "POST", body: b, headers: { "content-type": "application/json",
+      "x-cadre-wallet": buyer.kp.publicKey.toBase58(), "x-cadre-timestamp": String(ts), "x-cadre-signature": sig } });
+    return res;
+  };
+  const prompt = process.env.CADRE_PROMPT ?? "What is the capital of France? Answer in one word.";
+  const maxTokens = Number(process.env.CADRE_MAX_TOKENS ?? 12);
+  const chatBody = JSON.stringify({ model: model.name, messages: [{ role: "user", content: prompt }], max_tokens: maxTokens });
+  const t1 = Date.now();
+  const r1 = await signedPost("/v1/chat/completions", chatBody);
+  const j1: any = await r1.json();
+  if (r1.status !== 200) throw new Error(`chat completion: ${r1.status} ${JSON.stringify(j1).slice(0, 800)}`);
+  const answerS = (Date.now() - t1) / 1000;
+  if (j1.cadre?.ticket_id !== ticket || r1.headers.get("x-cadre-ticket") !== ticket || !r1.headers.get("x-cadre-explorer")) throw new Error(`receipt ${JSON.stringify(j1.cadre)}`);
+  info("chat completion", { text: j1.choices[0].message.content, usage: j1.usage, receipt: j1.cadre, wall_s: answerS });
+  // streaming text completion: SSE until [DONE]
+  const t2 = Date.now();
+  const r2 = await signedPost("/v1/completions", JSON.stringify({ model: model.name, prompt: "The capital of France is", max_tokens: maxTokens, stream: true }));
+  const sse = await r2.text();
+  const events = sse.split("\n\n").filter((e) => e.startsWith("data: ")).map((e) => e.slice(6));
+  if (events[events.length - 1] !== "[DONE]") throw new Error(`stream did not end in [DONE]: ${sse.slice(-300)}`);
+  const lastEv = JSON.parse(events[events.length - 2]);
+  const streamed = events.slice(0, -1).map((e) => JSON.parse(e).choices?.[0]?.text ?? "").join("");
+  const firstChunkMs = Number(lastEv.cadre?.measured?.ttft_s ?? 0) * 1000;
+  info("streamed completion", { text: streamed, chunks: events.length - 1, usage: lastEv.usage, ttft_s: lastEv.cadre?.measured?.ttft_s, decode_tokens_per_s: lastEv.cadre?.measured?.decode_tokens_per_s, wall_s: (Date.now() - t2) / 1000 });
+  void firstChunkMs;
+  const models = (await httpJson(`${GATEWAY_URL}/v1/models`)).body;
+  const stats = (await httpJson(`${GATEWAY_URL}/v1/stats`)).body;
+  info("models / stats", { price: models.data[0].cadre.pricing, stats });
+  // close the balance: the gateway posts the round, delivers, gets it attested, completes
+  const rc = await signedPost("/v1/balance/close", "{}");
+  if (rc.status !== 202) throw new Error(`close: ${rc.status}`);
+  const r = { body: { text: j1.choices[0].message.content, output_ids: { length: j1.usage.completion_tokens }, rows: j1.cadre.rows } };
+  const tk = await waitFor("balance ticket completed and every segment of every round mined", async () => {
     const t = await nodeCall("getTicket", { ticket_id: ticket }).catch(() => null);
     if (!t) return null;
     const segs = t.segment_list as any[];
-    return t.status === "completed" && segs.length === model.matrix_count && segs.every((g) => g.blocks_mined >= 1) ? t : null;
+    return t.status === "completed" && segs.length === model.matrix_count * t.standing.rounds && segs.every((g) => g.blocks_mined >= 1) ? t : null;
   }, 3_600_000, 5000);
   const settleS = (Date.now() - tPay) / 1000;
   const p = await nodeCall("getParams");
@@ -873,7 +907,10 @@ async function stepInference(): Promise<string> {
   // the response blob is the ticket's result
   const resp = await nodeCall("getBlob", { uri: tk.result_uri });
   const rj = JSON.parse(Buffer.from(resp.data, "base64").toString());
-  if (rj.text !== r.body.text || rj.ticket_id !== ticket) throw new Error(`response blob ${JSON.stringify(rj).slice(0, 300)}`);
+  const receipts = (rj.rounds as any[]).flatMap((x) => x.requests);
+  if (rj.ticket_id !== ticket || receipts.length !== 2 || !receipts.some((q: any) => q.request_id === j1.cadre.request_id)) throw new Error(`response blob ${JSON.stringify(rj).slice(0, 300)}`);
+  // pay for rows used: W x rows_used / R to the server, the rest of W + P's share back to the buyer
+  if (BigInt(tk.standing.rows_used) > BigInt(tk.standing.rows)) throw new Error(`rows_used ${tk.standing.rows_used}`);
   // Solana: the Order is finalized by proof with the response's hash
   const pda_ = orderPda(nonce);
   const acc = await waitFor("ticket Order finalized on Solana", async () => {
@@ -888,13 +925,14 @@ async function stepInference(): Promise<string> {
   const cliTicket = pearl(["ticket", ticket], resolve(ROOT, KEYS.payer));
   const cliModel = pearl(["model", "show", reg.model_id], resolve(ROOT, KEYS.payer));
   if (cliTicket.standing.blocks_mined !== tk.standing.blocks_mined || cliModel.tickets < 1) throw new Error("pearl ticket / model show disagree with the node");
-  const mined = BigInt(model.macs_per_row) * BigInt(tk.segment_list[0].m);
+  const mined = BigInt(model.macs_per_row) * BigInt(tk.standing.rows_used);
   writeFileSync(resolve(DEMO, "inference.json"), JSON.stringify({ model_id: reg.model_id, ticket, order: nonce.toString(), text: r.body.text, output_ids: r.body.output_ids,
-    rows: r.body.rows, timing: r.body.timing, answer_s: answerS, settle_s: settleS, blocks, heights, subsidy: sub.toString(), cap_total: capTotal.toString(),
-    price_lamports: req.maxAmountRequired, registration: reg }, null, 1));
-  return `model ${reg.model_id.slice(0, 12)} registered (${reg.matrices} matrices, ${reg.chunks} blobs in ${Number(reg.upload_s).toFixed(1)} s); paid ${req.maxAmountRequired} lamports over x402 ` +
-    `-> "${r.body.text}" (${r.body.output_ids.length} tokens in ${answerS.toFixed(1)} s); ticket ${ticket.slice(0, 12)}: ${segIds.size} standing jobs ` +
-    `(${tk.segment_list[0].m} rows, ${mined} mined MACs), ${blocks} blocks at ${heights[0]}..${heights[heights.length - 1]}, subsidy ${sub} <= alpha x P ${capTotal}; ` +
+    rows: r.body.rows, chat: j1, streamed: { text: streamed, last: lastEv }, models, stats, answer_s: answerS, settle_s: settleS, blocks, heights,
+    subsidy: sub.toString(), cap_total: capTotal.toString(), rows_used: tk.standing.rows_used, rows_budget: tk.standing.rows, price_lamports: req.maxAmountRequired, registration: reg }, null, 1));
+  return `model ${reg.model_id.slice(0, 12)} registered (${reg.matrices} matrices, ${reg.chunks} blobs in ${Number(reg.upload_s).toFixed(1)} s); balance of ${rowsBudget} rows ` +
+    `topped up for ${req.maxAmountRequired} lamports over x402; signed chat completion -> "${r.body.text}" (${r.body.output_ids.length} tokens in ${answerS.toFixed(1)} s), ` +
+    `streamed completion "${streamed}"; ticket ${ticket.slice(0, 12)}: ${tk.standing.rounds} round(s), ${segIds.size} standing jobs ` +
+    `(${tk.standing.rows_used} of ${tk.standing.rows} rows used, ${mined} mined MACs), ${blocks} blocks at ${heights[0]}..${heights[heights.length - 1]}, subsidy ${sub} <= alpha x P ${capTotal}; ` +
     `completed (W to the gateway), Order ${pda_.toBase58()} finalized by ${how}; settled ${settleS.toFixed(0)} s after payment`;
 }
 
@@ -957,7 +995,7 @@ try {
   await step("8. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
   await step("9. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
   await step("10. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
-  await step("11. paid inference (Cadre): RegisterModel Llama-3.2-1B int7, x402 completion at the gateway, its 96 weight GEMMs mined as standing jobs, ticket completed, Order finalized by proof", stepInference);
+  await step("11. paid inference (Cadre): RegisterModel Llama-3.2-1B int7, prepaid balance over x402, signed OpenAI chat + streamed completions, their weight GEMMs mined as standing jobs, ticket completed (pay for rows used), Order finalized by proof", stepInference);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
