@@ -198,7 +198,8 @@ export function heroAndStats(sm: Summary) {
 }
 
 function feedRow(r: BlockRow) {
-  const paid = r.kind === "paid_job";
+  const paid = r.kind === "paid_job" || r.kind === "paid_inference";
+  const inf = r.kind === "paid_inference";
   const who = paid
     ? `<span class="faint">paid by</span> <span class="hash" title="${esc(r.paid_by)}">${esc(short(r.paid_by!, 4, 4))}</span> ${
         r.paid_via === "storefront"
@@ -211,7 +212,7 @@ function feedRow(r: BlockRow) {
     : `<div class="amt"><span class="faint">fees</span> <span class="num">${tok(r.fees)}</span></div>`;
   return `<a class="row ${paid ? "row-paid" : "row-fb"}" href="/block/${r.height}">
   <span class="c-h num">${fmtInt(r.height)}</span>
-  <span class="c-main"><span class="c-l1">${paid ? badge("paid", "Paid job") : badge("fallback", "Fallback")}${paid ? `<span class="hash" title="${esc(r.job_id)}">job ${esc(short(r.job_id!, 6, 4))}</span>` : `<span class="hash faint" title="proof ${esc(r.proof_hash)}">proof ${esc(short(r.proof_hash, 6, 4))}</span>`}</span><span class="c-l2">${who}</span></span>
+  <span class="c-main"><span class="c-l1">${paid ? badge("paid", inf ? "Paid inference" : "Paid job") : badge("fallback", "Fallback")}${inf ? `<span class="hash" title="${esc(r.job_id)}">matrix ${esc(r.standing!.matrix)} of ticket ${esc(short(r.ticket_id!, 6, 4))}</span>` : paid ? `<span class="hash" title="${esc(r.job_id)}">job ${esc(short(r.job_id!, 6, 4))}</span>` : `<span class="hash faint" title="proof ${esc(r.proof_hash)}">proof ${esc(short(r.proof_hash, 6, 4))}</span>`}</span><span class="c-l2">${who}</span></span>
   <span class="c-amt">${amounts}</span>
   <span class="c-lc">${lcPill(r.light_client)}</span>
   <span class="c-t">${time(r.time_ms)}</span>
@@ -352,12 +353,18 @@ export function blocksPage(sm: Summary, feed: any) {
 // ------------------------------------------------------------ block page
 
 export function blockPage(sm: Summary, b: any) {
-  const paid = b.kind === "paid_job";
+  const paid = b.kind === "paid_job" || b.kind === "paid_inference";
   const o = b.order;
   const j = b.job;
   const who = paid
     ? kv([
         ["Job", id(b.job_id, { href: `/job/${b.job_id}`, head: 10, tail: 8 })],
+        ...(b.standing
+          ? ([
+              ["Standing job", `matrix <span class="num">${esc(b.standing.matrix)}</span> of model ${id(b.standing.model_id, { head: 6, tail: 4 })}: GEMM <span class="num">${esc(b.standing.m)} x ${esc(b.standing.k)} x ${esc(b.standing.n)}</span> on registered weights`],
+              ["Inference ticket", id(b.ticket_id, { href: `/job/${b.ticket_id}`, head: 10, tail: 8 })],
+            ] as [string, string][])
+          : []),
         ["Paid by", id(b.paid_by, { head: 8, tail: 8 })],
         ["Paid with", o ? `Storefront order <a href="/order/${esc(o.nonce)}">#${esc(o.nonce)}</a> on Solana` : `PostJob on the chain, in ${esc(BRAND.ticker)}`],
         ...(o
@@ -376,7 +383,7 @@ export function blockPage(sm: Summary, b: any) {
     ["Subsidy", `<span class="num">${tok(b.subsidy)}</span> ${T()}`],
     ...(paid
       ? ([
-          ["Job subsidy after this block", `<span class="num">${tok(b.job_subsidy_after_block)}</span> ${T()}`],
+          [b.standing ? "Ticket subsidy after this block (all its matrices)" : "Job subsidy after this block", `<span class="num">${tok(b.job_subsidy_after_block)}</span> ${T()}`],
           ["Cap alpha x P", `<span class="num">${tok(b.subsidy_cap)}</span> ${T()}`],
           ["Within cap", check(b.within_cap, "yes, subsidy ≤ alpha x P", "no")],
         ] as [string, string][])

@@ -144,6 +144,7 @@ export function summaryModel(ix: Indexer) {
       top10_share_of_fees: t.payers.top10Share,
     },
     jobs: { total: t.jobs.total, by_status: t.jobs.byStatus, via_storefront: t.jobs.storefront, posted_directly: t.jobs.direct },
+    inference: { tickets: t.inference.tickets, standing_jobs: t.inference.segments, standing_job_blocks: t.inference.segmentBlocks },
     light_client: c
       ? {
           checkpoint_height: c.checkpointHeight,
@@ -163,15 +164,28 @@ export function summaryModel(ix: Indexer) {
 
 export type Summary = ReturnType<typeof summaryModel>;
 
+/** Heights of every block mined on any segment of `ticketId` (SPEC 4.5). */
+function ticketBlocks(ix: Indexer, ticketId: string): number[] {
+  const out: number[] = [];
+  for (const [id, hs] of ix.jobBlocks) {
+    const j = ix.jobs.get(id);
+    if (j?.kind === "segment" && j.standing?.ticket_id === ticketId) out.push(...hs);
+  }
+  return out.sort((a, b) => a - b);
+}
+
 export async function blockRow(ix: Indexer, b: BlockRec, lc: LcState, ord: Map<string, OrderRec>) {
-  const job = b.jobId ? ix.jobs.get(b.jobId) : null;
-  const o = b.jobId ? ord.get(b.jobId) : undefined;
+  const mined = b.jobId ? ix.jobs.get(b.jobId) : null;
+  // a block on a standing job (segment) was paid for by its inference ticket
+  const segment = mined?.kind === "segment" ? mined : null;
+  const job = segment ? ix.jobs.get(segment.standing.ticket_id) ?? null : mined;
+  const o = job ? ord.get(job.job_id) : undefined;
   let cap: ReturnType<typeof capCheck> | null = null;
   let cumulative: bigint | null = null;
   if (job) {
     cap = capCheck(job, ix.params?.alpha_ppm);
-    const hs = ix.jobBlocks.get(job.job_id) ?? [];
-    const rows = cumulativeSubsidy(hs.map((h) => ({ height: h, subsidy: ix.blocks.get(h)!.subsidy })), cap.cap);
+    const hs = segment ? ticketBlocks(ix, job.job_id) : ix.jobBlocks.get(job.job_id) ?? [];
+    const rows = cumulativeSubsidy(hs.filter((h) => ix.blocks.has(h)).map((h) => ({ height: h, subsidy: ix.blocks.get(h)!.subsidy })), cap.cap);
     cumulative = rows.find((r) => r.height === b.height)?.cumulative ?? null;
   }
   return {
@@ -179,8 +193,10 @@ export async function blockRow(ix: Indexer, b: BlockRec, lc: LcState, ord: Map<s
     hash: b.hash,
     time_ms: b.time,
     miner: b.miner,
-    kind: b.jobId ? "paid_job" : "fallback",
+    kind: b.jobId ? (segment ? "paid_inference" : "paid_job") : "fallback",
     job_id: b.jobId,
+    ticket_id: segment ? segment.standing.ticket_id : null,
+    standing: segment ? { model_id: segment.standing.model_id, matrix: segment.standing.matrix, m: segment.m, k: segment.k, n: segment.n } : null,
     paid_by: job ? job.poster : null,
     paid_via: job ? (o && o.status !== "refunded" ? "storefront" : "post_job") : null,
     order_nonce: o ? o.nonce : null,
@@ -286,8 +302,9 @@ export async function blockModel(ix: Indexer, id: string) {
       lcTxs = null;
     }
   }
-  const job = blk.jobId ? ix.jobs.get(blk.jobId) ?? null : null;
-  const o = blk.jobId ? orderByJob(ix).get(blk.jobId) : undefined;
+  const mined = blk.jobId ? ix.jobs.get(blk.jobId) ?? null : null;
+  const job = mined?.kind === "segment" ? ix.jobs.get(mined.standing.ticket_id) ?? null : mined;
+  const o = job ? orderByJob(ix).get(job.job_id) : undefined;
   const withdrawals = [...ix.withdrawals.values()]
     .filter((w) => w.height === blk.height)
     .map((w) => ({ ...w, release_mode: releaseMode(w.releaseTxs) }));
@@ -350,6 +367,8 @@ function jobSummary(ix: Indexer, j: any) {
     posted_height: j.posted_height,
     closed_height: j.closed_height,
     deadline_height: j.deadline_height,
+    kind: j.kind ?? "job",
+    standing: j.standing ?? null,
   };
 }
 

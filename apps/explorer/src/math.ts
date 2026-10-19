@@ -70,6 +70,10 @@ export interface JobLike {
   blocks_mined: number;
   max_blocks: number;
   posted_height: number;
+  /** "job" | "ticket" | "segment" (SPEC 4.5; absent on older nodes = "job"). */
+  kind?: string;
+  /** Ticket: model_id, cap_total (alpha x P), subsidy_paid over its segments; segment: ticket_id, model_id, matrix. */
+  standing?: any;
 }
 
 export interface CapCheck {
@@ -87,8 +91,10 @@ export interface CapCheck {
 
 export function capCheck(job: JobLike, alphaPpm?: number | null): CapCheck {
   const P = big(job.protocol_fee);
-  const paid = big(job.subsidy_paid);
-  const cap = paid + big(job.cap_remaining);
+  // an inference ticket's subsidy is earned by its segments under cap_total = alpha x P
+  const ticket = job.kind === "ticket" && job.standing;
+  const paid = ticket ? big(job.standing.subsidy_paid) : big(job.subsidy_paid);
+  const cap = ticket ? big(job.standing.cap_total) : paid + big(job.cap_remaining);
   return {
     cap,
     capAtCurrentAlpha: alphaPpm === undefined || alphaPpm === null ? null : mulPpm(P, alphaPpm),
@@ -158,6 +164,8 @@ export interface Totals {
     top10Share: string;
   };
   jobs: { total: number; byStatus: Record<string, number>; storefront: number; direct: number };
+  /** Inference tickets and their standing jobs (SPEC 4.5); segments are not counted in jobs. */
+  inference: { tickets: number; segments: number; segmentBlocks: number };
 }
 
 /**
@@ -200,11 +208,19 @@ export function computeTotals(blocks: BlockLike[], jobs: JobLike[], orders: Orde
   const jobStatus: Record<string, number> = {};
   const pByPoster = new Map<string, bigint>();
   const sfPosters = new Set<string>();
+  let tickets = 0, segments = 0, segmentBlocks = 0;
   for (const j of jobs) {
+    if (j.kind === "segment") {
+      // a standing job of a ticket: W = P = 0, its subsidy counts on the ticket
+      segments++;
+      segmentBlocks += j.blocks_mined;
+      continue;
+    }
+    if (j.kind === "ticket") tickets++;
     const p = big(j.protocol_fee);
     P += p;
     W += big(j.worker_pay);
-    subsidyFromJobs += big(j.subsidy_paid);
+    subsidyFromJobs += j.kind === "ticket" ? big(j.standing?.subsidy_paid ?? 0) : big(j.subsidy_paid);
     if (!capCheck(j).ok) overCap++;
     jobStatus[j.status] = (jobStatus[j.status] ?? 0) + 1;
     pByPoster.set(j.poster, (pByPoster.get(j.poster) ?? 0n) + p);
@@ -243,7 +259,8 @@ export function computeTotals(blocks: BlockLike[], jobs: JobLike[], orders: Orde
       topPayerShare: P === 0n ? "0%" : pct(Number((ranked[0]?.[1] ?? 0n) * 1_000_000n / P), 1_000_000),
       top10Share: P === 0n ? "0%" : pct(Number((top10 * 1_000_000n) / P), 1_000_000),
     },
-    jobs: { total: jobs.length, byStatus: jobStatus, storefront, direct: jobs.length - storefront },
+    jobs: { total: jobs.length - segments, byStatus: jobStatus, storefront, direct: jobs.length - segments - storefront },
+    inference: { tickets, segments, segmentBlocks },
   };
 }
 

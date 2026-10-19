@@ -139,3 +139,23 @@ test("lcStatus: record, accumulator range, checkpoint, not relayed", () => {
   // a non-final block in the accumulator range is not claimed as accumulated
   assert.equal(lcStatus(236, false, lc, acc, null).state, "no-record");
 });
+
+test("inference tickets (SPEC 4.5): cap and subsidy from the ticket, segments not counted as jobs", () => {
+  const ticket = job({ job_id: "t1", kind: "ticket", protocol_fee: "1000", subsidy_paid: "0", cap_remaining: "2",
+    standing: { cap_total: "800", subsidy_paid: "790", model_id: "m" } });
+  const c = capCheck(ticket);
+  assert.equal(c.cap, 800n);
+  assert.equal(c.subsidyPaid, 790n);
+  assert.equal(c.ok, true);
+  assert.equal(capCheck({ ...ticket, standing: { cap_total: "800", subsidy_paid: "801" } }).ok, false, "over the ticket cap");
+  const seg = (id: string, sub: string) => job({ job_id: id, kind: "segment", worker_pay: "0", protocol_fee: "0", subsidy_paid: sub, cap_remaining: "0", blocks_mined: 1,
+    standing: { ticket_id: "t1", model_id: "m", matrix: 0 } });
+  const t = computeTotals([], [ticket, seg("s0", "400"), seg("s1", "390")], [], new Set(["t1"]));
+  assert.equal(t.jobs.total, 1, "segments are standing jobs of the ticket, not separate jobs");
+  assert.equal(t.inference.tickets, 1);
+  assert.equal(t.inference.segments, 2);
+  assert.equal(t.inference.segmentBlocks, 2);
+  assert.equal(t.fees.subsidyFromJobs, 790n, "counted once, on the ticket");
+  assert.equal(t.fees.jobsOverCap, 0, "a segment's P = 0 is not over cap");
+  assert.equal(t.fees.protocolFeesPaid, 1000n);
+});
