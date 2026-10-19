@@ -48,7 +48,11 @@ up() {
     [[ -f $so ]] || { echo "note: $so not built, skipping" >&2; continue; }
     extra+=(--upgradeable-program "$(solana-keygen pubkey "$ROOT/keys/localnet/$p-keypair.json")" "$so" "$payer")
   done
+  # tx history: solana-test-validator keeps 10000 shreds by default, about 6 s of the demo's
+  # busy 50 ms slots, so getSignaturesForAddress forgot a finalize from a minute earlier
+  # (demo step 11 "finalized by null"). LOCALNET_LEDGER_SHREDS overrides.
   solana-test-validator --ledger "$RUN/$c-ledger" --reset --quiet \
+    --limit-ledger-size "${LOCALNET_LEDGER_SHREDS:-5000000}" \
     --bind-address 127.0.0.1 --rpc-port "$RPC" --faucet-port "$FAUCET" \
     --gossip-port "$GOSSIP" --dynamic-port-range "$DYN" ${extra[@]+"${extra[@]}"} "$@" \
     >"$RUN/$c.log" 2>&1 &

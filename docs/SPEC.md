@@ -855,6 +855,10 @@ and exposes the receipt headers below plus `x-payment-response`; OPTIONS preflig
 A proxy (services/cadre-api) must forward the three `x-cadre-*` auth headers and
 `authorization` unchanged: the signature covers the gateway path, method and body, so the
 proxy must forward the body byte for byte and map its own path prefix back to `/v1/...`.
+services/cadre-api does so: `/v1/openai/<path>` -> gateway `/v1/<path>` (every path above
+under `/v1/`), `/v1/inference/balance` -> `/v1/balance`, `/v1/inference/balance/topup` and
+`/close` -> the same under `/v1/balance/`, `/v1/inference/prepaid/<wallet>` ->
+`/v1/prepaid/<wallet>` (docs/API.md). A client signs the GATEWAY path in each case.
 
 Receipt (every inference response): headers `X-Cadre-Request` (request id), `X-Cadre-Ticket`,
 `X-Cadre-Order` (storefront order nonce, or empty for a chain-native ticket),

@@ -36,8 +36,12 @@ Start with `GET /v1` (endpoint list) and `GET /v1/ready`.
   5, gateway POSTs 10). Headers `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`;
   `429` with `Retry-After`.
 - **CORS**: `Access-Control-Allow-Origin: *` by default; `CADRE_ALLOWED_ORIGINS=https://a,https://b`
-  switches to an allow-list. Preflight allows `content-type`, `authorization`, `x-payment`,
-  `x-cadre-*`; exposed headers include `etag`, `x-payment-response`, `x-request-id`.
+  switches to an allow-list. Preflight allows GET, HEAD, POST, DELETE and the headers
+  `content-type`, `authorization`, `x-payment`, `x-cadre-wallet`, `x-cadre-timestamp`,
+  `x-cadre-signature` (plus `x-cadre-account`, the site's earlier name, sent on as
+  `x-cadre-wallet`); exposed headers include `etag`, `x-payment-response`, `x-request-id` and
+  the gateway receipt headers `x-cadre-request`, `-ticket`, `-order`, `-rows`,
+  `-charged-lamports`, `-receipt`, `-explorer`.
 - **Pending**: an endpoint that waits on another component answers `501`
   (`pending_upstream` / `pending`) with what it waits for. Never placeholder data.
 
@@ -62,12 +66,16 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `POST /v1/inference/x402/payment-tx` | unsigned x402 payment tx for the payer's wallet |
 | | `GET /v1/inference/receipts?account=`, `/v1/inference/receipts/{ticket}` | tickets an account bought: fee, order, blocks mined, subsidy, links |
 | | `GET /v1/inference/requests/{ticket}` | the gateway's settlement record |
-| | `GET /v1/inference/prepaid/{account}`, `POST /v1/inference/prepaid/topup/quote`, `POST /v1/inference/prepaid/topup` | prepaid (gateway SPEC 5.4): **501 pending_upstream** until the gateway ships it |
-| | `GET\|POST /v1/openai/{path}` | OpenAI-style pass-through to the gateway (`models`, `completions`, `chat/completions`, `embeddings`, `requests/{id}`), SSE streamed |
+| | `GET /v1/inference/prepaid/{account}` | public prepaid balance of a wallet (gateway `GET /v1/prepaid/{wallet}`): tickets, rows free |
+| | `GET /v1/inference/balance` | the same, wallet-authenticated (gateway `GET /v1/balance`; sign the GATEWAY path `/v1/balance`, cadre-auth-v1) or `?wallet=` |
+| | `POST /v1/inference/balance/topup` (alias `/v1/inference/prepaid/topup`) | x402 top-up: 402 with the requirements, then 201 `{ticket_id, order, rows, wallet}` with `X-PAYMENT` |
+| | `POST /v1/inference/balance/topup/quote` (alias `/v1/inference/prepaid/topup/quote`) | the top-up's price (the gateway's unpaid 402 reply as 200) |
+| | `POST /v1/inference/balance/close` | settle the wallet's open balance tickets now (wallet-authenticated) |
+| | `GET\|POST\|DELETE /v1/openai/{path}` | pass-through to the gateway API v1 (`models`, `completions`, `chat/completions`, `embeddings`, `keys`, `balance`, `prepaid`, `receipts`, `requests`, `stats`): auth headers and body forwarded byte for byte, receipt headers copied, SSE streamed; only the wait for reply headers (30 min) and stream silence (10 min) are bounded |
 | Agents | `GET /v1/agents?sort=paid\|sol\|payers` | ranked by paid work from distinct payers (self-dealt excluded); never by counts |
-| | `GET /v1/agents/{account}` | profile: as server (completed W/P/SOL, distinct payers, top payer share, self-dealt, delivered-then-expired, acceptance by fee, blocks to completion, models), as buyer, as miner; registration + card URI |
+| | `GET /v1/agents/{account}` | profile: as server (completed W/P/SOL, distinct payers, top payer share, self-dealt, delivered-then-expired, acceptance by fee, blocks to completion, models), as buyer, as miner; registration + card URI + `card_probe {ok, status, checked_at, error, last_ok_at}` (the explorer's probe rules); the list also carries `registration` and `card_probe`, and shows registered agents before their first paid work |
 | Mining | `GET /v1/mining`, `GET /v1/miners/{account}` | params, subsidy rule and current max per block, mining pool balance, pool stats; a miner's paid vs fallback blocks, subsidy, fees, matured |
-| Wallet | `GET /v1/accounts/{addr}` | chain balance, nonce, payout lien; agent registration; SOL + CADRE SPL; mining record; recent chain txs + Solana signatures |
+| Wallet | `GET /v1/accounts/{addr}` | chain balance, nonce, payout lien; `credit` (the Agent Credit line as the chain enforces it: the payout lien's cap as `limit`, `repaid` = routed, lender, active; null without a lien; `agent_credit_program.deployed` says whether Agent Credit's Solana program is on the cluster); agent registration; SOL + CADRE SPL; mining record; recent chain txs + Solana signatures |
 | | `GET /v1/accounts/{addr}/balances`, `/v1/accounts/{addr}/txs?before&limit` | balances only; chain history paged |
 | Bridge | `GET /v1/bridge` | vault, chain escrow, invariant delta |
 | | `GET /v1/bridge/transfers?owner=` | deposits (submitted, unlocked, final) and withdrawals (submitted, final, released) |
@@ -103,7 +111,7 @@ const profile = await api.agent(agents[0].account);
 // models and prices
 const { models } = await api.inferenceModels({ prompt_tokens: 64, max_tokens: 64 });
 
-// prepaid is pending until the gateway ships it
+// prepaid balance (501 pending only where CADRE_PREPAID=off)
 try {
   await api.prepaidBalance(addr);
 } catch (e) {
@@ -170,13 +178,15 @@ signature at settlement. `POST /v1/inference/x402/payment-tx` refuses requiremen
 `payTo` / `feePayer` is not this deployment's storefront wallet.
 
 OpenAI SDKs: `baseURL = api.openaiBaseUrl` (`<base>/v1/openai`). Payment headers
-(`X-PAYMENT`, later the gateway's signed-request or API-key headers) pass through.
+(`X-PAYMENT`, `Authorization: Bearer cadre_sk_...`, `X-Cadre-Wallet` / `-Timestamp` /
+`-Signature`) pass through unchanged; a wallet signature covers the gateway path
+(`/v1/chat/completions`, not `/v1/openai/chat/completions`), the method and the body.
 
 ## Run, test, deploy
 
     cd services/cadre-api
     node src/main.ts            # :10685 against the local stack (env list at the top of src/main.ts)
-    npm test                    # 22 tests: HTTP layer, unsigned txs vs @solana/web3.js, the whole API
+    npm test                    # 31 tests: HTTP layer, unsigned txs vs @solana/web3.js, the whole API
                                 # and the client against an in-process fake stack, OpenAPI contract
     ../storefront-x402/node_modules/.bin/tsc -p .     # typecheck (server + client)
     CADRE_API=https://cadre-api.64-95-13-106.sslip.io NODE_RPC=http://127.0.0.1:20630 \
@@ -199,8 +209,6 @@ Agent profiles and circulating supply prefer the explorer's modules when they la
 
 | What | Answers now | Lands when |
 |---|---|---|
-| Prepaid balance, top-up quote, top-up | 501 `pending_upstream` (`CADRE_PREPAID=off`) | the gateway publishes its prepaid API in SPEC 5.4; set `CADRE_PREPAID=gateway` (paths `/v1/prepaid/{account}`, `/v1/prepaid/topup/quote`, `/v1/prepaid/topup` proxied; adjust in `src/routes/inference.ts` if SPEC 5.4 names them differently) |
-| `/v1/openai/chat/completions`, streaming, signed requests | pass-through, the gateway answers 404 until it has them | gateway build |
 | Model prices on the test box | `price_error` (the box's storefront-x402 predates the ticket quote) | the box's storefront restarts on commit 64a4177+ |
 | Circulating supply | `circulating_spl: null` + components | token-side `apps/explorer` supply module |
 | Agent profiles from the agent layer | cadre-api's REPUTATION 5.1 subset (`source` says so) | `apps/explorer/src/agents.ts` |
