@@ -60,8 +60,13 @@ SERVED = in cadre-api today and used by the site. OPEN = still needed.
 - OPEN prepaid: cadre-api proxies gateway `/v1/prepaid/...` but SPEC 5.4 names `/v1/balance`
   and `/v1/balance/topup`; `GET /v1/balance` needs wallet auth, so the unauthenticated
   `GET /v1/inference/prepaid/{account}` cannot read it as is (accept signed headers).
-- OPEN pass-through headers: forward `X-Cadre-Wallet` (SPEC 5.4); it forwards
-  `x-cadre-account` / `x-cadre-nonce` today. The site sends both names.
+- OPEN pass-through headers: allow (CORS ALLOW_HEADERS) and forward `X-Cadre-Wallet` (SPEC 5.4);
+  today only `x-cadre-account` / `x-cadre-nonce` pass, and a browser request carrying
+  X-Cadre-Wallet fails CORS preflight, so the site sends X-Cadre-Account until then. Also add
+  the receipt headers (X-Cadre-Request, -Ticket, -Order, -Rows, -Charged-Lamports, -Receipt,
+  -Explorer) to EXPOSE_HEADERS so browsers can read them.
+- OPEN `/v1/inference/models`: `served_by_gateway` compares the gateway's `id` (registry name,
+  e.g. llama-3.2-1b-w7a7) with the chain's `model_id` (hex), so it reads false while served.
 - OPEN pass-through paths: allow `keys` (POST /v1/keys, DELETE /v1/keys/{id}) so the site's
   "Create API key" works through /v1/openai/keys.
 - OPEN `/v1/accounts/{addr}`: Agent Credit line (`credit`) if any; agent `registration`
