@@ -40,6 +40,9 @@ struct Cli {
     /// Priority fee, micro-lamports per CU.
     #[arg(long, global = true, default_value_t = 0)]
     cu_price: u64,
+    /// Signature-status poll interval (ms) while confirming txs; raise it on a public RPC.
+    #[arg(long, global = true, default_value_t = 50)]
+    confirm_poll_ms: u64,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -135,11 +138,11 @@ fn main() -> Result<()> {
     let node = Node::new(&cli.node);
     match cli.cmd {
         Cmd::Init { height, relay_reward, retain_final } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
         Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
             let settle_node = Node::new(&cli.node);
             let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu });
@@ -171,11 +174,11 @@ fn main() -> Result<()> {
                     println!("tip {} {} final_floor {} final {} (txs {})", c.tip_height, hex::encode(c.tip_hash), c.final_floor, c.final_height, r.stats.txs);
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(if busy { 25 } else { poll_ms }));
+                std::thread::sleep(Duration::from_millis(if busy { cli.confirm_poll_ms.max(25) } else { poll_ms }));
             }
         }
         Cmd::SetParams { max_future_ms, relay_reward, retain_final } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             let mut p = s.config()?.params;
             p.max_future_ms = max_future_ms.unwrap_or(p.max_future_ms);
             p.relay_reward = relay_reward.unwrap_or(p.relay_reward);
@@ -185,7 +188,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::CloseWorks { work, parallel } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             for i in 0..parallel.max(1) {
                 let p = work_path(&work, i);
                 if !p.exists() {
@@ -201,7 +204,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Status => {
-            let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             match s.config() {
                 Ok(c) => {
                     let acc = s.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
@@ -225,7 +228,7 @@ fn main() -> Result<()> {
         }
         Cmd::Harvest { out, to } => harvest(&node, &out, to),
         Cmd::AccProof { height, restore } => {
-            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price);
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms);
             acc_proof(&node, &mut s, height, restore)
         }
     }

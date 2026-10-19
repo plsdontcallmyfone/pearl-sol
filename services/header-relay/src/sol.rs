@@ -20,11 +20,22 @@ pub struct Sol {
     pub cu: u64,
     /// micro-lamports per CU (priority fee); 0 = none
     pub cu_price: u64,
+    /// Signature-status poll interval while confirming. 50 ms suits a local validator; a
+    /// public RPC (Solana devnet: about 40 calls of one method per 10 s per IP) throttles
+    /// that with 429 backoff, which stalls the relay, so the devnet runs with a few hundred ms.
+    pub poll: std::time::Duration,
 }
 
 impl Sol {
     pub fn new(url: &str, payer: Keypair, cu_price: u64) -> Self {
-        Self { rpc: RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed()), payer, txs: 0, cu: 0, cu_price }
+        Self { rpc: RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed()), payer, txs: 0, cu: 0, cu_price,
+               poll: std::time::Duration::from_millis(50) }
+    }
+
+    /// Sets the confirm poll interval (`--confirm-poll-ms`).
+    pub fn with_poll(mut self, ms: u64) -> Self {
+        self.poll = std::time::Duration::from_millis(ms.max(10));
+        self
     }
 
     pub fn pk(&self) -> Pubkey {
@@ -32,7 +43,7 @@ impl Sol {
     }
 
     /// Sends one transaction and waits until it is confirmed; returns its signature.
-    /// Polls every 50 ms (RpcClient::send_and_confirm_transaction sleeps 500 ms between
+    /// Polls every `poll` (default 50 ms; RpcClient::send_and_confirm_transaction sleeps 500 ms between
     /// status checks, which made one header cost tens of seconds on a local validator).
     pub fn send(&mut self, ixs: &[Instruction], extra: &[&Keypair]) -> Result<String> {
         let mut all = vec![ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)];
@@ -99,7 +110,7 @@ impl Sol {
                 if t0.elapsed() > std::time::Duration::from_secs(60) {
                     bail!("{} batch txs unconfirmed after 60 s", left.len());
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(self.poll);
             }
         }
         self.txs += txs.len() as u64;
@@ -121,7 +132,7 @@ impl Sol {
             } else if t0.elapsed() > std::time::Duration::from_secs(5) && !self.rpc.is_blockhash_valid(bh, CommitmentConfig::processed())? {
                 bail!("transaction {sig} expired unconfirmed");
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(self.poll);
         }
     }
 
