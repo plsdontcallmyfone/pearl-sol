@@ -605,6 +605,19 @@ CLAUDE.md "Who is working on what".
    - Open: an Instruct model registration; a GPU worker; cadre-proxy live check against this gateway;
      the e2e wallet-tx flake (site result not shown within 60 s although the tx lands).
 
+18. PUBLIC DEVNET (owner decisions 2026-10-18; finished 2026-10-19 by the "devnet finish" agent):
+   LIVE, details and ids in docs/DEVNET.md. Agent chain on 3 BitLaunch boxes (rolling upgrade to
+   fe8e04a: RejectResult kind 13, RegisterModel / PostSegments, token-side changes), Solana devnet
+   programs deployed + initialized from fe8e04a (reserve 8m1RBPii, bridge 3S226LmV, storefront 9XjvGk2x,
+   lightclient 47mavKip; upgrade authority the deployer), CADRE mint BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e
+   (real pump.fun create_v2; devnet's pump Global has 0.3 SOL virtual reserves, so the dev buy graduated
+   it and it trades on PumpSwap; storefront buybacks burn since the reserve is above the 100M cap).
+   cadre-api https://api.64-95-12-116.sslip.io. Wallet release cadre-devnet-6.73.4 (pearl-wallet).
+   Fixes on the way: crank trade.ts PumpSwap path; pearl-miner --deliver orphan sweep (jobs mined by
+   non-delivering miners); header-relay confirm-poll / send-gap / fresh blockhash / --no-relay and the
+   relay moved to box 1 (Solana devnet public RPC limits, DEVNET.md "Solana devnet RPC budget"); explorer
+   SOL_POLL_MS. e2e: see DEVNET.md "End to end results". Open: a keyed Solana devnet RPC would lift the
+   relay limit (owner); header relay above 10 slots stops confirming from one IP.
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
