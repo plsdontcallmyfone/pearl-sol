@@ -37,14 +37,26 @@ impl PreparedJob {
         Self::build(job, a, b, false)
     }
 
-    fn build(mut job: Job, a: &[i8], b: &[i8], check: bool) -> Result<Self> {
+    /// Like [`PreparedJob::new`] with B given transposed (`bt`, n x k row-major), the
+    /// layout registered model weights are stored in (standing jobs, SPEC 4.5).
+    pub fn new_bt(job: Job, a: &[i8], bt: Vec<i8>) -> Result<Self> {
+        Self::build_bt(job, a, bt, true)
+    }
+
+    fn build(job: Job, a: &[i8], b: &[i8], check: bool) -> Result<Self> {
+        job.sanity_check()?;
+        let (n, k) = (job.n as usize, job.config.k());
+        ensure!(b.len() == k * n, "B has {} entries, expected k*n = {}", b.len(), k * n);
+        Self::build_bt(job, a, transpose(b, k, n), check)
+    }
+
+    fn build_bt(mut job: Job, a: &[i8], bt: Vec<i8>, check: bool) -> Result<Self> {
         job.sanity_check()?;
         let (m, n, k) = (job.m as usize, job.n as usize, job.config.k());
         ensure!(a.len() == m * k, "A has {} entries, expected m*k = {}", a.len(), m * k);
-        ensure!(b.len() == k * n, "B has {} entries, expected k*n = {}", b.len(), k * n);
-        ensure!(a.iter().chain(b).all(|&x| (-64..=64).contains(&x)), "matrix values must be int7 in [-64, 64]");
+        ensure!(bt.len() == k * n, "B has {} entries, expected k*n = {}", bt.len(), k * n);
+        ensure!(a.iter().chain(&bt).all(|&x| (-64..=64).contains(&x)), "matrix values must be int7 in [-64, 64]");
         let job_key = job.job_key();
-        let bt = transpose(b, k, n);
         let a_tree = MerkleTree::new(&pad_to_chunk_boundary(as_u8(a)), job_key);
         let bt_tree = MerkleTree::new(&pad_to_chunk_boundary(as_u8(&bt)), job_key);
         if check {

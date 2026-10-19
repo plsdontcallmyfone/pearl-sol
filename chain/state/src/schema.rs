@@ -19,6 +19,9 @@ pub mod tag {
     pub const JOB_INDEX: u8 = 8;
     pub const WITHDRAWAL: u8 = 9;
     pub const ROUTE: u8 = 10;
+    pub const MODEL: u8 = 11;
+    pub const MODEL_INDEX: u8 = 12;
+    pub const MODEL_COUNT: u8 = 13;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {
@@ -56,6 +59,17 @@ pub fn withdrawal_key(nonce: u64) -> Key {
 /// The payout lien (SetRoute) of an account; kept after it ends (route_nonce history).
 pub fn route_key(a: &Pubkey) -> Key {
     key(tag::ROUTE, a)
+}
+
+/// A registered model (SPEC 4.5).
+pub fn model_key(model_id: &Hash) -> Key {
+    key(tag::MODEL, model_id)
+}
+pub fn model_index_key(i: u64) -> Key {
+    key(tag::MODEL_INDEX, &i.to_le_bytes())
+}
+pub fn model_count_key() -> Key {
+    key(tag::MODEL_COUNT, &[])
 }
 
 fn expect_tag(r: &mut R<'_>, t: u8) -> Result<(), DecodeError> {
@@ -119,6 +133,70 @@ impl JobStatus {
     }
 }
 
+/// Standing-job extension of a JobRecord (SPEC 4.5). Plain jobs carry none (and encode
+/// exactly as before).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobExt {
+    /// A paid inference ticket (never mineable).
+    Ticket(TicketExt),
+    /// A standing job of a ticket: B is registered matrix `matrix` of `model_id`.
+    Segment { ticket_id: Hash, model_id: Hash, matrix: u16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TicketExt {
+    pub model_id: Hash,
+    /// The server (all zero until claimed by the first PostSegments).
+    pub server: Pubkey,
+    /// `round_up(prompt + max_new, row period)`.
+    pub rows: u64,
+    /// `alpha x P` at creation: the whole subsidy the ticket's segments may earn.
+    pub cap_total: u64,
+    pub segments: u32,
+    /// Sum of the segments' max_blocks (at most the ticket's max_blocks).
+    pub blocks_allocated: u32,
+    pub blocks_mined: u32,
+    pub subsidy_paid: u64,
+}
+
+impl JobExt {
+    fn write(&self, w: &mut W) {
+        match self {
+            JobExt::Ticket(t) => {
+                w.u8(1)
+                    .bytes(&t.model_id)
+                    .bytes(&t.server)
+                    .u64(t.rows)
+                    .u64(t.cap_total)
+                    .u32(t.segments)
+                    .u32(t.blocks_allocated)
+                    .u32(t.blocks_mined)
+                    .u64(t.subsidy_paid);
+            }
+            JobExt::Segment { ticket_id, model_id, matrix } => {
+                w.u8(2).bytes(ticket_id).bytes(model_id).u16(*matrix);
+            }
+        }
+    }
+
+    fn read(r: &mut R<'_>) -> Result<Self, DecodeError> {
+        Ok(match r.u8()? {
+            1 => JobExt::Ticket(TicketExt {
+                model_id: r.arr()?,
+                server: r.arr()?,
+                rows: r.u64()?,
+                cap_total: r.u64()?,
+                segments: r.u32()?,
+                blocks_allocated: r.u32()?,
+                blocks_mined: r.u32()?,
+                subsidy_paid: r.u64()?,
+            }),
+            2 => JobExt::Segment { ticket_id: r.arr()?, model_id: r.arr()?, matrix: r.u16()? },
+            _ => return Err(DecodeError::Invalid("job extension")),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobRecord {
     pub job_id: Hash,
@@ -148,8 +226,11 @@ pub struct JobRecord {
     pub closed_height: u64,
     pub index: u64,
     /// First field of the Pearl job header (`job_pubkey`): the job id for a PostJob,
-    /// the recipient (poster) for a storefront order (see [`order_terms_hash`]).
+    /// the recipient (poster) for a storefront order (see [`order_terms_hash`]),
+    /// the model id for a standing job (segment).
     pub header_id: Hash,
+    /// Ticket or segment (SPEC 4.5); `None` for a plain job.
+    pub ext: Option<JobExt>,
 }
 
 impl JobRecord {
@@ -186,6 +267,9 @@ impl JobRecord {
             .u64(self.closed_height)
             .u64(self.index)
             .bytes(&self.header_id);
+        if let Some(e) = &self.ext {
+            e.write(&mut w);
+        }
         w.into_inner()
     }
 
@@ -238,9 +322,39 @@ impl JobRecord {
             closed_height: r.u64()?,
             index: r.u64()?,
             header_id: r.arr()?,
+            ext: None,
         };
+        let j = if r.remaining() > 0 { JobRecord { ext: Some(JobExt::read(&mut r)?), ..j } } else { j };
         r.finish()?;
         Ok(j)
+    }
+
+    pub fn ticket(&self) -> Option<&TicketExt> {
+        match &self.ext {
+            Some(JobExt::Ticket(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn is_ticket(&self) -> bool {
+        self.ticket().is_some()
+    }
+
+    /// `(ticket_id, model_id, matrix)` of a segment.
+    pub fn segment(&self) -> Option<(Hash, Hash, u16)> {
+        match self.ext {
+            Some(JobExt::Segment { ticket_id, model_id, matrix }) => Some((ticket_id, model_id, matrix)),
+            _ => None,
+        }
+    }
+
+    /// "job", "ticket" or "segment".
+    pub fn kind_name(&self) -> &'static str {
+        match self.ext {
+            None => "job",
+            Some(JobExt::Ticket(_)) => "ticket",
+            Some(JobExt::Segment { .. }) => "segment",
+        }
     }
 
     /// Pearl 76-byte job header for v2 chain jobs:
@@ -322,6 +436,124 @@ pub fn job_id_for_post(poster: &Pubkey, nonce: u64) -> Hash {
 /// `job_id = sha256("pearl-sol:order-job:v1" || solana_nonce u64 LE)` for a storefront order.
 pub fn job_id_for_order(solana_nonce: u64) -> Hash {
     agent_types::tx::order_job_id(solana_nonce)
+}
+
+/// A registered model (SPEC 4.5, schema tag 11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Model {
+    pub model_id: Hash,
+    pub registrant: Pubkey,
+    pub name: Vec<u8>,
+    pub manifest_uri: Vec<u8>,
+    pub recipe: u8,
+    /// The model's mining config with `common_dim` of the first matrix (each matrix uses its own k).
+    pub config: [u8; 52],
+    pub matrices: Vec<agent_types::MatrixSpec>,
+    /// `sum k x n` over the matrices: MACs per token row.
+    pub macs_per_row: u64,
+    pub registered_height: u64,
+    pub index: u64,
+    pub tickets: u64,
+    pub segments: u64,
+    pub blocks_mined: u64,
+    pub subsidy_paid: u64,
+}
+
+impl Model {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = W::new();
+        w.u8(tag::MODEL)
+            .bytes(&self.model_id)
+            .bytes(&self.registrant)
+            .bytes8(&self.name)
+            .bytes16(&self.manifest_uri)
+            .u8(self.recipe)
+            .bytes(&self.config)
+            .u16(self.matrices.len() as u16);
+        for m in &self.matrices {
+            w.u32(m.k).u32(m.n).bytes(&m.hash_b);
+        }
+        w.u64(self.macs_per_row)
+            .u64(self.registered_height)
+            .u64(self.index)
+            .u64(self.tickets)
+            .u64(self.segments)
+            .u64(self.blocks_mined)
+            .u64(self.subsidy_paid);
+        w.into_inner()
+    }
+
+    pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = R::new(b);
+        expect_tag(&mut r, tag::MODEL)?;
+        let model_id = r.arr()?;
+        let registrant = r.arr()?;
+        let name = r.bytes8(255, "name")?;
+        let manifest_uri = r.bytes16(usize::MAX, "manifest_uri")?;
+        let recipe = r.u8()?;
+        let config = r.arr()?;
+        let n = r.u16()? as usize;
+        let mut matrices = Vec::with_capacity(n);
+        for _ in 0..n {
+            matrices.push(agent_types::MatrixSpec { k: r.u32()?, n: r.u32()?, hash_b: r.arr()? });
+        }
+        let m = Self {
+            model_id,
+            registrant,
+            name,
+            manifest_uri,
+            recipe,
+            config,
+            matrices,
+            macs_per_row: r.u64()?,
+            registered_height: r.u64()?,
+            index: r.u64()?,
+            tickets: r.u64()?,
+            segments: r.u64()?,
+            blocks_mined: r.u64()?,
+            subsidy_paid: r.u64()?,
+        };
+        r.finish()?;
+        Ok(m)
+    }
+
+    pub fn base_config(&self) -> Result<pearl_job::MiningConfig, String> {
+        pearl_job::MiningConfig::from_bytes(&self.config).map_err(|e| e.to_string())
+    }
+
+    /// Mining config of matrix `i` (the model's rank and patterns, the matrix's k).
+    pub fn matrix_config(&self, i: usize) -> Result<pearl_job::MiningConfig, String> {
+        let m = self.matrices.get(i).ok_or("no such matrix")?;
+        Ok(pearl_job::standing::matrix_config(&self.base_config()?, m.k))
+    }
+}
+
+pub fn encode_model_index(model_id: &Hash) -> Vec<u8> {
+    let mut v = vec![tag::MODEL_INDEX];
+    v.extend_from_slice(model_id);
+    v
+}
+
+pub fn decode_model_index(b: &[u8]) -> Result<Hash, DecodeError> {
+    let mut r = R::new(b);
+    expect_tag(&mut r, tag::MODEL_INDEX)?;
+    let h = r.arr()?;
+    r.finish()?;
+    Ok(h)
+}
+
+pub fn encode_model_count(n: u64) -> Vec<u8> {
+    let mut w = W::new();
+    w.u8(tag::MODEL_COUNT).u64(n);
+    w.into_inner()
+}
+
+pub fn decode_model_count(b: &[u8]) -> Result<u64, DecodeError> {
+    let mut r = R::new(b);
+    expect_tag(&mut r, tag::MODEL_COUNT)?;
+    let n = r.u64()?;
+    r.finish()?;
+    Ok(n)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

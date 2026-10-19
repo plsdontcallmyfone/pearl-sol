@@ -15,7 +15,7 @@ pub mod tx;
 pub use block::Block;
 pub use coinbase::Coinbase;
 pub use header::Header;
-pub use tx::{AttesterSig, PostJob, Tx, TxBody, TxKind};
+pub use tx::{AttesterSig, MatrixSpec, PostJob, RegisterModel, Segment, Tx, TxBody, TxKind};
 
 use thiserror::Error;
 

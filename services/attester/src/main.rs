@@ -37,6 +37,10 @@ struct Args {
     mining_program: String,
     #[arg(long, default_value_t = 2)]
     freivalds_rounds: usize,
+    /// Model store for inference tickets: <dir>/<model_id hex>/w/<i>.i8 (rebuilt from the
+    /// node's blobs when missing).
+    #[arg(long, default_value = "models")]
+    models: PathBuf,
 }
 
 fn main() -> Result<()> {
@@ -50,7 +54,7 @@ fn main() -> Result<()> {
         "request" => JobSource::Request,
         m => return Err(anyhow!("unknown --mode {m}")),
     };
-    let att = Attester { key: pearl_node::read_key_file(&a.keypair)?, source, freivalds_rounds: a.freivalds_rounds };
+    let att = Attester { key: pearl_node::read_key_file(&a.keypair)?, source, freivalds_rounds: a.freivalds_rounds, models_dir: a.models };
     let addr = format!("{}:{}", a.host, a.port);
     // Binding fails if anything already holds the port; we never take it over.
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;

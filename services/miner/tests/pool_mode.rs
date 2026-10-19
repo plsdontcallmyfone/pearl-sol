@@ -157,6 +157,8 @@ fn pool_miner_mines_job_work() {
         evaluators: vec![],
         threshold: 1,
         deadline_height: 1000,
+        kind: "job".into(),
+        standing: None,
     });
     let pool = pool_on(&node, &dir);
     let (logs, log) = logger();
@@ -199,6 +201,8 @@ fn bad_job_data_falls_back_to_fallback_work() {
         evaluators: vec![],
         threshold: 1,
         deadline_height: 1000,
+        kind: "job".into(),
+        standing: None,
     });
     let pool = pool_on(&node, &dir);
     let (logs, log) = logger();

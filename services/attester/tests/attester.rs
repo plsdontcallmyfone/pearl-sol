@@ -53,7 +53,7 @@ fn fixture(tag: &str) -> Fx {
         max_nonce: 256,
     };
     let prep = PreparedJob::new(spec.to_job().unwrap(), &a, &b).unwrap();
-    let att = Attester { key: SigningKey::from_bytes(&[5u8; 32]), source: JobSource::Request, freivalds_rounds: 2 };
+    let att = Attester { key: SigningKey::from_bytes(&[5u8; 32]), source: JobSource::Request, freivalds_rounds: 2, models_dir: "models".into() };
     Fx { att, spec, prep, job_pk, miner: [0x44; 32], a, b }
 }
 
@@ -208,12 +208,14 @@ fn node_fixture(tag: &str, evaluator: [u8; 32]) -> (Fx, MockNode, Vec<i32>, std:
         evaluators: vec![evaluator],
         threshold: 1,
         deadline_height: 100,
+        kind: "job".into(),
+        standing: None,
     });
     (fx, node, c, cpath)
 }
 
 fn node_attester(node: &MockNode) -> Attester {
-    Attester { key: SigningKey::from_bytes(&[5u8; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 }
+    Attester { key: SigningKey::from_bytes(&[5u8; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2, models_dir: "models".into() }
 }
 
 #[test]

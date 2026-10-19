@@ -67,6 +67,8 @@ fn make_job_with(dir: &std::path::Path, id: [u8; 32], header_id: [u8; 32], seed:
         evaluators: vec![attester_key().verifying_key().to_bytes()],
         threshold: 1,
         deadline_height: 1000,
+        kind: "job".into(),
+        standing: None,
     };
     (info, c)
 }
@@ -109,7 +111,7 @@ fn mines_job_blocks_and_delivers() {
     let node = MockNode::new(CHAIN, EASY);
     let (job, c) = make_job(&dir, [0x0a; 32], 5);
     node.add_job(job.clone());
-    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2, models_dir: "models".into() });
     let (logs, log) = collecting_log();
     let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 3, true), log);
     m.run(&|| false).unwrap();
@@ -139,7 +141,7 @@ fn delivers_order_job_whose_header_id_is_the_poster() {
     let node = MockNode::new(CHAIN, EASY);
     let (job, c) = make_job_with(&dir, [0x0b; 32], [0x10; 32], 6);
     node.add_job(job.clone());
-    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2, models_dir: "models".into() });
     let (logs, log) = collecting_log();
     let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 2, true), log);
     m.run(&|| false).unwrap();
@@ -228,7 +230,7 @@ fn attester_must_be_an_evaluator() {
     let node = MockNode::new(CHAIN, EASY);
     let (job, _) = make_job(&dir, [0x0d; 32], 8);
     node.add_job(job);
-    let att = InProc(Attester { key: SigningKey::from_bytes(&[0x77; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 1 });
+    let att = InProc(Attester { key: SigningKey::from_bytes(&[0x77; 32]), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 1, models_dir: "models".into() });
     let (logs, log) = collecting_log();
     let mut c = cfg(&dir, 2, true);
     c.max_blocks = Some(2);
@@ -274,7 +276,7 @@ fn over_http_jsonrpc() {
         }
     });
     let http = HttpNode::new(&format!("http://127.0.0.1:{port}"));
-    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(HttpNode::new(&format!("http://127.0.0.1:{port}")))), freivalds_rounds: 2 });
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(HttpNode::new(&format!("http://127.0.0.1:{port}")))), freivalds_rounds: 2, models_dir: "models".into() });
     let (_logs, log) = collecting_log();
     let mut m = Miner::new(&http, Some(&att), miner_key(), cfg(&dir, 2, true), log);
     m.run(&|| false).unwrap();
@@ -322,7 +324,7 @@ fn blob_job_data_and_blob_result() {
     job.data_uri = uri;
     std::fs::remove_dir_all(dir.join(hex::encode(&[0x0b; 4]))).unwrap(); // no local copy
     node.add_job(job.clone());
-    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2 });
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(node.clone())), freivalds_rounds: 2, models_dir: "models".into() });
     let (logs, log) = collecting_log();
     let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 2, true), log);
     m.run(&|| false).unwrap();

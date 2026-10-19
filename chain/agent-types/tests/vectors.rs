@@ -80,6 +80,14 @@ fn body_json(b: &TxBody) -> Value {
             "cap": cap.to_string(), "release_key": b58(release_key)}),
         TxBody::ClearRoute { account, route_nonce, sig } => json!({
             "account": b58(account), "route_nonce": route_nonce, "sig": hex::encode(sig)}),
+        TxBody::RegisterModel(m) => json!({
+            "name": String::from_utf8_lossy(&m.name), "manifest_uri": String::from_utf8_lossy(&m.manifest_uri),
+            "recipe": m.recipe, "rank": m.rank, "rows_pattern": hex::encode(m.rows_pattern), "cols_pattern": hex::encode(m.cols_pattern),
+            "matrices": m.matrices.iter().map(|x| json!({"k": x.k, "n": x.n, "hash_b": hex::encode(x.hash_b)})).collect::<Vec<_>>()}),
+        TxBody::PostSegments { ticket_id, segments } => json!({
+            "ticket_id": hex::encode(ticket_id),
+            "segments": segments.iter().map(|g| json!({"matrix": g.matrix, "m": g.m, "max_blocks": g.max_blocks,
+                "hash_a": hex::encode(g.hash_a), "c_hash": hex::encode(g.c_hash), "a_uri": String::from_utf8_lossy(&g.a_uri)})).collect::<Vec<_>>()}),
     }
 }
 
@@ -291,7 +299,55 @@ fn build() -> Vec<(&'static str, Value)> {
             "rule": "record = 0x00 || height u64 || miner || fees u64 || subsidy u64 || job_id || mature_height u64 (97 bytes); last tx_root leaf = blake3(0x00 || blake3(record))",
         },
     });
-    vec![("tx.json", Value::Array(tx_json)), ("messages.json", messages), ("header.json", header_v)]
+    // Standing jobs (SPEC 4.5) live in their own file so wallets that do not speak them
+    // keep passing tx.json.
+    let rows = [0, 1, 0, 0, 3, 0];
+    let cols = [0, 1, 0, 0, 7, 0];
+    let standing = vec![
+        tx_vector(
+            "register_model",
+            1,
+            6,
+            1000,
+            TxBody::RegisterModel(RegisterModel {
+                name: b"llama-3.2-1b-w7a7".to_vec(),
+                manifest_uri: format!("blob:{}", hex::encode([0x44u8; 32])).into_bytes(),
+                recipe: 1,
+                rank: 128,
+                rows_pattern: rows,
+                cols_pattern: cols,
+                matrices: vec![
+                    MatrixSpec { k: 2048, n: 3072, hash_b: [0x61; 32] },
+                    MatrixSpec { k: 8192, n: 2048, hash_b: [0x62; 32] },
+                ],
+            }),
+        )
+        .0,
+        tx_vector(
+            "post_segments",
+            2,
+            3,
+            1000,
+            TxBody::PostSegments {
+                ticket_id: order_job_id(44),
+                segments: vec![Segment {
+                    matrix: 1,
+                    m: 12,
+                    max_blocks: 1,
+                    hash_a: [0x71; 32],
+                    c_hash: [0x72; 32],
+                    a_uri: format!("blob:{}", hex::encode([0x73u8; 32])).into_bytes(),
+                }],
+            },
+        )
+        .0,
+    ];
+    vec![
+        ("tx.json", Value::Array(tx_json)),
+        ("messages.json", messages),
+        ("header.json", header_v),
+        ("standing.json", Value::Array(standing)),
+    ]
 }
 
 #[test]

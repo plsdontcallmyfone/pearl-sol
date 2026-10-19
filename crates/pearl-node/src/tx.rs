@@ -24,6 +24,21 @@ pub mod kind {
     pub const BRIDGE_UNLOCK: u8 = 6;
     pub const BRIDGE_LOCK: u8 = 7;
     pub const ADMIN_CONFIG: u8 = 8;
+    pub const SET_ROUTE: u8 = 9;
+    pub const CLEAR_ROUTE: u8 = 10;
+    pub const REGISTER_MODEL: u8 = 11;
+    pub const POST_SEGMENTS: u8 = 12;
+}
+
+/// One standing job of a ticket (SPEC 4.5, PostSegments).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentSpec {
+    pub matrix: u16,
+    pub m: u32,
+    pub max_blocks: u32,
+    pub hash_a: [u8; 32],
+    pub c_hash: [u8; 32],
+    pub a_uri: String,
 }
 
 /// Unsigned LEB128, as Commonware's `varint` for lengths.
@@ -46,6 +61,8 @@ pub enum Body {
     SubmitResult { job_id: [u8; 32], result_hash: [u8; 32], uri: String },
     CompleteJob { job_id: [u8; 32], sigs: Vec<([u8; 32], [u8; 64])> },
     ExpireJob { job_id: [u8; 32] },
+    /// `ticket_id [32] | count u8 | (matrix u16 | m u32 | max_blocks u32 | hash_a | c_hash | a_uri (u16 len))*`
+    PostSegments { ticket_id: [u8; 32], segments: Vec<SegmentSpec> },
     /// Any kind, body bytes as given.
     Raw { kind: u8, body: Vec<u8> },
 }
@@ -57,6 +74,7 @@ impl Body {
             Body::SubmitResult { .. } => kind::SUBMIT_RESULT,
             Body::CompleteJob { .. } => kind::COMPLETE_JOB,
             Body::ExpireJob { .. } => kind::EXPIRE_JOB,
+            Body::PostSegments { .. } => kind::POST_SEGMENTS,
             Body::Raw { kind, .. } => *kind,
         }
     }
@@ -85,6 +103,21 @@ impl Body {
                 }
             }
             Body::ExpireJob { job_id } => v.extend_from_slice(job_id),
+            Body::PostSegments { ticket_id, segments } => {
+                ensure!(!segments.is_empty() && segments.len() <= pearl_job::standing::MAX_SEGMENTS_PER_TX, "1..=64 segments per tx");
+                v.extend_from_slice(ticket_id);
+                v.push(segments.len() as u8);
+                for g in segments {
+                    ensure!(g.a_uri.len() <= 512, "a_uri too long");
+                    v.extend_from_slice(&g.matrix.to_le_bytes());
+                    v.extend_from_slice(&g.m.to_le_bytes());
+                    v.extend_from_slice(&g.max_blocks.to_le_bytes());
+                    v.extend_from_slice(&g.hash_a);
+                    v.extend_from_slice(&g.c_hash);
+                    v.extend_from_slice(&(g.a_uri.len() as u16).to_le_bytes());
+                    v.extend_from_slice(g.a_uri.as_bytes());
+                }
+            }
             Body::Raw { body, .. } => v.extend_from_slice(body),
         }
         Ok(v)

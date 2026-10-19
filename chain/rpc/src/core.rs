@@ -3,7 +3,7 @@
 //! The node actor owns one [`Core`] and calls it for RPC requests, gossip and sync
 //! deliveries. Side effects for the network are queued in [`Core::outbox`].
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use agent_types::{Block, Hash, Pubkey, Tx, TxBody};
@@ -67,6 +67,25 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     pub peer_info: Option<PeerInfoFn>,
     /// getPeers in static mode: keys (base58) of the peers heard from.
     pub static_peers: Vec<String>,
+    /// Chunk blob ids listed by each registered model's manifest we hold (SPEC 4.5),
+    /// keyed by manifest blob id: pinned, never pruned.
+    pub model_pins: HashMap<BlobId, Vec<BlobId>>,
+}
+
+/// Blob ids a `cadre-model-v1` manifest lists (every file's chunks).
+pub fn manifest_blobs(data: &[u8]) -> Vec<BlobId> {
+    let Ok(v) = serde_json::from_slice::<Value>(data) else { return Vec::new() };
+    let mut out = Vec::new();
+    if let Some(files) = v.get("files").and_then(|f| f.as_object()) {
+        for f in files.values() {
+            for b in f.get("blobs").and_then(|b| b.as_array()).into_iter().flatten() {
+                if let Some(id) = b.as_str().and_then(blobs::parse_id) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    out
 }
 
 pub const MAX_TEMPLATES: usize = 64;
@@ -98,6 +117,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             last_blob_prune: 0,
             peer_info: None,
             static_peers: Vec::new(),
+            model_pins: HashMap::new(),
         }
     }
 
@@ -126,6 +146,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     /// putBlob: rate limit, store, push to peers.
     pub async fn put_blob(&mut self, data: &[u8], now_ms: u64) -> Result<(BlobId, bool), PutError> {
+        self.put_blob_opt(data, now_ms, true).await
+    }
+
+    /// putBlob with `push = false`: stored here only; peers fetch it on demand (model uploads).
+    pub async fn put_blob_opt(&mut self, data: &[u8], now_ms: u64, push: bool) -> Result<(BlobId, bool), PutError> {
         let height = self.chain.tip_height();
         let Some(store) = self.blobs.as_mut() else { return Err(PutError::Storage("this node has no blob store".into())) };
         let id = blobs::blob_id(data);
@@ -138,7 +163,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         let r = store.put(data, height).await?;
         self.blob_wanted.remove(&id);
-        self.outbox.push(Outbound::Blob(data.to_vec()));
+        if push {
+            self.outbox.push(Outbound::Blob(data.to_vec()));
+        }
         Ok(r)
     }
 
@@ -225,7 +252,51 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 *e = (*e).max(until);
             }
         }
+        // Registered models: their manifests are kept (and fetched when missing).
+        for m in self.models().await? {
+            if let Some(b) = blobs::parse_uri(&m.manifest_uri) {
+                refs.insert(b, u64::MAX);
+            }
+        }
         Ok(refs)
+    }
+
+    /// Every registered model (tip state), in registration order.
+    pub async fn models(&self) -> Result<Vec<schema::Model>, ChainError> {
+        let n = match self.chain.read_tip(&schema::model_count_key()).await? {
+            Some(b) => schema::decode_model_count(&b).map_err(|e| ChainError::Internal(e.to_string()))?,
+            None => 0,
+        };
+        let mut out = Vec::new();
+        for i in 0..n {
+            let Some(b) = self.chain.read_tip(&schema::model_index_key(i)).await? else { continue };
+            let id = schema::decode_model_index(&b).map_err(|e| ChainError::Internal(e.to_string()))?;
+            if let Some(v) = self.chain.read_tip(&schema::model_key(&id)).await? {
+                out.push(schema::Model::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Model chunk blobs this node pins: those listed by the manifests of registered
+    /// models it holds (parsed once per manifest). Pinned blobs are never pruned and
+    /// are fetched on demand (getBlob), not proactively.
+    pub async fn model_pinned(&mut self) -> HashSet<BlobId> {
+        let models = self.models().await.unwrap_or_default();
+        let mut out = HashSet::new();
+        for m in models {
+            let Some(mid) = blobs::parse_uri(&m.manifest_uri) else { continue };
+            out.insert(mid);
+            if !self.model_pins.contains_key(&mid) {
+                if let Some(data) = self.serve_blob(&mid).await {
+                    self.model_pins.insert(mid, manifest_blobs(&data));
+                }
+            }
+            if let Some(v) = self.model_pins.get(&mid) {
+                out.extend(v.iter().copied());
+            }
+        }
+        out
     }
 
     /// Drop blobs no job needs any more (after the grace period) and stop fetches for
@@ -243,9 +314,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 return Vec::new();
             }
         };
+        let pinned = self.model_pinned().await;
         let store = self.blobs.as_mut().unwrap();
         let grace = store.config().grace_blocks;
-        let removed = store.prune(|id, m| blobs::keep(m, refs.get(id).copied(), tip, grace)).await;
+        let removed = store.prune(|id, m| pinned.contains(id) || blobs::keep(m, refs.get(id).copied(), tip, grace)).await;
         if !removed.is_empty() {
             info!(count = removed.len(), "pruned blobs");
         }
@@ -263,6 +335,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             .blob_wanted
             .iter()
             .filter(|(id, since)| {
+                if pinned.contains(*id) {
+                    return false;
+                }
                 let meta = blobs::Meta { size: 0, stored_height: **since };
                 !blobs::keep(&meta, refs.get(*id).copied(), tip, grace)
             })

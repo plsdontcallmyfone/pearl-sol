@@ -50,9 +50,25 @@ pub struct JobInfo {
     pub evaluators: Vec<[u8; 32]>,
     pub threshold: u8,
     pub deadline_height: u64,
+    /// "job", "ticket" or "segment" (SPEC 4.5; older nodes report none: "job").
+    pub kind: String,
+    /// For a segment: the registered matrix its B is.
+    pub standing: Option<StandingRef>,
+}
+
+/// A segment's registered matrix (SPEC 4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandingRef {
+    pub ticket_id: [u8; 32],
+    pub model_id: [u8; 32],
+    pub matrix: u16,
 }
 
 impl JobInfo {
+    pub fn is_segment(&self) -> bool {
+        self.standing.is_some()
+    }
+
     pub fn job_header(&self) -> JobHeader {
         JobHeader {
             job_pubkey: self.header_id,
@@ -141,6 +157,15 @@ impl JobInfo {
             },
             threshold: get("threshold").map(num).transpose()?.unwrap_or(1) as u8,
             deadline_height: get("deadline_height").map(num).transpose()?.unwrap_or(u64::MAX),
+            kind: get("kind").map(as_str).transpose()?.unwrap_or("job").to_string(),
+            standing: match (get("kind").and_then(|k| k.as_str()), get("standing")) {
+                (Some("segment"), Some(s)) => Some(StandingRef {
+                    ticket_id: key32(s.get("ticket_id").ok_or_else(|| anyhow!("standing.ticket_id missing"))?)?,
+                    model_id: key32(s.get("model_id").ok_or_else(|| anyhow!("standing.model_id missing"))?)?,
+                    matrix: num(s.get("matrix").ok_or_else(|| anyhow!("standing.matrix missing"))?)? as u16,
+                }),
+                _ => None,
+            },
         })
         .and_then(|j: Self| {
             // The node also reports job_key: catch any job-header rule mismatch here.
@@ -165,6 +190,8 @@ impl JobInfo {
             "evaluators": self.evaluators.iter().map(|e| bs58::encode(e).into_string()).collect::<Vec<_>>(),
             "threshold": self.threshold, "deadline_height": self.deadline_height,
             "job_key": hex::encode(self.to_job().job_key()), "job_header": hex::encode(self.job_header().to_bytes()),
+            "kind": self.kind,
+            "standing": self.standing.map(|s| json!({"ticket_id": k(&s.ticket_id), "model_id": k(&s.model_id), "matrix": s.matrix})),
         })
     }
 }
@@ -329,6 +356,60 @@ pub trait NodeApi: Send + Sync {
     fn put_blob(&self, _data: &[u8]) -> Result<String> {
         bail!("this node API has no blob store")
     }
+    /// Any JSON-RPC method (getModel, getTicket, putBlob with options, ...).
+    fn call(&self, method: &str, _params: Value) -> Result<Value> {
+        bail!("this node API cannot call {method}")
+    }
+}
+
+/// B^T (n x k) of a segment's registered matrix: from the model store, or rebuilt from the
+/// node's blobs (manifest from getModel, then every chunk of the weight file) and cached in
+/// the store. The caller checks it against hash_b (PreparedJob::new_bt does).
+pub fn load_segment_bt(node: &dyn NodeApi, store: &pearl_job::standing::ModelStore, s: &StandingRef, k: u32, n: u32) -> Result<Vec<i8>> {
+    if let Ok(bt) = store.load_bt(&s.model_id, s.matrix, k, n) {
+        return Ok(bt);
+    }
+    let m = node.call("getModel", json!({"model_id": hex::encode(s.model_id)}))?;
+    ensure!(!m.is_null(), "model {} is not registered", hex::encode(s.model_id));
+    let uri = m["manifest_uri"].as_str().ok_or_else(|| anyhow!("getModel has no manifest_uri"))?;
+    let manifest: pearl_job::standing::Manifest = serde_json::from_slice(&fetch_blob(node, uri)?).context("parse model manifest")?;
+    let mx = manifest.matrices.iter().find(|x| x.index == s.matrix).ok_or_else(|| anyhow!("manifest has no matrix {}", s.matrix))?;
+    let dir = store.dir(&s.model_id);
+    for f in [&mx.weights, &mx.aux] {
+        fetch_model_file(node, &manifest, f, &dir)?;
+    }
+    store.load_bt(&s.model_id, s.matrix, k, n)
+}
+
+/// Rebuild one file of a model from its chunks (blake3 of the whole file checked).
+pub fn fetch_model_file(node: &dyn NodeApi, manifest: &pearl_job::standing::Manifest, name: &str, dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    let f = manifest.files.get(name).ok_or_else(|| anyhow!("manifest lists no file {name}"))?;
+    let path = dir.join(name);
+    if let Ok(b) = std::fs::read(&path) {
+        if b.len() as u64 == f.size && hex::encode(blake3::hash(&b).as_bytes()) == f.blake3 {
+            return Ok(path);
+        }
+    }
+    let mut data = Vec::with_capacity(f.size as usize);
+    for c in &f.blobs {
+        data.extend_from_slice(&fetch_blob(node, c)?);
+    }
+    ensure!(data.len() as u64 == f.size, "{name}: chunks give {} bytes, manifest says {}", data.len(), f.size);
+    ensure!(hex::encode(blake3::hash(&data).as_bytes()) == f.blake3, "{name}: content does not match the manifest's blake3");
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let tmp = path.with_extension("part");
+    std::fs::write(&tmp, &data)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
+/// A segment's A (m x k) from its `data_uri` activation blob.
+pub fn load_segment_a(node: &dyn NodeApi, job: &JobInfo) -> Result<Vec<i8>> {
+    let (m, k, a) = pearl_job::standing::decode_activation_blob(&fetch_blob(node, &job.data_uri)?)?;
+    ensure!(m == job.m && k == job.config.common_dim, "activation blob is {m} x {k}, segment is {} x {}", job.m, job.config.common_dim);
+    Ok(a)
 }
 
 /// Fetch a `blob:` URI's bytes from the node and check them against the id.

@@ -20,6 +20,10 @@ pub const MAX_EVALUATORS: usize = 32;
 pub const MAX_SIGS: usize = 32;
 pub const MAX_ADMIN_VALUE: usize = 4096;
 pub const MAX_TX_SIZE: usize = 16 * 1024;
+/// RegisterModel: most matrices (40 bytes each, so the tx stays under MAX_TX_SIZE).
+pub const MAX_MODEL_MATRICES: usize = 384;
+/// PostSegments: most segments per tx.
+pub const MAX_SEGMENTS: usize = 64;
 /// Fixed prefix: version 1 + chain_id 4 + from 32 + nonce 8 + fee 8 + kind 1.
 pub const PREFIX_LEN: usize = 54;
 
@@ -37,6 +41,8 @@ pub enum TxKind {
     AdminConfig = 8,
     SetRoute = 9,
     ClearRoute = 10,
+    RegisterModel = 11,
+    PostSegments = 12,
 }
 
 impl TxKind {
@@ -53,6 +59,8 @@ impl TxKind {
             8 => Self::AdminConfig,
             9 => Self::SetRoute,
             10 => Self::ClearRoute,
+            11 => Self::RegisterModel,
+            12 => Self::PostSegments,
             k => return Err(DecodeError::Kind(k)),
         })
     }
@@ -69,8 +77,72 @@ impl TxKind {
             Self::AdminConfig => "AdminConfig",
             Self::SetRoute => "SetRoute",
             Self::ClearRoute => "ClearRoute",
+            Self::RegisterModel => "RegisterModel",
+            Self::PostSegments => "PostSegments",
         }
     }
+}
+
+/// One registered weight matrix (SPEC 4.5): `k u32 | n u32 | hash_b [32]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatrixSpec {
+    pub k: u32,
+    pub n: u32,
+    pub hash_b: Hash,
+}
+
+/// RegisterModel body (SPEC 4.5):
+/// `name (u8 len) | manifest_uri (u16 len) | recipe u8 | rank u16 | rows_pattern [6]
+/// | cols_pattern [6] | count u16 | (k u32 | n u32 | hash_b [32])*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisterModel {
+    pub name: Vec<u8>,
+    pub manifest_uri: Vec<u8>,
+    pub recipe: u8,
+    pub rank: u16,
+    pub rows_pattern: [u8; 6],
+    pub cols_pattern: [u8; 6],
+    pub matrices: Vec<MatrixSpec>,
+}
+
+impl RegisterModel {
+    pub fn write(&self, w: &mut W) {
+        w.bytes8(&self.name).bytes16(&self.manifest_uri).u8(self.recipe).u16(self.rank).bytes(&self.rows_pattern).bytes(&self.cols_pattern);
+        w.u16(self.matrices.len() as u16);
+        for m in &self.matrices {
+            w.u32(m.k).u32(m.n).bytes(&m.hash_b);
+        }
+    }
+
+    pub fn read(r: &mut R<'_>) -> Result<Self, DecodeError> {
+        let name = r.bytes8(MAX_NAME, "name")?;
+        let manifest_uri = r.bytes16(MAX_URI, "manifest_uri")?;
+        let recipe = r.u8()?;
+        let rank = r.u16()?;
+        let rows_pattern = r.arr()?;
+        let cols_pattern = r.arr()?;
+        let count = r.u16()? as usize;
+        if count > MAX_MODEL_MATRICES {
+            return Err(DecodeError::TooLarge("matrices"));
+        }
+        let mut matrices = Vec::with_capacity(count);
+        for _ in 0..count {
+            matrices.push(MatrixSpec { k: r.u32()?, n: r.u32()?, hash_b: r.arr()? });
+        }
+        Ok(Self { name, manifest_uri, recipe, rank, rows_pattern, cols_pattern, matrices })
+    }
+}
+
+/// One standing job of a ticket (SPEC 4.5):
+/// `matrix u16 | m u32 | max_blocks u32 | hash_a [32] | c_hash [32] | a_uri (u16 len)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    pub matrix: u16,
+    pub m: u32,
+    pub max_blocks: u32,
+    pub hash_a: Hash,
+    pub c_hash: Hash,
+    pub a_uri: Vec<u8>,
 }
 
 /// (pubkey, signature) pair used by evaluator and attester sets.
@@ -209,6 +281,10 @@ pub enum TxBody {
     /// ed25519 signature by the lien's release_key over [`route_clear_message`].
     /// Any account may send it (it pays the fee); the signature is the authority.
     ClearRoute { account: Pubkey, route_nonce: u64, sig: Sig },
+    /// Model registry entry (SPEC 4.5).
+    RegisterModel(RegisterModel),
+    /// Standing jobs of a paid inference ticket: `ticket_id [32] | count u8 | Segment*` (SPEC 4.5).
+    PostSegments { ticket_id: Hash, segments: Vec<Segment> },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -244,6 +320,8 @@ impl TxBody {
             Self::AdminConfig { .. } => TxKind::AdminConfig,
             Self::SetRoute { .. } => TxKind::SetRoute,
             Self::ClearRoute { .. } => TxKind::ClearRoute,
+            Self::RegisterModel(_) => TxKind::RegisterModel,
+            Self::PostSegments { .. } => TxKind::PostSegments,
         }
     }
 
@@ -291,6 +369,13 @@ impl TxBody {
             Self::ClearRoute { account, route_nonce, sig } => {
                 w.bytes(account).u64(*route_nonce).bytes(sig);
             }
+            Self::RegisterModel(m) => m.write(w),
+            Self::PostSegments { ticket_id, segments } => {
+                w.bytes(ticket_id).u8(segments.len() as u8);
+                for g in segments {
+                    w.u16(g.matrix).u32(g.m).u32(g.max_blocks).bytes(&g.hash_a).bytes(&g.c_hash).bytes16(&g.a_uri);
+                }
+            }
         }
     }
 
@@ -336,6 +421,26 @@ impl TxBody {
                 release_key: r.arr()?,
             },
             TxKind::ClearRoute => Self::ClearRoute { account: r.arr()?, route_nonce: r.u64()?, sig: r.arr()? },
+            TxKind::RegisterModel => Self::RegisterModel(RegisterModel::read(r)?),
+            TxKind::PostSegments => {
+                let ticket_id = r.arr()?;
+                let count = r.u8()? as usize;
+                if count > MAX_SEGMENTS {
+                    return Err(DecodeError::TooLarge("segments"));
+                }
+                let mut segments = Vec::with_capacity(count);
+                for _ in 0..count {
+                    segments.push(Segment {
+                        matrix: r.u16()?,
+                        m: r.u32()?,
+                        max_blocks: r.u32()?,
+                        hash_a: r.arr()?,
+                        c_hash: r.arr()?,
+                        a_uri: r.bytes16(MAX_URI, "a_uri")?,
+                    });
+                }
+                Self::PostSegments { ticket_id, segments }
+            }
         })
     }
 }

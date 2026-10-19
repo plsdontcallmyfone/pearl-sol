@@ -88,6 +88,11 @@ pub struct MinerConfig {
     /// Deliver C as a `blob:` (putBlob to the node) instead of a local `file://` URI.
     /// Falls back to file:// if the node refuses the blob.
     pub result_blob: bool,
+    /// Model store for standing jobs (SPEC 4.5): `<dir>/<model_id hex>/w/<i>.i8`. Missing
+    /// matrices are rebuilt from the node's blobs into it.
+    pub models_dir: PathBuf,
+    /// Prepared jobs kept in memory (a standing job holds B^T plus its Merkle tree).
+    pub max_prepared: usize,
 }
 
 impl Default for MinerConfig {
@@ -103,6 +108,8 @@ impl Default for MinerConfig {
             max_blocks: None,
             deliver_retry: Duration::from_secs(30),
             result_blob: true,
+            models_dir: PathBuf::from("models"),
+            max_prepared: 8,
         }
     }
 }
@@ -143,6 +150,10 @@ pub struct Miner<'a> {
     pub stats: Stats,
     log: Logger,
     prepared: HashMap<[u8; 32], Arc<PreparedJob>>,
+    /// Insertion order of `prepared` (oldest first), for eviction.
+    prepared_order: std::collections::VecDeque<[u8; 32]>,
+    /// Standing jobs (segments) among the prepared ones: mined, never delivered.
+    segments: std::collections::HashSet<[u8; 32]>,
     /// Jobs whose data failed to load: skip until this time.
     bad_jobs: HashMap<[u8; 32], Instant>,
     deliveries: BTreeMap<[u8; 32], Delivery>,
@@ -176,6 +187,8 @@ impl<'a> Miner<'a> {
             stats: Stats::default(),
             log,
             prepared: HashMap::new(),
+            prepared_order: Default::default(),
+            segments: Default::default(),
             bad_jobs: HashMap::new(),
             deliveries: BTreeMap::new(),
             nonce: AtomicU64::new(start),
@@ -202,10 +215,28 @@ impl<'a> Miner<'a> {
             return Ok(Some(p.clone()));
         }
         let job = t.job.as_ref().ok_or_else(|| anyhow!("template names a job but carries no job object"))?;
-        let d = pearl_node::load_job_data(self.node, &job.data_uri).with_context(|| format!("load job data {}", job.data_uri))?;
-        let prep = Arc::new(PreparedJob::new(job.to_job(), &d.a, &d.b)?);
-        self.log(json!({"event": "job_loaded", "job": hex::encode(id), "m": job.m, "n": job.n, "data_uri": job.data_uri}));
+        let started = Instant::now();
+        let prep = if let Some(s) = &job.standing {
+            // Standing job: A from the segment's activation blob, B from our copy of the model.
+            let a = pearl_node::load_segment_a(self.node, job).with_context(|| format!("load activations {}", job.data_uri))?;
+            let store = pearl_job::standing::ModelStore::new(&self.cfg.models_dir);
+            let bt = pearl_node::load_segment_bt(self.node, &store, s, job.config.common_dim, job.n)
+                .with_context(|| format!("load matrix {} of model {}", s.matrix, hex::encode(s.model_id)))?;
+            self.segments.insert(id);
+            Arc::new(PreparedJob::new_bt(job.to_job(), &a, bt)?)
+        } else {
+            let d = pearl_node::load_job_data(self.node, &job.data_uri).with_context(|| format!("load job data {}", job.data_uri))?;
+            Arc::new(PreparedJob::new(job.to_job(), &d.a, &d.b)?)
+        };
+        self.log(json!({"event": "job_loaded", "job": hex::encode(id), "kind": job.kind, "m": job.m, "n": job.n, "k": job.config.common_dim,
+                        "data_uri": job.data_uri, "load_ms": started.elapsed().as_millis() as u64,
+                        "matrix": job.standing.map(|s| s.matrix), "model": job.standing.map(|s| hex::encode(s.model_id))}));
+        while self.prepared.len() >= self.cfg.max_prepared.max(1) {
+            let Some(old) = self.prepared_order.pop_front() else { break };
+            self.prepared.remove(&old);
+        }
         self.prepared.insert(id, prep.clone());
+        self.prepared_order.push_back(id);
         Ok(Some(prep))
     }
 
@@ -295,7 +326,7 @@ impl<'a> Miner<'a> {
                 }
                 self.log(json!({"event": "block_accepted", "height": b.header.height, "block_hash": hex::encode(block_hash),
                                 "nonce": b.header.nonce, "job": job, "proof_len": b.proof.len()}));
-                if self.cfg.deliver && !b.header.is_fallback() && !self.deliveries.contains_key(&b.header.job_id) {
+                if self.cfg.deliver && !b.header.is_fallback() && !self.segments.contains(&b.header.job_id) && !self.deliveries.contains_key(&b.header.job_id) {
                     if let Some(p) = &prep {
                         self.queue_delivery(b.header.job_id, p)?;
                     }

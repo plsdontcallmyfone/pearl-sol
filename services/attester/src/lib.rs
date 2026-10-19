@@ -36,6 +36,9 @@ pub struct Attester {
     pub key: SigningKey,
     pub source: JobSource,
     pub freivalds_rounds: usize,
+    /// Model store for inference tickets (SPEC 5.4): registered matrices are read from it
+    /// (and rebuilt from the node's blobs when missing).
+    pub models_dir: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -237,6 +240,24 @@ impl Attester {
         ensure!(info.deliverer.as_ref() == Some(deliverer), "deliverer is not the job's deliverer");
         let me = self.key.verifying_key().to_bytes();
         ensure!(info.evaluators.is_empty() || info.evaluators.contains(&me), "this attester is not an evaluator of the job");
+        if info.kind == "ticket" {
+            let JobSource::Node(node) = &self.source else { bail!("tickets need node mode") };
+            let t0 = Instant::now();
+            let rh = self.check_ticket(node.as_ref(), info, job_pk)?;
+            let msg = result_message(job_pk, deliverer, &rh);
+            return Ok(ResultResponse {
+                ok: true,
+                job: req.job.clone(),
+                deliverer: req.deliverer.clone(),
+                result_hash: hex::encode(rh),
+                attester: self.pubkey_b58(),
+                message_hex: hex::encode(&msg),
+                signature_hex: self.sign(&msg),
+                freivalds_rounds: 0,
+                elapsed_ms: t0.elapsed().as_secs_f64() * 1e3,
+            });
+        }
+        ensure!(info.kind != "segment", "a segment's output is committed at post time; there is nothing to attest");
         let uri = req.result_uri.clone().or_else(|| Some(info.result_uri.clone()).filter(|u| !u.is_empty()));
         let (rh, ms) = self.check_result(&info.to_spec(), req, &uri)?;
         ensure!(info.result_hash == Some(rh), "on-chain result_hash does not match the delivered C");
@@ -253,6 +274,57 @@ impl Attester {
             freivalds_rounds: self.freivalds_rounds,
             elapsed_ms: ms,
         })
+    }
+
+    /// Evaluator rule for an inference ticket (SPEC 5.4): the response blob matches the
+    /// ticket, every registered matrix has a segment over all the response's rows, and each
+    /// segment's committed C equals A B recomputed from its activation blob and our copy of
+    /// the registered weights. Returns the result_hash to sign (the response blob id).
+    pub fn check_ticket(&self, node: &dyn NodeApi, info: &JobInfo, ticket_id: &[u8; 32]) -> Result<[u8; 32]> {
+        let t = node.call("getTicket", json!({"ticket_id": hex::encode(ticket_id)}))?;
+        let st = &t["standing"];
+        let model_hex = st["model_id"].as_str().ok_or_else(|| anyhow!("ticket has no model"))?.to_string();
+        let model = node.call("getModel", json!({"model_id": model_hex}))?;
+        ensure!(!model.is_null(), "ticket's model is not registered");
+        let period = model["row_period"].as_u64().unwrap_or(4).max(1);
+        let count = model["matrix_count"].as_u64().unwrap_or(0) as usize;
+        let rh = info.result_hash.ok_or_else(|| anyhow!("ticket has no result_hash"))?;
+        let bytes = pearl_node::fetch_blob(node, &info.result_uri).context("fetch response blob")?;
+        ensure!(pearl_job::data::blob_id(&bytes) == rh, "result_hash is not the response blob's id");
+        let r: Value = serde_json::from_slice(&bytes).context("response blob is not JSON")?;
+        ensure!(r["format"] == json!("cadre-response-v1"), "response format is not cadre-response-v1");
+        ensure!(r["model_id"].as_str() == Some(model_hex.as_str()), "response names another model");
+        ensure!(r["request_hash"].as_str() == st["request_hash"].as_str(), "response answers another request");
+        ensure!(r["ticket_id"].as_str() == Some(hex::encode(ticket_id).as_str()), "response names another ticket");
+        let rows = r["rows"].as_u64().ok_or_else(|| anyhow!("response has no rows"))?;
+        ensure!(rows > 0 && rows <= st["rows"].as_u64().unwrap_or(0), "response rows {rows} outside the ticket's");
+        let m_pad = rows.div_ceil(period) * period;
+        let segs = t["segment_list"].as_array().cloned().unwrap_or_default();
+        ensure!(segs.len() == count, "ticket has {} segments, the model registers {count} matrices", segs.len());
+        for s in &segs {
+            ensure!(s["m"].as_u64() == Some(m_pad), "segment {} has m {}, expected {m_pad}", s["matrix"], s["m"]);
+        }
+        let store = pearl_job::standing::ModelStore::new(&self.models_dir);
+        let ids: Vec<[u8; 32]> = segs.iter().map(|s| parse_key32(s["segment_id"].as_str().unwrap_or(""))).collect::<Result<_>>()?;
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let errors = std::sync::Mutex::new(Vec::<String>::new());
+        std::thread::scope(|sc| {
+            for _ in 0..threads {
+                sc.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= ids.len() {
+                        break;
+                    }
+                    if let Err(e) = check_segment(node, &store, &ids[i]) {
+                        errors.lock().unwrap().push(format!("segment {}: {e:#}", hex::encode(ids[i])));
+                    }
+                });
+            }
+        });
+        let errors = errors.into_inner().unwrap();
+        ensure!(errors.is_empty(), "{}", errors.join("; "));
+        Ok(rh)
     }
 
     /// Route one HTTP request. Returns (status, json body).
@@ -275,4 +347,17 @@ impl Attester {
             Err(e) => (400, json!({"ok": false, "error": format!("{e:#}")})),
         }
     }
+}
+
+/// One segment: A (blob) and B (model store, checked against hash_b) give C; its keyed hash
+/// must be the segment's committed c_hash.
+pub fn check_segment(node: &dyn NodeApi, store: &pearl_job::standing::ModelStore, id: &[u8; 32]) -> Result<()> {
+    let j = node.get_job(id)?.ok_or_else(|| anyhow!("segment not found"))?;
+    let s = j.standing.ok_or_else(|| anyhow!("not a segment"))?;
+    let a = pearl_node::load_segment_a(node, &j)?;
+    let bt = pearl_node::load_segment_bt(node, store, &s, j.config.common_dim, j.n)?;
+    let prep = pearl_job::PreparedJob::new_bt(j.to_job(), &a, bt)?;
+    let c = prep.product();
+    ensure!(Some(result_hash(&prep.job_key, &c)) == j.result_hash, "committed C does not equal A B");
+    Ok(())
 }

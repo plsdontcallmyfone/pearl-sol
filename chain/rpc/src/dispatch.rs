@@ -111,6 +111,49 @@ pub fn job_json(j: &JobRecord, next_height: u64) -> Value {
         "deliverer": opt_key(&j.deliverer), "result_hash": opt_hash(&j.result_hash),
         "result_uri": String::from_utf8_lossy(&j.result_uri),
         "closed_height": j.closed_height, "index": j.index,
+        "kind": j.kind_name(), "standing": standing_json(j),
+    })
+}
+
+/// Ticket / segment fields of a job (SPEC 4.5), or null for a plain job.
+pub fn standing_json(j: &JobRecord) -> Value {
+    match &j.ext {
+        None => Value::Null,
+        Some(schema::JobExt::Ticket(t)) => json!({
+            "model_id": hex::encode(t.model_id), "server": opt_key(&t.server), "rows": t.rows,
+            "prompt_tokens": j.m, "max_new_tokens": j.n, "request_hash": hex::encode(j.hash_a),
+            "cap_total": t.cap_total.to_string(), "cap_unallocated": j.cap_remaining.to_string(),
+            "segments": t.segments, "blocks_allocated": t.blocks_allocated, "blocks_mined": t.blocks_mined,
+            "subsidy_paid": t.subsidy_paid.to_string(),
+        }),
+        Some(schema::JobExt::Segment { ticket_id, model_id, matrix }) => json!({
+            "ticket_id": hex::encode(ticket_id), "model_id": hex::encode(model_id), "matrix": matrix,
+            "c_hash": hex::encode(j.result_hash),
+        }),
+    }
+}
+
+/// A registered model (SPEC 4.5).
+pub fn model_json(m: &schema::Model) -> Value {
+    let base = m.base_config().ok();
+    let matrices: Vec<Value> = m
+        .matrices
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let key = base.map(|b| hex::encode(pearl_job::standing::matrix_job_key(&m.model_id, i as u16, x.k, x.n, &b)));
+            json!({"index": i, "k": x.k, "n": x.n, "macs": (x.k as u64 * x.n as u64).to_string(),
+                   "hash_b": hex::encode(x.hash_b), "job_key": key})
+        })
+        .collect();
+    json!({
+        "model_id": hex::encode(m.model_id), "registrant": b58(&m.registrant), "name": String::from_utf8_lossy(&m.name),
+        "manifest_uri": String::from_utf8_lossy(&m.manifest_uri), "recipe": m.recipe,
+        "recipe_name": if m.recipe == pearl_job::standing::RECIPE_W7A7_SQ_ASYM { pearl_job::standing::RECIPE_NAME } else { "unknown" },
+        "config": hex::encode(m.config), "row_period": base.map(|b| b.rows_pattern.period()),
+        "macs_per_row": m.macs_per_row.to_string(), "registered_height": m.registered_height, "index": m.index,
+        "tickets": m.tickets, "segments": m.segments, "blocks_mined": m.blocks_mined, "subsidy_paid": m.subsidy_paid.to_string(),
+        "matrix_count": m.matrices.len(), "matrices": matrices,
     })
 }
 
@@ -374,6 +417,49 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let jobs: Vec<Value> = all.iter().skip(offset).take(limit).map(|j| job_json(j, next)).collect();
                 Ok(json!({"total": total, "jobs": jobs}))
             }
+            "getModel" => {
+                let id = p_key(p, &["model_id", "id"])?;
+                Ok(match self.tip_record(&schema::model_key(&id)).await? {
+                    Some(b) => model_json(&srv(schema::Model::decode(&b))?),
+                    None => Value::Null,
+                })
+            }
+            "listModels" => {
+                let models = srv(self.models().await)?;
+                let list: Vec<Value> = models
+                    .iter()
+                    .map(|m| {
+                        let mut v = model_json(m);
+                        v.as_object_mut().unwrap().remove("matrices");
+                        v
+                    })
+                    .collect();
+                Ok(json!({"total": list.len(), "models": list}))
+            }
+            "getTicket" => {
+                let id = p_key(p, &["ticket_id", "job_id", "id"])?;
+                let next = self.chain.tip_height() + 1;
+                let Some(t) = self.job(&id).await? else { return Ok(Value::Null) };
+                let Some(te) = t.ticket().copied() else { return Err(RpcError::params("not an inference ticket")) };
+                let count = match self.tip_record(&schema::model_key(&te.model_id)).await? {
+                    Some(b) => srv(schema::Model::decode(&b))?.matrices.len(),
+                    None => 0,
+                };
+                let mut segs = Vec::new();
+                for i in 0..count {
+                    let sid = pearl_job::standing::segment_id(&id, i as u16);
+                    if let Some(sj) = self.job(&sid).await? {
+                        segs.push(json!({"segment_id": hex::encode(sid), "matrix": i, "m": sj.m, "k": sj.k, "n": sj.n,
+                            "status": sj.status.name(), "mineable": executor::check_mineable(&sj, next).is_ok(),
+                            "max_blocks": sj.max_blocks, "blocks_mined": sj.blocks_mined,
+                            "cap": (sj.cap_remaining + sj.subsidy_paid).to_string(), "subsidy_paid": sj.subsidy_paid.to_string(),
+                            "data_uri": String::from_utf8_lossy(&sj.data_uri), "c_hash": hex::encode(sj.result_hash)}));
+                    }
+                }
+                let mut v = job_json(&t, next);
+                v["segment_list"] = Value::Array(segs);
+                Ok(v)
+            }
             "getBlock" => {
                 let Some(b) = self.block_by(p).await? else { return Ok(Value::Null) };
                 let mut v = self.block_meta(&b);
@@ -486,7 +572,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
             "putBlob" => {
                 let data = p_bytes(p, "data")?;
-                let (id, new) = self.put_blob(&data, now_ms).await.map_err(RpcError::server)?;
+                let push = p.get("push").and_then(|v| v.as_bool()).unwrap_or(true);
+                let (id, new) = self.put_blob_opt(&data, now_ms, push).await.map_err(RpcError::server)?;
                 Ok(json!({"blob_id": hex::encode(id), "uri": blobs::blob_uri(&id), "size": data.len(), "new": new}))
             }
             "getBlob" | "hasBlob" => {
@@ -505,7 +592,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     None => {
                         // not here: fetch it from peers if a job on the chain references it
                         let refs = srv(self.blob_refs().await)?;
-                        if refs.contains_key(&id) {
+                        if refs.contains_key(&id) || self.model_pinned().await.contains(&id) {
                             self.want_blob(id);
                         }
                         Ok(Value::Null)

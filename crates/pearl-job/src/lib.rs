@@ -22,6 +22,7 @@ pub mod pattern;
 pub mod pow;
 pub mod proof;
 pub mod spec;
+pub mod standing;
 pub mod verify;
 
 use std::ops::Range;

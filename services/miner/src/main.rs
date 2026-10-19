@@ -53,6 +53,13 @@ struct Args {
     /// shares there; --payout is the key the pool pays. Without it: solo mode.
     #[arg(long)]
     pool: Option<String>,
+    /// Model store for standing jobs (SPEC 4.5): <dir>/<model_id hex>/w/<i>.i8; matrices
+    /// not there are rebuilt from the node's blobs.
+    #[arg(long, default_value = "models")]
+    models: PathBuf,
+    /// Prepared jobs kept in memory.
+    #[arg(long, default_value_t = 8)]
+    max_prepared: usize,
     /// Pool mode: exit after this many accepted shares.
     #[arg(long)]
     shares: Option<u64>,
@@ -86,6 +93,8 @@ fn main() -> Result<()> {
         chain_id: a.chain_id,
         max_blocks: a.blocks,
         result_blob: !a.result_file,
+        models_dir: a.models,
+        max_prepared: a.max_prepared,
         ..MinerConfig::default()
     };
     let att: Option<&dyn ResultAttester> = if a.deliver { Some(&attester) } else { None };

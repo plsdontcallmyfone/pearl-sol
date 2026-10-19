@@ -151,6 +151,10 @@ impl NodeApi for HttpNode {
         v.get("uri").and_then(|u| u.as_str()).map(String::from).ok_or_else(|| anyhow!("putBlob result has no uri: {v}"))
     }
 
+    fn call(&self, method: &str, params: Value) -> Result<Value> {
+        HttpNode::call(self, method, params)
+    }
+
     fn send_tx(&self, wire: &[u8]) -> Result<String> {
         let v = self.call("sendTx", json!({"tx": b64(wire)}))?;
         Ok(match &v {

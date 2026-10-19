@@ -782,3 +782,97 @@ fn coinbase_receipts_and_payout_lien_over_rpc() {
         assert!(r["set_block"]["height"].as_u64().unwrap() < ct["height"].as_u64().unwrap());
     });
 }
+
+/// SPEC 4.5 over the node RPC: RegisterModel + model blobs (manifest pinned with its chunks,
+/// uploaded with push false), an inference ticket, PostSegments, templates offering the
+/// segment (kind "segment"), a mined segment block rolled up into getTicket / getModel.
+#[test]
+fn standing_jobs_over_rpc_and_model_blobs_pinned() {
+    use agent_types::{MatrixSpec, RegisterModel, Segment};
+    use pearl_job::standing;
+    runner(31).start(|ctx| async move {
+        let net = setup(&ctx, 2, 3, true).await;
+        let api = &net.apis[0];
+        api.send(&unlock_tx(0, 1, pk(2), 100_000)).await.unwrap();
+        api.send(&unlock_tx(1, 2, pk(3), 100_000)).await.unwrap();
+        api.send(&unlock_tx(2, 3, pk(4), 100_000)).await.unwrap();
+        api.send(&unlock_tx(3, 4, agent_types::pool_address(), 1_000_000)).await.unwrap();
+        api.mine(9).await;
+        // model files: one chunk; the manifest lists it
+        let chunk = vec![7u8; 1000];
+        let chunk_id = hex::encode(blake3::hash(&chunk).as_bytes());
+        let manifest = serde_json::to_vec(&json!({"format": "cadre-model-v1", "files": {"w/0.i8": {"size": 1000, "blake3": chunk_id, "blobs": [format!("blob:{chunk_id}")]}}})).unwrap();
+        let manifest_id = hex::encode(blake3::hash(&manifest).as_bytes());
+        let c = pearl_job::MiningConfig::localnet_default();
+        let reg = RegisterModel {
+            name: b"tiny".to_vec(),
+            manifest_uri: format!("blob:{manifest_id}").into_bytes(),
+            recipe: 1,
+            rank: c.rank,
+            rows_pattern: c.rows_pattern.to_bytes(),
+            cols_pattern: c.cols_pattern.to_bytes(),
+            matrices: vec![MatrixSpec { k: 2048, n: 8, hash_b: [0x61; 32] }],
+        };
+        api.send(&Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::RegisterModel(reg))).await.unwrap();
+        api.mine(9).await;
+        let model = standing::model_id(&pk(2), b"tiny");
+        let mhex = hex::encode(model);
+        let m = api.call("getModel", json!({"model_id": mhex})).await;
+        assert_eq!(m["name"], json!("tiny"));
+        assert_eq!(m["macs_per_row"], json!((2048u64 * 8).to_string()));
+        assert_eq!(m["matrices"][0]["job_key"], json!(hex::encode(standing::matrix_job_key(&model, 0, 2048, 8, &c))));
+        assert_eq!(api.call("listModels", json!({})).await["total"], json!(1));
+        // uploads after registration, manifest first; push false keeps them off node 1
+        api.call("putBlob", json!({"data": b64e(&manifest), "push": false})).await;
+        api.call("putBlob", json!({"data": b64e(&chunk), "push": false})).await;
+        let loose = api.call("putBlob", json!({"data": b64e(b"loose"), "push": false})).await["blob_id"].as_str().unwrap().to_string();
+        ctx.sleep(Duration::from_secs(2)).await;
+        assert!(!has_blob(&net.apis[1], &chunk_id).await, "push false: not pushed");
+        // ticket + segment
+        let req = api.call("putBlob", json!({"data": b64e(b"{\"format\":\"cadre-request-v1\"}")})).await["uri"].as_str().unwrap().to_string();
+        let a = api.call("putBlob", json!({"data": b64e(&standing::encode_activation_blob(4, 2048, &vec![1i8; 4 * 2048]).unwrap())})).await["uri"].as_str().unwrap().to_string();
+        let ticket = PostJob {
+            m: 3, n: 1, k: 1, config: standing::ticket_config(&model), hash_a: [5; 32], hash_b: pk(4),
+            data_uri: req.into_bytes(), worker_pay: 1_000_000, protocol_fee: 2_000_000, deadline_height: 500, max_blocks: 2,
+            evaluators: vec![pk(60)], threshold: 1,
+        };
+        api.send(&Tx::signed(&seed(3), CHAIN, 0, 10, TxBody::PostJob(ticket))).await.unwrap();
+        api.mine(9).await;
+        let tid = schema_job_id(&pk(3), 0);
+        let seg = Segment { matrix: 0, m: 4, max_blocks: 2, hash_a: [6; 32], c_hash: [7; 32], a_uri: a.into_bytes() };
+        api.send(&Tx::signed(&seed(4), CHAIN, 0, 10, TxBody::PostSegments { ticket_id: tid, segments: vec![seg] })).await.unwrap();
+        api.mine(9).await;
+        let t = api.call("getTicket", json!({"ticket_id": hex::encode(tid)})).await;
+        assert_eq!(t["kind"], json!("ticket"));
+        assert_eq!(t["mineable"], json!(false));
+        assert_eq!(t["standing"]["server"], json!(bs58::encode(pk(4)).into_string()));
+        assert_eq!(t["segment_list"].as_array().unwrap().len(), 1);
+        let sid = hex::encode(standing::segment_id(&tid, 0));
+        // the template's auto choice is the segment
+        let (tpl, _) = api.mine_with(9, None).await;
+        assert_eq!(tpl["job"]["job_id"], json!(sid));
+        assert_eq!(tpl["job"]["kind"], json!("segment"));
+        assert_eq!(tpl["job"]["standing"]["model_id"], json!(mhex));
+        assert_eq!(tpl["job"]["header_id"], json!(mhex));
+        let t = api.call("getTicket", json!({"ticket_id": hex::encode(tid)})).await;
+        assert_eq!(t["standing"]["blocks_mined"], json!(1));
+        assert_eq!(t["segment_list"][0]["blocks_mined"], json!(1));
+        assert_eq!(api.call("getModel", json!({"model_id": mhex})).await["blocks_mined"], json!(1));
+        assert!(api.try_call("getTicket", json!({"ticket_id": sid})).await.is_err(), "a segment is not a ticket");
+        // pinning: past the grace period the loose blob goes, the model's blobs stay
+        for _ in 0..BLOB_GRACE + 15 {
+            api.mine(9).await;
+        }
+        assert!(!has_blob(api, &loose).await, "unreferenced blob pruned");
+        assert!(has_blob(api, &manifest_id).await, "manifest pinned");
+        assert!(has_blob(api, &chunk_id).await, "model chunk pinned");
+        // node 1 fetches a pinned chunk on demand once it holds the manifest
+        assert!(wait_blob(&ctx, &net.apis[1], &manifest_id, 30).await, "manifest of a registered model is fetched");
+        for _ in 0..12 {
+            api.mine(9).await;
+        }
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        let _ = net.apis[1].call("getBlob", json!({"blob_id": chunk_id})).await;
+        assert!(wait_blob(&ctx, &net.apis[1], &chunk_id, 30).await, "chunk fetched on demand");
+    });
+}

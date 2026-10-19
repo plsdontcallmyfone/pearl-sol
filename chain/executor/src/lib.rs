@@ -25,7 +25,7 @@ use agent_types::{
     escrow_address, is_reserved, pool_address, Coinbase, Hash, PostJob, Pubkey, Tx, TxBody, TxKind, SPL_SCALE, TOTAL_SUPPLY,
 };
 use state::config::{keys, Config};
-use state::schema::{self, Account, Agent, Counters, Deposit, Immature, JobRecord, JobStatus, Key, Route, Withdrawal};
+use state::schema::{self, Account, Agent, Counters, Deposit, Immature, JobExt, JobRecord, JobStatus, Key, Model, Route, TicketExt, Withdrawal};
 use state::{StateError, StateRead, WriteSet};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -145,6 +145,17 @@ impl<'a, S: StateRead> Overlay<'a, S> {
         self.put(schema::job_key(&j.job_id), Some(j.encode()));
     }
 
+    pub async fn model(&self, id: &Hash) -> Result<Option<Model>, StateError> {
+        match self.get(&schema::model_key(id)).await? {
+            None => Ok(None),
+            Some(b) => Model::decode(&b).map(Some).map_err(|e| StateError::Corrupt(format!("model: {e}"))),
+        }
+    }
+
+    pub fn put_model(&mut self, m: &Model) {
+        self.put(schema::model_key(&m.model_id), Some(m.encode()));
+    }
+
     pub async fn config(&self) -> Result<Config, StateError> {
         let b = self.get(&schema::config_key()).await?.ok_or_else(|| StateError::Corrupt("no config record".into()))?;
         Config::decode(&b).map_err(|e| StateError::Corrupt(format!("config: {e}")))
@@ -231,6 +242,11 @@ fn check_post_job(p: &PostJob, cfg: &Config, height: u64, relative_deadline: boo
     if let Err(e) = pearl_job::job::check_shape(&mc, p.m as usize, p.n as usize) {
         return bad(format!("job shape: {e}"));
     }
+    check_post_job_terms(p, cfg, height, relative_deadline)
+}
+
+/// The pay, deadline and evaluator rules every PostJob body (job or ticket) follows.
+fn check_post_job_terms(p: &PostJob, cfg: &Config, height: u64, relative_deadline: bool) -> Result<u64, TxError> {
     if p.protocol_fee < cfg.min_protocol_fee {
         return bad(format!("protocol fee {} below min_protocol_fee {}", p.protocol_fee, cfg.min_protocol_fee));
     }
@@ -478,13 +494,21 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 self.ov.put(key, Some(a.encode()));
             }
             TxBody::PostJob(p) => {
-                let deadline = check_post_job(p, &self.cfg, h, false)?;
+                let (deadline, ticket) = self.check_job_or_ticket(p, h, false).await?;
                 let id = schema::job_id_for_post(&tx.from, tx.nonce);
-                self.create_job(&tx.from, id, p, deadline, false).await?;
+                self.create_job(&tx.from, id, p, deadline, false, ticket).await?;
                 out.job_id = Some(id);
             }
             TxBody::SubmitResult { job_id, result_hash, uri } => {
                 let Some(mut j) = self.ov.job(job_id).await? else { return bad("unknown job") };
+                if j.segment().is_some() {
+                    return bad("a segment's output is committed when it is posted; it takes no SubmitResult");
+                }
+                if let Some(t) = j.ticket() {
+                    if t.server == [0; 32] || t.server != tx.from {
+                        return bad("only the ticket's server delivers its response");
+                    }
+                }
                 if j.status != JobStatus::Open {
                     return bad("job is not open");
                 }
@@ -555,9 +579,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 c.deposit_count += 1;
                 self.ov.put_counters(&c);
                 if let Some(p) = job_order {
-                    let deadline = check_post_job(p, &self.cfg, h, true)?;
+                    let (deadline, ticket) = self.check_job_or_ticket(p, h, true).await?;
                     let id = schema::job_id_for_order(*solana_nonce);
-                    self.create_job(recipient, id, p, deadline, true).await?;
+                    self.create_job(recipient, id, p, deadline, true, ticket).await?;
                     out.job_id = Some(id);
                 }
             }
@@ -665,11 +689,199 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 self.flush_route(account, &mut r, &mut out.withdrawals).await?;
                 self.ov.put_route(account, &r);
             }
+            TxBody::RegisterModel(m) => self.register_model(&tx.from, m).await?,
+            TxBody::PostSegments { ticket_id, segments } => self.post_segments(&tx.from, ticket_id, segments).await?,
         }
         Ok(out)
     }
 
-    async fn create_job(&mut self, poster: &Pubkey, id: Hash, p: &PostJob, deadline: u64, order: bool) -> Result<(), TxError> {
+    /// RegisterModel (SPEC 4.5): shapes only; the blobs are never read.
+    async fn register_model(&mut self, from: &Pubkey, m: &agent_types::RegisterModel) -> Result<(), TxError> {
+        if m.name.is_empty() || m.name.len() > 64 {
+            return bad("model name must be 1..=64 bytes");
+        }
+        if !blobs::is_blob_uri(&m.manifest_uri) {
+            return bad("manifest_uri must be a blob: URI");
+        }
+        check_uri(&m.manifest_uri, "manifest_uri")?;
+        if m.recipe != pearl_job::standing::RECIPE_W7A7_SQ_ASYM {
+            return bad(format!("unknown recipe {}", m.recipe));
+        }
+        if m.matrices.is_empty() || m.matrices.len() > agent_types::tx::MAX_MODEL_MATRICES {
+            return bad("a model registers 1..=384 matrices");
+        }
+        let mut base = [0u8; 52];
+        base[0..4].copy_from_slice(&m.matrices[0].k.to_le_bytes());
+        base[4..6].copy_from_slice(&m.rank.to_le_bytes());
+        base[8..14].copy_from_slice(&m.rows_pattern);
+        base[14..20].copy_from_slice(&m.cols_pattern);
+        let base_cfg = match pearl_job::MiningConfig::from_bytes(&base) {
+            Ok(c) => c,
+            Err(e) => return bad(format!("mining config: {e}")),
+        };
+        let period = base_cfg.rows_pattern.period() as usize;
+        let mut macs: u64 = 0;
+        for (i, x) in m.matrices.iter().enumerate() {
+            let c = pearl_job::standing::matrix_config(&base_cfg, x.k);
+            if let Err(e) = pearl_job::job::check_shape(&c, period, x.n as usize) {
+                return bad(format!("matrix {i} ({} x {}) cannot be a job: {e}", x.k, x.n));
+            }
+            let e = x.k as u64 * x.n as u64;
+            if e > pearl_job::standing::MAX_MATRIX_ENTRIES {
+                return bad(format!("matrix {i} has {e} entries, above 2^26 (split it into column shards)"));
+            }
+            macs += e;
+        }
+        let id = pearl_job::standing::model_id(from, &m.name);
+        if self.ov.model(&id).await?.is_some() {
+            return bad("model already registered (register a new version under a new name)");
+        }
+        let count = match self.ov.get(&schema::model_count_key()).await? {
+            Some(b) => schema::decode_model_count(&b).map_err(|e| StateError::Corrupt(e.to_string()))?,
+            None => 0,
+        };
+        let rec = Model {
+            model_id: id,
+            registrant: *from,
+            name: m.name.clone(),
+            manifest_uri: m.manifest_uri.clone(),
+            recipe: m.recipe,
+            config: base,
+            matrices: m.matrices.clone(),
+            macs_per_row: macs,
+            registered_height: self.env.height,
+            index: count,
+            tickets: 0,
+            segments: 0,
+            blocks_mined: 0,
+            subsidy_paid: 0,
+        };
+        self.ov.put_model(&rec);
+        self.ov.put(schema::model_index_key(count), Some(schema::encode_model_index(&id)));
+        self.ov.put(schema::model_count_key(), Some(schema::encode_model_count(count + 1)));
+        Ok(())
+    }
+
+    /// PostSegments (SPEC 4.5): standing jobs of a ticket, MAC-proportional caps.
+    async fn post_segments(&mut self, from: &Pubkey, ticket_id: &Hash, segments: &[agent_types::Segment]) -> Result<(), TxError> {
+        let h = self.env.height;
+        if segments.is_empty() || segments.len() > agent_types::tx::MAX_SEGMENTS {
+            return bad("PostSegments carries 1..=64 segments");
+        }
+        let Some(mut t) = self.ov.job(ticket_id).await? else { return bad("unknown ticket") };
+        let Some(mut te) = t.ticket().copied() else { return bad("not an inference ticket") };
+        if !t.status.is_live() {
+            return bad("ticket is closed");
+        }
+        if h > t.deadline_height {
+            return bad("ticket deadline passed");
+        }
+        if te.server == [0; 32] {
+            te.server = *from;
+        } else if te.server != *from {
+            return bad("only the ticket's server posts its segments");
+        }
+        let Some(mut model) = self.ov.model(&te.model_id).await? else { return bad("ticket's model is not registered") };
+        let base = model.base_config().map_err(TxError::Invalid)?;
+        let period = base.rows_pattern.period() as u64;
+        let mut c = self.ov.counters().await?;
+        for g in segments {
+            let Some(mx) = model.matrices.get(g.matrix as usize).copied() else { return bad(format!("model has no matrix {}", g.matrix)) };
+            if g.m == 0 || g.m as u64 > te.rows || g.m as u64 % period != 0 {
+                return bad(format!("segment m {} must be a positive multiple of {period} and at most the ticket's {} rows", g.m, te.rows));
+            }
+            if g.max_blocks == 0 {
+                return bad("segment max_blocks must be positive");
+            }
+            te.blocks_allocated = match te.blocks_allocated.checked_add(g.max_blocks) {
+                Some(b) if b <= t.max_blocks => b,
+                _ => return bad(format!("segments would use more than the ticket's {} blocks", t.max_blocks)),
+            };
+            if !blobs::is_blob_uri(&g.a_uri) {
+                return bad("a_uri must be a blob: URI");
+            }
+            check_uri(&g.a_uri, "a_uri")?;
+            let id = pearl_job::standing::segment_id(ticket_id, g.matrix);
+            if self.ov.job(&id).await?.is_some() {
+                return bad(format!("ticket already has a segment for matrix {}", g.matrix));
+            }
+            let cap = pearl_job::standing::segment_cap(te.cap_total, g.m, mx.k, mx.n, te.rows, model.macs_per_row);
+            if cap > t.cap_remaining {
+                return bad("segment cap exceeds the ticket's remaining cap");
+            }
+            t.cap_remaining -= cap;
+            let cfg = pearl_job::standing::matrix_config(&base, mx.k);
+            let header = pearl_job::standing::matrix_job_header(&te.model_id, g.matrix, mx.k, mx.n);
+            let seg = JobRecord {
+                job_id: id,
+                poster: *from,
+                m: g.m,
+                n: mx.n,
+                k: mx.k,
+                config: cfg.to_bytes(),
+                hash_a: g.hash_a,
+                hash_b: mx.hash_b,
+                data_uri: g.a_uri.clone(),
+                worker_pay: 0,
+                protocol_fee: 0,
+                deadline_height: t.deadline_height,
+                max_blocks: g.max_blocks,
+                evaluators: t.evaluators.clone(),
+                threshold: t.threshold,
+                created_height: h,
+                terms_hash: header.terms_hash,
+                status: JobStatus::Open,
+                blocks_mined: 0,
+                cap_remaining: cap,
+                subsidy_paid: 0,
+                deliverer: *from,
+                result_hash: g.c_hash,
+                result_uri: Vec::new(),
+                closed_height: 0,
+                index: c.job_count,
+                header_id: te.model_id,
+                ext: Some(JobExt::Segment { ticket_id: *ticket_id, model_id: te.model_id, matrix: g.matrix }),
+            };
+            self.ov.put(schema::job_index_key(c.job_count), Some(schema::encode_job_index(&id)));
+            c.job_count += 1;
+            self.ov.put_job(&seg);
+            te.segments += 1;
+            model.segments += 1;
+        }
+        self.ov.put_counters(&c);
+        t.ext = Some(JobExt::Ticket(te));
+        self.ov.put_job(&t);
+        self.ov.put_model(&model);
+        Ok(())
+    }
+
+    /// A PostJob body as a plain job or a ticket (SPEC 4.5): absolute deadline and, for a
+    /// ticket, its extension.
+    async fn check_job_or_ticket(&mut self, p: &PostJob, height: u64, relative: bool) -> Result<(u64, Option<TicketExt>), TxError> {
+        let Some(model_id) = pearl_job::standing::parse_ticket_config(&p.config) else {
+            return Ok((check_post_job(p, &self.cfg, height, relative)?, None));
+        };
+        let Some(model) = self.ov.model(&model_id).await? else { return bad("ticket names an unregistered model") };
+        if p.k != 1 {
+            return bad("a ticket has k = 1 (m = prompt tokens, n = max new tokens)");
+        }
+        if p.m == 0 || p.n == 0 {
+            return bad("a ticket needs prompt tokens and max new tokens");
+        }
+        let period = model.base_config().map_err(TxError::Invalid)?.rows_pattern.period();
+        let rows = pearl_job::standing::ticket_rows(p.m, p.n, period);
+        if rows > pearl_job::standing::MAX_TICKET_ROWS as u64 {
+            return bad(format!("ticket rows {rows} above {}", pearl_job::standing::MAX_TICKET_ROWS));
+        }
+        if !blobs::is_blob_uri(&p.data_uri) {
+            return bad("a ticket's data_uri must be the request blob (blob: URI)");
+        }
+        let deadline = check_post_job_terms(p, &self.cfg, height, relative)?;
+        let cap = mul_ppm(p.protocol_fee, self.cfg.alpha_ppm);
+        Ok((deadline, Some(TicketExt { model_id, server: p.hash_b, rows, cap_total: cap, ..Default::default() })))
+    }
+
+    async fn create_job(&mut self, poster: &Pubkey, id: Hash, p: &PostJob, deadline: u64, order: bool, ticket: Option<TicketExt>) -> Result<(), TxError> {
         if self.ov.job(&id).await?.is_some() {
             return bad("job id already exists");
         }
@@ -709,7 +921,13 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             result_uri: Vec::new(),
             closed_height: 0,
             index: c.job_count,
+            ext: ticket.map(JobExt::Ticket),
         };
+        if let Some(t) = &ticket {
+            let Some(mut model) = self.ov.model(&t.model_id).await? else { return bad("ticket names an unregistered model") };
+            model.tickets += 1;
+            self.ov.put_model(&model);
+        }
         self.ov.put(schema::job_index_key(c.job_count), Some(schema::encode_job_index(&id)));
         c.job_count += 1;
         self.ov.put_counters(&c);
@@ -731,6 +949,22 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             self.ov.put_job(&j);
             self.ov.debit(&pool_address(), s).await.map_err(blk)?;
             self.summary.subsidy = s;
+            if let Some((ticket_id, model_id, _)) = j.segment() {
+                // Standing job: roll the block up into its ticket and model.
+                if let Some(mut t) = self.ov.job(&ticket_id).await? {
+                    if let Some(JobExt::Ticket(mut te)) = t.ext {
+                        te.blocks_mined += 1;
+                        te.subsidy_paid += s;
+                        t.ext = Some(JobExt::Ticket(te));
+                        self.ov.put_job(&t);
+                    }
+                }
+                if let Some(mut m) = self.ov.model(&model_id).await? {
+                    m.blocks_mined += 1;
+                    m.subsidy_paid += s;
+                    self.ov.put_model(&m);
+                }
+            }
         }
         let reward = self.summary.fees + self.summary.subsidy;
         let mature_height = h + self.cfg.finality_k as u64;
@@ -758,6 +992,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
 
 /// Can a block at `height` mine `job`? (parent-state check)
 pub fn check_mineable(job: &JobRecord, height: u64) -> Result<(), String> {
+    if job.is_ticket() {
+        return Err("an inference ticket is not mineable (its segments are)".into());
+    }
     if !job.status.is_live() {
         return Err(format!("job is {}", job.status.name()));
     }
