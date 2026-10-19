@@ -26,3 +26,17 @@ relayer.@IP@.sslip.io {
 	}
 	respond 405
 }
+
+# cadre-api (services/cadre-api, docs/API.md): CORS, caching and rate limits are the app's
+api.@IP@.sslip.io {
+	encode gzip
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy 127.0.0.1:10685 {
+		flush_interval -1
+		transport http {
+			read_timeout 310s
+		}
+	}
+}
