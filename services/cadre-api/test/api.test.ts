@@ -363,14 +363,17 @@ test("prepaid off: 501 pending_upstream", async () => {
   }
 });
 
-test("market: pump quote from the curve, crank view; unsigned pump/crank txs pending", async () => {
+test("market: pump quote from the curve, crank view (unsigned txs: test/market-tx.test.ts)", async () => {
   const q = await get("/v1/pump/quote?sol_in=1000000000");
   assert.equal(q.body.venue, "curve");
   // 1e15 x 1e9 / (3e10 + 1e9)
   assert.equal(q.body.tokens_out_spl, ((10n ** 15n * 10n ** 9n) / (30_000_000_000n + 1_000_000_000n)).toString());
   const c = await get("/v1/crank");
-  assert.equal(c.body.fund_mining.next_allowed_ts, 1_760_000_060);
-  assert.equal((await post("/v1/tx/pump-buy", {})).status, 501);
+  // the fake reserve Config predates the fund limits: fund_mining would fail with NeedsMigration
+  assert.equal(c.body.fund_mining.ok, false);
+  assert.equal(c.body.fund_mining.code, "needs_migration");
+  assert.equal(c.body.fund_mining.next_allowed_ts, null);
+  assert.equal((await post("/v1/tx/pump-buy", {})).status, 400);
 });
 
 void d;

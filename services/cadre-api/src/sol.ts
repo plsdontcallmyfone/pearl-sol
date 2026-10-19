@@ -332,3 +332,280 @@ export function parseWireTx(tx: Uint8Array): { sigs: Uint8Array[]; message: Uint
   for (let i = 0; i < nreq; i++) signers.push(b58encode(message.subarray(m.o + 32 * i, m.o + 32 * i + 32)));
   return { sigs, message, signers, version };
 }
+
+// ------------------------------------------------------------ market txs (pump buy, crank buyback, fund_mining)
+//
+// The account lists below mirror what services/crank already sends live (scripts/demo):
+// pump `buy_exact_quote_in_v3` as @pump-fun/pump-sdk 4.1.0 builds it (same 17 accounts the
+// storefront's crank_buyback CPI passes), PumpSwap `buy_exact_quote_in_v2` as
+// @pump-fun/pump-swap-sdk 2.1.0 builds it, and the storefront / reserve instructions with the
+// account sets of services/crank/src/{storefront,accounts}.ts (StorefrontKeys, ReserveKeys.fund).
+// test/market-tx.test.ts compares them with those builders.
+
+export const FEES = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";
+export const WSOL = "So11111111111111111111111111111111111111112";
+export const CLOCK = "SysvarC1ock11111111111111111111111111111111";
+/** The storefront buyback vault keeps this much (services/crank RENT_MIN, the program's RENT_MIN). */
+export const STORE_RENT_MIN = 890_880n;
+
+const seedKey = (k: string) => b58decode(k);
+const pumpPda = (...s: Uint8Array[]) => findPda(s, PUMP)[0];
+const ammPda = (...s: Uint8Array[]) => findPda(s, AMM)[0];
+
+export const pumpGlobalPda = () => pumpPda(utf8("global"));
+export const pumpEventAuthority = () => pumpPda(utf8("__event_authority"));
+export const pumpUserVolumeAccumulator = (user: string) => pumpPda(utf8("user_volume_accumulator"), seedKey(user));
+export const pumpFeeConfig = () => findPda([utf8("fee_config"), seedKey(PUMP)], FEES)[0];
+export const ammGlobalConfigPda = () => ammPda(utf8("global_config"));
+export const ammEventAuthority = () => ammPda(utf8("__event_authority"));
+export const ammUserVolumeAccumulator = (user: string) => ammPda(utf8("user_volume_accumulator"), seedKey(user));
+export const ammFeeConfig = () => findPda([utf8("fee_config"), seedKey(AMM)], FEES)[0];
+
+const IX_PUMP_BUY_EXACT_QUOTE_IN_V3 = Uint8Array.from([225, 247, 80, 30, 213, 179, 132, 136]);
+const IX_AMM_BUY_EXACT_QUOTE_IN_V2 = Uint8Array.from([194, 171, 28, 70, 104, 77, 91, 47]);
+
+function keyList(d: Uint8Array, at: number, n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push(b58encode(d.subarray(at + 32 * i, at + 32 * i + 32)));
+  return out;
+}
+/** pump Global.buyback_fee_recipients (8 keys at 741, the layout of the fixtures/pump Global and pump-sdk 4.1.0). */
+export function pumpBuybackRecipients(d: Uint8Array): string[] {
+  if (d.length < 741 + 256) throw new Error("pump Global too short for buyback_fee_recipients");
+  return keyList(d, 741, 8);
+}
+/** PumpSwap GlobalConfig.buyback_fee_recipients (8 keys at 643, pump-swap-sdk 2.1.0 layout). */
+export function ammBuybackRecipients(d: Uint8Array): string[] {
+  if (d.length < 643 + 256) throw new Error("PumpSwap GlobalConfig too short for buyback_fee_recipients");
+  return keyList(d, 643, 8);
+}
+/** Pool keys the PumpSwap buy needs (pump_amm Pool: base_mint 43, quote_mint 75, vaults 139 / 171, coin_creator 211). */
+export function decodePoolKeys(d: Uint8Array) {
+  return { baseMint: b58encode(d.subarray(43, 75)), quoteMint: b58encode(d.subarray(75, 107)), baseVault: b58encode(d.subarray(139, 171)), quoteVault: b58encode(d.subarray(171, 203)), coinCreator: b58encode(d.subarray(211, 243)) };
+}
+
+export const syncNative = (account: string): Ix => ({ programId: TOKEN, keys: [meta(account, true)], data: Uint8Array.of(17) });
+export const closeAccount = (account: string, dest: string, owner: string): Ix => ({ programId: TOKEN, keys: [meta(account, true), meta(dest, true), meta(owner, false, true)], data: Uint8Array.of(9) });
+
+/** pump `buy_exact_quote_in_v3(spendable_quote_in, min_tokens_out, partial_fill = false)` on a SOL-quoted curve. */
+export function pumpBuyExactQuoteInIx(user: string, mint: string, spendableQuoteIn: bigint, minTokensOut: bigint, buybackFeeRecipient: string, tokenProgram = TOKEN_2022): Ix {
+  const bc = bondingCurvePda(mint);
+  return {
+    programId: PUMP,
+    keys: [
+      meta(pumpGlobalPda()),
+      meta(mint),
+      meta(WSOL),
+      meta(tokenProgram),
+      meta(TOKEN),
+      meta(bc, true),
+      meta(ata(bc, mint, tokenProgram), true),
+      meta(ata(bc, WSOL, TOKEN), true),
+      meta(user, true, true),
+      meta(ata(user, mint, tokenProgram), true),
+      meta(ata(user, WSOL, TOKEN), true),
+      meta(pumpUserVolumeAccumulator(user), true),
+      meta(pumpFeeConfig()),
+      meta(buybackFeeRecipient, true),
+      meta(SYSTEM),
+      meta(pumpEventAuthority()),
+      meta(PUMP),
+    ],
+    data: cat(IX_PUMP_BUY_EXACT_QUOTE_IN_V3, u64(spendableQuoteIn), u64(minTokensOut), Uint8Array.of(0)),
+  };
+}
+
+export interface PoolKeys {
+  pool: string;
+  baseMint: string;
+  quoteMint: string;
+  baseVault: string;
+  quoteVault: string;
+}
+/** PumpSwap `buy_exact_quote_in_v2(spendable_quote_in, min_base_amount_out)`; `ammBuybackOwner` is a GlobalConfig buyback recipient (its wSOL ATA is passed). */
+export function ammBuyExactQuoteInIx(user: string, p: PoolKeys, spendableQuoteIn: bigint, minBaseOut: bigint, ammBuybackOwner: string, baseTokenProgram = TOKEN_2022): Ix {
+  return {
+    programId: AMM,
+    keys: [
+      meta(p.pool, true),
+      meta(user, true, true),
+      meta(ammGlobalConfigPda()),
+      meta(p.baseMint),
+      meta(p.quoteMint),
+      meta(ata(user, p.baseMint, baseTokenProgram), true),
+      meta(ata(user, p.quoteMint, TOKEN), true),
+      meta(p.baseVault, true),
+      meta(p.quoteVault, true),
+      meta(baseTokenProgram),
+      meta(TOKEN),
+      meta(SYSTEM),
+      meta(ammUserVolumeAccumulator(user), true),
+      meta(ammFeeConfig()),
+      meta(ata(ammBuybackOwner, p.quoteMint, TOKEN), true),
+      meta(ammEventAuthority()),
+      meta(AMM),
+    ],
+    data: cat(IX_AMM_BUY_EXACT_QUOTE_IN_V2, u64(spendableQuoteIn), u64(minBaseOut)),
+  };
+}
+
+// ---- storefront buyback crank (token/programs/storefront crank_buyback / crank_buyback_amm)
+
+export interface StoreCrankConfig {
+  mint: string;
+  reserveProgram: string;
+  /** zero key = permissionless */
+  cranker: string;
+  maxPerCall: bigint;
+  minBuy: bigint;
+  minIntervalSecs: bigint;
+  lastTs: bigint;
+  locked: bigint;
+  reserveCap: bigint;
+}
+/** Storefront Config buyback fields (offsets as apps/explorer decodeStoreBuyback: tail after the attesters vec). */
+export function decodeStoreCrankConfig(d: Uint8Array): StoreCrankConfig | null {
+  if (d.length < 146 || !Buffer.from(d.subarray(0, 8)).equals(Buffer.from(accountDisc("Config")))) return null;
+  const b0 = Buffer.from(d);
+  const n = b0.readUInt32LE(142);
+  const at = 146 + 32 * n;
+  const b = at + 59;
+  if (d.length < at + 246) return null; // a program before held shares (bb_locked): not the crank this API builds for
+  return {
+    mint: b58encode(d.subarray(40, 72)),
+    reserveProgram: b58encode(d.subarray(b + 3, b + 35)),
+    cranker: b58encode(d.subarray(b + 35, b + 67)),
+    maxPerCall: b0.readBigUInt64LE(b + 67),
+    minBuy: b0.readBigUInt64LE(b + 75),
+    minIntervalSecs: b0.readBigInt64LE(b + 83),
+    lastTs: b0.readBigInt64LE(b + 91),
+    locked: b0.readBigUInt64LE(b + 171),
+    reserveCap: d.length >= at + 254 ? b0.readBigUInt64LE(b + 187) : 0n,
+  };
+}
+
+export const storeConfigAddress = () => findPda([utf8("config")], STOREFRONT_ID)[0];
+export const storeBuybackVault = () => findPda([utf8("buyback")], STOREFRONT_ID)[0];
+
+/** storefront.crank_buyback(max_sol_in, min_tokens_out): accounts as services/crank StorefrontKeys.curve. */
+export function storeCrankBuybackIx(cranker: string, c: StoreCrankConfig, maxSolIn: bigint, minTokensOut: bigint, buybackFeeRecipient: string): Ix {
+  const vault = storeBuybackVault();
+  const bc = bondingCurvePda(c.mint);
+  const reserveAtaAddr = ata(findPda([utf8("creator")], c.reserveProgram)[0], c.mint, TOKEN_2022);
+  return {
+    programId: STOREFRONT_ID,
+    keys: [
+      meta(cranker, true, true),
+      meta(storeConfigAddress(), true),
+      meta(vault, true),
+      meta(c.mint, true),
+      meta(ata(vault, c.mint, TOKEN_2022), true),
+      meta(ata(vault, WSOL, TOKEN), true),
+      meta(reserveAtaAddr, true),
+      meta(pumpGlobalPda()),
+      meta(bc, true),
+      meta(ata(bc, c.mint, TOKEN_2022), true),
+      meta(ata(bc, WSOL, TOKEN), true),
+      meta(pumpUserVolumeAccumulator(vault), true),
+      meta(pumpFeeConfig()),
+      meta(buybackFeeRecipient, true),
+      meta(WSOL),
+      meta(TOKEN),
+      meta(TOKEN_2022),
+      meta(ATA_PROGRAM),
+      meta(SYSTEM),
+      meta(pumpEventAuthority()),
+      meta(PUMP),
+    ],
+    data: cat(disc("crank_buyback"), u64(maxSolIn), u64(minTokensOut)),
+  };
+}
+
+/** storefront.crank_buyback_amm(max_sol_in, min_tokens_out): accounts as services/crank StorefrontKeys.amm. */
+export function storeCrankBuybackAmmIx(cranker: string, c: StoreCrankConfig, p: PoolKeys, maxSolIn: bigint, minTokensOut: bigint, ammBuybackOwner: string): Ix {
+  const vault = storeBuybackVault();
+  const reserveAtaAddr = ata(findPda([utf8("creator")], c.reserveProgram)[0], c.mint, TOKEN_2022);
+  return {
+    programId: STOREFRONT_ID,
+    keys: [
+      meta(cranker, true, true),
+      meta(storeConfigAddress(), true),
+      meta(vault, true),
+      meta(c.mint, true),
+      meta(ata(vault, c.mint, TOKEN_2022), true),
+      meta(ata(vault, WSOL, TOKEN), true),
+      meta(reserveAtaAddr, true),
+      meta(p.pool, true),
+      meta(p.baseVault, true),
+      meta(p.quoteVault, true),
+      meta(ammGlobalConfigPda()),
+      meta(ammUserVolumeAccumulator(vault), true),
+      meta(ammFeeConfig()),
+      meta(ata(ammBuybackOwner, WSOL, TOKEN), true),
+      meta(WSOL),
+      meta(TOKEN),
+      meta(TOKEN_2022),
+      meta(ATA_PROGRAM),
+      meta(SYSTEM),
+      meta(ammEventAuthority()),
+      meta(AMM),
+    ],
+    data: cat(disc("crank_buyback_amm"), u64(maxSolIn), u64(minTokensOut)),
+  };
+}
+
+// ---- reserve fund_mining (token/programs/reserve, permissionless + rate limited since 2026-10-19)
+
+export interface ReserveFundLimits {
+  layout: number;
+  paused: boolean;
+  minIntervalSecs: bigint;
+  windowSecs: bigint;
+  maxPerWindow: bigint;
+  lastTs: bigint;
+  windowStart: bigint;
+  windowUsed: bigint;
+  calls: bigint;
+}
+/** The fund-limit tail of the reserve Config (after bump, creator_bump), or null on an unmigrated config. */
+export function decodeReserveFundLimits(d: Uint8Array): ReserveFundLimits | null {
+  const o = 8 + 32 * 6 + 8 * 3 + 2 + 8 * 6 + 2; // through total_funded, then bump + creator_bump
+  if (d.length < o + 2 + 8 * 7) return null;
+  const b = Buffer.from(d);
+  return {
+    layout: d[o],
+    paused: d[o + 1] !== 0,
+    minIntervalSecs: b.readBigInt64LE(o + 2),
+    windowSecs: b.readBigInt64LE(o + 10),
+    maxPerWindow: b.readBigUInt64LE(o + 18),
+    lastTs: b.readBigInt64LE(o + 26),
+    windowStart: b.readBigInt64LE(o + 34),
+    windowUsed: b.readBigUInt64LE(o + 42),
+    calls: b.readBigUInt64LE(o + 50),
+  };
+}
+
+/** reserve.fund_mining(amount): accounts as services/crank ReserveKeys.fund (bridge Deposit PDA keyed by the bridge's deposit nonce now). */
+export function reserveFundMiningIx(authority: string, mint: string, bridgeProgram: string, depositNonce: bigint, amount: bigint): Ix {
+  const bcfg = findPda([utf8("config")], bridgeProgram)[0];
+  return {
+    programId: RESERVE_ID,
+    keys: [
+      meta(authority, true, true),
+      meta(reserveConfigPda(), true),
+      meta(reserveCreatorPda()),
+      meta(mint),
+      meta(reserveAta(mint), true),
+      meta(bcfg, true),
+      meta(ata(bcfg, mint, TOKEN_2022), true),
+      meta(findPda([utf8("deposit"), u64(depositNonce)], bridgeProgram)[0], true),
+      meta(TOKEN_2022),
+      meta(SYSTEM),
+      meta(bridgeProgram),
+    ],
+    data: cat(disc("fund_mining"), u64(amount)),
+  };
+}
+
+/** Clock sysvar unix_timestamp (i64 at 32). */
+export const clockUnixTs = (d: Uint8Array) => Number(Buffer.from(d).readBigInt64LE(32));

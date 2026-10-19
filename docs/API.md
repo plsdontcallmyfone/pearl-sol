@@ -77,7 +77,9 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `POST /v1/tx/solana {tx}`, `GET /v1/tx/solana/{sig}` | relay a signed Solana tx; status |
 | | `POST /v1/tx/chain {tx}`, `GET /v1/tx/chain/{hash}` | relay a signed agent-chain tx; status |
 | Market | `GET /v1/pump/quote?sol_in=`, `GET /v1/crank` | fee-free buy quote (curve or PumpSwap); buyback + reserve crank view |
-| | `POST /v1/tx/pump-buy`, `/v1/tx/crank-buyback`, `/v1/tx/fund-mining` | **501 pending** (account lists still changing on the token side) |
+| | `POST /v1/tx/pump-buy {buyer, sol_in, slippage_bps?, min_tokens_out?}` | unsigned CADRE buy: pump `buy_exact_quote_in_v3` on the curve, PumpSwap `buy_exact_quote_in_v2` (wSOL wrap) after graduation; min out = fee-free quote of sol_in net of a 1.25% fee allowance, less slippage (default 100 bps) |
+| | `POST /v1/tx/crank-buyback {cranker, max_sol_in?, min_out_bps?}` | unsigned storefront buyback crank (permissionless; services/crank account list and defaults); 409 `too_soon` / `nothing_to_buy` / `cranker_restricted` when the program would refuse |
+| | `POST /v1/tx/fund-mining {cranker, amount_spl?}` | unsigned reserve `fund_mining` (permissionless, rate limited; amount defaults to the most the limits allow); 409 `fund_paused` / `rate_limited` / `window_full` (with `next_allowed_ts`) / `needs_migration` |
 
 ## Using it from the site
 
@@ -202,4 +204,3 @@ Agent profiles and circulating supply prefer the explorer's modules when they la
 | Model prices on the test box | `price_error` (the box's storefront-x402 predates the ticket quote) | the box's storefront restarts on commit 64a4177+ |
 | Circulating supply | `circulating_spl: null` + components | token-side `apps/explorer` supply module |
 | Agent profiles from the agent layer | cadre-api's REPUTATION 5.1 subset (`source` says so) | `apps/explorer/src/agents.ts` |
-| Unsigned pump buy / crank buyback / fund_mining txs | 501 `pending` | token-side account lists settle |

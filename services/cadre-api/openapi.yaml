@@ -546,23 +546,67 @@ paths:
     post:
       tags: [market, tx]
       operationId: buildPumpBuy
-      summary: Unsigned pump buy tx (501 pending)
+      summary: Unsigned CADRE buy for the buyer's wallet (pump curve buy_exact_quote_in_v3; PumpSwap buy_exact_quote_in_v2 with a wSOL wrap after graduation)
+      description: "Spends at most `sol_in` (pump's fee included). `min_tokens_out` defaults to the fee-free constant-product quote of sol_in net of a 1.25% fee allowance, less `slippage_bps`. `summary` carries venue, quote, min out, the buyback fee recipient used."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [buyer, sol_in]
+              properties:
+                buyer: { $ref: "#/components/schemas/Address" }
+                sol_in: { $ref: "#/components/schemas/Amount" }
+                slippage_bps: { type: integer, minimum: 0, maximum: 5000, default: 100 }
+                min_tokens_out: { $ref: "#/components/schemas/Amount" }
       responses:
-        "501": { $ref: "#/components/responses/Pending" }
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "The curve is complete but the PumpSwap pool is not there yet (pool_missing)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
   /v1/tx/crank-buyback:
     post:
       tags: [market, tx]
       operationId: buildCrankBuyback
-      summary: Unsigned crank buyback tx (501 pending)
+      summary: Unsigned storefront buyback crank (permissionless crank_buyback, or crank_buyback_amm after graduation), as services/crank builds it
+      description: "Spends the vault's released lamports (vault minus rent minus shares held for unsettled orders, capped by buyback_max_per_call and `max_sol_in`); min out = fee-free quote less `min_out_bps` (services/crank defaults). Tokens go to the reserve under bb_reserve_cap, the rest is burned (`summary.destination`)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cranker]
+              properties:
+                cranker: { $ref: "#/components/schemas/Address" }
+                max_sol_in: { $ref: "#/components/schemas/Amount" }
+                min_out_bps: { type: integer, minimum: 0, maximum: 5000, default: 300 }
       responses:
-        "501": { $ref: "#/components/responses/Pending" }
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "The program would refuse now: too_soon (details.next_allowed_ts), nothing_to_buy, cranker_restricted, buyback_unavailable, pool_missing", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /v1/tx/fund-mining:
     post:
       tags: [market, tx]
       operationId: buildFundMining
-      summary: Unsigned fund_mining tx (501 pending)
+      summary: Unsigned reserve fund_mining (permissionless, rate limited), as services/crank builds it
+      description: "Moves reserve tokens through the bridge to the agent-chain mining pool. `amount_spl` defaults to the most the limits allow now (min of max_fund_per_call, the window's room and the reserve). Refused up front when the on-chain checks would fail; GET /v1/crank `fund_mining` shows the same state."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cranker]
+              properties:
+                cranker: { $ref: "#/components/schemas/Address" }
+                amount_spl: { $ref: "#/components/schemas/Amount" }
       responses:
-        "501": { $ref: "#/components/responses/Pending" }
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "fund_paused, rate_limited or window_full (details.next_allowed_ts), needs_migration, not_launched, not_wired, reserve_missing", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
 components:
   parameters:
