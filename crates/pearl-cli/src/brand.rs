@@ -1,15 +1,15 @@
 //! Product name, ticker and the ASCII wordmark, in ONE place.
 //!
-//! Name chosen by the owner 2026-10-18: Lode, ticker LODE. A
+//! Name chosen by the owner 2026-10-18: Cadre, ticker CADRE. A
 //! rename is a change to [`NAME`] and [`TICKER`] only: the wordmark is generated from
 //! [`NAME`] with the block font below, the bracketed top-right mark from it too.
 //! (The crate and binary are still called `pearl-cli` / `pearl`; they move with the
 //! rename, see docs/CLI.md.)
 
 /// Product name shown on screen.
-pub const NAME: &str = "LODE";
+pub const NAME: &str = "CADRE";
 /// Ticker of the bridged token (chain units 9 dp, SPL 6 dp).
-pub const TICKER: &str = "LODE";
+pub const TICKER: &str = "CADRE";
 /// Second header line.
 pub const TAGLINE: &str = "Useful-PoW agent chain + Solana bridge (c) 2026";
 /// Beta warning under the wordmark.

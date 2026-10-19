@@ -723,9 +723,9 @@ mod tests {
             assert_eq!(b[(x - 1, y)].symbol(), "\u{250c}", "{title} sits on the border");
         }
         // values traced from the sample snapshot
-        assert!(all.contains("40.74 LODE"));
-        assert!(all.contains("2 Pending LODE"));
-        assert!(all.contains("8.69M LODE on Solana"));
+        assert!(all.contains("40.74 CADRE"));
+        assert!(all.contains("2 Pending CADRE"));
+        assert!(all.contains("8.69M CADRE on Solana"));
         assert!(all.contains("job from 0.01 SOL"));
         assert!(all.contains("no price source"));
         assert!(all.contains("height 260"));
@@ -775,7 +775,7 @@ mod tests {
         assert_eq!((app.tab, app.sel), (Tab::Mining, 0));
         let t = text(&draw(&app, 140, 46));
         assert!(find(&t, "/Mining").is_some());
-        assert!(t.join("\n").contains("yours 3/8 blocks, 3 LODE (2 pending)"));
+        assert!(t.join("\n").contains("yours 3/8 blocks, 3 CADRE (2 pending)"));
         assert!(t.join("\n").contains("fallback"));
         on_key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
         assert!(text(&draw(&app, 140, 46)).join("\n").contains("released"));

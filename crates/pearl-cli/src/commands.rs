@@ -31,7 +31,7 @@ pub enum Cmd {
     Balance,
     /// The connected addresses.
     Address,
-    /// Transfer LODE on the agent chain: `send <to> <amount>`.
+    /// Transfer CADRE on the agent chain: `send <to> <amount>`.
     Send {
         to: String,
         /// Decimal tokens, e.g. 1.5
@@ -237,7 +237,7 @@ impl Out {
 }
 
 pub const HELP: &str = "\
-send <to> <amount>             transfer LODE on the agent chain
+send <to> <amount>             transfer CADRE on the agent chain
 bridge in <amount>             Solana SPL -> chain (bridge deposit)
 bridge out <amount> [--to X]   chain -> Solana (BridgeLock, released when K deep)
 bridge status                  escrow, vault, in flight, invariant
@@ -1647,11 +1647,11 @@ mod tests {
         let j = json!({"job_id": "ab".repeat(32), "status": "open", "worker_pay": "5000000000", "protocol_fee": "1000000000",
                        "m": 64, "n": 64, "k": 2048, "blocks_mined": 1, "max_blocks": 10, "deadline_height": 900});
         assert_eq!(job_line(&j), "abab...abab  open      W              5  P            1  64x64x2048  blocks 1/10  deadline 900");
-        assert!(job_detail(&j).contains("worker_pay      5 LODE"));
+        assert!(job_detail(&j).contains("worker_pay      5 CADRE"));
         assert_eq!(route_text(&Value::Null), "none");
         let r = json!({"active": true, "route_bps": 5000, "solana_recipient": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
                        "until_height": 99, "routed": "1000000500", "withdrawn": "1000000000", "pending": "500"});
-        assert_eq!(route_text(&r), "active 50% to 7xKX...gAsU until 99 (routed 1 LODE, withdrawn 1 LODE, pending 0 LODE)");
+        assert_eq!(route_text(&r), "active 50% to 7xKX...gAsU until 99 (routed 1 CADRE, withdrawn 1 CADRE, pending 0 CADRE)");
         assert!(HELP.lines().all(|l| l.len() <= 90));
     }
 
@@ -1669,7 +1669,7 @@ mod tests {
         let plain = crate::term::render_panel(&p, &Style::plain());
         assert!(plain.contains("[ Job info ]"));
         assert!(plain.contains("Status           COMPLETED"), "{plain}");
-        assert!(plain.contains("Worker pay       5 LODE"));
+        assert!(plain.contains("Worker pay       5 CADRE"));
         assert!(plain.contains("Deliverer        -"));
         let col = crate::term::render_panel(&p, &Style::colored());
         assert!(col.contains("\x1b[32mCOMPLETED\x1b[0m"));
