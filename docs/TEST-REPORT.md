@@ -152,3 +152,40 @@ the chain was at ~24,460 (relayer log), about 9 headers a minute on a box at loa
 can be released until header-relay catches up or the stack restarts. Not restarted here (other
 lanes use the stack). Worth a look by the header-relay owner: on a long-lived stack the relay
 never catches up.
+
+## Token-side buyback cap + permissionless fund_mining + public numbers (2026-10-19)
+
+Programs built on the test VPS in a separate clone (`~/pearl-tok`, same program ids, keypairs
+from keys/localnet); LiteSVM JS suites run on the Mac with `TOKEN_TARGET` pointing at the
+fetched build (the litesvm 0.3.3 node binding aborts with std::bad_alloc on the box, also
+on the untouched tree, so those suites stay on the Mac).
+
+| Suite | Command (cwd) | Passed | Failed |
+|---|---|---:|---:|
+| reserve LiteSVM (real pump bytecode + bridge) | `TOKEN_TARGET=... npm test` (token/tests/reserve) | 18 | 0 |
+| storefront LiteSVM | `TOKEN_TARGET=... npm test` (token/tests/storefront) | 23 | 0 |
+| pearl-cli (VPS) | `cargo test --release` (crates/pearl-cli) | 36 | 0 |
+| explorer | `npm test` (apps/explorer, at 992d459) | 28 | 0 |
+| DefiLlama adapter unit | `npm test` (tools/defillama) | 2 | 0 |
+| crank typecheck | `npm run typecheck` (services/crank) | ok | |
+| pearl-wallet vitest (dev, IDL fixtures refreshed) | `npx vitest run` | 134 (+3 skipped) | 0 |
+
+New tests: reserve: fund defaults, permissionless fund by a stranger, per-call cap, interval,
+window cap and rollover, pause (admin included), destination frozen after the first funding,
+set_fund_limits admin-only + event, migrate_config on a 276-byte old config. Storefront: cap
+default, set_buyback_cap admin-only + event, a buy crossing the cap (reserve exactly at cap,
+excess burned, supply down by the excess, events), a buy at the cap (all burned), cap 0 = no
+cap, the PumpSwap crank under the cap, bridge vault untouched and `1e18 - escrow <= 1000 x
+mint supply`. CU: crank_buyback with the split 127.5k.
+
+Live, read-only against the VPS demo stack through a tunnel:
+- `tools/defillama` `npm run live`: all-time fees 22,240,866 lamports, holders revenue
+  1,112,043, supply side 20,016,780; all three equal the storefront Config counters
+  (total_sol, total_sol + every share ever held, bb_accrued). Rerun later at slot 4,891 the
+  validator had pruned the history and every check reported a mismatch (as designed: the
+  adapter needs an RPC with full history for its window).
+- explorer `/api/supply`: reserve 25,062,907,355,180 = 35,047,085,691,636 bought - 1e13 funded
+  + 15,821,663,544 from the buyback; bridge in_flight 0; circulating = supply - reserve - pool
+  exactly. The first run found reserve/bridge reading 0 (wrong ATA program id), fixed in
+  992d459 with a vector test. `/revenue` screenshots (desktop + phone, headless):
+  screenshots/explorer/revenue*.png.
