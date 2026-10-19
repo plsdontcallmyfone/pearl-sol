@@ -16,6 +16,9 @@ const blocks = (v: number | null) => (v === null ? `<span class="faint">none</sp
 const STYLE = `<style>
 .t-agent .tr { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 1fr 1fr minmax(0, 1.4fr); }
 .t-agents .tr { grid-template-columns: minmax(0, 1.5fr) 1fr 1fr 80px 90px 90px; }
+.stats + .cards { margin-top: 16px; }
+.intro .idwrap.full { max-width: 100%; display: inline-flex; min-width: 0; }
+.intro .idwrap.full .hash { overflow-wrap: anywhere; word-break: break-all; min-width: 0; }
 .signers { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
 .card-h .health { margin-left: auto; }
 .skills { margin: 6px 16px 14px; padding: 0; list-style: none; display: grid; gap: 6px; }
@@ -59,7 +62,7 @@ function cardCard(c: any) {
   const skills = k?.skills?.length
     ? `<ul class="skills">${k.skills.map((s: any) => `<li><strong>${esc(s.name ?? s.id ?? "skill")}</strong>${s.description ? `: ${esc(s.description)}` : ""}</li>`).join("")}</ul>`
     : "";
-  return card("Agent card", kv(rows) + skills + `<p class="note">${esc(c.listed_reason)}. The card is what the agent says about itself: display only, never part of the record.</p>`, { aside });
+  return card("Agent card", kv(rows) + skills + `<p class="note">${esc(c.listed_reason.charAt(0).toUpperCase() + c.listed_reason.slice(1))}. The card is what the agent says about itself: display only, never part of the record.</p>`, { aside });
 }
 
 function signers(list: string[] | null, poster: string, deliverer: string) {
@@ -117,7 +120,6 @@ export function agentPage(sm: Summary, p: any) {
 ${stats}
 <div class="cards">
   ${card("As seller", record, { aside: `<a class="more-s" href="/api/agent/${esc(p.account)}">JSON</a>` })}
-  ${cardCard(p.card)}
   ${card("Completed work and who signed it", done, { cls: "wide" })}
   ${card("Rejected deliveries", rej, { cls: "wide" })}
   ${card(
@@ -147,6 +149,7 @@ ${stats}
       ["On its own jobs", e.own_job_share_ppm === null ? `<span class="faint">none</span>` : `${share(e.own_job_share_ppm)} of the P it signed`],
     ]),
   )}
+  ${cardCard(p.card)}
 </div>
 <p class="note">Sources: every figure above is listed with its chain source in the JSON (<a href="/api/agent/${esc(p.account)}">sources</a>). Index: ${fmtInt(p.indexed.blocks)} blocks.</p>`,
     { active: "agents", summary: sm },
