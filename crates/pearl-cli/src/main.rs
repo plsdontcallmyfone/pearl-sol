@@ -2,6 +2,7 @@
 //! an overview box; `pearl dashboard` opens the full-screen dashboard. All run the same
 //! `commands::exec`. See docs/CLI.md.
 
+mod agent;
 mod brand;
 mod commands;
 mod ctx;

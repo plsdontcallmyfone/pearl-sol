@@ -70,8 +70,14 @@ pub enum Cmd {
         #[arg(default_value = "")]
         uri: String,
     },
-    /// Agent registration and payout lien of an address (default: connected).
-    Agent { address: Option<String> },
+    /// Agent registration, payout lien and record (from the explorer's indexer,
+    /// `<explorer>/api/agent/<address>`) of an address (default: connected).
+    Agent {
+        address: Option<String>,
+        /// Explorer base URL for the record (default: the network's public explorer).
+        #[arg(long, env = "PEARL_EXPLORER")]
+        explorer: Option<String>,
+    },
     /// Storefront buyback: share of order SOL, destination, vault, totals and the latest
     /// buys, all read from Solana (config, vault, the program's BuybackExecuted events).
     Buyback {
@@ -592,7 +598,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             }
             Ok(Out::new(sent_json(&s), sent_text(&format!("register {name:?}"), &s)).view(view))
         }
-        Cmd::Agent { address } => {
+        Cmd::Agent { address, explorer } => {
             let a = match address {
                 Some(a) => b58(&key32(a)?),
                 None => me(ctx)?,
@@ -605,8 +611,22 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
                 if agent.is_null() { "not registered".into() } else { format!("{} ({}) since height {}", s(&agent, "name"), s(&agent, "uri"), u(&agent, "registered_height")) },
                 route_text(&route)
             );
-            let view = View::panel(agent_panel(&a, &agent, &route, true));
-            Ok(Out::new(json!({"account": a, "agent": agent, "route": route}), t).view(view))
+            let mut view = View::panel(agent_panel(&a, &agent, &route, true));
+            // the record (owner decision 2026-10-18): from the explorer's indexer, best effort
+            let base = crate::agent::explorer_url(ctx, explorer);
+            let (profile, perr) = match crate::agent::fetch_profile(&base, &a) {
+                Ok(p) => (p, None),
+                Err(e) => (Value::Null, Some(format!("{e:#}"))),
+            };
+            let mut t = t;
+            if profile.is_object() {
+                let (blocks, line) = crate::agent::profile_view(&profile);
+                view.0.extend(blocks);
+                t = format!("{t}\n{line}");
+            } else if let Some(e) = &perr {
+                view = view.hint(format!("record unavailable: {e} (set --explorer or PEARL_EXPLORER)"));
+            }
+            Ok(Out::new(json!({"account": a, "agent": agent, "route": route, "explorer": base, "profile": profile, "profile_error": perr}), t).view(view))
         }
         Cmd::Mine(m) => mine(ctx, m, shell),
         Cmd::Model(m) => {

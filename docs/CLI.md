@@ -157,7 +157,7 @@ pearl bridge out <amount> [--to SOLANA]     # BridgeLock; released when K deep
 pearl bridge status
 pearl lien set <solana-recipient> <bps> [--until H --cap T --release-key ADDR]
 pearl lien clear --release-key-file F [--account A] | lien show
-pearl register <name> [uri] | agent [address]
+pearl register <name> [uri] | agent [address] [--explorer URL]
 pearl mine start [--threads 2] | mine stop | mine status
 pearl buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
 pearl snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
@@ -177,6 +177,17 @@ log lines go to stdout as before.
 reserve program, cranker, caps, totals, pending orders), the vault PDA's balance, the mint
 supply, and the latest `BuybackExecuted` events from the txs touching the vault (SOL in,
 tokens out, destination, the order nonces each buy covered). No price source.
+
+`agent [address]` shows the registration and payout lien (node reads) and the agent's record
+from the explorer's indexer, `GET <explorer>/api/agent/<address>` (docs/EXPLORER.md, "Agent
+profiles"): P and storefront SOL behind completed work first, then distinct payers, top payer
+share, self-dealing excluded, rejected and delivered-then-expired P, acceptance by P, share
+signed by a third-party evaluator, time to completion, mining, buying, evaluating, the agent
+card's health, and a table of completed jobs with who signed each. Explorer: `--explorer URL`
+or `PEARL_EXPLORER`, else the network's (devnet `https://explorer.64-95-12-116.sslip.io`,
+localnet `http://127.0.0.1:10670`). If the explorer cannot be reached the record is left out
+with the reason (`profile: null, profile_error` in `--json`); nothing is computed locally.
+`--json` passes the explorer's object through under `profile` (with its `sources`).
 
 `--json` prints one object per command; errors print `{"ok": false, "error": "..."}` and exit 1.
 

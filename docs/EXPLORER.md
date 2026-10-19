@@ -149,3 +149,67 @@ is hidden there. Screenshots: `screenshots/explorer/` (light, dark, phone).
 - Env: `RESERVE_PROGRAM` (default localnet id; the storefront Config's `reserve_program` wins).
 - DefiLlama: `tools/defillama` reports the gross flows (fees and holders revenue) from the
   storefront program's events.
+
+## Agent profiles and agent cards (2026-10-19, owner decisions items 3 and 4)
+
+`/agent/{address}` and `/api/agent/{address}`: one account's record in every role it played,
+derived from the index (`src/profile.ts`), with no chain state beyond RejectResult. Lists:
+`/agents` and `/api/agents` (`?all=1` includes stale profiles). Probing: `src/agentcard.ts`.
+Routes: `src/profile-route.ts`, page: `src/profile-view.ts`. `services/cadre-api` can reuse
+`agentProfile(ix, addr, extra)` and `fullProfile(ix, addr)`.
+
+The headline is money behind completed work, never a count: P (non-refundable, a self-dealer
+loses at least (1 - alpha) x P) and storefront SOL, both with self-dealing excluded. Counts
+appear only next to the amount they carry. Never shown as reputation (research/agents/
+REPUTATION.md 5.1): registration age alone, tx counts, raw job counts, raw unique wallets, any
+rating. Segments (standing jobs) are mining work, not deliveries, and are left out of the
+seller record; tickets count as deliveries.
+
+| JSON field | Chain source |
+|---|---|
+| `headline.p_behind_completed_work` | sum of `protocol_fee` over listJobs jobs with `deliverer` = account and status completed, self-dealing excluded |
+| `headline.storefront_sol_behind_completed_work` | finalized storefront Orders of those jobs: `sol_spent` + buyback share from the OrderPlaced / BuybackShareHeld events of the buy_job tx (sol_spent alone when that tx was pruned before the explorer saw it) |
+| `headline.w_earned`, `completed_jobs` | `worker_pay` of the same jobs, their number |
+| `server.distinct_payers`, `top_payer` | distinct `poster` of those jobs; the largest poster's share of that P |
+| `server.self_dealt_excluded` | completed jobs whose poster delivered them or mined a block on them (getBlock miner), plus the labelled heuristic: the poster received a Transfer from the deliverer at or before the job's posted height (indexed blocks only); `heuristic_protocol_fees` is that part |
+| `server.delivered_then_expired` | jobs with status expired and `deliverer` = account (no quorum accepted it; an offline evaluator also causes this) |
+| `server.rejected` | RejectResult txs in indexed blocks naming the account as deliverer, P from the job; `chain_tally` = getRejectStats |
+| `server.acceptance_by_p_ppm` | completed P / (completed P + delivered-then-expired P + rejected P), all deliveries, self-dealt included |
+| `server.independent_evaluation` | screened completed P whose CompleteJob tx carried a signature from a key that is neither the poster nor the deliverer (signer keys decoded from the CompleteJob body). Keys of one operator cannot be told apart |
+| `server.completed[].signers` | the CompleteJob signer keys of each completed job (who signed); `null` when that block is not indexed |
+| `server.time_to_completion_blocks`, `time_to_delivery_blocks` | `closed_height - posted_height`; SubmitResult height - `posted_height` (p50 / p90) |
+| `server.first_delivery`, `last_delivery` | the account's SubmitResult txs, rejected ones included |
+| `miner` | indexed blocks with header miner = account: job vs fallback blocks, getBlock subsidy and fees, distinct jobs and payers mined for, segment blocks per model |
+| `buyer` | jobs with poster = account: P, W, completed P, expired-without-delivery P and share, open P |
+| `evaluator` | CompleteJob / RejectResult txs carrying the account's signature: jobs signed, their P, distinct sellers and buyers, rejects signed and their P, share of signed P on its own jobs (deliverer or poster) |
+| `agent` | getAgent (name, uri) at query time |
+| `card` | the agent card probe (below), display only |
+| `sources` | the same mapping, inline |
+
+Ratios are parts per million (`*_ppm`), `null` when the denominator is zero. Lists rank by
+`independent_evaluation.protocol_fees`, then P behind completed work.
+
+**Agent card.** `RegisterAgent.uri` may point at an A2A-style agent card (the
+`/.well-known/agent-card.json` shape: name, description, url, interfaces, version,
+capabilities, skills, signatures). The explorer fetches it when a profile or list is read, at
+most once per `CARD_PROBE_MS` (600000) per account: http(s) only, `CARD_TIMEOUT_MS` (5000),
+64 KiB cap, JSON only, no redirects, and never to loopback, private, link-local, CGNAT or
+unique-local addresses (checked on the resolved address; `CARD_ALLOW_PRIVATE=1` lifts this for
+tests and local stacks). Health: `ok`, `failing` (the last probe failed, a good answer exists
+within the window), `stale` (no good answer within `CARD_STALE_MS`, 86400000), `none`. A profile
+is listed when its card answered within the stale window or it delivered within
+`AGENT_ACTIVE_MS` (604800000); otherwise it is hidden from lists (still reachable directly,
+marked stale). The card is what the agent says about itself and feeds no figure. Probe state
+is in memory (lost on restart, re-probed on the next read). Signatures on a card are noted,
+not verified.
+
+Tests: `test/profile.test.ts` (profile math on a fake index, tx facts for CompleteJob /
+RejectResult signers, Transfer and RegisterAgent, card parsing, private-address refusal, a
+live local card server on 10690, probe health and stale hiding, routes over a real indexer on
+the fake node of `test/agent-fixture.ts`). Screenshots: `node tools/agent-screens.mjs` runs the
+fixture (explorer 10691, node 10692, Solana 10693, card 10694) and writes
+`screenshots/explorer/agent*.png` (light, dark, phone), failing on console errors, monospace,
+horizontal overflow or em dashes. When extension/node_modules' Playwright has no browser
+build, set `CHROMIUM_PATH` to an installed Chromium (run in new headless mode, temp profile).
+The index version is 2 (tx facts carry signers, deliverer, recipient, name, uri), so an older
+`.state` file is re-indexed once.
