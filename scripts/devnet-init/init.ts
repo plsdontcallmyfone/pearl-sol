@@ -14,7 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
@@ -76,17 +76,19 @@ const NONE = Buffer.from([0]);
 
 // 1. reserve + launch
 const esc = await nodeCall("getEscrow");
-let status = JSON.parse(crank(["status"]));
+// `crank status` prints a plain log line (not JSON) while the reserve Config does not exist
+const reserveStatus = (): any => { const o = crank(["status"]).trim(); return o.startsWith("{") ? JSON.parse(o) : { initialized: false }; };
+let status = reserveStatus();
 if (!status.initialized && !status.admin) {
   log(crank(["init", "--bridgeProgram", BRIDGE_PROGRAM_ID.toBase58(), "--miningPool", esc.pool]).trim());
-  status = JSON.parse(crank(["status"]));
+  status = reserveStatus();
 }
 if (!status.mint || status.mint === PublicKey.default.toBase58()) {
   const mintFile = resolve(ROOT, "keys/devnet/mint-keypair.json");
   try { readFileSync(mintFile); } catch { execFileSync("solana-keygen", ["new", "--no-bip39-passphrase", "-s", "-o", mintFile]); }
   log(crank(["launch", "--name", "Cadre", "--symbol", "CADRE", "--uri", `https://explorer.${DASH}.sslip.io/cadre-token.json`,
     "--devBuy", DEV_BUY, "--mintKeypair", mintFile]).trim());
-  status = JSON.parse(crank(["status"]));
+  status = reserveStatus();
 }
 const MINT = new PublicKey(status.mint);
 log(`reserve: mint ${status.mint}, reserve tokens ${status.reserveTokens}, mining pool ${status.miningPool}`);
@@ -114,14 +116,20 @@ log(crank(["sf-set", "--bps", "1000", "--dest", "reserve", "--maxPerCall", "1000
 
 // 4. chain gas for ops (AdminConfig fees) and miner0 (SubmitResult / CompleteJob fees)
 const bal = async (k: PublicKey) => BigInt((await nodeCall("getAccount", { account: k.toBase58() })).balance);
-if ((await bal(ops.publicKey)) === 0n || (await bal(miner0.publicKey)) === 0n) {
+// chain balances only move once the relayer (started after init) unlocks, so a local record of the
+// gas deposits and the first fund keeps a second init pass from repeating them
+const DONE_FILE = resolve(ROOT, ".devnet-e2e/init-done.json");
+const done: Record<string, string> = existsSync(DONE_FILE) ? JSON.parse(readFileSync(DONE_FILE, "utf8")) : {};
+const mark = (k: string, v: string) => { done[k] = v; writeFileSync(DONE_FILE, JSON.stringify(done, null, 2)); };
+if (!done.gas && ((await bal(ops.publicKey)) === 0n || (await bal(miner0.publicKey)) === 0n)) {
   const b = JSON.parse(trade(["buy", "--keypair", crankEnv.KEYPAIR, "--mint", MINT.toBase58(), "--sol", GAS_BUY]).trim().split("\n").pop()!);
   const half = BigInt(b.tokens) / 2n;
   for (const k of [ops.publicKey, miner0.publicKey]) log(relayerCli(["deposit", half.toString(), k.toBase58(), crankEnv.KEYPAIR]).trim());
+  mark("gas", new Date().toISOString());
 }
 
 // 5. fund the chain's mining pool from the reserve (once)
-if (BigInt(esc.pool_balance) === 0n) log(crank(["fund", "--amount", FUND_SPL]).trim());
+if (!done.fund && BigInt(esc.pool_balance) === 0n) { log(crank(["fund", "--amount", FUND_SPL]).trim()); mark("fund", new Date().toISOString()); }
 log(`done: bridge ${decodeBridgeConfig((await conn.getAccountInfo(bridgeConfigPda()))!.data).depositNonce} deposits so far; ops SOL ${(await conn.getBalance(ops.publicKey)) / 1e9}`);
 
 // 6. proof modes (once the light client is initialized by header-relay init on box 0): bridge

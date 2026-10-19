@@ -5,7 +5,10 @@
 //
 // Env: RPC_URL (default http://127.0.0.1:10600). Prints one JSON line:
 // {"ok":true,"side":"buy","tokens":"...","sig":"...","creatorFee":"..."}.
-// Curve only (buy_v3 / sell_v3 via @pump-fun/pump-sdk); refuses after graduation.
+// Curve (buy_v3 / sell_v3 via @pump-fun/pump-sdk) while the curve is open; after graduation the
+// canonical PumpSwap pool (buy quote-in / sell base-in via @pump-fun/pump-swap-sdk, 5% slippage).
+// Solana devnet's pump.fun Global has 0.3 SOL initial virtual reserves (mainnet 30), so a devnet
+// launch graduates on its dev buy and a migration bot moves it to PumpSwap seconds later.
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Keypair as KeypairT, TransactionInstruction } from '@solana/web3.js';
@@ -15,6 +18,7 @@ const require = createRequire(import.meta.url);
 const { Connection, Keypair, PublicKey, Transaction, ComputeBudgetProgram } = require('@solana/web3.js') as typeof import('@solana/web3.js');
 const BN = require('bn.js');
 const sdk = require('@pump-fun/pump-sdk');
+const swap = require('@pump-fun/pump-swap-sdk');
 
 const RPC = process.env.RPC_URL ?? 'http://127.0.0.1:10600';
 const conn = new Connection(RPC, 'confirmed');
@@ -49,9 +53,24 @@ async function main() {
   const bcInfo = await conn.getAccountInfo(bondingCurve(mint));
   if (!bcInfo) throw new Error('no bonding curve for that mint');
   const bc = sdk.PUMP_SDK.decodeBondingCurve(bcInfo);
-  if (bc.complete) throw new Error('curve complete (graduated): this trader only trades the curve');
   const before = await tokenBalance(kp.publicKey, mint);
   let sig: string;
+  if (bc.complete) {
+    const poolKey = swap.canonicalPumpPoolPda(mint);
+    if (!(await conn.getAccountInfo(poolKey))) throw new Error('curve complete but not migrated to PumpSwap yet (no canonical pool); retry shortly');
+    const state = await new swap.OnlinePumpAmmSdk(conn).swapSolanaState(poolKey, kp.publicKey);
+    let ixs: TransactionInstruction[];
+    if (side === 'buy') ixs = await swap.PUMP_AMM_SDK.buyQuoteInput(state, new BN(f.sol), 5);
+    else if (side === 'sell') {
+      const amount = f.tokens ? new BN(f.tokens) : new BN(((before * BigInt(Math.round(Number(f.fraction ?? '0.5') * 1e6))) / 1_000_000n).toString());
+      if (amount.isZero()) throw new Error('nothing to sell');
+      ixs = await swap.PUMP_AMM_SDK.sellBaseInput(state, amount, 5);
+    } else throw new Error('usage: trade.ts buy|sell --keypair FILE --mint MINT (--sol L | --tokens N | --fraction F)');
+    sig = await send(ixs, kp);
+    const after = await tokenBalance(kp.publicKey, mint);
+    console.log(JSON.stringify({ ok: true, side, venue: 'pumpswap', tokens: (after - before).toString(), balance: after.toString(), sig, creatorFee: '0' }));
+    return;
+  }
   if (side === 'buy') {
     const sol = new BN(f.sol);
     const global = sdk.PUMP_SDK.decodeGlobal(await conn.getAccountInfo(pda(['global'], PUMP)));
@@ -71,7 +90,7 @@ async function main() {
   }
   const after = await tokenBalance(kp.publicKey, mint);
   const bc2 = sdk.PUMP_SDK.decodeBondingCurve(await conn.getAccountInfo(bondingCurve(mint)));
-  console.log(JSON.stringify({ ok: true, side, tokens: (after - before).toString(), balance: after.toString(), sig,
+  console.log(JSON.stringify({ ok: true, side, venue: 'curve', tokens: (after - before).toString(), balance: after.toString(), sig,
     creatorFee: String(bc2.creatorFee?.toString() ?? '0') }));
 }
 
