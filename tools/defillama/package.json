@@ -1,0 +1,17 @@
+{
+  "name": "@pearl-sol/defillama-cadre",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DefiLlama dimension adapter for Cadre (fees = storefront SOL, holders revenue = released buyback shares), laid out as in DefiLlama/dimension-adapters so fees/cadre/index.ts copies over verbatim; local shims for adapters/types and helpers.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --import ./test/register.mjs --test test/*.test.ts",
+    "live": "node --import ./test/register.mjs test/live.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.0"
+  }
+}
