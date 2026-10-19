@@ -255,6 +255,11 @@ export interface StoreBuyback {
   locked: string;
   /** Shares paid back to buyers of refunded / expired orders. */
   refunded: string;
+  /** Config.mint and reserve_program (whose creator PDA's ATA is the mining reserve). */
+  mint: string;
+  reserveProgram: string;
+  /** bb_reserve_cap (appended 2026-10-19): buys above it burn; "0" = no cap (also an older program). */
+  reserveCap: string;
 }
 
 /** The buyback tail of the storefront Config, or null on a program without it. */
@@ -277,6 +282,10 @@ export function decodeStoreBuyback(d: Uint8Array): StoreBuyback | null {
     pendingOrders: Number(rd64(d, b + 147)),
     locked: d.length >= at + 246 ? rd64(d, b + 171).toString() : "0",
     refunded: d.length >= at + 246 ? rd64(d, b + 179).toString() : "0",
+    mint: pk(d, 40),
+    reserveProgram: pk(d, b + 3),
+    // zero-filled slack on a config written before the field reads "0" = no cap
+    reserveCap: d.length >= at + 254 ? rd64(d, b + 187).toString() : "0",
   };
 }
 
@@ -303,6 +312,58 @@ export interface BuybackAccrued {
   order: string;
   nonce: string;
   lamports: string;
+}
+
+/** The reserve cap split of one buy (BuybackToReserve / BuybackBurned, 2026-10-19). */
+export interface BuybackPart {
+  buy: number;
+  kind: "reserve" | "burn";
+  tokens: string;
+  /** burn only: "above cap" (the reserve was at bb_reserve_cap) or "destination" (dest = burn) */
+  reason: "above cap" | "destination" | null;
+  reserveCap: string;
+  /** burn only: mint supply after the burn */
+  supplyAfter: string | null;
+}
+
+/** BuybackToReserve / BuybackBurned events in a tx's logs. */
+export function buybackParts(logs: string[] | null | undefined): BuybackPart[] {
+  const out: BuybackPart[] = [];
+  const tr = Buffer.from(eventDisc("BuybackToReserve"));
+  const bu = Buffer.from(eventDisc("BuybackBurned"));
+  for (const l of logs ?? []) {
+    const m = l.match(/^Program data: (.+)$/);
+    if (!m) continue;
+    const d = Uint8Array.from(Buffer.from(m[1], "base64"));
+    if (d.length < 8) continue;
+    const disc = Buffer.from(d.subarray(0, 8));
+    if (disc.equals(tr) && d.length >= 8 + 40) {
+      out.push({ buy: Number(rd64(d, 8)), kind: "reserve", tokens: rd64(d, 16).toString(), reason: null, reserveCap: rd64(d, 40).toString(), supplyAfter: null });
+    } else if (disc.equals(bu) && d.length >= 8 + 49) {
+      out.push({ buy: Number(rd64(d, 8)), kind: "burn", tokens: rd64(d, 16).toString(), reason: d[24] === 0 ? "above cap" : "destination", reserveCap: rd64(d, 33).toString(), supplyAfter: rd64(d, 41).toString() });
+    }
+  }
+  return out;
+}
+
+/** OrderPlaced (sol_spent) and BuybackShareHeld (lamports) in one buy_job* tx: what the buyer paid in. */
+export function orderPaid(logs: string[] | null | undefined): { nonce: string; solSpent: string; share: string }[] {
+  const op = Buffer.from(eventDisc("OrderPlaced"));
+  const sh = Buffer.from(eventDisc("BuybackShareHeld"));
+  const placed = new Map<string, string>();
+  const shares = new Map<string, string>();
+  for (const l of logs ?? []) {
+    const m = l.match(/^Program data: (.+)$/);
+    if (!m) continue;
+    const d = Uint8Array.from(Buffer.from(m[1], "base64"));
+    if (d.length < 8) continue;
+    const disc = Buffer.from(d.subarray(0, 8));
+    // OrderPlaced: order 32, nonce 8, job_id 32, buyer 32, recipient 32, venue 1, sol_spent 8, ...
+    if (disc.equals(op) && d.length >= 8 + 32 + 8 + 96 + 1 + 8) placed.set(rd64(d, 40).toString(), rd64(d, 8 + 32 + 8 + 96 + 1).toString());
+    // BuybackShareHeld: order 32, nonce 8, lamports 8, ...
+    else if (disc.equals(sh) && d.length >= 8 + 48) shares.set(rd64(d, 40).toString(), rd64(d, 48).toString());
+  }
+  return [...placed].map(([nonce, solSpent]) => ({ nonce, solSpent, share: shares.get(nonce) ?? "0" }));
 }
 
 /** Anchor `emit!` events in a tx's logs ("Program data: <base64>"), the two buyback kinds only. */

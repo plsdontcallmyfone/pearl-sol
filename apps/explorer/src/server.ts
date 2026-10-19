@@ -9,6 +9,9 @@ import * as M from "./models.ts";
 import * as V from "./views.ts";
 import { readBuyback } from "./buyback.ts";
 import { solTxPage } from "./soltx.ts";
+import { revenueModel } from "./revenue.ts";
+import { plainTokens, supplyModel } from "./supply.ts";
+import { revenuePage } from "./revenue-view.ts";
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const TYPES: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
@@ -16,6 +19,7 @@ const TYPES: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js"
 type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
 const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
 const html = (body: string, status = 200): Res => ({ status, type: "text/html; charset=utf-8", body });
+const text = (body: string, status = 200): Res => ({ status, type: "text/plain; charset=utf-8", body, headers: { "access-control-allow-origin": "*" } });
 
 export async function route(ix: Indexer, method: string, rawUrl: string): Promise<Res> {
   if (method !== "GET" && method !== "HEAD") return json({ error: "read-only: GET only" }, 405);
@@ -43,7 +47,7 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
   if (api) {
     switch (rest[0]) {
       case undefined:
-        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback"] });
+        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback", "/api/revenue", "/api/supply", "/api/supply/circulating", "/api/supply/total"] });
       case "summary":
         return json(sm);
       case "feed":
@@ -76,6 +80,16 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
         return json(M.payersModel(ix));
       case "buyback":
         return json(await readBuyback(ix));
+      case "revenue":
+        return json(revenueModel(ix));
+      case "supply": {
+        const sp = await supplyModel(ix);
+        if (rest[1] === "circulating" || rest[1] === "total") {
+          if (!sp.available) return text(sp.reason, 503);
+          return text(plainTokens(rest[1] === "total" ? sp.total_supply : sp.circulating_supply));
+        }
+        return json(sp, sp.available ? 200 : 503);
+      }
     }
     return json({ error: "unknown endpoint", see: "/api" }, 404);
   }
@@ -117,6 +131,8 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
       break;
     case "api":
       return html(V.apiPage(sm));
+    case "revenue":
+      return html(revenuePage(sm, revenueModel(ix), await supplyModel(ix).catch((e) => ({ available: false, reason: (e as Error).message }))));
   }
   if (p === "/docs") return html(V.apiPage(sm));
   return html(V.notFound(sm, "Page"), 404);

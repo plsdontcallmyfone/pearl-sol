@@ -106,7 +106,13 @@ test("indexer: index, reorg, restart with a new genesis, persistence, routes", a
     assert.equal(b5.light_client.state, "none");
     const jp = JSON.parse((await route(ix, "GET", `/api/job/${J.slice(0, 8)}`)).body as string);
     assert.deepEqual(jp.blocks.map((b: any) => [b.height, b.job_subsidy_after_block]), [[5, "40"], [6, "80"]]);
-    for (const p of ["/", "/blocks?filter=paid", "/block/5", "/block/9", `/job/${J}`, "/jobs", "/orders", "/docs"]) {
+    const rv = JSON.parse((await route(ix, "GET", "/api/revenue")).body as string);
+    assert.equal(rv.gross.jobs, ix.jobs.size, "revenue covers every indexed job");
+    assert.equal(BigInt(rv.screened.protocol_fees) + BigInt(rv.self_dealt_excluded.protocol_fees), BigInt(rv.gross.protocol_fees));
+    // no storefront config with the buyback fields on this fake Solana: supply says why, never a guess
+    const sp = await route(ix, "GET", "/api/supply/circulating");
+    assert.equal(sp.status, 503);
+    for (const p of ["/", "/blocks?filter=paid", "/block/5", "/block/9", `/job/${J}`, "/jobs", "/orders", "/docs", "/revenue"]) {
       const r = await route(ix, "GET", p);
       assert.equal(r.status, 200, p);
       assert.match(r.body as string, /<!doctype html>/);

@@ -43,6 +43,10 @@ export interface SolTx {
   ok: boolean;
   ix: string[]; // Anchor instruction names for the program of interest
   buyback?: { executed: D.BuybackExecuted[]; accrued: D.BuybackAccrued[] };
+  /** Reserve cap split of the buys in this tx (BuybackToReserve / BuybackBurned, 2026-10-19). */
+  parts?: D.BuybackPart[];
+  /** buy_job* txs: the order's SOL in (OrderPlaced sol_spent + BuybackShareHeld lamports). */
+  paid?: { nonce: string; solSpent: string; share: string }[];
 }
 
 export interface OrderRec extends D.Order {
@@ -391,6 +395,8 @@ export class Indexer {
       if (have.has(s.signature)) continue;
       const tx = await this.sol.getTransaction(s.signature).catch(() => null);
       const ev = programId === D.STOREFRONT_ID && tx ? D.buybackEvents(tx.meta?.logMessages) : null;
+      const parts = programId === D.STOREFRONT_ID && tx ? D.buybackParts(tx.meta?.logMessages) : [];
+      const paid = programId === D.STOREFRONT_ID && tx ? D.orderPaid(tx.meta?.logMessages) : [];
       into.push({
         sig: s.signature,
         slot: s.slot,
@@ -398,6 +404,8 @@ export class Indexer {
         ok: !s.err,
         ix: tx ? D.anchorInstructions(tx.meta?.logMessages, programId) : [],
         ...(ev && (ev.executed.length || ev.accrued.length) ? { buyback: ev } : {}),
+        ...(parts.length ? { parts } : {}),
+        ...(paid.length ? { paid } : {}),
       });
     }
     into.sort((a, b) => a.slot - b.slot);

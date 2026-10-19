@@ -16,18 +16,18 @@ function waitNote(w: any) {
 export const esc = (v: unknown) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-const tok = (v: string | bigint | null | undefined, frac = 4) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), CHAIN_DP, frac));
-const sol = (v: string | bigint | null | undefined, frac = 4) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), SOL_DP, frac));
-const spl = (v: string | bigint | null | undefined, frac = 2) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), SPL_DP, frac));
-const T = () => `<span class="unit">${esc(BRAND.ticker)}</span>`;
-const S = () => `<span class="unit">SOL</span>`;
+export const tok = (v: string | bigint | null | undefined, frac = 4) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), CHAIN_DP, frac));
+export const sol = (v: string | bigint | null | undefined, frac = 4) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), SOL_DP, frac));
+export const spl = (v: string | bigint | null | undefined, frac = 2) => (v === null || v === undefined ? "–" : formatUnits(big(v as any), SPL_DP, frac));
+export const T = () => `<span class="unit">${esc(BRAND.ticker)}</span>`;
+export const S = () => `<span class="unit">SOL</span>`;
 
 function short(v: string, head = 6, tail = 6) {
   return v.length <= head + tail + 1 ? v : `${v.slice(0, head)}…${v.slice(-tail)}`;
 }
 
 /** A hash or address: shortened, full value in the title, a copy button, optional link. */
-function id(v: string | null | undefined, opts: { href?: string; head?: number; tail?: number; full?: boolean } = {}) {
+export function id(v: string | null | undefined, opts: { href?: string; head?: number; tail?: number; full?: boolean } = {}) {
   if (!v) return `<span class="faint">none</span>`;
   const text = opts.full ? esc(v) : esc(short(v, opts.head ?? 6, opts.tail ?? 6));
   const inner = opts.href ? `<a class="hash" href="${esc(opts.href)}" title="${esc(v)}">${text}</a>` : `<span class="hash" title="${esc(v)}">${text}</span>`;
@@ -50,7 +50,7 @@ const ICON = {
   arrow: `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 
-function badge(kind: "paid" | "fallback" | "ok" | "warn" | "bad" | "neutral" | "accent", text: string) {
+export function badge(kind: "paid" | "fallback" | "ok" | "warn" | "bad" | "neutral" | "accent", text: string) {
   return `<span class="badge b-${kind}">${esc(text)}</span>`;
 }
 
@@ -76,11 +76,11 @@ function lcPill(lc: { state: string; label: string; behind?: number }) {
   return `<span class="lc lc-${tone}" title="${esc(lc.label)}"><span class="dot"></span>${esc(text)}${extra}</span>`;
 }
 
-function kv(rows: [string, string][]) {
+export function kv(rows: [string, string][]) {
   return `<dl class="kv">${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
 }
 
-function card(title: string, body: string, opts: { aside?: string; cls?: string } = {}) {
+export function card(title: string, body: string, opts: { aside?: string; cls?: string } = {}) {
   return `<section class="card ${opts.cls ?? ""}"><header class="card-h"><h2>${esc(title)}</h2>${opts.aside ?? ""}</header>${body}</section>`;
 }
 
@@ -103,6 +103,7 @@ export function page(title: string, body: string, opts: { active?: string; summa
     ["feed", "/", "Blocks"],
     ["jobs", "/jobs", "Jobs"],
     ["orders", "/orders", "Orders"],
+    ["revenue", "/revenue", "Revenue"],
     ["api", "/docs", "API"],
   ]
     .map(([k, href, label]) => `<a href="${href}"${opts.active === k ? ' aria-current="page"' : ""}>${label}</a>`)
@@ -293,7 +294,7 @@ function buybackCard(bb: any) {
     ? `<ul class="mini">${buys
         .map(
           (e: any) =>
-            `<li><a href="${solTxHref(e.sig)}"><span class="mini-l">Buy #${e.buy}${badge(e.destination === "burn" ? "warn" : "ok", e.destination === "burn" ? "burned" : "to reserve")}</span><span class="mini-r"><span class="num">${sol(e.solIn)}</span> <span class="unit">SOL</span></span><span class="mini-s"><span class="num">${spl(e.tokensOut)}</span> ${esc(BRAND.ticker)} on the ${esc(e.venue)}${e.orders ? ` · orders #${esc(e.firstNonce)} to #${esc(e.lastNonce)}` : ""}</span></a></li>`,
+            `<li><a href="${solTxHref(e.sig)}"><span class="mini-l">Buy #${e.buy}${(e.split && BigInt(e.split.to_reserve) > 0n && BigInt(e.split.burned) > 0n ? badge("accent", "reserve to cap, rest burned") : badge(e.destination === "burn" ? "warn" : "ok", e.destination === "burn" ? "burned" : "to reserve"))}</span><span class="mini-r"><span class="num">${sol(e.solIn)}</span> <span class="unit">SOL</span></span><span class="mini-s"><span class="num">${spl(e.tokensOut)}</span> ${esc(BRAND.ticker)} on the ${esc(e.venue)}${e.orders ? ` · orders #${esc(e.firstNonce)} to #${esc(e.lastNonce)}` : ""}</span></a></li>`,
         )
         .join("")}</ul>`
     : `<p class="note">No buy recorded by the explorer yet${bb.buys ? " (earlier buys fell out of the Solana RPC's ledger before it saw them; the totals above still count them)" : ""}.</p>`;
@@ -306,6 +307,7 @@ function buybackCard(bb: any) {
       ["Tokens bought", `<span class="num">${spl(bb.tokens_bought_spl)}</span> ${T()}`],
       ["To the mining reserve", `<span class="num">${spl(bb.to_reserve_spl)}</span> ${T()}`],
       ["Burned", `<span class="num">${spl(bb.burned_spl)}</span> ${T()}`],
+      ["Reserve cap", big(bb.reserve_cap_spl ?? "0") === 0n ? "none" : `<span class="num">${spl(bb.reserve_cap_spl)}</span> ${T()} <span class="faint">above it buys burn</span>`],
     ])}${list}`,
     { aside: `<a class="more-s" href="/api/buyback">JSON</a>` },
   );
@@ -585,6 +587,10 @@ export function apiPage(sm: Summary) {
     ["/api/sol/tx/{signature}", "The Solana tx as the RPC returns it (getTransaction), if still in its ledger."],
     ["/api/payers", "Payers ranked by protocol fees paid, with job counts and SOL through the storefront."],
     ["/api/buyback", "Storefront buyback events, or null while none exist."],
+    ["/api/revenue", "Revenue after wash screens: self-dealing excluded (payer = deliverer or miner of the job), unique payers, concentration, seller screen."],
+    ["/api/supply", "Total, circulating and burned supply with every non-circulating account (mining reserve, mining pool, transit), the bridge and the reserve's fund_mining limits."],
+    ["/api/supply/circulating", "Circulating supply as a bare number of whole tokens (text/plain, for CoinGecko / CMC)."],
+    ["/api/supply/total", "Total supply (Solana mint supply after burns) as a bare number of whole tokens (text/plain)."],
   ];
   return page(
     "API",
