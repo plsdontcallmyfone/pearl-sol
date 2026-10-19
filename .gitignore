@@ -19,3 +19,4 @@ scripts/demo/node_modules
 keys/devnet/
 scripts/devnet-e2e/node_modules
 .devnet-e2e/
+scripts/devnet-init/node_modules
