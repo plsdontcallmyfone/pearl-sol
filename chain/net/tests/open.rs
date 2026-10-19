@@ -246,3 +246,27 @@ fn pinned_seed_key_self_dial_and_foreign_namespace() {
         assert!(!a.oracle.is_connected(&key(1)) && !a.oracle.is_connected(&key(2)));
     });
 }
+
+#[test]
+fn pinned_seeds_in_one_slash16_all_connect() {
+    // the public devnet's three boxes share 64.95.0.0/16; outbound diversity (one per /16)
+    // left boxes 1 and 2 connected only to box 0. Key-pinned seeds are exempt.
+    runner(11).start(|ctx| async move {
+        let ips = [[64, 95, 12, 116], [64, 95, 13, 213], [64, 95, 12, 22]];
+        let a = |i: usize| SocketAddr::from((ips[i], 10640));
+        let mut nodes = Vec::new();
+        for i in 0..3usize {
+            let mut c = cfg(i as u64, 0, &[]);
+            c.listen = a(i);
+            c.external = Some(a(i));
+            c.allow_private = false;
+            c.seeds = (0..3).filter(|j| *j != i).map(|j| Seed { addr: a(j), key: Some(key(j as u64)) }).collect();
+            nodes.push(start(&ctx, i as u64, c, 1000));
+        }
+        ctx.sleep(Duration::from_secs(20)).await;
+        for (i, n) in nodes.iter().enumerate() {
+            let peers = n.oracle.peers();
+            assert_eq!(peers.len(), 2, "node {i} peers {:?}", peers.iter().map(|p| p.remote).collect::<Vec<_>>());
+        }
+    });
+}

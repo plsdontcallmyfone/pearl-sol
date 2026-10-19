@@ -256,7 +256,9 @@ fn dial_tick<E, N>(
                 if ip_bans.get(&ip).is_some_and(|u| *u > now) {
                     return false;
                 }
-                if !limits::exempt(ip, allow) && used.contains(&limits::subnet(ip)) {
+                // outbound diversity (one per /16) does not apply to key-pinned seeds: the
+                // operator chose them (a devnet's own boxes often share a /16)
+                if !e.pinned && !limits::exempt(ip, allow) && used.contains(&limits::subnet(ip)) {
                     return false;
                 }
                 limits::dialable(&e.addr, allow)
