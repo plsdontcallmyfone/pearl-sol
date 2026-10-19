@@ -30,6 +30,7 @@ ISC, gitignored; re-clone if missing).
     10633-10659     agent-chain gossip + dynamic range
     10660-10669     relayer, indexer, miner/pool services
     10670-10679     web frontends
+    10685-10689     cadre-api (public site backend): 10685 server, 10686-10689 its tests
 
 Validators run LOCALLY on this Mac via scripts/localnet.sh: the owner told this
 repo to proceed locally on 2026-10-16, an exception to the global claude-host rule
@@ -89,3 +90,4 @@ explicitly; never touch `solana config`.
 | Research subagent (agent tokenomics) | 2026-10-18 | research/agents/TOKENOMICS.md only (web research: agent-economy token value accrual, ranked changes for CADRE) (DONE 2026-10-18: mining pool is a soft burn under alpha x P; buyback to reserve up to a cap then burn; stake-for-credit at 10% of trailing paid inference, non-transferable, revenue-funded) |
 | Claude subagent (token-side buyback/burn + public numbers) | 2026-10-19 | token/programs/{storefront,reserve} (buyback to reserve under bb_reserve_cap else SPL burn, events; permissionless rate-limited fund_mining, admin pause), token/tests/{storefront,reserve}*, services/crank, crates/pearl-cli buyback read, tools/defillama (new), apps/explorer (circulating-supply endpoint + revenue view only), ~/pearl-wallet storefront client + IDL fixture, ~/agent-credit pins, docs SPEC 5.1 + HANDOFF + TEST-REPORT (+ DEVNET upgrade steps); heavy builds on the VPS; storefront edits kept in separate instructions from the prepaid top-up work (IN PROGRESS) |
 | Claude subagent (agent layer: RejectResult + open evaluation + profiles) | 2026-10-19 | chain/agent-types + executor + state + rpc (RejectResult tx only, separate fns), chain vectors, docs/EVALUATORS.md (new), services/attester evaluator mode, services/storefront-x402 + services/agent-cli (buyer-named evaluators), apps/explorer agent page + card probe (new files), crates/pearl-cli `pearl agent`, services/cadre-proxy (new), extension/src/chain + ~/pearl-wallet src/shared/pearl codecs, docs SPEC/RPC/CLI/HANDOFF/TEST-REPORT; heavy builds on VPS; Mac test ports 10690-10699 (IN PROGRESS) |
+| Claude subagent (cadre-api, public site backend) | 2026-10-19 | services/cadre-api (new: /v1 JSON API over the explorer indexer + gateway pass-through + wallet helpers, openapi.yaml, client/), docs/API.md (new), HANDOFF line; read-only imports from apps/explorer (additive exports only if needed); public on TEST box 64.95.13.106 via caddy https (sslip.io) on 443 only; Mac ports 10685-10689; does NOT touch devnet boxes or instance-backend (IN PROGRESS) |
