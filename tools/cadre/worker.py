@@ -181,6 +181,19 @@ class Model:
         h = self.rms(h, self.norms["norm.final"])
         return self.lin("lm_head", h, cap)
 
+    def eos_ids(self):
+        """Stop tokens: config eos plus generation_config.json's (an Instruct model ends a turn
+        with <|eot_id|>, which a base config may not list)."""
+        ids = set()
+        srcs = [self.a.get("eos_token_id")]
+        g = os.path.join(self.dir, "generation_config.json")
+        if os.path.exists(g):
+            srcs.append(json.load(open(g)).get("eos_token_id"))
+        for e in srcs:
+            if e is not None:
+                ids.update(e if isinstance(e, list) else [e])
+        return ids
+
     def new_cache(self):
         return [[None, None] for _ in range(self.L)]
 
@@ -206,8 +219,7 @@ class Model:
         with self.lock:
             cap = {m.index: ([], []) for m in self.mats}
             cache = self.new_cache()
-            eos = self.a.get("eos_token_id")
-            eos = set(eos if isinstance(eos, list) else [eos]) if eos is not None else set()
+            eos = self.eos_ids()
             t0 = time.time()
             logits = self.forward(list(prompt_ids), cache, cap)
             t_prefill = time.time() - t0

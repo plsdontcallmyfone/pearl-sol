@@ -11,7 +11,7 @@
 #
 # Env: DEMO_TICKS_PER_SLOT (token validator, default 8 = 50 ms slots), DEMO_KEEP_UP=1 (leave the stack running), DEMO_K (finality depth, default 6),
 #      DEMO_BLOCK_MS (target block time, default 1500), DEMO_MINER_THREADS (default 4),
-#      CADRE_MODEL_DIR (quantized model for the inference step, default ~/cadre-models/llama-3.2-1b-w7a7;
+#      CADRE_MODEL_DIR (quantized model for the inference step, default ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048, owner choice 2026-10-19;
 #      tools/cadre/quantize.py makes it), CADRE_PYTHON (python with torch + transformers for the worker),
 #      DEMO_STEPS (comma list of step numbers to run, default all; 1-6 are the setup the later steps need).
 # Kills by PID only (never by pattern). Never touches `solana config`.

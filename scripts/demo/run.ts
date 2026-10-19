@@ -78,7 +78,7 @@ const BIN = {
 };
 // Cadre inference (SPEC 4.5 / 5.4): the quantized model (tools/cadre/quantize.py), the worker's python,
 // the model store the miner, attester and gateway read registered matrices from
-const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-w7a7-k2048");
+const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-instruct-w7a7-k2048");
 const CADRE_PYTHON = process.env.CADRE_PYTHON ?? resolve(homedir(), "int7-exp/venv/bin/python");
 const MODEL_STORE = resolve(DEMO, "models");
 const GATEWAY_URL = "http://127.0.0.1:10664";
@@ -1005,7 +1005,7 @@ try {
   await step("8. rewards mature, bridge release -> proof mode, BridgeLock -> release_proof on Solana", step6);
   await step("9. underpaid order (chain floor raised) held back, refunded on Solana: refund_deposit + mark_refunded", stepRefund);
   await step("10. payout lien (R2) on the miner's income -> lender on Solana by proof; coinbase receipt (R1); accumulator (R5)", stepLien);
-  await step("11. paid inference (Cadre): RegisterModel Llama-3.2-1B int7, prepaid balance over x402, signed OpenAI chat + streamed completions, their weight GEMMs mined as standing jobs, ticket completed (pay for rows used), Order finalized by proof", stepInference);
+  await step("11. paid inference (Cadre): RegisterModel Llama-3.2-1B-Instruct int7, prepaid balance over x402, signed OpenAI chat + streamed completions, their weight GEMMs mined as standing jobs, ticket completed (pay for rows used), Order finalized by proof", stepInference);
 } catch (e) {
   failed = true;
   console.log(`\n${String((e as Error).message)}`);
