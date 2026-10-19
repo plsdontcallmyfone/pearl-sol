@@ -33,6 +33,7 @@ const pages = [
   ["orders", "/orders"],
   ...(orders[0] ? [["order", `/order/${orders[0].nonce}`]] : []),
   ["api", "/docs"],
+  ["revenue", "/revenue"],
 ];
 
 const browser = await chromium.launch({ headless: true });

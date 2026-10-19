@@ -47,6 +47,9 @@ chain TOKEN 9 dp, SOL 9 dp, Solana SPL token 6 dp).
 | `/jobs`, `/orders`, `/order/{nonce}` | `/api/jobs`, `/api/orders`, `/api/order/{n}` | lists, one Order with its recorded Solana txs and x402 payment |
 | | `/api/payers` | payers ranked by P (buyer concentration) |
 | | `/api/buyback` | storefront buyback totals and buys, or null |
+| `/revenue` | `/api/revenue` | revenue after wash screens: gross, self-dealing excluded, screened (P, W delivered, storefront SOL), unique payers, top payer / top two share, seller screen; plus supply and the reserve's fund_mining limits |
+| | `/api/supply` | total, circulating, burned supply with each non-circulating account, the bridge, the reserve exit |
+| | `/api/supply/circulating`, `/api/supply/total` | bare numbers of whole tokens (text/plain), for CoinGecko / CMC |
 | `/sol/tx/{sig}` | `/api/sol/tx/{sig}` | the Solana tx (program names, Anchor instructions, logs), while the RPC still has it |
 | `/docs` | `/api` | endpoint list |
 
@@ -123,3 +126,26 @@ is hidden there. Screenshots: `screenshots/explorer/` (light, dark, phone).
 - The feed's "all" view reads up to 5,000 blocks per page to group fallback runs; a 23k-block
   fallback run spans several pages.
 - Single process, in-memory index (about 25k blocks is a few MB); no database.
+
+## Revenue and supply (2026-10-19, SYNTHESIS item 7)
+
+- **Self-dealing (excluded)**: a job whose payer (chain poster; for a storefront order the x402
+  payer's key, `Order.recipient`) is its deliverer or the miner of any block mined on it.
+  It gets its own W and the subsidy back, so it is a round trip, not demand.
+- **Screened**: every other job. P counts whatever the outcome (it stays in the pool), W only
+  for completed jobs, storefront SOL only for finalized orders (`sol_spent` + the order's
+  buyback share from the `OrderPlaced` / `BuybackShareHeld` events of its buy_job tx; when that
+  tx was pruned before the explorer saw it, `sol_spent` alone and a note says how many).
+- **Shown, not excluded**: top payer and top two payers' share of screened P; screened revenue
+  from deliverers with fewer than 10 distinct payers (TRM Labs drops such sellers; a young
+  network has few workers, so the amount is reported instead).
+- **Released buyback shares** (holders revenue): storefront `bb_accrued`.
+- **Circulating supply** = Solana mint supply - mining reserve ATA - chain mining pool / 1000 -
+  storefront transit ATAs (buyback vault, trader PDA). **Burned** = 1B - mint supply. The bridge
+  vault is not subtracted (it backs the chain balances outside the escrow; the pool is subtracted
+  on the chain side); `bridge.in_flight` = vault - outside_escrow / 1000. Reads cached 5 s.
+- **Reserve exit**: reserve Config layout 1 (`fund_mining` permissionless, paused flag, per call,
+  interval, window cap, destination frozen after the first funding).
+- Env: `RESERVE_PROGRAM` (default localnet id; the storefront Config's `reserve_program` wins).
+- DefiLlama: `tools/defillama` reports the gross flows (fees and holders revenue) from the
+  storefront program's events.

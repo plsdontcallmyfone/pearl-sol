@@ -110,6 +110,9 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   who posts a job and mines it gets back at most `alpha x P` and loses
   `(1 - alpha) x P`. Default emission_ppm per block: 7 (about 1% a day at 60 s).
 - A job is mined until its cap or its `max_blocks` is used up or it expires.
+- The pool is funded from outside only by reserve `fund_mining` (permissionless and rate
+  limited since 2026-10-19, 5.1 "Reserve exit"): pool tokens leave only as subsidy on paid
+  jobs (at most alpha x P each), reserve tokens leave only into the pool.
 
 Coinbase receipt (Agent Credit R1, 2026-10-17): the LAST leaf of every non-genesis
 block's `tx_root` is the block's reward record, so a reward is provable on Solana by
@@ -173,6 +176,20 @@ max_blocks u32, evaluators (count u8, pubkey*), threshold u8`.
 
 ### 4.2 Agents
 `RegisterAgent`: profile `{name, uri, registered_height}` keyed by account.
+- Agent card (owner decision 2026-10-18): `uri` may point at an A2A-style agent card JSON
+  (`/.well-known/agent-card.json` shape: name, description, url / interfaces, version,
+  capabilities, skills). The card is a self-claim for display and endpoints only; the
+  explorer probes it for health and hides profiles with a stale card and no recent delivery
+  from its lists (docs/EXPLORER.md).
+- Agent profile (owner decision 2026-10-18): derived by an indexer, no chain state beyond
+  RejectResult's records (4.1). apps/explorer `/agent/<addr>` + `/api/agent/<addr>` and
+  `pearl agent <addr> [--json]` lead with P and storefront SOL behind completed work (never
+  job counts), then distinct payers, top payer share, self-dealt share (excluded),
+  delivered-then-expired and rejected deliveries, acceptance rate weighted by P, the share
+  signed by evaluators other than buyer and seller (signer keys from the CompleteJob tx
+  bodies), time to completion, and the mining record from coinbase receipts. Every figure
+  is traced to chain state (research/agents/REPUTATION.md 5.1). Open evaluation:
+  docs/EVALUATORS.md and `pearl-evaluator`.
 
 ### 4.3 Bridge (chain side)
 - `BridgeUnlock`: M-of-N attester signatures over
@@ -423,6 +440,33 @@ its own segments, up to `alpha x P` of subsidy and the blocks' fees.
 Existing: `reserve` (launch, buybacks, fund_mining) and `bridge` (deposit,
 release with M-of-N ed25519 signatures). Changes and additions:
 
+Reserve exit (owner decision 2026-10-18, built 2026-10-19; token/programs/reserve): the
+reserve has no admin-key exit.
+- `fund_mining(amount)` is PERMISSIONLESS: any signer (it pays the bridge Deposit rent)
+  moves reserve tokens into the bridge vault with `config.mining_pool` as the chain
+  recipient. `config.funder` is no longer read (kept for the layout).
+- Rate limits, all admin-editable with `set_fund_limits(FundLimitParams { paused,
+  max_per_call, min_interval_secs, window_secs, max_per_window })` (event
+  `FundLimitsUpdated` with every value): `max_fund_per_call` (0 = no cap),
+  `fund_min_interval_secs` between calls, at most `fund_max_per_window` per
+  `fund_window_secs` window (a window starts at the first funding after the previous one
+  ended; 0 = no window cap). Defaults PROVISIONAL: 10M tokens per call, 3600 s, 20M tokens
+  per 86,400 s (2% of supply a day). The admin can pause (`paused`, error `FundPaused`)
+  but cannot redirect: `mining_pool` and `bridge_program` freeze once `total_funded > 0`
+  (`update_config` then refuses a different value, `DestinationFrozen`).
+- `MiningFunded` gains `caller, reserve_left, window_start, window_used, calls` (appended;
+  older decoders stop after `total_funded`).
+- Config layout 1 appends `layout u8, fund_paused bool, fund_min_interval_secs i64,
+  fund_window_secs i64, fund_max_per_window u64, fund_last_ts i64, fund_window_start i64,
+  fund_window_used u64, fund_calls u64` (58 bytes; account 334 bytes). A config written
+  before (276 bytes) does not deserialize until the admin runs `migrate_config()` (realloc,
+  rent from the admin, fund defaults set; no-op on a current config).
+- What remains trusted: the program upgrade authority (as for every program here).
+- Creator-fee buybacks (`crank_buyback*`) still land in the reserve unconditionally; the
+  reserve cap below applies to the storefront's buybacks.
+- Readers: `node services/crank/src/main.ts status | fund | fund-limits | migrate`, explorer
+  `/api/supply` (`reserve`).
+
 ### 5.1 `storefront` program (M1)
 - `buy_job(order)`: buyer pays SOL (localnet and mainnet) or USDC (mainnet, via
   Jupiter CPI to SOL first). The program buys the token on the curve or PumpSwap
@@ -584,6 +628,29 @@ event anyone can read.
   the ShareRecord rent, which comes back to the service wallet at settle).
 - Sandwich risk is the reserve's: the on-chain quote is read inside the tx, so the caller's
   `min_tokens_out`, the per-call cap and the optional cranker allowlist are the protection.
+- Reserve cap (owner decision 2026-10-18, built 2026-10-19): with `buyback_dest` 0 a buy's
+  tokens go to the mining reserve only while the reserve ATA holds less than
+  `bb_reserve_cap`; the part that would lift it above the cap is burned (Token-2022
+  BurnChecked, lowers the mint supply) in the same instruction: `to_reserve =
+  min(routed, cap - reserve_balance)` (`storefront::reserve_share`), the rest burned.
+  `buyback_dest` 1 still burns everything (override). Cap 0 = no cap (all to the reserve);
+  a config written before the field reads 0, so an upgraded program keeps the old
+  behaviour until the admin sets it. Default at `initialize` PROVISIONAL: 100M tokens (1e14
+  base units, 10% of supply). Admin: `set_buyback_cap(reserve_cap)` (event
+  `BuybackCapUpdated`). Config: `bb_reserve_cap u64` appended after `bb_refunded` (fits the
+  attester-vector slack of a config with 9 attesters or fewer).
+  Events per buy, before `BuybackExecuted`: `BuybackToReserve { buy, tokens,
+  reserve_before, reserve_after, reserve_cap }` and `BuybackBurned { buy, tokens, reason
+  (0 above cap, 1 destination burn), reserve_before, reserve_cap, supply_after,
+  total_burned }`. `BuybackExecuted.destination` is 0 when any part reached the reserve
+  (`destination_account` the reserve ATA), else 1 (the mint); `bb_to_reserve` /
+  `bb_burned` add the parts. Measured (LiteSVM): crank_buyback with the split 127.5k CU.
+  Bridge bound after burns: `1e18 - escrow <= 1000 x mint supply` (tested in LiteSVM and
+  demo step 6).
+- Public numbers (SYNTHESIS item 7): `tools/defillama` (fees = OrderPlaced.sol_spent +
+  BuybackShareHeld, holders revenue = BuybackAccrued), explorer `/api/supply`
+  (`/circulating`, `/total`: mint supply - reserve - chain pool - transit) and `/revenue`
+  (self-dealing excluded, unique payers); docs/EXPLORER.md.
 - Readers: `GET /buyback` (storefront-x402), `node services/crank/src/main.ts sf-status`,
   `pearl buyback [--json]` (config, vault, totals, latest `BuybackExecuted`).
 
