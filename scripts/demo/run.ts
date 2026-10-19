@@ -877,7 +877,13 @@ async function stepInference(): Promise<string> {
   const rc = await signedPost("/v1/balance/close", "{}");
   if (rc.status !== 202) throw new Error(`close: ${rc.status}`);
   const r = { body: { text: j1.choices[0].message.content, output_ids: { length: j1.usage.completion_tokens }, rows: j1.cadre.rows } };
-  const tk = await waitFor("balance ticket completed and every segment of every round mined", async () => {
+  const done0 = await waitFor("balance ticket completed", async () => {
+    const t = await nodeCall("getTicket", { ticket_id: ticket }).catch(() => null);
+    return t && t.status === "completed" ? t : null;
+  }, 3_600_000, 5000);
+  const respBlob = await nodeCall("getBlob", { uri: done0.result_uri });
+  if (!respBlob) throw new Error(`response blob ${done0.result_uri} not on the node`);
+  const tk = await waitFor("every segment of every round mined", async () => {
     const t = await nodeCall("getTicket", { ticket_id: ticket }).catch(() => null);
     if (!t) return null;
     const segs = t.segment_list as any[];
@@ -905,8 +911,7 @@ async function stepInference(): Promise<string> {
   if (sub === 0n || sub > capTotal) throw new Error(`ticket subsidy ${sub} vs alpha x P ${capTotal}`);
   if (tk.deliverer !== gwKey.kp.publicKey.toBase58()) throw new Error(`deliverer ${tk.deliverer}`);
   // the response blob is the ticket's result
-  const resp = await nodeCall("getBlob", { uri: tk.result_uri });
-  const rj = JSON.parse(Buffer.from(resp.data, "base64").toString());
+  const rj = JSON.parse(Buffer.from(respBlob.data, "base64").toString());
   const receipts = (rj.rounds as any[]).flatMap((x) => x.requests);
   if (rj.ticket_id !== ticket || receipts.length !== 2 || !receipts.some((q: any) => q.request_id === j1.cadre.request_id)) throw new Error(`response blob ${JSON.stringify(rj).slice(0, 300)}`);
   // pay for rows used: W x rows_used / R to the server, the rest of W + P's share back to the buyer

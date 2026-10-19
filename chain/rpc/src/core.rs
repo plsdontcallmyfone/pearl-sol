@@ -242,11 +242,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             let id = schema::decode_job_index(&b).map_err(|e| ChainError::Internal(e.to_string()))?;
             let Some(v) = self.chain.read_tip(&schema::job_key(&id)).await? else { continue };
             let j = schema::JobRecord::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))?;
-            let until = match j.status {
+            let mut until = match j.status {
                 schema::JobStatus::Open => j.deadline_height,
                 schema::JobStatus::Delivered => u64::MAX,
                 _ => j.closed_height,
             };
+            if j.is_ticket() {
+                // a ticket's request and response blobs (the per-request receipts) stay as long as
+                // its segments are mineable (SPEC 4.5), not just a grace period after completion
+                until = until.max(j.deadline_height);
+            }
             for b in [blobs::parse_uri(&j.data_uri), blobs::parse_uri(&j.result_uri)].into_iter().flatten() {
                 let e = refs.entry(b).or_insert(0);
                 *e = (*e).max(until);
