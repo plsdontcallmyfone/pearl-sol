@@ -13,6 +13,10 @@ name = "pearl_attester"
 name = "pearl-attester"
 path = "src/main.rs"
 
+[[bin]]
+name = "pearl-evaluator"
+path = "src/bin/pearl-evaluator.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
@@ -27,3 +31,4 @@ tiny_http.workspace = true
 pearl-job.workspace = true
 pearl-chain.workspace = true
 pearl-node.workspace = true
+ureq.workspace = true

@@ -86,7 +86,7 @@ export interface IndexerOptions {
   log?: (msg: string) => void;
 }
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2; // 2: tx facts carry signers / deliverer / to / name / uri (agent profiles)
 
 export class Indexer {
   o: Required<IndexerOptions>;

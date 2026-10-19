@@ -9,6 +9,8 @@
 //! - `Request`: the request carries a `job_spec` and it is trusted. Dev and tests only,
 //!   since a client could then describe a fake job with an easy target.
 
+pub mod evaluator;
+
 use std::time::Instant;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};

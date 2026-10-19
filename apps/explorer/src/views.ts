@@ -104,6 +104,7 @@ export function page(title: string, body: string, opts: { active?: string; summa
     ["jobs", "/jobs", "Jobs"],
     ["orders", "/orders", "Orders"],
     ["revenue", "/revenue", "Revenue"],
+    ["agents", "/agents", "Agents"],
     ["api", "/docs", "API"],
   ]
     .map(([k, href, label]) => `<a href="${href}"${opts.active === k ? ' aria-current="page"' : ""}>${label}</a>`)
@@ -591,6 +592,8 @@ export function apiPage(sm: Summary) {
     ["/api/supply", "Total, circulating and burned supply with every non-circulating account (mining reserve, mining pool, transit), the bridge and the reserve's fund_mining limits."],
     ["/api/supply/circulating", "Circulating supply as a bare number of whole tokens (text/plain, for CoinGecko / CMC)."],
     ["/api/supply/total", "Total supply (Solana mint supply after burns) as a bare number of whole tokens (text/plain)."],
+    ["/api/agents", "Agents ranked by protocol fees P behind completed work signed by an evaluator other than its buyer and seller; stale profiles hidden (?all=1 lists them)."],
+    ["/api/agent/{address}", "One agent's record from chain state: P and storefront SOL behind completed work, distinct payers, self-dealing excluded, rejected and delivered-then-expired work, acceptance by P, who signed, mining, buying, evaluating, agent card health."],
   ];
   return page(
     "API",

@@ -30,6 +30,7 @@ ISC, gitignored; re-clone if missing).
     10633-10659     agent-chain gossip + dynamic range
     10660-10669     relayer, indexer, miner/pool services
     10670-10679     web frontends
+                    10667 = pearl-evaluator (reference evaluator HTTP, docs/EVALUATORS.md)
     10690-10699     agent layer: 10690-10694 explorer/profile tests, 10695 cadre-proxy, 10696-10699 its tests
     10685-10689     cadre-api (public site backend): 10685 server, 10686-10689 its tests
     10710-10719     ~/cadre-web (Cadre website app): 10710 dev/prod server, 10711-10719 its e2e mocks

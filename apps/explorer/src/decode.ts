@@ -175,6 +175,20 @@ export interface TxFacts {
   orderJobId?: string;
   solanaRecipient?: string; // BridgeLock
   amount?: string;
+  // agent profiles (profile.ts): evaluator keys of a CompleteJob / RejectResult, the
+  // rejected deliverer, a Transfer's recipient, a RegisterAgent's name and uri
+  signers?: string[];
+  deliverer?: string;
+  to?: string;
+  name?: string;
+  uri?: string;
+}
+
+/** Signer keys of a `count u8, (pubkey [32], sig [64])*` list at `o`. */
+function sigKeys(d: Uint8Array, o: number): string[] {
+  const n = rd8(d, o);
+  if (o + 1 + n * 96 > d.length) throw new Error("short sig list");
+  return Array.from({ length: n }, (_, i) => pk(d, o + 1 + i * 96));
 }
 
 /** The fields the explorer links on, read from a tx's bytes (base64). Unknown kinds give {}. */
@@ -186,8 +200,19 @@ export function txFacts(kind: string, txB64: string): TxFacts {
       case "SubmitResult":
         return { jobId: hex(slice(d, HDR, 32)), resultHash: hex(slice(d, HDR + 32, 32)) };
       case "CompleteJob":
+        return { jobId: hex(slice(d, HDR, 32)), signers: sigKeys(d, HDR + 32) };
       case "ExpireJob":
         return { jobId: hex(slice(d, HDR, 32)) };
+      case "RejectResult":
+        return { jobId: hex(slice(d, HDR, 32)), deliverer: pk(d, HDR + 32), resultHash: hex(slice(d, HDR + 64, 32)), signers: sigKeys(d, HDR + 96) };
+      case "Transfer":
+        return { to: pk(d, HDR), amount: rd64(d, HDR + 32).toString() };
+      case "RegisterAgent": {
+        const nl = rd8(d, HDR);
+        const name = Buffer.from(slice(d, HDR + 1, nl)).toString("utf8");
+        const ul = rd16(d, HDR + 1 + nl);
+        return { name, uri: Buffer.from(slice(d, HDR + 3 + nl, ul)).toString("utf8") };
+      }
       case "PostJob": {
         const o = HDR + 12 + 52;
         const uriLen = rd16(d, o + 64);
