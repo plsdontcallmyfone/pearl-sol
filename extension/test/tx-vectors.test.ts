@@ -5,10 +5,12 @@ import { describe, expect, it } from "vitest";
 import { b58, fromHex, hex, key32 } from "../src/core/bytes";
 import { pubkeyOf, sha256, signRaw, blake3 } from "../src/core/crypto";
 import { KIND, PostJobBody, TxBody, decodeTx, encodePostJob, framedMessage, signTx, signingBytes, txHash, verifyTx } from "../src/chain/tx";
-import { RESERVED, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, resultMessage, routeClearMessage } from "../src/chain/messages";
+import { RESERVED, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, rejectMessage, resultMessage, routeClearMessage } from "../src/chain/messages";
 
 const dir = resolve(__dirname, "../../chain/agent-types/vectors");
-const txv = JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8"));
+// tx.json plus RejectResult (kind 13), published in its own file like standing.json
+const rejv = JSON.parse(readFileSync(resolve(dir, "reject.json"), "utf8"));
+const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs];
 const msgv = JSON.parse(readFileSync(resolve(dir, "messages.json"), "utf8"));
 
 function postJob(j: any): PostJobBody {
@@ -34,6 +36,7 @@ function body(v: any): TxBody {
     case "AdminConfig": return { kind: "AdminConfig", key: b.key, value: fromHex(b.value) };
     case "SetRoute": return { kind: "SetRoute", solanaRecipient: key32(b.solana_recipient), routeBps: b.route_bps, untilHeight: BigInt(b.until_height), cap: BigInt(b.cap), releaseKey: key32(b.release_key) };
     case "ClearRoute": return { kind: "ClearRoute", account: key32(b.account), routeNonce: BigInt(b.route_nonce), sig: fromHex(b.sig) };
+    case "RejectResult": return { kind: "RejectResult", jobId: fromHex(b.job_id), deliverer: key32(b.deliverer), resultHash: fromHex(b.result_hash), sigs: sigs(b.sigs) };
   }
   throw new Error(`unhandled ${v.kind_name}`);
 }
@@ -102,6 +105,16 @@ describe("domain messages", () => {
     expect(b58(RESERVED.escrow)).toBe(r.escrow);
     expect(b58(RESERVED.pool)).toBe(r.pool);
     expect(b58(blake3(new TextEncoder().encode("pearl-sol:escrow:v1")))).toBe(r.escrow);
+  });
+  it("reject message (RejectResult) and both evaluator signatures", () => {
+    const v = rejv.messages.find((m: any) => m.name === "reject");
+    const rj = rejv.txs.find((t: any) => t.name === "reject_result");
+    const m = rejectMessage(fromHex(rj.body.job_id), key32(rj.body.deliverer), fromHex(rj.body.result_hash));
+    expect(hex(m)).toBe(v.message);
+    expect(hex(signRaw(fromHex(v.seed), m))).toBe(v.sig);
+    expect(rj.body.sigs[0].sig).toBe(v.sig);
+    // same fields as the result message, another domain
+    expect(hex(m)).not.toBe(hex(resultMessage(fromHex(rj.body.job_id), key32(rj.body.deliverer), fromHex(rj.body.result_hash))));
   });
   it("route clear (R2 payout lien release)", () => {
     const v = by("route_clear");

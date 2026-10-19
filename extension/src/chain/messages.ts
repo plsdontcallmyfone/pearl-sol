@@ -18,6 +18,10 @@ export const depositOrderMessage = (solanaNonce: bigint, recipient: Uint8Array, 
 export const resultMessage = (jobId: Uint8Array, deliverer: Uint8Array, resultHash: Uint8Array) =>
   concat(utf8("pearl-sol:result:v1"), jobId, deliverer, resultHash);
 
+/** RejectResult evaluator message: `"pearl-sol:reject:v1" || job_id || deliverer || result_hash` (raw ed25519). */
+export const rejectMessage = (jobId: Uint8Array, deliverer: Uint8Array, resultHash: Uint8Array) =>
+  concat(utf8("pearl-sol:reject:v1"), jobId, deliverer, resultHash);
+
 /** ClearRoute release signature (raw ed25519 by the lien's release key):
  *  "pearl-sol:route-clear:v1" || chain_id u32 LE || account || route_nonce u64 LE. */
 export const routeClearMessage = (chainId: number, account: Uint8Array, routeNonce: bigint) =>

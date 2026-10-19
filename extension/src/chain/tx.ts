@@ -21,6 +21,7 @@ export const KIND = {
   AdminConfig: 8,
   SetRoute: 9,
   ClearRoute: 10,
+  RejectResult: 13,
 } as const;
 export type KindName = keyof typeof KIND;
 export const KIND_NAME: Record<number, KindName> = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k])) as Record<number, KindName>;
@@ -61,7 +62,9 @@ export type TxBody =
   // cleared early.
   | { kind: "SetRoute"; solanaRecipient: Uint8Array; routeBps: number; untilHeight: bigint; cap: bigint; releaseKey: Uint8Array }
   // Ends `account`'s lien early; sig = raw ed25519 by its release key over routeClearMessage.
-  | { kind: "ClearRoute"; account: Uint8Array; routeNonce: bigint; sig: Uint8Array };
+  | { kind: "ClearRoute"; account: Uint8Array; routeNonce: bigint; sig: Uint8Array }
+  // Job evaluators reject the current delivery (SPEC 4.1); sigs are raw ed25519 over rejectMessage.
+  | { kind: "RejectResult"; jobId: Uint8Array; deliverer: Uint8Array; resultHash: Uint8Array; sigs: SigPair[] };
 
 export interface UnsignedTx {
   chainId: number;
@@ -139,6 +142,8 @@ export function encodeBody(b: TxBody): Uint8Array {
       );
     case "ClearRoute":
       return concat(fixed(b.account, 32, "account"), u64(b.routeNonce), fixed(b.sig, 64, "release sig"));
+    case "RejectResult":
+      return concat(fixed(b.jobId, 32, "job_id"), fixed(b.deliverer, 32, "deliverer"), fixed(b.resultHash, 32, "result_hash"), sigList(b.sigs));
   }
 }
 
@@ -232,6 +237,8 @@ function readBody(kind: number, r: Reader): TxBody {
       };
     case "ClearRoute":
       return { kind: "ClearRoute", account: r.take(32).slice(), routeNonce: r.u64(), sig: r.take(64).slice() };
+    case "RejectResult":
+      return { kind: "RejectResult", jobId: r.take(32).slice(), deliverer: r.take(32).slice(), resultHash: r.take(32).slice(), sigs: readSigs(r) };
     default:
       throw new Error(`unknown tx kind ${kind}`);
   }
