@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "types": ["node"],
+    "typeRoots": ["../storefront-x402/node_modules/@types"]
+  },
+  "include": ["src/**/*.ts", "client/**/*.ts"]
+}

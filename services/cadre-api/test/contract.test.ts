@@ -40,5 +40,5 @@ test("openapi.yaml: 3.1, every $ref resolves, no em dashes", () => {
   const y = readFileSync(OPENAPI_FILE, "utf8");
   assert.match(y, /^openapi: 3\.1\.0$/m);
   for (const m of y.matchAll(/\$ref: "#\/components\/(\w+)\/(\w+)"/g)) assert.match(y, new RegExp(`^    ${m[2]}:`, "m"), `${m[1]}/${m[2]} defined`);
-  assert.equal(y.includes("—"), false);
+  assert.equal(y.includes(String.fromCharCode(0x2014)), false);
 });
