@@ -849,7 +849,7 @@ impl Gateway {
     /// near its deadline, closing, or a one-request ticket.
     pub fn settle_pass(&self) {
         let Ok(_g) = self.settle_lock.try_lock() else { return };
-        let ids: Vec<String> = self.ledger.lock().unwrap().tickets.iter().filter(|(_, t)| t.state == "open" || t.state == "closing").map(|(k, _)| k.clone()).collect();
+        let ids: Vec<String> = self.ledger.lock().unwrap().tickets.iter().filter(|(_, t)| t.state == "open" || t.state == "closing" || t.state == "delivered").map(|(k, _)| k.clone()).collect();
         for id in ids {
             if let Err(e) = self.settle_ticket(&id) {
                 (self.log)(json!({"event": "settle_error", "ticket": id, "error": format!("{e:#}")}));
@@ -870,6 +870,10 @@ impl Gateway {
         let tip = self.node.call("getChainInfo", json!({}))?["height"].as_u64().unwrap_or(0);
         self.with_ledger(|l| l.tickets.get_mut(id).map(|x| x.deadline_height = Some(deadline)));
         let p = self.model.period() as u64;
+        if t.state == "delivered" {
+            // delivered but not completed yet (e.g. the attester was down): retry the completion
+            return self.close_ticket(&tid, id, &t, &chain);
+        }
         let due = !t.pending.is_empty()
             && (t.single || t.state == "closing" || self.oldest_pending_age(&t) >= self.cfg.round_every || self.ledger.lock().unwrap().free(&t, p) < self.cfg.min_free_rows);
         if due {
