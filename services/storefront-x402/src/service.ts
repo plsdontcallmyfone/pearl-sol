@@ -131,6 +131,7 @@ export class Service {
       if (req.method === "GET" && u.pathname === "/health") return json(200, { ok: true, wallet: this.o.wallet.publicKey.toBase58(), network: this.o.network });
       if (req.method === "GET" && u.pathname === "/quote") return json(200, await this.quote(Object.fromEntries(u.searchParams)));
       if (req.method === "GET" && u.pathname === "/buyback") return json(200, await this.buyback());
+      if (req.method === "GET" && u.pathname === "/evaluators") return json(200, await this.evaluators());
       if (req.method === "POST" && u.pathname === "/jobs") return await this.postJob(req);
       const m = u.pathname.match(/^\/jobs\/([^/]+)$/);
       if (req.method === "GET" && m) return await this.getJob(m[1]);
@@ -239,6 +240,23 @@ export class Service {
         protocol_fee_bps: cfg.protocolFeeBps,
       },
       payment: { scheme: "exact", network: this.o.network, asset: "SOL (native)", pay_to: this.o.wallet.publicKey.toBase58() },
+    };
+  }
+
+  /**
+   * Open evaluation (docs/EVALUATORS.md): the default evaluator set a job gets when the buyer
+   * names none, and how to name others. The storefront does not vet or rank evaluators: any
+   * 1..8 keys the buyer passes in spec.evaluators are posted as given.
+   */
+  async evaluators() {
+    const cfg = await this.storeConfig();
+    return {
+      default: cfg.attesters.slice(0, sf.MAX_EVALUATORS).map((k) => k.toBase58()),
+      default_threshold: Math.min(cfg.threshold, cfg.attesters.length, sf.MAX_EVALUATORS),
+      max_evaluators: sf.MAX_EVALUATORS,
+      how: "POST /jobs with spec.evaluators = [base58, ...] (1 to 8 keys) and spec.threshold (1..count); omitted = the default set",
+      check: "docs/EVALUATORS.md (reference evaluator: pearl-evaluator in services/attester)",
+      paid: false,
     };
   }
 

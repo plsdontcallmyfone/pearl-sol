@@ -107,6 +107,16 @@ test("buyback recipient offsets match the pump SDKs", () => {
   assert.equal(sf.ammGlobalBuyback(gc.data).toBase58(), decoded.buybackFeeRecipients[0].toBase58());
 });
 
+test("GET /evaluators lists the default set and how buyers name their own", async () => {
+  const r = await call("GET", "/evaluators");
+  assert.equal(r.status, 200);
+  const b = r.body as any;
+  assert.deepEqual(b.default, attesters.map((k) => k.publicKey.toBase58()));
+  assert.ok(b.default_threshold >= 1 && b.default_threshold <= b.default.length);
+  assert.equal(b.max_evaluators, sf.MAX_EVALUATORS);
+  assert.match(b.check, /EVALUATORS\.md/);
+});
+
 test("GET /quote prices a job from its size", async () => {
   const r = await call("GET", "/quote?m=1024&n=1024&k=1024&max_blocks=10");
   assert.equal(r.status, 200);
@@ -345,6 +355,20 @@ test("POST /jobs: an inference ticket (SPEC 4.5) is priced by its registered mod
   assert.equal((qr.body as any).work_flops, flops);
   assert.deepEqual((qr.body as any).ticket, { model_id: model, prompt_tokens: 6, max_tokens: 10 });
   assert.equal((await svc.handle({ method: "GET", url: `/quote?model_id=${"01".repeat(32)}&prompt_tokens=6&max_tokens=10`, headers: {} })).status, 400);
+});
+
+test("POST /jobs: buyer-named evaluators are posted as given (open evaluation)", async () => {
+  const mine = [Keypair.generate().publicKey.toBase58(), Keypair.generate().publicKey.toBase58()];
+  const body = jobBody({ evaluators: mine, threshold: 1, data_uri: "ipfs://own-evaluators" });
+  const r402 = await call("POST", "/jobs", {}, body);
+  assert.equal(r402.status, 402);
+  const req: PaymentRequirements = (r402.body as any).accepts[0];
+  const header = buildNativePayment(client, req, await chain.latestBlockhash());
+  const r = await call("POST", "/jobs", { "x-payment": header }, body);
+  assert.equal(r.status, 201, JSON.stringify(r.body, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
+  const o = sf.decodeOrder(svm.getAccount(sf.orderPda(BigInt((r.body as any).id)))!.data);
+  assert.deepEqual(o.spec.evaluators, mine);
+  assert.equal(o.spec.threshold, 1);
 });
 
 test("CU of the service's buy_job tx", () => {
