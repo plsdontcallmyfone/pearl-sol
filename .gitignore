@@ -17,3 +17,5 @@ scripts/demo/node_modules
 
 # public devnet keys: never commit (backup in ~/.config/pearl-sol/keys-devnet-backup)
 keys/devnet/
+scripts/devnet-e2e/node_modules
+.devnet-e2e/

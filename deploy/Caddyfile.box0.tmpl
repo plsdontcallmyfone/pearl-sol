@@ -1,6 +1,12 @@
 
 explorer.@IP@.sslip.io {
 	encode gzip
+	# token metadata URI of the devnet mint (pump.fun create_v2 uri)
+	handle /cadre-token.json {
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		respond `{"name":"Cadre","symbol":"CADRE","description":"Cadre public devnet token (Solana devnet). Bridges 1:1 to the Cadre agent chain, where useful proof of work on paid AI jobs produces the blocks.","external_url":"https://explorer.@IP@.sslip.io"}` 200
+	}
 	reverse_proxy 127.0.0.1:10670
 }
 
