@@ -36,6 +36,19 @@ export interface ServiceOptions {
   addresses?: ReturnType<typeof sf.addresses>;
   stateFile?: string;
   maxCuPriceMicroLamports?: bigint;
+  /** Agent-chain node RPC: prices inference tickets by the registered model (SPEC 4.5). */
+  agentRpc?: string;
+  /** getModel override (tests). */
+  getModel?: (modelIdHex: string) => Promise<any>;
+}
+
+/** Ticket config magic (SPEC 4.5): a PostJob body whose config starts with it is an inference ticket. */
+export const TICKET_MAGIC = Buffer.from("CADRE-T1");
+
+/** The model id of a ticket config, or null for a matmul job config. */
+export function ticketModel(config: Buffer): string | null {
+  if (config.length !== 52 || !config.subarray(0, 8).equals(TICKET_MAGIC) || config.subarray(40).some((b) => b !== 0)) return null;
+  return config.subarray(8, 40).toString("hex");
 }
 
 export interface HttpReq {
@@ -176,8 +189,8 @@ export class Service {
    * sol_in - share covers the job: the buyback is a markup on top of the job, not a cut
    * of it. price = sol_in + overhead (rents and fees the service pays).
    */
-  price(cfg: sf.StoreConfig, m: number, n: number, k: number, maxBlocks: number) {
-    const flops = 2n * BigInt(m) * BigInt(n) * BigInt(k) * BigInt(maxBlocks);
+  price(cfg: sf.StoreConfig, m: number, n: number, k: number, maxBlocks: number, flopsOverride?: bigint) {
+    const flops = flopsOverride ?? 2n * BigInt(m) * BigInt(n) * BigInt(k) * BigInt(maxBlocks);
     const work = (flops * this.o.pricing.lamportsPerGflop + 999_999_999n) / 1_000_000_000n;
     const job = this.o.pricing.baseLamports + work;
     const bps = BigInt(cfg.buyback.bps);
@@ -238,6 +251,33 @@ export class Service {
     };
   }
 
+  /**
+   * Inference ticket (SPEC 4.5): the work priced is the request's mined GEMMs,
+   * 2 x macs_per_row x rows with rows = round_up(prompt + max new tokens, row period), read
+   * from the registered model; the same knobs (base + lamports per GFLOP) as matmul jobs.
+   * undefined for a matmul job.
+   */
+  async ticketFlops(spec: sf.JobSpec): Promise<bigint | undefined> {
+    const model = ticketModel(spec.config);
+    if (model === null) return undefined;
+    if (spec.k !== 1) throw new BadRequest("a ticket has k = 1 (m = prompt tokens, n = max new tokens)");
+    const m = await this.model(model);
+    if (!m) throw new BadRequest(`ticket names model ${model}, which is not registered on the agent chain`);
+    const period = BigInt(m.row_period ?? 4);
+    const rows = ((BigInt(spec.m) + BigInt(spec.n) + period - 1n) / period) * period;
+    return 2n * BigInt(m.macs_per_row) * rows;
+  }
+
+  private async model(id: string): Promise<any> {
+    if (this.o.getModel) return this.o.getModel(id);
+    if (!this.o.agentRpc) throw new BadRequest("inference tickets need the agent-chain RPC (AGENT_RPC)");
+    const r = await fetch(this.o.agentRpc, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getModel", params: { model_id: id } }) });
+    const j = (await r.json()) as any;
+    if (j.error) throw new Error(`getModel: ${j.error.message}`);
+    return j.result;
+  }
+
   // ------------------------------------------------------------ jobs
 
   private parseSpec(cfg: sf.StoreConfig, b: Record<string, unknown>): sf.JobSpec {
@@ -265,7 +305,7 @@ export class Service {
     const cfg = await this.storeConfig();
     if (cfg.paused) return json(503, { error: "storefront paused" });
     const spec = this.parseSpec(cfg, body);
-    const { solIn, price } = this.price(cfg, spec.m, spec.n, spec.k, spec.maxBlocks);
+    const { solIn, price } = this.price(cfg, spec.m, spec.n, spec.k, spec.maxBlocks, await this.ticketFlops(spec));
     const reqs = this.requirements(price);
     const header = req.headers["x-payment"];
     const need = (error: string) => json(402, { x402Version: X402_VERSION, error, accepts: [reqs] });

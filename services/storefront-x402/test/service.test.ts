@@ -316,6 +316,30 @@ test("POST /jobs: bad specs are 400 before any payment", async () => {
   assert.equal((await call("POST", "/jobs", {}, undefined)).status, 400);
 });
 
+test("POST /jobs: an inference ticket (SPEC 4.5) is priced by its registered model's MACs", async () => {
+  const model = "ab".repeat(32);
+  const macs = 1_235_746_816n;
+  const svc = new Service({ chain, wallet, network: NETWORK, publicUrl: "http://storefront.test",
+    pricing: { baseLamports: 10_000_000n, lamportsPerGflop: 100_000n, overheadLamports: 14_000_000n },
+    getModel: async (id) => (id === model ? { macs_per_row: macs.toString(), row_period: 4 } : null) });
+  const ticket = (o: Record<string, unknown> = {}) => ({ spec: { m: 6, n: 10, k: 1, config: Buffer.concat([Buffer.from("CADRE-T1"), Buffer.from(model, "hex"), Buffer.alloc(12)]).toString("hex"),
+    hash_a: "aa".repeat(32), hash_b: "bb".repeat(32), data_uri: "blob:" + "cc".repeat(32), deadline_blocks: 400, max_blocks: 96, ...o } });
+  const r = await svc.handle({ method: "POST", url: "/jobs", headers: {}, body: JSON.stringify(ticket()) });
+  assert.equal(r.status, 402);
+  // rows = round_up(6 + 10, 4) = 16; work = 2 x macs x 16 flops at 100k lamports per GFLOP
+  const flops = 2n * macs * 16n;
+  const job = 10_000_000n + (flops * 100_000n + 999_999_999n) / 1_000_000_000n;
+  const solIn = (job * 10_000n + 8_999n) / 9_000n;
+  assert.equal(BigInt((r.body as any).accepts[0].maxAmountRequired), solIn + 14_000_000n);
+  const bad = await svc.handle({ method: "POST", url: "/jobs", headers: {}, body: JSON.stringify(ticket({ k: 2 })) });
+  assert.equal(bad.status, 400);
+  const other = { ...ticket() };
+  other.spec.config = Buffer.concat([Buffer.from("CADRE-T1"), Buffer.alloc(32, 1), Buffer.alloc(12)]).toString("hex");
+  const unk = await svc.handle({ method: "POST", url: "/jobs", headers: {}, body: JSON.stringify(other) });
+  assert.equal(unk.status, 400);
+  assert.match((unk.body as any).error, /not registered/);
+});
+
 test("CU of the service's buy_job tx", () => {
   const cus = chain.sent.map((s) => s.cu);
   console.log(`  service txs CU: ${cus.join(", ")}`);

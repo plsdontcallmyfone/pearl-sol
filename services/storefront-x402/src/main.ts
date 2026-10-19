@@ -10,6 +10,7 @@
 //   PRICE_LAMPORTS_PER_GFLOP  100000
 //   OVERHEAD_LAMPORTS         14000000   (Order + Deposit + buyback ShareRecord rent, tx fees; the record rent comes back at settle_share)
 //   STATE_FILE                .data/state.json (used payments, for replay protection)
+//   AGENT_RPC                 http://127.0.0.1:10630 (agent-chain node: prices inference tickets by the registered model)
 //
 // Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads).
 
@@ -38,6 +39,7 @@ const service = new Service({
     overheadLamports: BigInt(env.OVERHEAD_LAMPORTS ?? 14_000_000),
   },
   stateFile: env.STATE_FILE ?? resolve(here, "../.data/state.json"),
+  agentRpc: env.AGENT_RPC ?? "http://127.0.0.1:10630",
 });
 
 const server = createServer((req, res) => {
