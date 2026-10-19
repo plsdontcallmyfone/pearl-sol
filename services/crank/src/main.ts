@@ -6,13 +6,15 @@
 //   node src/main.ts launch --name N --symbol S --uri U --devBuy LAMPORTS [--mintKeypair FILE]
 //   node src/main.ts once   one buyback attempt (+ fund_mining if FUND_AMOUNT is set)
 //   node src/main.ts run    loop every CRANK_INTERVAL_SECS
-//   node src/main.ts fund --amount BASE_UNITS
+//   node src/main.ts fund --amount BASE_UNITS       permissionless fund_mining (any KEYPAIR; rate limited on chain)
+//   node src/main.ts fund-limits [--paused true|false] [--maxPerCall N] [--minIntervalSecs S] [--windowSecs S] [--maxPerWindow N]   (admin)
+//   node src/main.ts migrate                         migrate_config: grow a pre-2026-10-19 reserve config (admin)
 //
 // Storefront buyback (token/programs/storefront, SPEC 5.1 "Buyback"):
 //   node src/main.ts sf-status                   buyback config, vault, totals, pending orders (JSON)
 //   node src/main.ts sf-setup                    vault PDA's pump + PumpSwap volume accumulators (once, anyone pays)
 //   node src/main.ts sf-set [--bps N] [--dest reserve|burn] [--cranker PK|none] [--maxPerCall L] [--minBuy L]
-//                           [--minIntervalSecs S] [--reserveProgram PK]       (admin = KEYPAIR)
+//                           [--minIntervalSecs S] [--reserveProgram PK] [--reserveCap N (0 = no cap)]   (admin = KEYPAIR)
 //   node src/main.ts sf-settle                   settle_share for every closed order (finalized: released; refunded/expired: paid back)
 //   node src/main.ts sf-buyback                  sf-settle, then one crank_buyback(_amm) attempt; prints the BuybackExecuted fields (JSON)
 //   `run` and `once` also attempt a storefront buyback each tick (SF_BUYBACK=0 turns it off).
@@ -199,9 +201,23 @@ async function crankOnce(): Promise<string> {
   return `pool buyback +${(await tokenAmount(keys.reserveAta(mint))) - before} tokens ${sig}`;
 }
 
+/** Seconds until fund_mining's on-chain limits allow `amount`, or a reason it never will (null = now). */
+function fundWait(c: any, now: number, amount: bigint): string | null {
+  if (c.fundPaused) return 'fund: paused by the admin';
+  const perCall = BigInt(c.maxFundPerCall.toString());
+  if (perCall > 0n && amount > perCall) return `fund: ${amount} above max_fund_per_call ${perCall}`;
+  const last = Number(c.fundLastTs), iv = Number(c.fundMinIntervalSecs);
+  if (last !== 0 && now < last + iv) return `fund: wait ${last + iv - now}s (fund_min_interval_secs)`;
+  const ws = Number(c.fundWindowSecs), wmax = BigInt(c.fundMaxPerWindow.toString()), start = Number(c.fundWindowStart);
+  if (ws > 0 && wmax > 0n && start !== 0 && now < start + ws && BigInt(c.fundWindowUsed.toString()) + amount > wmax) return `fund: window full, wait ${start + ws - now}s`;
+  return null;
+}
+
 async function fund(amount: bigint) {
   const c = await fetchConfig();
   if (!c || c.mint.equals(ZERO) || c.bridgeProgram.equals(ZERO)) return 'fund: reserve not launched or bridge not wired';
+  const wait = fundWait(c, await chainTime(), amount);
+  if (wait) return wait;
   const bcfg = await conn.getAccountInfo(pda(['config'], c.bridgeProgram));
   if (!bcfg) return 'fund: bridge config missing';
   const nonce = bcfg.data.readBigUInt64LE(8 + 32 * 4); // bridge Config: admin, mint, vault, token_program, deposit_nonce
@@ -255,6 +271,20 @@ switch (cmd) {
     break;
   case 'fund':
     log(await fund(BigInt(flags.amount)));
+    break;
+  case 'fund-limits': {
+    const p = {
+      paused: flags.paused === undefined ? null : flags.paused === 'true',
+      maxPerCall: flags.maxPerCall ? new BN(flags.maxPerCall) : null,
+      minIntervalSecs: flags.minIntervalSecs ? new BN(flags.minIntervalSecs) : null,
+      windowSecs: flags.windowSecs ? new BN(flags.windowSecs) : null,
+      maxPerWindow: flags.maxPerWindow ? new BN(flags.maxPerWindow) : null,
+    };
+    log('set_fund_limits', await send([await program.methods.setFundLimits(p).accountsStrict({ admin: signer.publicKey, config: keys.config }).instruction()]));
+    break;
+  }
+  case 'migrate':
+    log('migrate_config', await send([await program.methods.migrateConfig().accountsStrict({ admin: signer.publicKey, config: keys.config, systemProgram: new PublicKey('11111111111111111111111111111111') }).instruction()]));
     break;
   case 'sf-status':
     console.log(JSON.stringify(await storefront().status(), null, 2));

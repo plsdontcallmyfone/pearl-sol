@@ -311,6 +311,9 @@ pub struct Buyback {
     pub locked: u64,
     /// Shares paid back to buyers of refunded / expired orders.
     pub refunded: u64,
+    /// Reserve cap (appended 2026-10-19): with dest reserve, buys go to the reserve while
+    /// it holds less, the rest is burned. 0 = no cap (also a config from before the field).
+    pub reserve_cap: u64,
 }
 
 impl Buyback {
@@ -345,10 +348,14 @@ impl Buyback {
             pending_last_nonce: r.u64()?,
             locked: 0,
             refunded: 0,
+            reserve_cap: 0,
         };
         if d.len() >= r.1 + 16 {
             b.locked = r.u64()?;
             b.refunded = r.u64()?;
+        }
+        if d.len() >= r.1 + 8 {
+            b.reserve_cap = r.u64()?;
         }
         Ok(b)
     }
@@ -400,9 +407,33 @@ pub struct BuybackAccrued {
     pub total_accrued: u64,
 }
 
+/// Storefront `BuybackToReserve`: the part of buy `buy` sent to the mining reserve under the cap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuybackToReserve {
+    pub buy: u64,
+    pub tokens: u64,
+    pub reserve_before: u64,
+    pub reserve_after: u64,
+    pub reserve_cap: u64,
+}
+
+/// Storefront `BuybackBurned`: the part of buy `buy` burned (reason 0 above cap, 1 destination burn).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuybackBurned {
+    pub buy: u64,
+    pub tokens: u64,
+    pub reason: u8,
+    pub reserve_before: u64,
+    pub reserve_cap: u64,
+    pub supply_after: u64,
+    pub total_burned: u64,
+}
+
 pub enum StoreEvent {
     Executed(BuybackExecuted),
     Accrued(BuybackAccrued),
+    ToReserve(BuybackToReserve),
+    Burned(BuybackBurned),
 }
 
 /// Decodes a `Program data:` payload (event disc + Borsh fields) if it is a buyback event.
@@ -436,6 +467,22 @@ pub fn decode_store_event(b: &[u8]) -> Option<StoreEvent> {
     if b[..8] == event_disc("BuybackAccrued") {
         let e = BuybackAccrued { order: r.key().ok()?, nonce: r.u64().ok()?, lamports: r.u64().ok()?, vault_available: r.u64().ok()?, total_accrued: r.u64().ok()? };
         return Some(StoreEvent::Accrued(e));
+    }
+    if b[..8] == event_disc("BuybackToReserve") {
+        let e = BuybackToReserve { buy: r.u64().ok()?, tokens: r.u64().ok()?, reserve_before: r.u64().ok()?, reserve_after: r.u64().ok()?, reserve_cap: r.u64().ok()? };
+        return Some(StoreEvent::ToReserve(e));
+    }
+    if b[..8] == event_disc("BuybackBurned") {
+        let e = BuybackBurned {
+            buy: r.u64().ok()?,
+            tokens: r.u64().ok()?,
+            reason: r.u8().ok()?,
+            reserve_before: r.u64().ok()?,
+            reserve_cap: r.u64().ok()?,
+            supply_after: r.u64().ok()?,
+            total_burned: r.u64().ok()?,
+        };
+        return Some(StoreEvent::Burned(e));
     }
     None
 }

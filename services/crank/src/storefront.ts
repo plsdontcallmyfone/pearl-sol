@@ -1,8 +1,9 @@
 // Storefront buyback crank (token/programs/storefront, SPEC 5.1 "Buyback"): a share of
 // every storefront order's SOL sits in the storefront's buyback vault PDA; this module
 // calls the permissionless crank_buyback (curve) / crank_buyback_amm (PumpSwap) that buys
-// the token with it and sends it to the mining reserve or burns it, plus the admin
-// set_buyback and the one-time vault setup. Same pump path as the reserve's buyback.
+// the token with it and sends it to the mining reserve while the reserve holds less than
+// bb_reserve_cap and burns the rest (SPEC 5.1 "Reserve cap"), plus the admin set_buyback /
+// set_buyback_cap and the one-time vault setup. Same pump path as the reserve's buyback.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -88,12 +89,19 @@ export class StorefrontBuyback {
     const vaultLamports = BigInt(await this.conn.getBalance(this.keys.vault));
     const dest = Number(c.buybackDest);
     const s = (v: any) => v.toString();
+    const reserveAta = this.keys.reserveAta(c.reserveProgram, c.mint);
+    const ra = await this.conn.getAccountInfo(reserveAta);
+    const reserveTokens = ra && ra.data.length >= 72 ? ra.data.readBigUInt64LE(64) : 0n;
+    const capV = BigInt((c.bbReserveCap ?? 0).toString());
     return {
       initialized: true, vault: this.keys.vault.toBase58(), vaultLamports: s(vaultLamports),
       availableLamports: s(vaultLamports > RENT_MIN + BigInt(c.bbLocked.toString()) ? vaultLamports - RENT_MIN - BigInt(c.bbLocked.toString()) : 0n),
       heldLamports: s(c.bbLocked), refunded: s(c.bbRefunded), buybackBps: c.buybackBps,
       destination: DEST_NAMES[dest] ?? `unknown(${dest})`,
-      destinationAccount: dest === 0 ? this.keys.reserveAta(c.reserveProgram, c.mint).toBase58() : c.mint.toBase58(),
+      destinationAccount: dest === 0 ? reserveAta.toBase58() : c.mint.toBase58(),
+      reserveCap: s(capV), reserveTokens: s(reserveTokens),
+      // where the next buy goes under the cap rule (0 = no cap)
+      nextBuy: dest === 1 ? 'burn' : capV === 0n || reserveTokens < capV ? (capV === 0n ? 'reserve' : `reserve up to ${capV - reserveTokens}, rest burned`) : 'burn (reserve at cap)',
       reserveProgram: c.reserveProgram.toBase58(), cranker: c.buybackCranker.equals(PublicKey.default) ? null : c.buybackCranker.toBase58(),
       maxPerCall: s(c.buybackMaxPerCall), minBuy: s(c.buybackMinBuy), minIntervalSecs: s(c.buybackMinIntervalSecs), lastBuyTs: s(c.bbLastTs),
       accrued: s(c.bbAccrued), spent: s(c.bbSpent), tokens: s(c.bbTokens), toReserve: s(c.bbToReserve), burned: s(c.bbBurned), buys: s(c.bbBuys),
@@ -129,8 +137,12 @@ export class StorefrontBuyback {
       maxPerCall: f.maxPerCall ? new BN(f.maxPerCall) : null, minBuy: f.minBuy ? new BN(f.minBuy) : null,
       minIntervalSecs: f.minIntervalSecs ? new BN(f.minIntervalSecs) : null,
     };
-    const ix = await this.program.methods.setBuyback(p).accountsStrict({ admin: this.signer.publicKey, config: this.keys.config }).instruction();
-    return this.send([ix]);
+    const ixs: TransactionInstruction[] = [];
+    if (Object.values(p).some((v) => v !== null)) ixs.push(await this.program.methods.setBuyback(p).accountsStrict({ admin: this.signer.publicKey, config: this.keys.config }).instruction());
+    // --reserveCap N (SPL base units, 0 = no cap): set_buyback_cap
+    if (f.reserveCap !== undefined) ixs.push(await this.program.methods.setBuybackCap(new BN(f.reserveCap)).accountsStrict({ admin: this.signer.publicKey, config: this.keys.config }).instruction());
+    if (ixs.length === 0) return 'nothing to set';
+    return this.send(ixs);
   }
 
   /**
@@ -224,14 +236,22 @@ export class StorefrontBuyback {
         .instruction();
     }
     const sig = await this.send([ix]);
-    const ev = (await this.events(sig)).find((e) => e.name.toLowerCase() === 'buybackexecuted');
+    const evs = await this.events(sig);
+    const ev = evs.find((e) => e.name.toLowerCase() === 'buybackexecuted');
     const d = ev?.data ?? {};
     const g = (k: string, alt: string) => (d[k] ?? d[alt])?.toString();
+    const part = (name: string) => evs.find((e) => e.name.toLowerCase() === name)?.data;
+    const tr = part('buybacktoreserve'), bu = part('buybackburned');
     return {
       ok: true, settled, venue, sig, buy: g('buy', 'buy'), solIn: g('solIn', 'sol_in'), tokensOut: g('tokensOut', 'tokens_out'), routed: g('routed', 'routed'),
       destination: DEST_NAMES[Number(d.destination)] ?? String(d.destination), destinationAccount: (d.destinationAccount ?? d.destination_account)?.toBase58?.(),
       firstNonce: g('firstNonce', 'first_nonce'), lastNonce: g('lastNonce', 'last_nonce'), orders: g('orders', 'orders'),
       availableBefore: g('availableBefore', 'available_before'), carry: g('carry', 'carry'),
+      // the cap split (BuybackToReserve / BuybackBurned)
+      toReserve: tr ? tr.tokens.toString() : '0', burned: bu ? bu.tokens.toString() : '0',
+      burnReason: bu ? (Number(bu.reason) === 0 ? 'above cap' : 'destination burn') : null,
+      reserveCap: (tr ?? bu) ? ((tr ?? bu).reserveCap ?? (tr ?? bu).reserve_cap).toString() : null,
+      supplyAfter: bu ? (bu.supplyAfter ?? bu.supply_after).toString() : null,
     };
   }
 }

@@ -90,6 +90,8 @@ const RELAYER = resolve(ROOT, "services/relayer");
 const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS), DEVNET_BLOBS: JSON.stringify(DEVNET_BLOBS) };
 
 const crank = (args: string[]) => run("node", ["src/main.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC, KEYPAIR: resolve(ROOT, KEYS.payer) } });
+/** The crank CLI signed by another key (fund_mining is permissionless since 2026-10-19). */
+const crankAs = (keyFile: string, args: string[]) => run("node", ["src/main.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC, KEYPAIR: keyFile } });
 const trade = (args: string[]) => lastJson(run("node", ["src/trade.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC } }));
 const relayerCli = (args: string[]) => run("node", ["src/cli.ts", ...args], { cwd: RELAYER, env: relayerEnv() });
 function relayerEnv(): Record<string, string> {
@@ -339,10 +341,14 @@ async function step2(): Promise<string> {
   console.log(once);
   const after = BigInt(JSON.parse(crank(["status"])).reserveTokens);
   if (after <= before) throw new Error(`buyback did not add reserve tokens (${before} -> ${after}): ${once}`);
-  // fund_mining into the bridge, recipient = the chain's mining pool
+  // fund_mining into the bridge, recipient = the chain's mining pool. Permissionless and
+  // rate limited (owner decision 2026-10-18): the trader key, not the admin, calls it.
   const nonce = await bridgeNonce();
   const poolBefore = BigInt((await nodeCall("getEscrow")).pool_balance);
-  console.log(crank(["fund", "--amount", FUND_SPL.toString()]).trim());
+  console.log(crankAs(trader.file, ["fund", "--amount", FUND_SPL.toString()]).trim());
+  // a second call inside fund_min_interval_secs (default 3600 s): the CLI reads the on-chain limit and reports the wait
+  const again = crankAs(trader.file, ["fund", "--amount", "1"]).trim();
+  if (!/wait \d+s/.test(again)) throw new Error(`second fund_mining inside the interval: ${again}`);
   const d = await depositFinal(nonce);
   const esc = await nodeCall("getEscrow");
   const poolGain = BigInt(esc.pool_balance) - poolBefore;
@@ -600,19 +606,24 @@ async function stepBuyback(): Promise<string> {
   if (!isCrank || !tx1!.meta!.logMessages!.some((l) => l.startsWith("Program data: "))) throw new Error(`tx ${b1.sig} is not a crank_buyback with an event`);
   info("buy 1 (reserve)", b1);
 
-  // buy 2: the carry, burned
-  console.log(crank(["sf-set", "--dest", "burn", "--maxPerCall", "0"]).trim());
+  // buy 2: the carry, under the reserve cap rule (owner decision 2026-10-18): the cap is set
+  // 1000 tokens above the reserve's balance, so 1000 tokens go to the reserve and the rest is
+  // burned (SPL burn) in the same instruction
+  const ROOM = 1_000_000_000n;
+  console.log(crank(["sf-set", "--maxPerCall", "0", "--reserveCap", (reserve1 + ROOM).toString()]).trim());
   const b2 = JSON.parse(crank(["sf-buyback"]).trim().split("\n").pop()!);
-  if (!b2.ok || b2.destination !== "burn" || b2.orders !== "0" || BigInt(b2.availableBefore) !== BigInt(b1.carry)) throw new Error(`buy 2: ${JSON.stringify(b2)}`);
+  if (!b2.ok || b2.orders !== "0" || BigInt(b2.availableBefore) !== BigInt(b1.carry)) throw new Error(`buy 2: ${JSON.stringify(b2)}`);
+  if (BigInt(b2.toReserve) !== ROOM || BigInt(b2.toReserve) + BigInt(b2.burned) !== BigInt(b2.routed) || b2.burnReason !== "above cap") throw new Error(`buy 2 split: ${JSON.stringify(b2)}`);
   const supply2 = await supply();
-  if (supply0 - supply2 !== BigInt(b2.routed) || BigInt(b2.routed) === 0n) throw new Error(`supply ${supply0} -> ${supply2}, burned ${b2.routed}`);
-  info("buy 2 (burn)", b2);
-  // back to the provisional defaults: destination reserve, 1 SOL per call (interval and min
+  if (supply0 - supply2 !== BigInt(b2.burned) || BigInt(b2.burned) === 0n || BigInt(b2.supplyAfter) !== supply2) throw new Error(`supply ${supply0} -> ${supply2}, burned ${b2.burned}`);
+  if ((await splBalance(RESERVE_CREATOR)) !== reserve1 + ROOM) throw new Error("reserve not exactly at the cap");
+  info("buy 2 (reserve to the cap, rest burned)", b2);
+  // back to the provisional defaults: 1 SOL per call, cap 100M tokens (interval and min
   // buy stay at the demo's values)
-  console.log(crank(["sf-set", "--dest", "reserve", "--maxPerCall", "1000000000"]).trim());
+  console.log(crank(["sf-set", "--maxPerCall", "1000000000", "--reserveCap", "100000000000000"]).trim());
 
   const s2 = sfStatus();
-  if (s2.buys !== "2" || BigInt(s2.toReserve) !== BigInt(b1.routed) || BigInt(s2.burned) !== BigInt(b2.routed) || s2.pendingOrders !== "0") throw new Error(`totals ${JSON.stringify(s2)}`);
+  if (s2.buys !== "2" || BigInt(s2.toReserve) !== BigInt(b1.routed) + ROOM || BigInt(s2.burned) !== BigInt(b2.burned) || s2.pendingOrders !== "0") throw new Error(`totals ${JSON.stringify(s2)}`);
   if (BigInt(s2.spent) !== BigInt(b1.solIn) + BigInt(b2.solIn)) throw new Error(`spent ${s2.spent}`);
   // bridge vault untouched; after a burn the chain-side supply outside the escrow is still
   // backed: 1e18 - escrow <= 1000 x mint supply (burned tokens can never be bridged in)
@@ -623,7 +634,7 @@ async function stepBuyback(): Promise<string> {
   if (outside > supply2 * 1000n) throw new Error(`outside escrow ${outside} > 1000 x supply ${supply2}`);
   return `order ${order.nonce} paid ${avail} lamports (${s0.buybackBps} bps of sol_in) into vault ${s0.vault}; ` +
     `buy 1 ${b1.solIn} lamports -> ${b1.tokensOut} SPL to the mining reserve ${reserveAta.toBase58()} (orders ${b1.firstNonce}..${b1.lastNonce}, carry ${b1.carry}, ${b1.sig.slice(0, 16)}...); ` +
-    `buy 2 ${b2.solIn} lamports -> ${b2.tokensOut} SPL burned, mint supply ${supply0} -> ${supply2} (${b2.sig.slice(0, 16)}...); ` +
+    `buy 2 ${b2.solIn} lamports -> ${b2.tokensOut} SPL: ${b2.toReserve} to the reserve up to its cap, ${b2.burned} burned, mint supply ${supply0} -> ${supply2} (${b2.sig.slice(0, 16)}...); ` +
     `config totals: ${s2.buys} buys, spent ${s2.spent}, to reserve ${s2.toReserve}, burned ${s2.burned}; GET /buyback agrees; ` +
     `bridge vault unchanged (${vaultSpl2} SPL), 1e18 - escrow ${outside} <= 1000 x supply`;
 }

@@ -53,6 +53,7 @@ pub fn store_config_bytes() -> Vec<u8> {
     }
     d.extend(20_000_000u64.to_le_bytes()); // bb_locked
     d.extend(5_000_000u64.to_le_bytes()); // bb_refunded
+    d.extend(100_000_000_000_000u64.to_le_bytes()); // bb_reserve_cap (100M tokens)
     d.resize(d.len() + 200, 0);
     d
 }
@@ -74,6 +75,22 @@ pub fn buyback_event_bytes() -> Vec<u8> {
     d
 }
 
+/// The cap split of buy 1: BuybackToReserve 4000 tokens, BuybackBurned 5000 tokens above the cap.
+pub fn cap_split_event_bytes() -> (Vec<u8>, Vec<u8>) {
+    let mut a = crate::solana::event_disc("BuybackToReserve").to_vec();
+    for v in [1u64, 4_000_000_000, 99_996_000_000_000, 100_000_000_000_000, 100_000_000_000_000] {
+        a.extend(v.to_le_bytes());
+    }
+    let mut b = crate::solana::event_disc("BuybackBurned").to_vec();
+    b.extend(1u64.to_le_bytes());
+    b.extend(5_000_000_000u64.to_le_bytes());
+    b.push(0); // above cap
+    for v in [99_996_000_000_000u64, 100_000_000_000_000, 999_000_000_000_000, 5_000_000_000] {
+        b.extend(v.to_le_bytes());
+    }
+    (a, b)
+}
+
 fn answer(method: &str, params: &Value) -> Result<Value, String> {
     let b64 = |b: Vec<u8>| base64::engine::general_purpose::STANDARD.encode(b);
     Ok(match method {
@@ -87,7 +104,11 @@ fn answer(method: &str, params: &Value) -> Result<Value, String> {
         }
         "getBalance" => json!({"value": 890_880u64 + 50_000_000 + 20_000_000}),
         "getSignaturesForAddress" => json!([{"signature": "5sig", "slot": 77, "err": null, "blockTime": 1_760_000_000}]),
-        "getTransaction" => json!({"meta": {"logMessages": ["Program DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr invoke [1]", format!("Program data: {}", b64(buyback_event_bytes()))]}}),
+        "getTransaction" => {
+            let (tr, bu) = cap_split_event_bytes();
+            json!({"meta": {"logMessages": ["Program DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr invoke [1]", format!("Program data: {}", b64(tr)),
+                format!("Program data: {}", b64(bu)), format!("Program data: {}", b64(buyback_event_bytes()))]}})
+        }
         "getChainInfo" => json!({"height": 20, "finalized_height": 14, "finality_k": 6, "chain_id": 7, "peers": 1, "syncing": false, "target_bits": 1}),
         "getParams" => json!({"min_fee": "1000", "attesters": [OTHER], "emission_ppm": 1000, "min_protocol_fee_effective": "1"}),
         "getEscrow" => json!({"escrow_balance": "999000000000000000", "pool_balance": "100", "total_supply": "1000000000000000000", "outside_escrow": "1000000000000000"}),

@@ -1266,8 +1266,19 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
     let available = lamports.saturating_sub(890_880).saturating_sub(b.locked);
     let supply = ctx.sol.account(&b.mint)?.map(|m| solana::mint_supply(&m)).transpose()?;
     let dest_account = if b.dest == 0 { solana::reserve_ata(&b.reserve_program, &b.mint) } else { b.mint };
+    // the mining reserve's balance decides where the next buy goes (reserve cap rule)
+    let reserve_ata = solana::reserve_ata(&b.reserve_program, &b.mint);
+    let reserve_tokens = ctx.sol.account(&reserve_ata).ok().flatten().filter(|d| d.len() >= 72).map(|d| u64::from_le_bytes(d[64..72].try_into().unwrap()));
+    let next_buy = match (b.dest, b.reserve_cap, reserve_tokens) {
+        (1, _, _) => "burn".to_string(),
+        (_, 0, _) => "mining reserve (no cap)".to_string(),
+        (_, cap, Some(r)) if r >= cap => "burn (reserve at its cap)".to_string(),
+        (_, cap, Some(r)) => format!("mining reserve up to {} {TICKER}, the rest burned", fmt::spl((cap - r) as u128)),
+        (_, _, None) => "mining reserve up to the cap, the rest burned".to_string(),
+    };
     // events: newest txs touching the vault (orders pay into it, buys spend from it)
     let mut buys = vec![];
+    let mut split: std::collections::HashMap<u64, (u64, u64, Option<u8>)> = Default::default();
     let mut accrued = 0usize;
     let mut accrued_lamports = 0u64;
     let sigs = ctx.sol.call("getSignaturesForAddress", json!([b58(&vault), {"limit": 100, "commitment": "confirmed"}]))?;
@@ -1289,15 +1300,36 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
                     accrued += 1;
                     accrued_lamports += a.lamports;
                 }
+                Some(solana::StoreEvent::ToReserve(e)) => split.entry(e.buy).or_default().0 += e.tokens,
+                Some(solana::StoreEvent::Burned(e)) => {
+                    let s = split.entry(e.buy).or_default();
+                    s.1 += e.tokens;
+                    s.2 = Some(e.reason);
+                }
                 None => {}
             }
         }
     }
     let dest_label = |d: u8| if d == 0 { "reserve" } else if d == 1 { "burn" } else { "unknown" };
+    // per buy: (to reserve, burned, burn reason); a buy from before the cap events has none, so
+    // its whole routed amount went to its single destination
+    let parts = |e: &solana::BuybackExecuted| match split.get(&e.buy) {
+        Some(&(r, bu, why)) => (r, bu, why),
+        None if e.destination == 0 => (e.routed, 0, None),
+        None => (0, e.routed, Some(1)),
+    };
+    let to_label = |e: &solana::BuybackExecuted| match parts(e) {
+        (r, 0, _) if r > 0 => "reserve".to_string(),
+        (0, bu, _) if bu > 0 => "burn".to_string(),
+        (0, 0, _) => dest_label(e.destination).to_string(),
+        _ => "reserve + burn".to_string(),
+    };
     let jb: Vec<Value> = buys
         .iter()
         .map(|(sig, slot, t, e)| {
-            json!({"signature": sig, "slot": slot, "block_time": t, "buy": e.buy, "venue": if e.venue == 1 { "pumpswap" } else { "curve" },
+            let (r, bu, why) = parts(e);
+            json!({"to_reserve_spl": r.to_string(), "burned_spl": bu.to_string(),
+                   "burn_reason": why.map(|w| if w == 0 { "above cap" } else { "destination burn" }),"signature": sig, "slot": slot, "block_time": t, "buy": e.buy, "venue": if e.venue == 1 { "pumpswap" } else { "curve" },
                    "sol_in_lamports": e.sol_in.to_string(), "tokens_out_spl": e.tokens_out.to_string(), "routed_spl": e.routed.to_string(),
                    "destination": dest_label(e.destination), "destination_account": b58(&e.destination_account),
                    "orders": e.orders, "first_nonce": if e.orders > 0 { Some(e.first_nonce) } else { None }, "last_nonce": if e.orders > 0 { Some(e.last_nonce) } else { None },
@@ -1309,6 +1341,7 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
         "vault": b58(&vault), "vault_lamports": lamports.to_string(), "available_lamports": available.to_string(), "held_lamports": b.locked.to_string(),
         "buyback_bps": b.bps, "destination": b.dest_name(), "destination_account": b58(&dest_account), "reserve_program": b58(&b.reserve_program),
         "cranker": if b.cranker == zero { None } else { Some(b58(&b.cranker)) },
+        "reserve_cap_spl": b.reserve_cap.to_string(), "reserve_tokens_spl": reserve_tokens.map(|x| x.to_string()), "next_buy": next_buy,
         "max_per_call_lamports": b.max_per_call.to_string(), "min_buy_lamports": b.min_buy.to_string(), "min_interval_secs": b.min_interval_secs, "last_buy_ts": b.last_ts,
         "totals": {"refunded_lamports": b.refunded.to_string(), "accrued_lamports": b.accrued.to_string(), "spent_lamports": b.spent.to_string(), "tokens_bought_spl": b.tokens.to_string(),
                    "to_reserve_spl": b.to_reserve.to_string(), "burned_spl": b.burned.to_string(), "buys": b.buys},
@@ -1332,6 +1365,15 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
     let mut p = Panel::new("Buyback")
         .kv("Share of order SOL", format!("{:.2}% ({} bps)", b.bps as f64 / 100.0, b.bps))
         .kv("Destination", if b.dest == 0 { format!("mining reserve {}", short(&b58(&dest_account))) } else { "burn".to_string() })
+        .kv(
+            "Reserve cap",
+            match (b.reserve_cap, reserve_tokens) {
+                (0, _) => "none (all to the reserve)".to_string(),
+                (c, Some(r)) => format!("{} {TICKER} (reserve holds {}); above it buys burn", fmt::spl(c as u128), fmt::spl(r as u128)),
+                (c, None) => format!("{} {TICKER}; above it buys burn", fmt::spl(c as u128)),
+            },
+        )
+        .kv("Next buy", next_buy.clone())
         .kv("Vault", format!("{} SOL to spend ({})", fmt::sol(available as u128), short(&b58(&vault))))
         .kv("Held for open orders", format!("{} SOL (refunded if the order is)", fmt::sol(b.locked as u128)))
         .kv("Cranker", if b.cranker == zero { "anyone".to_string() } else { short(&b58(&b.cranker)) })
@@ -1362,14 +1404,14 @@ fn buyback(ctx: &Ctx, limit: usize) -> Result<Out> {
                     ((if e.venue == 1 { "pumpswap" } else { "curve" }).to_string(), Tone::Plain),
                     (fmt::sol(e.sol_in as u128), Tone::Plain),
                     (fmt::spl(e.tokens_out as u128), Tone::Good),
-                    (dest_label(e.destination).to_string(), Tone::Plain),
+                    (to_label(e), Tone::Plain),
                     (if e.orders == 0 { "carry only".to_string() } else { format!("{} ({}..{})", e.orders, e.first_nonce, e.last_nonce) }, Tone::Plain),
                 ]
             })
             .collect(),
         empty: "no buys yet".into(),
     };
-    Ok(Out::new(j, t).view(View::panel(p).with(Block::Table(table)).hint("every figure is a Solana read: storefront config, vault balance, BuybackExecuted events")))
+    Ok(Out::new(j, t).view(View::panel(p).with(Block::Table(table)).hint("every figure is a Solana read: storefront config, vault and reserve balances, BuybackExecuted / BuybackToReserve / BuybackBurned events")))
 }
 
 /// The invariant section every bridge box ends with.
@@ -1776,6 +1818,11 @@ mod tests {
         assert_eq!(b["first_nonce"], 3);
         assert_eq!(b["last_nonce"], 9);
         assert_eq!(b["carry_lamports"], "50000000");
+        assert_eq!(b["to_reserve_spl"], "4000000000", "cap split from BuybackToReserve");
+        assert_eq!(b["burned_spl"], "5000000000", "cap split from BuybackBurned");
+        assert_eq!(b["burn_reason"], "above cap");
+        assert_eq!(j["reserve_cap_spl"], "100000000000000");
+        assert_eq!(j["reserve_tokens_spl"], Value::Null, "reserve ATA not served by the stub");
         assert!(o.text.contains("1000 bps -> reserve"), "{}", o.text);
         let t = crate::stub::ctx(&url, true);
         let plain = crate::stub::run(&t, "buyback").view.unwrap().render(&Style::plain());
@@ -1783,6 +1830,12 @@ mod tests {
         // a config from before the buyback fields reads as share 0
         let old = &crate::stub::store_config_bytes()[..8 + 32 * 3 + 1 + 2 + 2 + 8 + 8 + 4 + 4 + 8 + 1 + 4 + 32 + 24 + 3 + 32];
         assert_eq!(solana::Buyback::parse(old).unwrap().bps, 0);
+        // a config from before the cap field (bb_refunded is its last field) reads cap 0 = no cap
+        let full = crate::stub::store_config_bytes();
+        let pre_cap = &full[..full.len() - 200 - 8];
+        let pb = solana::Buyback::parse(pre_cap).unwrap();
+        assert_eq!((pb.reserve_cap, pb.refunded), (0, 5_000_000));
+        assert!(plain.contains("reserve + burn"), "{plain}");
     }
 
     #[test]
