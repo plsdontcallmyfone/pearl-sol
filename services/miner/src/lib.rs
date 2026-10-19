@@ -25,7 +25,7 @@ use pearl_job::freivalds::result_hash;
 use pearl_job::pow::{mine_header_nonce, BlockWork, MinedBlock};
 use pearl_job::{data, PreparedJob};
 use pearl_node::tx::{self, Body, Tx};
-use pearl_node::{b58, NodeApi, SubmitOutcome, Template};
+use pearl_node::{b58, JobInfo, NodeApi, SubmitOutcome, Template};
 
 /// Signs Result messages for CompleteJob (the attester service, or an in-process one).
 pub trait ResultAttester: Send + Sync {
@@ -93,6 +93,9 @@ pub struct MinerConfig {
     pub models_dir: PathBuf,
     /// Prepared jobs kept in memory (a standing job holds B^T plus its Merkle tree).
     pub max_prepared: usize,
+    /// With `deliver`: how often to look for open jobs other miners mined out but nobody
+    /// delivered (see `sweep_orphans`).
+    pub orphan_every: Duration,
 }
 
 impl Default for MinerConfig {
@@ -110,6 +113,7 @@ impl Default for MinerConfig {
             result_blob: true,
             models_dir: PathBuf::from("models"),
             max_prepared: 8,
+            orphan_every: Duration::from_secs(60),
         }
     }
 }
@@ -157,6 +161,9 @@ pub struct Miner<'a> {
     /// Jobs whose data failed to load: skip until this time.
     bad_jobs: HashMap<[u8; 32], Instant>,
     deliveries: BTreeMap<[u8; 32], Delivery>,
+    /// Orphan sweep: last run, and jobs already taken (queued or unusable here).
+    last_sweep: Option<Instant>,
+    orphans_seen: std::collections::HashSet<[u8; 32]>,
     nonce: AtomicU64,
     nonces_done: AtomicU64,
     ticker: (Instant, u64),
@@ -191,6 +198,8 @@ impl<'a> Miner<'a> {
             segments: Default::default(),
             bad_jobs: HashMap::new(),
             deliveries: BTreeMap::new(),
+            last_sweep: None,
+            orphans_seen: Default::default(),
             nonce: AtomicU64::new(start),
             nonces_done: AtomicU64::new(0),
             ticker: (Instant::now(), 0),
@@ -438,6 +447,59 @@ impl<'a> Miner<'a> {
         Ok(())
     }
 
+    /// With `deliver`: queue a delivery for open plain jobs that are mined out
+    /// (`blocks_mined >= max_blocks`, so the node no longer offers them) but that nobody
+    /// delivered, typically because the miners that mined them run without `--deliver`.
+    /// SubmitResult takes any deliverer (SPEC 4.1), so a delivering miner closes them:
+    /// it loads A and B, computes C and goes through the normal delivery steps. Without
+    /// this such a job stays open until its deadline and the buyer is refunded although
+    /// the work was mined. Runs at most every `orphan_every`; tickets and segments are
+    /// left alone (their deliverer is fixed).
+    pub fn sweep_orphans(&mut self) -> Result<usize> {
+        if !self.cfg.deliver || self.last_sweep.is_some_and(|t| t.elapsed() < self.cfg.orphan_every) {
+            return Ok(0);
+        }
+        self.last_sweep = Some(Instant::now());
+        let height = self.node.call("getChainInfo", json!({}))?.get("height").and_then(Value::as_u64).unwrap_or(0);
+        let mut queued = 0;
+        let mut offset = 0u64;
+        loop {
+            let page = self.node.call("listJobs", json!({"status": "open", "offset": offset, "limit": 200}))?;
+            let jobs = page.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+            for v in &jobs {
+                let n = |k: &str| v.get(k).and_then(|x| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
+                let kind = v.get("kind").and_then(Value::as_str).unwrap_or("job");
+                if kind != "job" || n("max_blocks") == 0 || n("blocks_mined") < n("max_blocks") || height >= n("deadline_height") {
+                    continue;
+                }
+                let job = match JobInfo::from_json(v) {
+                    Ok(j) => j,
+                    Err(_) => continue,
+                };
+                let id = job.job_id;
+                if self.deliveries.contains_key(&id) || self.orphans_seen.contains(&id) {
+                    continue;
+                }
+                self.orphans_seen.insert(id);
+                let prep = match pearl_node::load_job_data(self.node, &job.data_uri).and_then(|d| PreparedJob::new(job.to_job(), &d.a, &d.b)) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.log(json!({"event": "orphan_unusable", "job": hex::encode(id), "error": format!("{e:#}")}));
+                        continue;
+                    }
+                };
+                self.log(json!({"event": "orphan_found", "job": hex::encode(id), "blocks_mined": n("blocks_mined"), "deadline_height": n("deadline_height")}));
+                self.queue_delivery(id, &prep)?;
+                queued += 1;
+            }
+            offset += jobs.len() as u64;
+            if jobs.len() < 200 || offset >= n_total(&page) {
+                break;
+            }
+        }
+        Ok(queued)
+    }
+
     /// Header nonces tried so far (all threads).
     pub fn nonces_done(&self) -> u64 {
         self.nonces_done.load(Ordering::Relaxed)
@@ -460,6 +522,11 @@ impl<'a> Miner<'a> {
             if let Err(e) = self.step() {
                 self.log(json!({"event": "step_failed", "error": format!("{e:#}")}));
                 std::thread::sleep(Duration::from_millis(500));
+            }
+            if self.cfg.deliver {
+                if let Err(e) = self.sweep_orphans() {
+                    self.log(json!({"event": "orphan_sweep_failed", "error": format!("{e:#}")}));
+                }
             }
             if self.cfg.deliver && !self.deliveries.is_empty() {
                 let me = self.me();
@@ -485,4 +552,8 @@ fn blake3_seed() -> [u8; 32] {
     let mut v = t.to_le_bytes().to_vec();
     v.extend_from_slice(&std::process::id().to_le_bytes());
     pearl_job::merkle::blake3_digest(&v, None)
+}
+
+fn n_total(page: &Value) -> u64 {
+    page.get("total").and_then(Value::as_u64).unwrap_or(0)
 }

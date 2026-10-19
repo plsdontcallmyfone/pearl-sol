@@ -346,3 +346,63 @@ fn blob_job_data_and_blob_result() {
     assert!(node2.state.lock().unwrap().blocks.iter().all(|b| b.header.is_fallback()));
     drop(logs2);
 }
+
+/// MockNode plus the two calls the orphan sweep makes (`listJobs`, `getChainInfo`): it
+/// reports every mock job as mined out by someone else (`blocks_mined = max_blocks = 2`).
+struct MinedOutNode(MockNode);
+impl NodeApi for MinedOutNode {
+    fn block_template(&self, payout: &[u8; 32]) -> anyhow::Result<pearl_node::Template> { self.0.block_template(payout) }
+    fn submit_block(&self, t: &pearl_node::Template, b: &pearl_job::pow::MinedBlock) -> anyhow::Result<pearl_node::SubmitOutcome> { self.0.submit_block(t, b) }
+    fn get_job(&self, id: &[u8; 32]) -> anyhow::Result<Option<JobInfo>> { self.0.get_job(id) }
+    fn get_account(&self, a: &[u8; 32]) -> anyhow::Result<pearl_node::Account> { self.0.get_account(a) }
+    fn send_tx(&self, wire: &[u8]) -> anyhow::Result<String> { self.0.send_tx(wire) }
+    fn call(&self, method: &str, _p: Value) -> anyhow::Result<Value> {
+        let s = self.0.state.lock().unwrap();
+        match method {
+            "getChainInfo" => Ok(serde_json::json!({"height": s.blocks.len()})),
+            "listJobs" => {
+                let jobs: Vec<Value> = s.jobs.iter().filter(|j| j.is("Open")).map(|j| {
+                    let mut v = j.to_json();
+                    v["max_blocks"] = 2.into();
+                    v["blocks_mined"] = 2.into();
+                    v
+                }).collect();
+                Ok(serde_json::json!({"total": jobs.len(), "jobs": jobs}))
+            }
+            m => anyhow::bail!("method not found: {m}"),
+        }
+    }
+}
+
+/// A job other miners mined out without delivering (no `--deliver` there): the node no
+/// longer offers it, so a delivering miner finds it with the orphan sweep and closes it.
+#[test]
+fn delivers_orphaned_mined_out_job() {
+    let dir = tmp("orphan");
+    let mock = MockNode::new(CHAIN, EASY);
+    mock.state.lock().unwrap().max_blocks_per_job = 0; // templates are fallback only
+    let (job, c) = make_job(&dir, [0x0e; 32], 9);
+    mock.add_job(job.clone());
+    let node = MinedOutNode(mock.clone());
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(mock.clone())), freivalds_rounds: 2, models_dir: "models".into() });
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 3, true), log);
+    m.run(&|| false).unwrap();
+    let j = mock.job(&[0x0e; 32]).unwrap();
+    assert!(j.is("Completed"), "job is {}", j.status);
+    assert_eq!(j.deliverer, Some(miner_key().verifying_key().to_bytes()));
+    assert_eq!(j.result_hash, Some(result_hash(&job.to_job().job_key(), &c)));
+    assert_eq!(events(&logs, "orphan_found"), 1);
+    assert!(mock.state.lock().unwrap().blocks.iter().all(|b| b.header.job_id != [0x0e; 32]), "the sweep must not mine the job");
+
+    // without --deliver nothing is swept
+    let mock2 = MockNode::new(CHAIN, EASY);
+    mock2.state.lock().unwrap().max_blocks_per_job = 0;
+    mock2.add_job(make_job(&dir, [0x0f; 32], 10).0);
+    let node2 = MinedOutNode(mock2.clone());
+    let (logs2, log2) = collecting_log();
+    let mut m2 = Miner::new(&node2, None, miner_key(), cfg(&dir, 2, false), log2);
+    m2.run(&|| false).unwrap();
+    assert!(mock2.job(&[0x0f; 32]).unwrap().is("Open"));
+    assert_eq!(events(&logs2, "orphan_found"), 0);
+}
