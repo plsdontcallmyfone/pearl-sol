@@ -209,12 +209,18 @@ export class Service {
 
   async quote(q: Record<string, unknown>) {
     const cfg = await this.storeConfig();
-    const { m, n, k, maxBlocks } = this.checkDims(cfg, q);
-    const pr = this.price(cfg, m, n, k, maxBlocks);
+    // Inference ticket quote (SPEC 4.5): ?model_id=hex&prompt_tokens=P&max_tokens=N prices the
+    // ticket exactly as POST /jobs does (m = prompt tokens, n = max new tokens, k = 1).
+    const ticket = q.model_id !== undefined;
+    const dims = ticket ? { ...this.checkDims(cfg, { m: q.prompt_tokens, n: q.max_tokens, k: 1 }), maxBlocks: 1 } : this.checkDims(cfg, q);
+    const { m, n, k, maxBlocks } = dims;
+    const flops = ticket ? await this.ticketFlopsFor(String(q.model_id).toLowerCase(), m, n) : undefined;
+    const pr = this.price(cfg, m, n, k, maxBlocks, flops);
     const mk = await this.market(cfg, pr.jobLamports);
     const p = (mk.quote * BigInt(cfg.protocolFeeBps)) / 10_000n;
     return {
       m, n, k, max_blocks: maxBlocks,
+      ...(ticket ? { ticket: { model_id: String(q.model_id).toLowerCase(), prompt_tokens: m, max_tokens: n } } : {}),
       work_flops: pr.flops,
       sol_in_lamports: pr.solIn,
       job_lamports: pr.jobLamports,
@@ -261,10 +267,16 @@ export class Service {
     const model = ticketModel(spec.config);
     if (model === null) return undefined;
     if (spec.k !== 1) throw new BadRequest("a ticket has k = 1 (m = prompt tokens, n = max new tokens)");
+    return this.ticketFlopsFor(model, spec.m, spec.n);
+  }
+
+  /** 2 x macs_per_row x rows, rows = round_up(prompt + max new tokens, row period), from the registered model. */
+  async ticketFlopsFor(model: string, promptTokens: number, maxTokens: number): Promise<bigint> {
+    if (!/^[0-9a-f]{64}$/.test(model)) throw new BadRequest("model_id must be 32 bytes hex");
     const m = await this.model(model);
     if (!m) throw new BadRequest(`ticket names model ${model}, which is not registered on the agent chain`);
     const period = BigInt(m.row_period ?? 4);
-    const rows = ((BigInt(spec.m) + BigInt(spec.n) + period - 1n) / period) * period;
+    const rows = ((BigInt(promptTokens) + BigInt(maxTokens) + period - 1n) / period) * period;
     return 2n * BigInt(m.macs_per_row) * rows;
   }
 

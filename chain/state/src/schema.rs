@@ -157,6 +157,12 @@ pub struct TicketExt {
     pub blocks_allocated: u32,
     pub blocks_mined: u32,
     pub subsidy_paid: u64,
+    /// Segment rounds started (SPEC 4.5); the current round is `rounds - 1`.
+    pub rounds: u16,
+    /// m of the current round (every segment of a round has it).
+    pub round_rows: u32,
+    /// Sum of every round's m: the rows served, at most `rows`.
+    pub rows_used: u64,
 }
 
 impl JobExt {
@@ -171,7 +177,10 @@ impl JobExt {
                     .u32(t.segments)
                     .u32(t.blocks_allocated)
                     .u32(t.blocks_mined)
-                    .u64(t.subsidy_paid);
+                    .u64(t.subsidy_paid)
+                    .u16(t.rounds)
+                    .u32(t.round_rows)
+                    .u64(t.rows_used);
             }
             JobExt::Segment { ticket_id, model_id, matrix } => {
                 w.u8(2).bytes(ticket_id).bytes(model_id).u16(*matrix);
@@ -190,6 +199,9 @@ impl JobExt {
                 blocks_allocated: r.u32()?,
                 blocks_mined: r.u32()?,
                 subsidy_paid: r.u64()?,
+                rounds: r.u16()?,
+                round_rows: r.u32()?,
+                rows_used: r.u64()?,
             }),
             2 => JobExt::Segment { ticket_id: r.arr()?, model_id: r.arr()?, matrix: r.u16()? },
             _ => return Err(DecodeError::Invalid("job extension")),

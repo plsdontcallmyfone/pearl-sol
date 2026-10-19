@@ -283,8 +283,9 @@ pub enum TxBody {
     ClearRoute { account: Pubkey, route_nonce: u64, sig: Sig },
     /// Model registry entry (SPEC 4.5).
     RegisterModel(RegisterModel),
-    /// Standing jobs of a paid inference ticket: `ticket_id [32] | count u8 | Segment*` (SPEC 4.5).
-    PostSegments { ticket_id: Hash, segments: Vec<Segment> },
+    /// Standing jobs of a paid inference ticket, one round:
+    /// `ticket_id [32] | round u16 | count u8 | Segment*` (SPEC 4.5).
+    PostSegments { ticket_id: Hash, round: u16, segments: Vec<Segment> },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -370,8 +371,8 @@ impl TxBody {
                 w.bytes(account).u64(*route_nonce).bytes(sig);
             }
             Self::RegisterModel(m) => m.write(w),
-            Self::PostSegments { ticket_id, segments } => {
-                w.bytes(ticket_id).u8(segments.len() as u8);
+            Self::PostSegments { ticket_id, round, segments } => {
+                w.bytes(ticket_id).u16(*round).u8(segments.len() as u8);
                 for g in segments {
                     w.u16(g.matrix).u32(g.m).u32(g.max_blocks).bytes(&g.hash_a).bytes(&g.c_hash).bytes16(&g.a_uri);
                 }
@@ -424,6 +425,7 @@ impl TxBody {
             TxKind::RegisterModel => Self::RegisterModel(RegisterModel::read(r)?),
             TxKind::PostSegments => {
                 let ticket_id = r.arr()?;
+                let round = r.u16()?;
                 let count = r.u8()? as usize;
                 if count > MAX_SEGMENTS {
                     return Err(DecodeError::TooLarge("segments"));
@@ -439,7 +441,7 @@ impl TxBody {
                         a_uri: r.bytes16(MAX_URI, "a_uri")?,
                     });
                 }
-                Self::PostSegments { ticket_id, segments }
+                Self::PostSegments { ticket_id, round, segments }
             }
         })
     }

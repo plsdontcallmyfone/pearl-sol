@@ -338,6 +338,13 @@ test("POST /jobs: an inference ticket (SPEC 4.5) is priced by its registered mod
   const unk = await svc.handle({ method: "POST", url: "/jobs", headers: {}, body: JSON.stringify(other) });
   assert.equal(unk.status, 400);
   assert.match((unk.body as any).error, /not registered/);
+  // GET /quote prices the same ticket without placing it (cadre-api reads this)
+  const qr = await svc.handle({ method: "GET", url: `/quote?model_id=${model}&prompt_tokens=6&max_tokens=10`, headers: {} });
+  assert.equal(qr.status, 200, String((qr.body as any).error));
+  assert.equal(BigInt((qr.body as any).price_lamports), solIn + 14_000_000n);
+  assert.equal((qr.body as any).work_flops, flops);
+  assert.deepEqual((qr.body as any).ticket, { model_id: model, prompt_tokens: 6, max_tokens: 10 });
+  assert.equal((await svc.handle({ method: "GET", url: `/quote?model_id=${"01".repeat(32)}&prompt_tokens=6&max_tokens=10`, headers: {} })).status, 400);
 });
 
 test("CU of the service's buy_job tx", () => {

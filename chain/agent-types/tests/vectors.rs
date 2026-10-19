@@ -84,8 +84,8 @@ fn body_json(b: &TxBody) -> Value {
             "name": String::from_utf8_lossy(&m.name), "manifest_uri": String::from_utf8_lossy(&m.manifest_uri),
             "recipe": m.recipe, "rank": m.rank, "rows_pattern": hex::encode(m.rows_pattern), "cols_pattern": hex::encode(m.cols_pattern),
             "matrices": m.matrices.iter().map(|x| json!({"k": x.k, "n": x.n, "hash_b": hex::encode(x.hash_b)})).collect::<Vec<_>>()}),
-        TxBody::PostSegments { ticket_id, segments } => json!({
-            "ticket_id": hex::encode(ticket_id),
+        TxBody::PostSegments { ticket_id, round, segments } => json!({
+            "ticket_id": hex::encode(ticket_id), "round": round,
             "segments": segments.iter().map(|g| json!({"matrix": g.matrix, "m": g.m, "max_blocks": g.max_blocks,
                 "hash_a": hex::encode(g.hash_a), "c_hash": hex::encode(g.c_hash), "a_uri": String::from_utf8_lossy(&g.a_uri)})).collect::<Vec<_>>()}),
     }
@@ -330,6 +330,7 @@ fn build() -> Vec<(&'static str, Value)> {
             1000,
             TxBody::PostSegments {
                 ticket_id: order_job_id(44),
+                round: 0,
                 segments: vec![Segment {
                     matrix: 1,
                     m: 12,

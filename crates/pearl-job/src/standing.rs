@@ -68,9 +68,9 @@ pub fn matrix_job_key(model_id: &Hash256, index: u16, k: u32, n: u32, base: &Min
     job_key(&matrix_job_header(model_id, index, k, n), &matrix_config(base, k))
 }
 
-/// `segment_id = blake3("pearl-sol:segment:v1" || ticket_id || matrix u16)`.
-pub fn segment_id(ticket_id: &Hash256, matrix: u16) -> Hash256 {
-    blake3_digest(&[&b"pearl-sol:segment:v1"[..], ticket_id, &matrix.to_le_bytes()].concat(), None)
+/// `segment_id = blake3("pearl-sol:segment:v1" || ticket_id || matrix u16 || round u16)`.
+pub fn segment_id(ticket_id: &Hash256, matrix: u16, round: u16) -> Hash256 {
+    blake3_digest(&[&b"pearl-sol:segment:v1"[..], ticket_id, &matrix.to_le_bytes(), &round.to_le_bytes()].concat(), None)
 }
 
 /// Ticket config: `"CADRE-T1" || model_id [32] || 0 [12]`.
@@ -344,7 +344,8 @@ mod tests {
         let a = model_id(&reg, b"m");
         assert_ne!(a, model_id(&reg, b"n"));
         assert_ne!(a, model_id(&[2u8; 32], b"m"));
-        assert_ne!(segment_id(&[3; 32], 0), segment_id(&[3; 32], 1));
+        assert_ne!(segment_id(&[3; 32], 0, 0), segment_id(&[3; 32], 1, 0));
+        assert_ne!(segment_id(&[3; 32], 0, 0), segment_id(&[3; 32], 0, 1));
         assert_ne!(matrix_terms_hash(&a, 0, 2048, 8), matrix_terms_hash(&a, 1, 2048, 8));
         assert_eq!(ticket_rows(5, 6, 4), 12);
         assert_eq!(ticket_rows(4, 4, 4), 8);

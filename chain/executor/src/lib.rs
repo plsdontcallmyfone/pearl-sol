@@ -531,9 +531,12 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 check_sigs(sigs, &j.evaluators, j.threshold, &msg)?;
                 j.status = JobStatus::Completed;
                 j.closed_height = h;
-                let pay = j.worker_pay;
+                let mut pay = j.worker_pay;
                 let to = j.deliverer;
                 self.ov.put_job(&j);
+                if let Some(te) = j.ticket() {
+                    pay = self.settle_ticket_rows(&j, te).await?;
+                }
                 self.credit_income(&to, pay, &mut out.withdrawals, &mut out.routed).await?;
             }
             TxBody::ExpireJob { job_id } => {
@@ -690,7 +693,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 self.ov.put_route(account, &r);
             }
             TxBody::RegisterModel(m) => self.register_model(&tx.from, m).await?,
-            TxBody::PostSegments { ticket_id, segments } => self.post_segments(&tx.from, ticket_id, segments).await?,
+            TxBody::PostSegments { ticket_id, round, segments } => self.post_segments(&tx.from, ticket_id, *round, segments).await?,
         }
         Ok(out)
     }
@@ -763,15 +766,15 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
     }
 
     /// PostSegments (SPEC 4.5): standing jobs of a ticket, MAC-proportional caps.
-    async fn post_segments(&mut self, from: &Pubkey, ticket_id: &Hash, segments: &[agent_types::Segment]) -> Result<(), TxError> {
+    async fn post_segments(&mut self, from: &Pubkey, ticket_id: &Hash, round: u16, segments: &[agent_types::Segment]) -> Result<(), TxError> {
         let h = self.env.height;
         if segments.is_empty() || segments.len() > agent_types::tx::MAX_SEGMENTS {
             return bad("PostSegments carries 1..=64 segments");
         }
         let Some(mut t) = self.ov.job(ticket_id).await? else { return bad("unknown ticket") };
         let Some(mut te) = t.ticket().copied() else { return bad("not an inference ticket") };
-        if !t.status.is_live() {
-            return bad("ticket is closed");
+        if t.status != JobStatus::Open {
+            return bad("ticket is closed (segments are posted while it is Open)");
         }
         if h > t.deadline_height {
             return bad("ticket deadline passed");
@@ -784,6 +787,28 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         let Some(mut model) = self.ov.model(&te.model_id).await? else { return bad("ticket's model is not registered") };
         let base = model.base_config().map_err(TxError::Invalid)?;
         let period = base.rows_pattern.period() as u64;
+        // rounds: this tx continues the current round or starts the next one (all its segments share m)
+        let m0 = segments[0].m;
+        if segments.iter().any(|g| g.m != m0) {
+            return bad("every segment of a round has the same m");
+        }
+        if te.rounds > 0 && round == te.rounds - 1 {
+            if m0 != te.round_rows {
+                return bad(format!("round {round} has m {}, not {m0}", te.round_rows));
+            }
+        } else if round == te.rounds {
+            if m0 == 0 || m0 as u64 % period != 0 {
+                return bad(format!("segment m {m0} must be a positive multiple of {period}"));
+            }
+            if te.rows_used + m0 as u64 > te.rows {
+                return bad(format!("round of {m0} rows exceeds the ticket's budget ({} of {} rows used)", te.rows_used, te.rows));
+            }
+            te.rounds += 1;
+            te.round_rows = m0;
+            te.rows_used += m0 as u64;
+        } else {
+            return bad(format!("round {round}: the ticket is at round {} (continue it or start {})", te.rounds as i64 - 1, te.rounds));
+        }
         let mut c = self.ov.counters().await?;
         for g in segments {
             let Some(mx) = model.matrices.get(g.matrix as usize).copied() else { return bad(format!("model has no matrix {}", g.matrix)) };
@@ -801,9 +826,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 return bad("a_uri must be a blob: URI");
             }
             check_uri(&g.a_uri, "a_uri")?;
-            let id = pearl_job::standing::segment_id(ticket_id, g.matrix);
+            let id = pearl_job::standing::segment_id(ticket_id, g.matrix, round);
             if self.ov.job(&id).await?.is_some() {
-                return bad(format!("ticket already has a segment for matrix {}", g.matrix));
+                return bad(format!("round {round} already has a segment for matrix {}", g.matrix));
             }
             let cap = pearl_job::standing::segment_cap(te.cap_total, g.m, mx.k, mx.n, te.rows, model.macs_per_row);
             if cap > t.cap_remaining {
@@ -853,6 +878,26 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         self.ov.put_job(&t);
         self.ov.put_model(&model);
         Ok(())
+    }
+
+    /// Pay for rows used (SPEC 4.5): the server's share of W, `floor(W x rows_used / R)`, is
+    /// returned for the caller to credit; the rest of W and `floor(P x (R - rows_used) / R)`
+    /// from the mining pool go back to the poster.
+    async fn settle_ticket_rows(&mut self, j: &JobRecord, te: &TicketExt) -> Result<u64, TxError> {
+        let rows = te.rows.max(1) as u128;
+        let used = te.rows_used.min(te.rows) as u128;
+        let pay = (j.worker_pay as u128 * used / rows) as u64;
+        let p_back = (j.protocol_fee as u128 * (rows - used) / rows) as u64;
+        let pool = self.ov.account(&pool_address()).await?.balance;
+        let p_back = p_back.min(pool);
+        if p_back > 0 {
+            self.ov.debit(&pool_address(), p_back).await?;
+        }
+        let back = j.worker_pay - pay + p_back;
+        if back > 0 {
+            self.ov.credit(&j.poster, back).await?;
+        }
+        Ok(pay)
     }
 
     /// A PostJob body as a plain job or a ticket (SPEC 4.5): absolute deadline and, for a
