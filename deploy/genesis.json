@@ -1,0 +1,11 @@
+{
+  "chain_id": 1128350802,
+  "timestamp_ms": 1792378354599,
+  "target_bits": "0x1e0f1b3f",
+  "admin": "Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb",
+  "attesters": [
+    "9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD"
+  ],
+  "attester_threshold": 1,
+  "params": {}
+}

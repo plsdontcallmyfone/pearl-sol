@@ -49,7 +49,7 @@ case "${1:-}" in
     [[ $n == 0 ]] && printf 'TOKEN_RPC=%s\nBRIDGE_PROGRAM=%s\nSTOREFRONT_PROGRAM=%s\nRESERVE_PROGRAM=%s\nLIGHTCLIENT_PROGRAM=%s\nPUBLIC_URL=https://storefront.%s.sslip.io\nHR_PARALLEL=%s\nREFUND_GRACE_MS=%s\n' \
       "$SOLANA_RPC" "$BRIDGE_PROGRAM" "$STOREFRONT_PROGRAM" "$RESERVE_PROGRAM" "$LIGHTCLIENT_PROGRAM" "$dash" "$HR_PARALLEL" "$REFUND_GRACE_MS" > "$tmp/services.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"
-    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json node.json miner.env /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true
+    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true
       install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer
       systemctl daemon-reload; systemctl reload caddy || systemctl restart caddy; rm -f /tmp/cadre-*.service /tmp/genesis.json /tmp/node.json /tmp/*.env /tmp/Caddyfile; echo installed on box $n"
     ;;

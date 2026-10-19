@@ -1,9 +1,5 @@
 # Cadre devnet https front (docs/DEVNET.md). @IP@ = this box's IPv4 with dashes (sslip.io).
 # Certificates: Let's Encrypt via caddy's automatic HTTPS (ports 80 + 443 open in ufw).
-{
-	email ops@cadre.invalid
-}
-
 rpc.@IP@.sslip.io {
 	encode gzip
 	@ws path /ws /ws/*
