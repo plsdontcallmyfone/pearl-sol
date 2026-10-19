@@ -319,48 +319,65 @@ hash_a = request_hash = blake3(request blob)        hash_b = server key (0 = fir
 data_uri = request blob (blob:)                      max_blocks = block budget of all its segments
 W, P, deadline, evaluators, threshold as for any job
 ```
-- The model must be registered; `R = round_up(m + n, row period) <= 4096` (rows the request
-  may produce, prompt plus generated tokens).
+- The model must be registered; the row budget is `R = round_up(m + n, row period) <= 4096`.
+  A one-request ticket uses m = prompt tokens, n = max new tokens; a prepaid balance ticket
+  (5.4) uses m = R - 1, n = 1.
 - A ticket is a JobRecord with a ticket extension (`model_id, server, rows R, cap_total =
   alpha x P, segments, blocks allocated, blocks mined, subsidy`). It is never mineable. W is
   escrowed, P goes to the mining pool at post time (non-refundable), `cap_remaining` starts
   at `alpha x P` and is the not-yet-allocated part of the ticket's subsidy cap.
-- Lifecycle as a job: Open -> Delivered (SubmitResult by the server only; `result_hash` =
-  blob id of the response blob, uri = that blob) -> Completed (CompleteJob, evaluator
-  signatures over the usual result message; W to the server) or Expired (after the
-  deadline; W back to the poster, the unallocated cap stays in the pool).
+- Lifecycle as a job: Open -> Delivered (SubmitResult by the server only, after its last
+  round; `result_hash` = blob id of the response blob, uri = that blob) -> Completed
+  (CompleteJob, evaluator signatures over the usual result message; W pro rata to the server,
+  see PostSegments) or Expired (after the deadline; W back to the poster, the unallocated cap
+  stays in the pool).
 - Request blob: JSON `{"format": "cadre-request-v1", "model_id", "prompt_ids": [...],
   "max_new_tokens", "sampling": "greedy"}`. Response blob: JSON `{"format":
-  "cadre-response-v1", "model_id", "ticket_id", "request_hash", "rows", "prompt_ids",
-  "output_ids", "text", "segments": [{"matrix", "segment_id", "m"}]}`.
+  "cadre-response-v1", "model_id", "ticket_id", "request_hash", "rows", "rounds": [{"round",
+  "m", "requests": [{"request_id", "body_sha256", "row_offset", "rows", "prompt_tokens",
+  "completion_tokens", "output_sha256"}]}], "segments": [{"round", "matrix", "segment_id", "m"}]}`
+  (one-request tickets also carry `prompt_ids`, `output_ids`, `text`). Per-request receipts
+  live here: the chain sees one ticket per balance, the buyer can check every request's rows.
 
 **`PostSegments` (kind 12)**, sent by the ticket's server:
 ```
-ticket_id [32] | count u8 (1..=64)
+ticket_id [32] | round u16 | count u8 (1..=64)
 | (matrix u16 | m u32 | max_blocks u32 | hash_a [32] | c_hash [32] | a_uri (u16 len, blob:)) * count
 ```
-- Ticket must be Open or Delivered and `height <= deadline`; the sender must be the server
-  (or claims an unset server). `matrix < count`; `m` in `[period, R]`, a multiple of the row
-  period (the server pads A with zero rows); `max_blocks >= 1` and the ticket's segments
-  together use at most the ticket's `max_blocks`; `a_uri` a well-formed blob URI.
+- Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
+  The server serves requests off chain against the ticket's row budget R and posts their GEMMs
+  in rounds: round r stacks the rows of every request served in that period (each request's
+  rows contiguous, zero-padded to the row period). The ticket records `rounds` (started),
+  `round_rows` (m of the current round) and `rows_used` (sum of every round's m). A tx names
+  either the current round (`round = rounds - 1`, every segment's `m = round_rows`) or starts
+  the next one (`round = rounds`, sets `round_rows = m`, `rows_used += m`); `rows_used <= R`.
+  A one-request ticket is a single round 0.
+- Ticket must be Open and `height <= deadline`; the sender must be the server (or claims an
+  unset server). `matrix < count`; `m` a positive multiple of the row period; `max_blocks >= 1`
+  and all segments together use at most the ticket's `max_blocks`; `a_uri` a well-formed blob
+  URI.
 - Each segment is a standing job: `segment_id = blake3("pearl-sol:segment:v1" || ticket_id
-  || matrix u16)` (one segment per matrix per ticket), a JobRecord with poster = server,
-  `(m, n, k)` and config from the registry, `hash_a` from the tx, `hash_b` = the registered
-  one, header = the matrix job header above, `data_uri = a_uri`, W = P = 0, deadline = the
-  ticket's, `result_hash = c_hash = blake3_keyed(C as i32 LE row-major, job_key)` (the
-  output the server used, committed at post time; status stays Open), evaluators = the
-  ticket's.
+  || matrix u16 || round u16)` (one segment per matrix per round), a JobRecord with poster =
+  server, `(m, n, k)` and config from the registry, `hash_a` from the tx, `hash_b` = the
+  registered one, header = the matrix job header above, `data_uri = a_uri`, W = P = 0,
+  deadline = the ticket's, `result_hash = c_hash = blake3_keyed(C as i32 LE row-major,
+  job_key)` (the output the server used, committed at post time; status stays Open),
+  evaluators = the ticket's.
 - Subsidy cap, MAC-proportional: `seg_cap = floor(cap_total x m k n / (R x macs_per_row))`,
-  moved from the ticket's `cap_remaining` into the segment's. One segment per matrix and
-  `m <= R` give `sum seg_cap <= cap_total = alpha x P`, so the paid-work rule holds for the
-  whole ticket however its segments are mined, and a request that stops early (fewer rows)
-  earns proportionally less. Mining a segment is an ordinary job block (3.4): `subsidy =
-  min(pool x emission_ppm, seg cap_remaining)`; the ticket's and the model's totals are
-  updated in the same block.
-- Segments are mineable until the ticket's deadline whether or not the ticket completed (P
-  was paid when the ticket was posted). SubmitResult and CompleteJob are refused on a
-  segment (its output is committed at post time); ExpireJob closes it after the deadline
-  (nothing to refund).
+  moved from the ticket's `cap_remaining` into the segment's. Per matrix the rounds' m sum to
+  `rows_used <= R`, so `sum seg_cap <= cap_total = alpha x P`: the paid-work rule holds for the
+  whole ticket however its segments are mined, and unused rows earn nothing. Mining a segment
+  is an ordinary job block (3.4): `subsidy = min(pool x emission_ppm, seg cap_remaining)`; the
+  ticket's and the model's totals are updated in the same block.
+- Pay for rows used: CompleteJob on a ticket pays the server `floor(W x rows_used / R)` and
+  returns the rest of W plus `floor(P x (R - rows_used) / R)` (from the mining pool) to the
+  poster, so an unused balance or an early stop is refunded on the chain (in CADRE, to the
+  buyer's chain account). The subsidy bound still holds: the segments can earn at most
+  `alpha x P x rows_used / R`, alpha times the P the pool keeps. ExpireJob refunds all of W
+  (P stays in the pool, as for every job).
+- Segments are mineable until the ticket's deadline whether or not the ticket completed.
+  SubmitResult and CompleteJob are refused on a segment (its output is committed at post
+  time); ExpireJob closes it after the deadline (nothing to refund).
 - A block on a segment needs `A` (the `a_uri` blob, `"PSA1" || m u32 || k u32 || A i8[m x
   k]`) and `B_j` (the miner's copy of the registered model). The template's job object
   carries `kind: "segment"` and the standing fields so a miner knows to load B from its
@@ -685,34 +702,76 @@ relay services/header-relay):
   `--settle` proves each withdrawal at the light client's own final height (block hash
   checked against the node's), falling back to the current-root proof on an older node.
   Refused below the withdrawal's block or above the node's final height.
-### 5.4 Inference gateway (Cadre, 2026-10-18)
+### 5.4 Inference gateway and its public API (Cadre, 2026-10-18; API v1, keep stable)
 
 `services/inference-gateway` (`cadre-gateway`, port 10664) sits in front of storefront-x402
-and next to a model worker (`tools/cadre/worker.py`, port 10665, the int7 model runner).
-The gateway's key is the ticket's server and its chain account.
+and next to a model worker (`tools/cadre/worker.py`, port 10665, the int7 model runner). The
+gateway's key is the server of its tickets (it posts their segments, delivers, receives W).
+Other services (cadre-proxy, services/cadre-api) build against the API below; changes are
+additive only.
 
-- `POST /v1/completions {"prompt", "max_tokens", "recipient"?}`: tokenizes (worker), builds
-  the request blob, puts it on the node, builds the ticket spec and forwards the buyer's
-  `X-PAYMENT` with it to storefront-x402 `POST /jobs`. No payment: the 402 with the
-  storefront's requirements goes back to the buyer (pay to the storefront wallet, as for any
-  job). Paid: the order is placed, the worker runs the request at once (greedy, recipe 1)
-  and the reply carries the tokens and the ticket / order ids. Settlement continues in the
-  background: wait for the ticket on the chain, PostSegments (A blobs + C commitments),
-  SubmitResult (response blob), attester signature, CompleteJob.
-- `GET /v1/requests/<ticket_id>`: ticket, segments (status, blocks mined, subsidy), order.
-  `GET /v1/models`, `GET /health`.
-- The buyer's chain key is the ticket's poster (an expired ticket refunds W to it), as for
-  storefront jobs.
+Payment model (owner decision 2026-10-18): PREPAID BALANCE. A buyer tops up once (SOL over
+x402 through the storefront: one Order = one balance ticket of R rows, default 4096), then
+sends wallet-authenticated requests that draw rows from it with no Solana or chain tx on the
+request path. The gateway posts the served rows as segment rounds every period, and when the
+balance is used up, near its deadline or closed by the buyer, delivers the receipts and
+completes the ticket: one order and one CompleteJob per balance, W paid pro rata to rows
+used, the rest of W and P refunded on the chain (4.5). Any open ticket the wallet posted on
+the chain itself (PostJob, ticket form, server = this gateway) counts as balance too. A
+per-request x402 payment (one ticket per request) stays available but is not the main path.
+
+Authentication (requests that draw on a balance), either:
+- wallet signature headers: `X-Cadre-Wallet: <base58 ed25519 pubkey>`, `X-Cadre-Timestamp:
+  <unix ms>`, `X-Cadre-Signature: <hex 64 bytes>`, a raw ed25519 signature over
+  `"cadre-auth-v1\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`.
+  The timestamp must be within 120 s; a signature is accepted once.
+- `Authorization: Bearer cadre_sk_<hex>`: an API key bound to a wallet, made by
+  `POST /v1/keys` (wallet-signed), revoked by `DELETE /v1/keys/<key_id>` (wallet-signed).
+  This is what plain OpenAI clients send.
+
+Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
+| Method, path | Auth | What |
+|---|---|---|
+| `GET /health` | none | `{ok, server, model_id, model}` |
+| `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
+| `POST /v1/balance/topup` | x402 (`X-PAYMENT`) | body `{rows?}`; no payment: 402 with the storefront's requirements; paid: 201 `{ticket_id, order, rows, wallet}` (wallet = the x402 payer = the ticket's poster) |
+| `GET /v1/balance` | wallet or key | `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}` |
+| `POST /v1/balance/close` | wallet or key | settle and complete the wallet's open tickets now (refund of the unused rows on the chain) |
+| `POST /v1/keys` | wallet | `{key_id, api_key}` (the key is shown once) |
+| `DELETE /v1/keys/<key_id>` | wallet | revoke |
+| `POST /v1/chat/completions` | wallet or key; or x402 per request | OpenAI chat completions: `model`, `messages`, `max_tokens` / `max_completion_tokens`, `stream`, `stop`, `tools` / `tool_choice` (rendered by the model's chat template; tool calls are parsed from the output when the model emits them, best effort), `temperature` / `top_p` accepted but decoding is greedy (deterministic, documented in each response); returns `chat.completion` (or SSE `chat.completion.chunk` events ending in `data: [DONE]`, usage and receipt in the last chunk) |
+| `POST /v1/completions` | same | OpenAI text completions (`prompt`) |
+| `GET /v1/requests/<request_id>` | none | the receipt plus its settlement: round, segment ids, blocks mined on them, ticket status, Solana order status |
+| `GET /v1/stats` | none | measured figures of this gateway: requests, time to first token, decode tokens/s (recent and totals) |
+
+Receipt (every inference response): headers `X-Cadre-Request` (request id), `X-Cadre-Ticket`,
+`X-Cadre-Order` (storefront order nonce, or empty for a chain-native ticket),
+`X-Cadre-Rows`, `X-Cadre-Charged-Lamports`, `X-Cadre-Receipt` (status URL) and
+`X-Cadre-Explorer` (explorer link to the ticket); the body carries the same as
+`cadre: {request_id, ticket_id, order, rows, charged_lamports, lamports_per_row, round: null
+until posted, status_url, explorer_url, decoding: "greedy"}`. `usage` is OpenAI's
+(`prompt_tokens`, `completion_tokens`, `total_tokens`).
+
+Pricing: one row = one token through every registered matrix. `lamports_per_row` = the
+balance's x402 price / R (the storefront knobs over `2 x macs_per_row x R`, 5.1/4.5), so
+prompt and completion tokens cost the same. A DEFAULT, not a market price (owner decision
+open); no USD figure is shown because the stack has no price source.
+
+Settlement rounds: every `--round-secs` (default 60) the gateway posts one round per ticket
+with served rows (A blobs + PostSegments); it delivers and completes a ticket when its free
+rows drop below `--min-free-rows` (default 64), when it is within `--close-margin-blocks`
+(default 50) of its deadline, or on `/v1/balance/close`.
 
 Evaluator rule for tickets (M1, services/attester): the response blob must hash to the
-ticket's `result_hash`, name the ticket's model and `request_hash`, and declare `rows`; the
-ticket must have one segment for every registered matrix with `m = round_up(rows, period)`;
-for each segment the attester loads A (blob) and B (its copy of the model, checked against
-`hash_b`), computes `C = A B` and requires `blake3_keyed(C, job_key) == c_hash`. Then it
-signs the result message. Not checked in M1: the non-GEMM steps (norms, attention, sampling)
-that connect one segment's C to the next segment's A, so a server could commit correct
-GEMMs over wrong activations. Follow-up: replay by the evaluator (greedy decoding is
-deterministic on one platform) or a TOPLOC-style activation check.
+ticket's `result_hash`, name the ticket's model and `request_hash`; its rounds must match the
+chain's (count, m), each round's receipts must fit in its m; every round must have one
+segment for every registered matrix; for each segment the attester loads A (blob) and B (its
+copy of the model, checked against `hash_b`), computes `C = A B` and requires
+`blake3_keyed(C, job_key) == c_hash`. Then it signs the result message. Not checked in M1: the
+non-GEMM steps (norms, attention, sampling) that connect one segment's C to the next segment's
+A, so a server could commit correct GEMMs over wrong activations. Follow-up: replay by the
+evaluator (greedy decoding is deterministic on one platform) or a TOPLOC-style activation
+check (research/agents/REPUTATION.md).
 
 ## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
 
