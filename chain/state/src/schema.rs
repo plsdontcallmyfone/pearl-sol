@@ -22,6 +22,10 @@ pub mod tag {
     pub const MODEL: u8 = 11;
     pub const MODEL_INDEX: u8 = 12;
     pub const MODEL_COUNT: u8 = 13;
+    /// RejectResult records (state/src/reject.rs).
+    pub const REJECT: u8 = 14;
+    pub const REJECT_COUNT: u8 = 15;
+    pub const REJECT_STATS: u8 = 16;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {

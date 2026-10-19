@@ -218,13 +218,15 @@ pub struct HistoryEntry {
 }
 
 /// Accounts a tx touches, as far as the tx bytes say: the sender, a Transfer's
-/// recipient, a BridgeUnlock's recipient (job payouts and coinbase are not listed).
+/// recipient, a BridgeUnlock's recipient, a RejectResult's deliverer (job payouts and
+/// coinbase are not listed).
 pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
     let mut v = vec![t.from];
     match &t.body {
         agent_types::TxBody::Transfer { to, .. } => v.push(*to),
         agent_types::TxBody::BridgeUnlock { recipient, .. } => v.push(*recipient),
         agent_types::TxBody::ClearRoute { account, .. } => v.push(*account),
+        agent_types::TxBody::RejectResult { deliverer, .. } => v.push(*deliverer),
         _ => {}
     }
     v.dedup();

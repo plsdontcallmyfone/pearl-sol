@@ -31,6 +31,8 @@ pub const NS_TX: &[u8] = b"pearl-sol:tx:v1";
 
 /// Evaluator signatures for CompleteJob: `domain || job_id || deliverer || result_hash`.
 pub const DOMAIN_RESULT: &[u8] = b"pearl-sol:result:v1";
+/// Evaluator signatures for RejectResult (SPEC 4.1): `domain || job_id || deliverer || result_hash`.
+pub const DOMAIN_REJECT: &[u8] = b"pearl-sol:reject:v1";
 /// Plain BridgeUnlock: `domain || solana_nonce u64 LE || recipient || amount_spl u64 LE`.
 pub const DOMAIN_DEPOSIT: &[u8] = b"pearl-sol:deposit:v1";
 /// Storefront order BridgeUnlock (job_order = 1):

@@ -12,7 +12,7 @@ use commonware_codec::{Encode, ReadExt};
 use commonware_cryptography::{ed25519, Signer, Verifier};
 
 use crate::codec::{R, W};
-use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_RESULT, NS_TX, TX_VERSION};
+use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_REJECT, DOMAIN_RESULT, NS_TX, TX_VERSION};
 
 pub const MAX_NAME: usize = 64;
 pub const MAX_URI: usize = 512;
@@ -43,6 +43,7 @@ pub enum TxKind {
     ClearRoute = 10,
     RegisterModel = 11,
     PostSegments = 12,
+    RejectResult = 13,
 }
 
 impl TxKind {
@@ -61,6 +62,7 @@ impl TxKind {
             10 => Self::ClearRoute,
             11 => Self::RegisterModel,
             12 => Self::PostSegments,
+            13 => Self::RejectResult,
             k => return Err(DecodeError::Kind(k)),
         })
     }
@@ -79,6 +81,7 @@ impl TxKind {
             Self::ClearRoute => "ClearRoute",
             Self::RegisterModel => "RegisterModel",
             Self::PostSegments => "PostSegments",
+            Self::RejectResult => "RejectResult",
         }
     }
 }
@@ -286,6 +289,12 @@ pub enum TxBody {
     /// Standing jobs of a paid inference ticket, one round:
     /// `ticket_id [32] | round u16 | count u8 | Segment*` (SPEC 4.5).
     PostSegments { ticket_id: Hash, round: u16, segments: Vec<Segment> },
+    /// Evaluators reject the current delivery of a job (SPEC 4.1):
+    /// `job_id [32] | deliverer [32] | result_hash [32] | count u8 | (pubkey [32], sig [64])*`,
+    /// each sig RAW ed25519 over [`reject_message`]. `deliverer` and `result_hash` must be
+    /// the job's current ones (so the tx names whom it rejects without reading state).
+    /// The job reopens; the failed delivery is recorded against the deliverer.
+    RejectResult { job_id: Hash, deliverer: Pubkey, result_hash: Hash, sigs: Vec<AttesterSig> },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -323,6 +332,7 @@ impl TxBody {
             Self::ClearRoute { .. } => TxKind::ClearRoute,
             Self::RegisterModel(_) => TxKind::RegisterModel,
             Self::PostSegments { .. } => TxKind::PostSegments,
+            Self::RejectResult { .. } => TxKind::RejectResult,
         }
     }
 
@@ -376,6 +386,10 @@ impl TxBody {
                 for g in segments {
                     w.u16(g.matrix).u32(g.m).u32(g.max_blocks).bytes(&g.hash_a).bytes(&g.c_hash).bytes16(&g.a_uri);
                 }
+            }
+            Self::RejectResult { job_id, deliverer, result_hash, sigs } => {
+                w.bytes(job_id).bytes(deliverer).bytes(result_hash);
+                write_sigs(w, sigs);
             }
         }
     }
@@ -443,6 +457,12 @@ impl TxBody {
                 }
                 Self::PostSegments { ticket_id, round, segments }
             }
+            TxKind::RejectResult => Self::RejectResult {
+                job_id: r.arr()?,
+                deliverer: r.arr()?,
+                result_hash: r.arr()?,
+                sigs: read_sigs(r)?,
+            },
         })
     }
 }
@@ -616,6 +636,13 @@ pub fn route_clear_message(chain_id: u32, account: &Pubkey, route_nonce: u64) ->
 /// Message evaluators sign to complete a job: `b"pearl-sol:result:v1" || job_id || deliverer || result_hash`.
 pub fn result_message(job_id: &Hash, deliverer: &Pubkey, result_hash: &Hash) -> Vec<u8> {
     [DOMAIN_RESULT, &job_id[..], &deliverer[..], &result_hash[..]].concat()
+}
+
+/// Message evaluators sign to reject a delivery (RejectResult):
+/// `b"pearl-sol:reject:v1" || job_id || deliverer || result_hash` (same layout as
+/// [`result_message`], another domain, so a signature can never serve as the other).
+pub fn reject_message(job_id: &Hash, deliverer: &Pubkey, result_hash: &Hash) -> Vec<u8> {
+    [DOMAIN_REJECT, &job_id[..], &deliverer[..], &result_hash[..]].concat()
 }
 
 impl commonware_codec::Write for Tx {

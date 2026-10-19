@@ -4,7 +4,7 @@
 //! a plain run checks that the encoder still produces them byte for byte.
 
 use agent_types::block::encode_header_with_proof;
-use agent_types::tx::{deposit_message, order_job_id, order_message, pubkey_from_seed, result_message, route_clear_message, sign_plain};
+use agent_types::tx::{deposit_message, order_job_id, order_message, pubkey_from_seed, reject_message, result_message, route_clear_message, sign_plain};
 use agent_types::*;
 use serde_json::{json, Value};
 
@@ -88,6 +88,9 @@ fn body_json(b: &TxBody) -> Value {
             "ticket_id": hex::encode(ticket_id), "round": round,
             "segments": segments.iter().map(|g| json!({"matrix": g.matrix, "m": g.m, "max_blocks": g.max_blocks,
                 "hash_a": hex::encode(g.hash_a), "c_hash": hex::encode(g.c_hash), "a_uri": String::from_utf8_lossy(&g.a_uri)})).collect::<Vec<_>>()}),
+        TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => json!({
+            "job_id": hex::encode(job_id), "deliverer": b58(deliverer), "result_hash": hex::encode(result_hash),
+            "sigs": sigs_json(sigs)}),
     }
 }
 
@@ -343,8 +346,23 @@ fn build() -> Vec<(&'static str, Value)> {
         )
         .0,
     ];
+    // RejectResult (kind 13) in its own file, like standing.json: evaluators 20 and 21
+    // reject bob's delivery of the sample job (threshold 2 shown; the sample job has 1).
+    let jmsg = reject_message(&job_id, &bob, &result_hash);
+    let reject = json!({
+        "txs": [tx_vector(
+            "reject_result",
+            3,
+            2,
+            1000,
+            TxBody::RejectResult { job_id, deliverer: bob, result_hash, sigs: vec![signed_sig(20, &jmsg), signed_sig(21, &jmsg)] },
+        )
+        .0],
+        "messages": [msg_v("reject", DOMAIN_REJECT, &jmsg, 20)],
+    });
     vec![
         ("tx.json", Value::Array(tx_json)),
+        ("reject.json", reject),
         ("messages.json", messages),
         ("header.json", header_v),
         ("standing.json", Value::Array(standing)),

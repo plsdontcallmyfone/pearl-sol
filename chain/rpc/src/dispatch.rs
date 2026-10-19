@@ -391,7 +391,18 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getJob" => {
                 let id = p_key(p, &["job_id", "id"])?;
                 let next = self.chain.tip_height() + 1;
-                Ok(self.job(&id).await?.map(|j| job_json(&j, next)).unwrap_or(Value::Null))
+                let Some(j) = self.job(&id).await? else { return Ok(Value::Null) };
+                let mut v = job_json(&j, next);
+                v["reject_count"] = json!(self.reject_count(&id).await?);
+                Ok(v)
+            }
+            "getJobRejects" => {
+                let id = p_key(p, &["job_id", "id"])?;
+                self.job_rejects(&id).await
+            }
+            "getRejectStats" => {
+                let a = p_key(p, &["account", "address", "deliverer"])?;
+                self.reject_stats(&a).await
             }
             "listJobs" => {
                 let status = p_str(p, &["status"]).map(|s| s.to_ascii_lowercase());
@@ -631,7 +642,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     v["height"] = json!(e.height);
                     v["index"] = json!(e.index);
                     let lien = matches!(&t.body, agent_types::TxBody::ClearRoute { account, .. } if *account == a);
-                    v["role"] = json!(if lien { "lien" } else if t.from == a { "sender" } else { "recipient" });
+                    let rejected = matches!(&t.body, agent_types::TxBody::RejectResult { deliverer, .. } if *deliverer == a);
+                    v["role"] = json!(if lien { "lien" } else if rejected { "rejected" } else if t.from == a { "sender" } else { "recipient" });
                     v["confirmations"] = json!(self.chain.confirmations(&e.block_hash, e.height));
                     v["final"] = json!(self.chain.is_final(&e.block_hash, e.height));
                     out.push(v);

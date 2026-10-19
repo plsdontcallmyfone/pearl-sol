@@ -20,6 +20,8 @@
 
 use std::collections::BTreeMap;
 
+mod reject;
+
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
 use agent_types::{
     escrow_address, is_reserved, pool_address, Coinbase, Hash, PostJob, Pubkey, Tx, TxBody, TxKind, SPL_SCALE, TOTAL_SUPPLY,
@@ -314,7 +316,7 @@ pub fn precheck_post_job(p: &PostJob, cfg: &Config) -> Result<(), String> {
 
 /// Count valid, distinct signatures from `set` over `msg` (raw ed25519). Any signature
 /// that is invalid or from outside the set fails the whole check.
-fn check_sigs(sigs: &[agent_types::AttesterSig], set: &[Pubkey], threshold: u8, msg: &[u8]) -> Result<(), TxError> {
+pub(crate) fn check_sigs(sigs: &[agent_types::AttesterSig], set: &[Pubkey], threshold: u8, msg: &[u8]) -> Result<(), TxError> {
     let mut seen: Vec<Pubkey> = Vec::new();
     for s in sigs {
         if !set.contains(&s.pubkey) {
@@ -516,6 +518,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                     return bad("job deadline passed");
                 }
                 check_uri(uri, "result uri")?;
+                if j.ticket().is_none() && self.was_rejected(job_id, &tx.from).await? {
+                    return bad("this deliverer's result was rejected on this job; it cannot deliver it again");
+                }
                 j.status = JobStatus::Delivered;
                 j.deliverer = tx.from;
                 j.result_hash = *result_hash;
@@ -694,6 +699,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             }
             TxBody::RegisterModel(m) => self.register_model(&tx.from, m).await?,
             TxBody::PostSegments { ticket_id, round, segments } => self.post_segments(&tx.from, ticket_id, *round, segments).await?,
+            TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => {
+                self.reject_result(h, job_id, deliverer, result_hash, sigs).await?
+            }
         }
         Ok(out)
     }

@@ -56,6 +56,7 @@ sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol
 | 10 | ClearRoute | account [32], route_nonce u64, sig [64] (ends a lien early; sig by its release key, 4.4) |
 | 11 | RegisterModel | name, manifest_uri, recipe, mining config, matrices (k, n, hash_b)* (model registry, 4.5) |
 | 12 | PostSegments | ticket_id [32], segments (matrix, m, max_blocks, hash_a, c_hash, a_uri)* (standing jobs of a paid inference ticket, 4.5) |
+| 13 | RejectResult | job_id [32], deliverer [32], result_hash [32], evaluator sigs (count u8, (pubkey [32], sig [64])*) (job evaluators reject the current delivery; the job reopens, 4.1) |
 
 - Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
@@ -154,6 +155,21 @@ max_blocks u32, evaluators (count u8, pubkey*), threshold u8`.
 - `result_hash = blake3_keyed(C as i32 LE row-major, key = job_key)` (pearl-job).
 - M1 evaluator = the attester service (Freivalds check off chain). M2: data
   availability for A, B, C so any node or the light client can check.
+- **RejectResult** (kind 13, owner decision 2026-10-18): the job's evaluators reject its
+  current delivery with `threshold` raw ed25519 signatures over
+  `b"pearl-sol:reject:v1" || job_id || deliverer || result_hash` (the CompleteJob rule under
+  another domain, so neither signature serves as the other). The tx names `deliverer` and
+  `result_hash`, which must be the job's current ones; anyone may send it. Effect: Delivered ->
+  Open (same deadline, W stays escrowed, mining continues), deliverer / result cleared, and the
+  failure is recorded: `Reject ["reject", job_id || index]` (tag 14: deliverer, result_hash,
+  height, P, signer keys), `RejectCount ["reject-count", job_id]` (tag 15) and
+  `RejectStats ["reject-stats", deliverer]` (tag 16: rejected, rejected P, first / last
+  height). On a plain job the rejected deliverer may not deliver to that job again, so the
+  first-deliverer griefing (deliver garbage first, hold the job until its deadline) costs a
+  fresh key and fee per attempt and each attempt is on the griefer's record. A ticket's server
+  may redeliver (only it can). Segments have no delivery to reject. RPC: getJob
+  `reject_count`, getJobRejects, getRejectStats; getAccountTxs lists the reject under the
+  deliverer with role `rejected` (docs/RPC.md). Open evaluation: docs/EVALUATORS.md.
 
 ### 4.2 Agents
 `RegisterAgent`: profile `{name, uri, registered_height}` keyed by account.

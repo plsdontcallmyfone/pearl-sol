@@ -47,6 +47,7 @@ Reserved addresses (no key; cannot send):
   - plain deposit: `"pearl-sol:deposit:v1" || solana_nonce u64 LE || recipient [32] || amount_spl u64 LE`
   - storefront order: `"pearl-sol:deposit-order:v1" || solana_nonce u64 LE || recipient [32] || amount_spl u64 LE || sha256(PostJob body)`
   - job result (CompleteJob): `"pearl-sol:result:v1" || job_id [32] || deliverer [32] || result_hash [32]`
+  - rejected result (RejectResult): `"pearl-sol:reject:v1" || job_id [32] || deliverer [32] || result_hash [32]`
   - payout-lien release (ClearRoute, by the lien's release key): `"pearl-sol:route-clear:v1" || chain_id u32 LE || account [32] || route_nonce u64 LE`
 
   (Change 2026-10-16: an earlier draft of this node framed these messages too. The
@@ -213,6 +214,20 @@ getWithdrawalProof like any BridgeLock (`from` = the account).
 `{"account", "name", "uri", "registered_height", "updated_height"}` or null.
 
 ### getJob `{"job_id": "hex"}` -> Job or null
+The Job object plus `"reject_count": n` (RejectResults recorded on this job, see getJobRejects).
+
+### getJobRejects `{"job_id": "hex"}`
+Every rejected delivery of the job, oldest first (SPEC 4.1 RejectResult):
+```json
+{"job_id": "hex", "count": 1, "rejects": [{"job_id": "hex", "index": 0, "deliverer": "base58",
+  "result_hash": "hex", "height": 41, "protocol_fee": "2000000", "signers": ["base58"]}]}
+```
+`protocol_fee` is the job's P (string); `signers` are the evaluator keys whose signatures
+the RejectResult carried.
+
+### getRejectStats `{"account": "base58"}` (`"deliverer"` accepted)
+Rejections recorded against a deliverer over all jobs; zeros when there are none:
+`{"account", "rejected": 1, "rejected_fee": "2000000", "first_height": 41, "last_height": 41}`.
 
 ### listJobs `{"status"?: "open|delivered|completed|expired|mineable", "offset"?: 0, "limit"?: 50}`
 `{"total": 12, "jobs": [Job]}`, in posting order. `limit` is at most 200.
@@ -283,15 +298,17 @@ error) when `at_height` is below the withdrawal's block or above the final heigh
 
 ### getAccountTxs `{"account": "base58", "limit"?: 50, "before"?: "height:index"}`
 Txs touching the account on the canonical chain, newest first: txs it sent, Transfers to it,
-BridgeUnlocks to it, and ClearRoutes naming it in their `account` field, whoever sent them
+BridgeUnlocks to it, ClearRoutes naming it in their `account` field and RejectResults naming
+it as `deliverer`, whoever sent them
 (R7; coinbase, job payouts and refunds are not txs and are not listed).
 ```json
 {"account": "base58", "txs": [{"tx_hash", "kind", "from", "nonce", "fee", "tx",
-  "block_hash": "hex", "height": 41, "index": 0, "role": "sender|recipient|lien",
+  "block_hash": "hex", "height": 41, "index": 0, "role": "sender|recipient|lien|rejected",
   "confirmations": 3, "final": false}], "next": "41:0" | null,
  "tip_height": 43, "finalized_height": 13}
 ```
 `role` is `lien` for a ClearRoute naming the account (also when the account sent it itself),
+`rejected` for a RejectResult naming it as deliverer,
 else `sender` when it sent the tx, else `recipient`. `limit` is 1..200. Pass `next` back as `before` for the next page (strictly older entries);
 `next` is null on the last page. The final part comes from an index the node extends when
 blocks finalize (they cannot reorg); the part above `finalized_height` is read from the
@@ -413,6 +430,7 @@ Result `{"subscribed": [...]}`. Notifications:
 | 8 AdminConfig | `key u8, value_len u16, value` |
 | 9 SetRoute | `solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]` (zero key = no early release) |
 | 10 ClearRoute | `account [32], route_nonce u64, sig [64]` (raw ed25519 by the lien's release key over the route-clear message) |
+| 13 RejectResult | `job_id [32], deliverer [32], result_hash [32], count u8, (pubkey [32], sig [64])*` (job evaluators, raw ed25519 over the reject message; reopens the job) |
 
 Rules worth knowing:
 - `fee >= min_fee`, except BridgeUnlock (fee may be 0, so a relayer needs no balance).
