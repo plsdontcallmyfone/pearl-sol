@@ -362,6 +362,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let done = match st {
                 None => {
                     // left the node's canonical chain (or the window)
+                    eprintln!("relay: header {} left the window or the canonical chain at stage {:?} after {} txs; flight dropped", f.hd.height, f.stage, f.sent);
                     self.abandoned.push((f.hd.height, f.hd.hash));
                     true
                 }
@@ -392,6 +393,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                             false
                         }
                     } else if f.stage == Stage::Finished {
+                        eprintln!("relay: header {} still pending after all {} steps ({} txs): redoing it", f.hd.height, f.plan.len(), f.sent);
                         f.stage = Stage::Begin; // the jackpot did not land: redo
                         f.txs.clear();
                         false
