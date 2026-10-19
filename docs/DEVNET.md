@@ -75,7 +75,7 @@ from the environment (`/etc/lode/services.env`); IDLs with the devnet addresses:
 | bridge Config | AfRovjWYspv13E9rtT8nJj3T9xirSdmZPj2c7zxbXtUM (attester 1 of 1, release mode proof only) |
 | storefront | buyback vault 9D3hqn9D2TsT4pS7p7J5sAHNB9QBHVJnPSKX8d7kJbQ6; finalize mode proof only |
 | chain mining pool (frozen in the reserve at the first fund) | 6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v |
-| light client | initialized at chain height 1655 (header-relay init on box 0) |
+| light client | initialized at chain height 1655 (header-relay init on box 0); relayed from box 1 since 2026-10-19 23:08 UTC |
 
 pump.fun on Solana devnet is not mainnet-shaped: its Global has initial virtual reserves of 0.3 SOL
 (mainnet 30 SOL), so the 1 SOL dev buy bought the whole curve (822.37M CADRE into the reserve) and
@@ -126,7 +126,9 @@ SSH: one key per box, `~/.ssh/lode_devnet{0,1,2}` (BitLaunch keys lode-devnet-0.
 `scripts/devnet-deploy.sh ssh N` (user lode), root with the same key. Firewall (ufw): 22, 80, 443,
 10640 (p2p) only; RPC/WS (10630/10631) and services (10660-10670) bind 127.0.0.1 behind caddy.
 Keys on the boxes: `/etc/lode/keys/` (600, lode): box 0 has ops, attester, storefront-wallet,
-miner0; boxes 1-2 only their miner key. The deployer key and the p2p seeds' source files stay on
+miner0; boxes 1-2 their miner key; box 1 also `relay.json`, the header relay's fee payer, generated
+on box 1 itself (`scripts/devnet-deploy.sh relay-key 1`, pubkey XQUUCs5tZaJrf4VMuKJRmUbA2gEV2M7uKWTQiSTe6Cy,
+funded with 6 devnet SOL by the deployer). The deployer key and the p2p seeds' source files stay on
 the Mac (keys/devnet/, gitignored; backup ~/.config/pearl-sol/keys-devnet-backup).
 
 ## Operate
@@ -134,10 +136,21 @@ the Mac (keys/devnet/, gitignored; backup ~/.config/pearl-sol/keys-devnet-backup
     scripts/devnet-deploy.sh status                    # heights, peers, units, load on every box
     scripts/devnet-deploy.sh ctl N restart [UNITS]     # systemctl on box N (default: all cadre-* units there)
     scripts/devnet-deploy.sh ctl N stop                # stop box N's units (the box still bills)
-    scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-header-relay -n 50'
+    scripts/devnet-deploy.sh ssh 1 'journalctl -u cadre-header-relay -n 50'
 
-Units: cadre-node, cadre-miner (every box); cadre-attester, cadre-relayer, cadre-header-relay,
-cadre-storefront, cadre-crank, cadre-explorer, cadre-api (box 0). Data: `/var/lib/lode/` (chain data,
+Units: cadre-node, cadre-miner (every box); cadre-attester, cadre-relayer, cadre-settle,
+cadre-storefront, cadre-crank, cadre-explorer, cadre-api (box 0); cadre-header-relay (box 1,
+`HEADER_RELAY_BOX`).
+
+Solana devnet RPC budget. The public endpoint allows about 100 calls per 10 s per IP (about 40 per
+method). Past that every call from the IP gets 429, which stalled the header relay for hours on
+2026-10-19 (light client 150+ blocks behind, e2e run 1 step 4 timed out). Measures in place: the
+header relay runs alone on box 1 (`cadre-header-relay`, payer `relay.json`, 10 slots, confirm poll
+800 ms, sends paced 400 ms apart, a blockhash at most 15 s old per tx); box 0 settles by proof only
+(`cadre-settle` = `header-relay run --settle --no-relay`, payer ops, since finalize_order_proof needs
+the admin or an attester); the explorer and cadre-api poll Solana every 30 s (`SOL_POLL_MS`), the
+relayer every 10 s. Throughput measured: about 6 headers/min verified, about 2/min net catch-up with
+the chain at about 0.7 blocks/min. A keyed RPC (Helius, Triton) would remove the limit (owner). Data: `/var/lib/lode/` (chain data,
 relayer / storefront state, header-relay work keypairs, explorer index).
 
 ### Update the nodes and services
@@ -195,6 +208,26 @@ light-client program deploy or re-init is needed because its accounts track the 
 `ctl N stop` on each box stops the services. Destroying boxes is the owner's call (BitLaunch
 `DELETE /servers/<id>` with the ids above); NEVER touch pearl-sol-test (64.95.13.106) or
 instance-backend (64.94.84.126).
+
+## End to end results (scripts/devnet-e2e.sh, from the Mac)
+
+Results JSON: `.devnet-e2e/result-<run>.json` (gitignored). Supply invariant after every step.
+
+Run 1 (2026-10-19 20:10-23:16 UTC, E2E_RUN=run1): FAIL at step 4, steps 1-3 PASS.
+
+    PASS  1. preflight: public endpoints, SPEC genesis params, light client  (0.1 min)
+    PASS  2. fund throwaway e2e keys from ops  (0.1 min)
+    PASS  3. bridge in (pump.fun buy + deposit) and x402 storefront order, both unlocked K deep  (35.3 min)
+    FAIL  4. bridge out (BridgeLock -> release_proof) and the paid job (... finalize_order_proof)  (150.3 min)
+       timed out waiting for SPL released on Solana (light client 150+ blocks behind)
+    invariant OK after every step (delta 0; the open withdrawal counted in flight)
+
+Found and fixed during run 1 (all committed): (a) the x402 order's job was mined by box 1's miner,
+which does not deliver, so it sat open: `pearl-miner --deliver` now sweeps open mined-out jobs and
+delivers them (box 0 then delivered and completed it, height 1741); (b) the header relay could not
+keep up with Solana devnet's public RPC limits (see "Solana devnet RPC budget" above): polling,
+pacing, blockhash and placement fixes. The run's open withdrawal (BridgeLock to the e2e user) and
+Order 6 are settled by cadre-settle once the light client is final past them.
 
 ## Files
 
