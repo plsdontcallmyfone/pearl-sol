@@ -43,40 +43,30 @@ these two validators and stop them when idle.
 `lsof -ti :<port>` before binding. Kill by PID only. Always pass `-u` and `-k`
 explicitly; never touch `solana config`.
 
-## Cadre web asks (from ~/cadre-web, Cadre website app row)
+## Cadre web asks (from ~/cadre-web, Cadre website app row; updated 2026-10-19 by the takeover)
 
-The site reads only the cadre-api typed client and signs only in the Cadre Wallet
-(`window.pearl`, Wallet Standard on Solana). Endpoints it needs; anything missing shows
-"unavailable" in the UI (behind `NEXT_PUBLIC_CADRE_PENDING_API=1`, never fake data).
-Prefer amounts as decimal strings of base units, as the explorer does. Status per line:
-OPEN = not in openapi.yaml yet.
+The site reads only cadre-api (`NEXT_PUBLIC_CADRE_API`) and signs only in the Cadre Wallet
+(`window.pearl` for the chain, Wallet Standard "Cadre Wallet" for Solana). Anything missing
+shows "Unavailable" with the API's reason in the UI; nothing is stubbed with data.
+SERVED = in cadre-api today and used by the site. OPEN = still needed.
 
-- SERVED by cadre-api (circulating_spl null until the token-side supply module; bb_* fields pass through) `GET /v1/summary`: paid-block ratio (paid, indexed), totals (P, subsidy, SOL settled,
-  unique payers, top payer share), buyback (vault SOL, bought, to reserve, burned,
-  bb_reserve_cap), reserve ATA balance, mint supply / circulating, light client (tip,
-  final, chain height, lag).
-- SERVED `GET /v1/feed?filter=paid&limit=N`: recent paid work (block, job or ticket, payer,
-  P, subsidy, light-client verdict). Plus block / job / order / tx detail as the explorer has.
-- SERVED (no Agent Credit line yet) `GET /v1/accounts/{addr}`: chain balance + nonce, Solana SOL + CADRE SPL, agent
-  profile, lien (getRoute), Agent Credit line if any, mining earnings (coinbase receipts:
-  fees, subsidy, matured), history (getAccountTxs + Solana signatures).
-- SERVED `GET /v1/bridge/transfers?owner=ADDR`: deposits (Solana -> chain) and withdrawals
-  (chain -> Solana) with stage (submitted, seen, unlocked/released, final) and tx links.
-- SERVED quote; PENDING 501 pump-buy tx: `GET /v1/pump/quote?sol_in=L` and `POST /v1/tx/pump-buy {buyer, sol_in,
-  slippage_bps}` -> unsigned Solana tx (base64) + quote (curve or PumpSwap after graduation).
-- SERVED `POST /v1/tx/bridge-deposit {owner, amount_spl, recipient}` -> unsigned Solana tx.
-  (Bridge out is a chain BridgeLock the wallet already builds.)
-- PARTIAL via cadre-api: models + prices `GET /v1/inference/models`, receipts `GET /v1/inference/receipts?account=` + `/{ticket}`, gateway pass-through `/v1/openai/*` (SSE), x402 payment tx `POST /v1/inference/x402/payment-tx`; prepaid PENDING 501 until the gateway ships it. Asked: gateway: `GET /v1/models` with prices, `POST /v1/chat/completions` streaming (SSE),
-  prepaid `GET /v1/prepaid/{account}` + top-up (unsigned tx or the exact transfer to make),
-  API keys or signed-request auth (message format to sign), `GET /v1/receipts?account=`
-  and `GET /v1/receipts/{id}` (paid, ticket, order, blocks mined, proof hash, explorer link).
-- SERVED `GET /v1/agents?sort=paid` (ranked by paid volume from distinct payers, never counts)
-  and `GET /v1/agents/{account}` (REPUTATION profile, card URI + probe).
-- SERVED `GET /v1/mining`: params (difficulty, block time, subsidy now, K), pool endpoints;
-  `GET /v1/miners/{addr}` earnings (coinbase receipts + pool payouts).
-- SERVED GET; PENDING 501 tx builders. crank: `GET /v1/crank` (buyback vault, last BuybackExecuted, min buy / interval,
-  fund_mining availability + rate limit) and `POST /v1/tx/crank-buyback {payer}`,
-  `POST /v1/tx/fund-mining {payer}` -> unsigned Solana txs.
+- SERVED: /v1/summary, /v1/feed, /v1/blocks|jobs|orders/{id}, /v1/tx/chain/{hash},
+  /v1/accounts/{addr}(+/balances), /v1/bridge, /v1/bridge/transfers, /v1/bridge/quote,
+  /v1/tx/bridge-deposit, /v1/tx/bridge-lock, /v1/pump/quote, /v1/crank, /v1/mining,
+  /v1/miners/{addr}, /v1/agents, /v1/agents/{account}, /v1/inference/models,
+  /v1/inference/receipts, /v1/inference/x402/payment-tx, /v1/openai/* pass-through.
+- OPEN `POST /v1/tx/pump-buy`, `/v1/tx/crank-buyback`, `/v1/tx/fund-mining` (501 today): the
+  site's Buy and Crank buttons call them and say "not live yet" until they return a tx.
+- OPEN prepaid: cadre-api proxies gateway `/v1/prepaid/...` but SPEC 5.4 names `/v1/balance`
+  and `/v1/balance/topup`; `GET /v1/balance` needs wallet auth, so the unauthenticated
+  `GET /v1/inference/prepaid/{account}` cannot read it as is (accept signed headers).
+- OPEN pass-through headers: forward `X-Cadre-Wallet` (SPEC 5.4); it forwards
+  `x-cadre-account` / `x-cadre-nonce` today. The site sends both names.
+- OPEN pass-through paths: allow `keys` (POST /v1/keys, DELETE /v1/keys/{id}) so the site's
+  "Create API key" works through /v1/openai/keys.
+- OPEN `/v1/accounts/{addr}`: Agent Credit line (`credit`) if any; agent `registration`
+  is null for registered agents in /v1/agents (demo-agent shows none).
+- OPEN `/v1/agents/{account}`: `card_probe {ok, status, checked_at}` for the card URI.
 
 ## Who is working on what
 
