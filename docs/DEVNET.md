@@ -5,9 +5,11 @@ side on Solana devnet. Everything here is devnet only: no mainnet, no pump.fun m
 Owner decisions (2026-10-18): public devnet first; 3 new BitLaunch boxes, one node each; the
 docs/SPEC.md chain parameters and buyback defaults unchanged; no domain, sslip.io names with https.
 
-Status (2026-10-19): agent chain LIVE (3 nodes, open p2p, miners on every box, explorer and
-attester up). Solana side NOT DEPLOYED YET: devnet airdrops are refused (429 / "Internal error"
-from the Mac and from all three box IPs), so the deployer needs funding first (below).
+Status (2026-10-19, evening): LIVE end to end. Agent chain on 3 nodes (open p2p, miners on every
+box), upgraded in place (rolling, chain kept finalizing) to commit fe8e04a, which has RejectResult
+(tx kind 13), RegisterModel / PostSegments and the token-side changes. Solana devnet programs deployed
+from the same commit, initialized, light client following, proof modes on, relayer, header-relay,
+storefront-x402, crank, explorer and cadre-api running on box 0. e2e results: "End to end results" below.
 
 ## Endpoints
 
@@ -18,11 +20,11 @@ from the Mac and from all three box IPs), so the deployer needs funding first (b
 | node 2 | https://rpc.64-95-12-22.sslip.io |
 | p2p seeds (open membership, `key@host:port`) | `64.95.12.116:10640`, `64.95.13.213:10640`, `64.95.12.22:10640` (keys: `agent-node pubkey`, or `getPeers`) |
 | explorer (docs/EXPLORER.md, JSON under `/api`) | https://explorer.64-95-12-116.sslip.io |
-| storefront x402 (buy AI jobs in SOL) | https://storefront.64-95-12-116.sslip.io (after the Solana deploy) |
-| relayer health (GET only) | https://relayer.64-95-12-116.sslip.io/health (after the Solana deploy) |
+| storefront x402 (buy AI jobs in SOL) | https://storefront.64-95-12-116.sslip.io (`/health`, `/quote`) |
+| relayer health (GET only) | https://relayer.64-95-12-116.sslip.io/health |
 | mint metadata (pump.fun uri) | https://explorer.64-95-12-116.sslip.io/cadre-token.json |
 | Solana RPC | https://api.devnet.solana.com (public; rate limited) |
-| cadre-api (public site API) | not on the devnet boxes yet: built by the cadre-api agent, first hosted on the test box. Plan: run it on box 0 as `cadre-api.service` behind `api.64-95-12-116.sslip.io` (same caddy file, add a block) |
+| cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway, pool and prepaid off (no inference gateway on the devnet) |
 
 CLI: `pearl` now defaults to the devnet (`--network devnet`); `--network localnet` (or
 `PEARL_NETWORK=localnet`) gives the old 127.0.0.1 endpoints and localnet program ids.
@@ -39,17 +41,19 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 | admin (AdminConfig) | ops `Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb` |
 | attester (chain + bridge signer + storefront attester), 1 of 1 | `9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD` |
 | miner payouts | box 0 `GDcEUhU4fXRziN3YQyrwyoZJhsGhSRytJooX7kr7hC4s`, box 1 `4pDphQUNYsybNnXH4nkHdHMS6udinkjVuFrf6iRZpU8b`, box 2 `AHYHqULAUjJzvBkNsRYFpksrbjL1qqurZcgMWq9mHdAH` |
-| binaries | built on box 0 from commit 424c2c1 (agent-node sha256 99878931...4404ecd, pearl-miner 6c43dadc...fca4) |
+| binaries | built on box 0 from commit fe8e04a (agent-node sha256 3a80b545...91f277d0, pearl-miner 356437dc...3b52ee0); was 424c2c1 until the 2026-10-19 rolling upgrade |
 
 ## Solana devnet programs (NEW keypairs, `--features devnet` builds)
 
 | program | id | .so (sha256) |
 |---|---|---|
-| reserve | 8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi | 359,752 B, a5db8c09...b3802 |
-| bridge | 3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN | 398,248 B, 1f6abc9c...970e0 |
-| storefront | 9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu | 620,680 B, 5695a3cc...4cc28 |
-| lightclient | 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m | 649,824 B, 02badf6b...5f4cc |
+| reserve | 8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi | 386,216 B, 13f78f26...613570c4 |
+| bridge | 3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN | 398,248 B, 1f6abc9c...2f7970e0 |
+| storefront | 9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu | 624,544 B, ad947c9a...2e717088 |
+| lightclient | 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m | 652,840 B, e8786d59...5d58aef |
 
+Deployed 2026-10-19 from commit fe8e04a (build on box 0), max-len 1.1x the .so size (programdata
+424,837 / 438,072 / 686,998 / 718,124 B).
 Upgrade authority: deployer `Fvqtw8jwj9Y97hMC5mu2VYRhAAi5z8GXHhp76X4qXRaP` (key on the Mac only).
 pump.fun: the real programs are live on Solana devnet (pump 6EF8..., PumpSwap pAMM..., fees
 pfee..., Global and fee_config accounts initialized, transactions every few seconds), so the
@@ -61,23 +65,42 @@ How the ids are switched: each program has `#[cfg(feature = "devnet")] declare_i
 the explorer read `BRIDGE_PROGRAM`, `STOREFRONT_PROGRAM`, `RESERVE_PROGRAM`, `LIGHTCLIENT_PROGRAM`
 from the environment (`/etc/lode/services.env`); IDLs with the devnet addresses: deploy/devnet-idl/.
 
-### Funding (BLOCKED, owner action)
+### What is on Solana devnet
 
-Fund the deployer `Fvqtw8jwj9Y97hMC5mu2VYRhAAi5z8GXHhp76X4qXRaP` with **25 devnet SOL**
-(faucet.solana.com, GitHub login; several requests if it caps per request). Budget, measured:
-programdata rent at max-len 1.1x size = 11.3 SOL (10.31 at exact size), plus the largest buffer
-(3.3 SOL, refunded after each deploy) and ~0.01 SOL of write fees; ops 10 SOL (light-client
-accounts + 2 work accounts at 0.49 each, 1 SOL dev buy, 0.02 SOL chain gas buy, relay ~0.3-0.45
-SOL/day per SPEC 5.3, two e2e runs ~0.6 SOL each, mostly refundable); 0.5 to the storefront wallet.
+| | |
+|---|---|
+| CADRE mint (Token-2022, pump.fun create_v2, name Cadre, symbol CADRE) | BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e |
+| pump.fun bonding curve (graduated) / PumpSwap canonical pool | AGxUczNjaySraHYotmW2vS6d2NcNQXfWq8cdwPzQ2piV / `canonicalPumpPoolPda(mint)` |
+| reserve Config (layout 1) | eYzQHvueBMcSCxiU8mM75Kxb6PLAGEn3DttvBFQNvd1, admin ops, creator PDA 9LcVub7iBYpXwidnqEDdrV3pfZVkMmdac3ooN6f4monD |
+| bridge Config | AfRovjWYspv13E9rtT8nJj3T9xirSdmZPj2c7zxbXtUM (attester 1 of 1, release mode proof only) |
+| storefront | buyback vault 9D3hqn9D2TsT4pS7p7J5sAHNB9QBHVJnPSKX8d7kJbQ6; finalize mode proof only |
+| chain mining pool (frozen in the reserve at the first fund) | 6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v |
+| light client | initialized at chain height 1655 (header-relay init on box 0) |
 
-Then, from the Mac:
+pump.fun on Solana devnet is not mainnet-shaped: its Global has initial virtual reserves of 0.3 SOL
+(mainnet 30 SOL), so the 1 SOL dev buy bought the whole curve (822.37M CADRE into the reserve) and
+pump's devnet migration bot ran MigrateV2 two seconds later. CADRE on devnet trades on PumpSwap; the
+storefront quotes `venue: pumpswap` (buy_job_amm), the crank uses crank_buyback_amm, and
+services/crank/src/trade.ts buys and sells on the PumpSwap pool once the curve is complete. Because the
+reserve already holds far more than the 100M `bb_reserve_cap`, every storefront buyback on devnet burns
+(`nextBuy: burn (reserve at cap)`); on mainnet the curve does not graduate on the dev buy.
+
+Token-side settings after init (fresh initialize, so `migrate_config` and `sf-set --reserveCap` were not
+needed: the Config already reads `layout 1`): fund limits 10M CADRE per call, 3600 s between calls, 20M
+per 24 h, not paused (all PROVISIONAL); storefront buyback 1000 bps to the reserve, 1 SOL per call, min buy
+0.001 SOL, 600 s, reserve cap 100M (PROVISIONAL). First fund_mining: 10M CADRE (deposit nonce 2).
+
+SOL spent (devnet, 2026-10-19): deployer 89.9999 -> 67.9612 SOL: 11.5387 programdata rent + fees for the
+4 deploys (buffers refunded), 10 SOL to ops, 0.5 to the storefront wallet. Ops: 10 -> 8.84 after init
+(1 SOL dev buy, two 0.02 SOL gas buys, rents for the configs, accumulators, light-client accounts).
+
+To redo from scratch (new keypairs would mean new ids everywhere; normally only upgrades are needed):
 
     scripts/devnet-solana.sh balances
-    scripts/devnet-solana.sh deploy          # 4 programs, max-len 1.1x
+    scripts/devnet-solana.sh deploy          # 4 programs, max-len 1.1x (or `deploy storefront` to upgrade one)
     scripts/devnet-solana.sh fund 10         # deployer -> ops 10 SOL, storefront wallet 0.5
-    scripts/devnet-solana.sh init            # reserve + launch, bridge, storefront, buyback defaults,
-                                             # chain gas, fund_mining, light client, proof modes, services
-    scripts/devnet-e2e.sh                    # end to end from the Mac, twice
+    scripts/devnet-solana.sh init            # idempotent; keeps a local record in .devnet-e2e/init-done.json
+    scripts/devnet-e2e.sh                    # end to end from the Mac
 
 ## Boxes (BitLaunch, Dallas dal1, Ubuntu 24.04 LTS)
 
@@ -114,7 +137,7 @@ the Mac (keys/devnet/, gitignored; backup ~/.config/pearl-sol/keys-devnet-backup
     scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-header-relay -n 50'
 
 Units: cadre-node, cadre-miner (every box); cadre-attester, cadre-relayer, cadre-header-relay,
-cadre-storefront, cadre-crank, cadre-explorer (box 0). Data: `/var/lib/lode/` (chain data,
+cadre-storefront, cadre-crank, cadre-explorer, cadre-api (box 0). Data: `/var/lib/lode/` (chain data,
 relayer / storefront state, header-relay work keypairs, explorer index).
 
 ### Update the nodes and services
@@ -141,6 +164,9 @@ Refresh deploy/devnet-idl/ from `/opt/lode/idl/` after the build.
 
 Steps for the 2026-10-19 token-side change (commits bfa0fef, 8f05870; added by the
 token-side agent, see docs/HANDOFF.md item 15):
+APPLIED 2026-10-19: the first devnet deploy already carried this change (commit fe8e04a), so the
+programs were initialized fresh with layout 1 and the default cap; steps 2 and 4 were not needed. Kept
+for reference (an upgrade from an older build would need them):
 1. Build and deploy `reserve` and `storefront` as above (ids unchanged).
 2. Right after the reserve upgrade, grow its Config (until then every reserve instruction
    fails with AccountDidNotDeserialize): `RPC_URL=<devnet rpc> KEYPAIR=<reserve admin key>
