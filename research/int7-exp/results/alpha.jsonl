@@ -1,0 +1,2 @@
+{"model": "Qwen--Qwen2.5-0.5B", "cfg": "w7a7_sq", "alpha": 0.8, "quantized_linears": 168, "ppl": 15.033753383398574, "ppl_tokens": 32736, "ppl_windows": 32, "ppl_windows_total": 292, "seqlen": 1024, "ppl_s": 397.7, "wall_s": 408.9, "rss_anon_mb": 860, "rss_file_mb": 1081}
+{"model": "unsloth--Llama-3.2-1B", "cfg": "w7a7_sq", "alpha": 0.8, "quantized_linears": 112, "ppl": 11.278609826623782, "ppl_tokens": 16368, "ppl_windows": 16, "ppl_windows_total": 282, "seqlen": 1024, "ppl_s": 345.2, "wall_s": 381.9, "rss_anon_mb": 1449, "rss_file_mb": 2496}
