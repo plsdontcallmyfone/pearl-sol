@@ -30,7 +30,12 @@ use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, Tran
 
 pub mod sigverify;
 
+// Localnet id = keys/localnet/bridge-keypair.json; the public devnet build (`--features devnet`,
+// docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
+#[cfg(not(feature = "devnet"))]
 declare_id!("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
+#[cfg(feature = "devnet")]
+declare_id!("3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN");
 
 pub const MAX_SIGNERS: usize = 10;
 /// Chain ids used in `Processed` seeds.

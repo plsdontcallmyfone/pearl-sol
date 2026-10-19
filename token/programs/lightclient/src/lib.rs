@@ -54,7 +54,12 @@ use pv::difficulty::{self, Retarget};
 use pv::header::Header;
 use pv::verify::{JobParams, Side};
 
+// Localnet id = keys/localnet/lightclient-keypair.json; the public devnet build (`--features devnet`,
+// docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
+#[cfg(not(feature = "devnet"))]
 declare_id!("BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5");
+#[cfg(feature = "devnet")]
+declare_id!("47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const CANON_SEED: &[u8] = b"canon";

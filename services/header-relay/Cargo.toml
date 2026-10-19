@@ -36,6 +36,10 @@ pearl-verify-sbf = { path = "../../crates/pearl-verify-sbf" }
 pearl-node = { path = "../../crates/pearl-node" }
 pearl-job = { path = "../../crates/pearl-job" }
 
+[features]
+# public devnet program ids (docs/DEVNET.md)
+devnet = ["lightclient/devnet"]
+
 [profile.release]
 opt-level = 3
 

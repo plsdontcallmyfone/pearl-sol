@@ -6,8 +6,9 @@
 import { createHash } from "node:crypto";
 import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
-export const STOREFRONT_ID = new PublicKey("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
-export const BRIDGE_ID = new PublicKey("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
+// Localnet ids by default; the public devnet sets STOREFRONT_PROGRAM / BRIDGE_PROGRAM / RESERVE_PROGRAM (docs/DEVNET.md).
+export const STOREFRONT_ID = new PublicKey(process.env.STOREFRONT_PROGRAM || "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
+export const BRIDGE_ID = new PublicKey(process.env.BRIDGE_PROGRAM || "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
 export const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 export const AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
 export const PUMP_FEES = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
@@ -18,7 +19,7 @@ export const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsL
 export const IX_SYSVAR = new PublicKey("Sysvar1nstructions1111111111111111111111111");
 
 export const STATUS = { 1: "pending", 2: "finalized", 3: "expired", 4: "refunded" } as Record<number, string>;
-export const RESERVE_ID = new PublicKey("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
+export const RESERVE_ID = new PublicKey(process.env.RESERVE_PROGRAM || "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
 /** storefront Config.buyback_dest */
 export const DEST = { 0: "reserve", 1: "burn" } as Record<number, string>;
 export const RENT_MIN = 890_880n;

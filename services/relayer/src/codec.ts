@@ -8,8 +8,9 @@
 import { createHash, createPrivateKey, sign as edSign } from "node:crypto";
 import { Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
-export const BRIDGE_PROGRAM_ID = new PublicKey("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
-export const STOREFRONT_PROGRAM_ID = new PublicKey("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
+// Localnet ids by default; the public devnet sets BRIDGE_PROGRAM / STOREFRONT_PROGRAM (docs/DEVNET.md).
+export const BRIDGE_PROGRAM_ID = new PublicKey(process.env.BRIDGE_PROGRAM || "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
+export const STOREFRONT_PROGRAM_ID = new PublicKey(process.env.STOREFRONT_PROGRAM || "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
 export const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 export const ATA_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 export const ED25519_PROGRAM_ID = new PublicKey("Ed25519SigVerify111111111111111111111111111");

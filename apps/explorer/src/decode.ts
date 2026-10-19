@@ -4,9 +4,10 @@
 
 import { b58decode, findPda, hex, pk, rd16, rd32, rd64, rdi64, rd8, sha256, slice, u64le, utf8 } from "./codec.ts";
 
-export const STOREFRONT_ID = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr";
-export const LIGHTCLIENT_ID = "BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5";
-export const BRIDGE_ID = "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8";
+// Localnet ids by default; the public devnet sets STOREFRONT_PROGRAM / LIGHTCLIENT_PROGRAM / BRIDGE_PROGRAM (docs/DEVNET.md).
+export const STOREFRONT_ID = process.env.STOREFRONT_PROGRAM || "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr";
+export const LIGHTCLIENT_ID = process.env.LIGHTCLIENT_PROGRAM || "BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5";
+export const BRIDGE_ID = process.env.BRIDGE_PROGRAM || "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8";
 
 export const accountDisc = (name: string) => slice(sha256(utf8(`account:${name}`)), 0, 8);
 const discIs = (d: Uint8Array, name: string) => d.length >= 8 && Buffer.compare(Buffer.from(slice(d, 0, 8)), Buffer.from(accountDisc(name))) === 0;

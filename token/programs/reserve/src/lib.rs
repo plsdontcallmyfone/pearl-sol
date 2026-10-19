@@ -28,7 +28,12 @@ use anchor_lang::solana_program::{hash::hash, pubkey, system_instruction, progra
 pub mod pump;
 use pump::*;
 
+// Localnet id = keys/localnet/reserve-keypair.json; the public devnet build (`--features devnet`,
+// docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
+#[cfg(not(feature = "devnet"))]
 declare_id!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
+#[cfg(feature = "devnet")]
+declare_id!("8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const CREATOR_SEED: &[u8] = b"creator";

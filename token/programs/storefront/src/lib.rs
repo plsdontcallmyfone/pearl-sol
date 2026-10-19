@@ -142,7 +142,12 @@ pub mod pump;
 pub mod sigverify;
 use pump::*;
 
+// Localnet id = keys/localnet/storefront-keypair.json; the public devnet build (`--features devnet`,
+// docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
+#[cfg(not(feature = "devnet"))]
 declare_id!("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
+#[cfg(feature = "devnet")]
+declare_id!("9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const TRADER_SEED: &[u8] = b"trader";
@@ -153,7 +158,10 @@ pub const SHARE_SEED: &[u8] = b"share";
 /// token/programs/reserve: its creator PDA owns the mining reserve ATA.
 pub const RESERVE_CREATOR_SEED: &[u8] = b"creator";
 /// token/programs/reserve `declare_id!` (keys/localnet/reserve-keypair.json).
+#[cfg(not(feature = "devnet"))]
 pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
+#[cfg(feature = "devnet")]
+pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi");
 
 pub const MAX_ATTESTERS: usize = 10;
 pub const MAX_EVALUATORS: usize = 8;
