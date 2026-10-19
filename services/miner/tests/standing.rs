@@ -129,3 +129,18 @@ fn attester_segment_check_recomputes_c() {
     let e = pearl_attester::check_segment(&node, &store, &bad.job_id).unwrap_err();
     assert!(e.to_string().contains("does not equal"), "{e}");
 }
+
+#[test]
+fn ticket_jobs_parse_without_a_mining_config() {
+    // getJob of a ticket: its config is the ticket form and its job_key is empty (SPEC 4.5)
+    let cfg = hex::encode(standing::ticket_config(&[4; 32]));
+    let v = serde_json::json!({"job_id": hex::encode([1u8; 32]), "header_id": hex::encode([2u8; 32]), "terms_hash": hex::encode([3u8; 32]),
+        "created_height": 0, "share_target": 0, "config": cfg, "m": 255, "n": 1, "hash_a": hex::encode([5u8; 32]), "hash_b": hex::encode([6u8; 32]),
+        "status": "delivered", "kind": "ticket", "job_key": "", "standing": {"model_id": hex::encode([4u8; 32])}});
+    let j = JobInfo::from_json(&v).unwrap();
+    assert_eq!(j.kind, "ticket");
+    assert!(j.standing.is_none());
+    let mut bad = v.clone();
+    bad["kind"] = serde_json::json!("job");
+    assert!(JobInfo::from_json(&bad).is_err(), "a plain job with a ticket config is refused");
+}

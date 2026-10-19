@@ -120,7 +120,10 @@ impl JobInfo {
                 None => Ok(None),
             }
         };
+        // an inference ticket's config is the ticket form (SPEC 4.5), never mined: no mining config
+        let ticket = get("kind").and_then(|k| k.as_str()) == Some("ticket");
         let config = match get("config") {
+            Some(_) if ticket => MiningConfig::localnet_default(),
             Some(c) => MiningConfig::from_bytes(&hex::decode(as_str(c)?.trim_start_matches("0x")).context("config hex")?)?,
             None => MiningConfig::localnet_default(),
         };
@@ -169,7 +172,7 @@ impl JobInfo {
         })
         .and_then(|j: Self| {
             // The node also reports job_key: catch any job-header rule mismatch here.
-            if let Some(k) = get("job_key") {
+            if let Some(k) = get("job_key").filter(|_| !ticket) {
                 let want = key32(k)?;
                 let got = j.to_job().job_key();
                 ensure!(want == got, "node job_key {} != computed {} (job header rule differs)", hex::encode(want), hex::encode(got));
