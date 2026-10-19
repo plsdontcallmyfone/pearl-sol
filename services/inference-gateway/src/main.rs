@@ -135,9 +135,26 @@ fn main() -> Result<()> {
             let method = req.method().as_str().to_uppercase();
             let path = req.url().to_string();
             let headers: Vec<(String, String)> = req.headers().iter().map(|h| (h.field.as_str().as_str().to_string(), h.value.as_str().to_string())).collect();
+            // CORS: browsers (the Cadre site) call the gateway directly or through cadre-api
+            let cors = [
+                "Access-Control-Allow-Origin: *",
+                "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers: content-type, authorization, x-payment, x-cadre-wallet, x-cadre-timestamp, x-cadre-signature",
+                "Access-Control-Expose-Headers: x-cadre-request, x-cadre-ticket, x-cadre-order, x-cadre-rows, x-cadre-charged-lamports, x-cadre-receipt, x-cadre-explorer, x-payment-response",
+            ];
+            if method == "OPTIONS" {
+                let mut resp = tiny_http::Response::empty(204);
+                for c in cors {
+                    resp = resp.with_header(c.parse::<tiny_http::Header>().unwrap());
+                }
+                let _ = req.respond(resp);
+                return;
+            }
             let r = gw.handle(&method, &path, &headers, &body);
             let mut hs: Vec<tiny_http::Header> = r.headers.iter().filter_map(|(k, v)| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok()).collect();
-            hs.push("Access-Control-Expose-Headers: x-cadre-request, x-cadre-ticket, x-cadre-order, x-cadre-rows, x-cadre-charged-lamports, x-cadre-receipt, x-cadre-explorer, x-payment-response".parse().unwrap());
+            for c in cors {
+                hs.push(c.parse().unwrap());
+            }
             match r.body {
                 Payload::Json(v) => {
                     if !r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {

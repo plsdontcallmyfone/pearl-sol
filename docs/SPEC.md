@@ -849,6 +849,13 @@ Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/
 | `GET /v1/requests/<request_id>` | none | the receipt plus its settlement: round, segment ids, blocks mined on them, ticket status, Solana order status |
 | `GET /v1/stats` | none | measured figures of this gateway: requests, time to first token, decode tokens/s (recent and totals) |
 
+CORS: every response allows any origin, the methods above and the request headers
+`content-type, authorization, x-payment, x-cadre-wallet, x-cadre-timestamp, x-cadre-signature`,
+and exposes the receipt headers below plus `x-payment-response`; OPTIONS preflights answer 204.
+A proxy (services/cadre-api) must forward the three `x-cadre-*` auth headers and
+`authorization` unchanged: the signature covers the gateway path, method and body, so the
+proxy must forward the body byte for byte and map its own path prefix back to `/v1/...`.
+
 Receipt (every inference response): headers `X-Cadre-Request` (request id), `X-Cadre-Ticket`,
 `X-Cadre-Order` (storefront order nonce, or empty for a chain-native ticket),
 `X-Cadre-Rows`, `X-Cadre-Charged-Lamports`, `X-Cadre-Receipt` (status URL) and

@@ -6,7 +6,7 @@
 import { blake3 } from "@noble/hashes/blake3";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   ComputeBudgetProgram, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction,
@@ -38,6 +38,7 @@ const GENESIS_PARAMS = {
   min_fee: 1000,
 };
 const MINER_THREADS = process.env.DEMO_MINER_THREADS ?? "4";
+const WORKER_THREADS = process.env.DEMO_WORKER_THREADS ?? String(Math.max(1, Math.floor(availableParallelism() / 2)));
 // M2 light client: the token validator runs 8 ticks per slot (50 ms slots) so the
 // header relay (about 37 Solana txs per agent-chain header) keeps pace with 1.5 s blocks.
 const TICKS_PER_SLOT = process.env.DEMO_TICKS_PER_SLOT ?? "8";
@@ -814,7 +815,9 @@ async function stepInference(): Promise<string> {
   const model = await nodeCall("getModel", { model_id: reg.model_id });
   if (!model || model.matrix_count !== reg.matrices) throw new Error(`getModel ${JSON.stringify(model)?.slice(0, 300)}`);
   // worker + gateway
-  start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665"], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
+  // torch threads: the miner keeps every core busy, and an oversubscribed torch pool collapses
+  // (measured on the 4-core test box under the demo's miner: 0.41 tok/s at 4 threads, 1.33 at 2)
+  start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665", "--threads", WORKER_THREADS], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
   await waitFor("worker /health", async () => (await httpJson(`${WORKER_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 180_000);
   start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL,
     "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400", "--round-secs", "5", "--balance-deadline-blocks", "2000"]);

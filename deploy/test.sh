@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "commit $(git -C "$ROOT" rev-parse --short HEAD)"
 fails=0
 t() { local name="$1"; shift; local s=$(date +%s); local out; out="$("$@" 2>&1)"; local rc=$?
-  local sum; sum="$(echo "$out" | grep -E "^test result|^# (pass|fail)|Tests +[0-9]|passed|failed" | tail -3 | tr '\n' ' ')"
+  local sum; sum="$(echo "$out" | awk '/^test result/{p+=$4; f+=$6; i+=$8; n++} /^# pass/{tp+=$3} /^# fail/{tf+=$3} END{if(n) printf "rust %d passed %d failed %d ignored", p, f, i; if(tp+tf) printf " node %d passed %d failed", tp, tf}')"
   echo "$([ $rc = 0 ] && echo PASS || echo FAIL) $name ($(( $(date +%s) - s )) s): $sum"; [ $rc = 0 ] || { fails=$((fails+1)); echo "$out" | tail -40; }; }
 t chain bash -c "cd $ROOT/chain && cargo test --workspace --release -q"
 t crates bash -c "cd $ROOT/crates && cargo test --workspace --release -q"
