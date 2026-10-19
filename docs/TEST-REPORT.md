@@ -205,3 +205,39 @@ Live, read-only against the VPS demo stack through a tunnel:
 
 Live: explorer agent profile + `pearl agent` read-only against the test box's chain (:10630).
 cadre-proxy live check against the real gateway still pending (nothing on 10664 then).
+
+## Cadre inference + Cadre web asks (2026-10-19, standing jobs / inference takeover)
+
+Full matrix `bash deploy/test.sh` on the test VPS at b5638ea (log ~/test-takeover.log on the box),
+plus the two LiteSVM node suites on the Mac (the litesvm node binding aborts with std::bad_alloc
+on the box, as noted at the top of deploy/test.sh):
+
+| Suite | Where | Result |
+|---|---|---|
+| chain workspace | test VPS | 95 pass, 0 fail (291 s) |
+| crates workspace (pearl-job, pearl-node, miner, attester, pool, cadre-gateway) | test VPS | 97 pass, 0 fail, 1 ignored |
+| pearl-cli | test VPS | 38 pass |
+| header-relay (+ devnet feature build) | test VPS | 3 pass, build clean |
+| bridge LiteSVM | test VPS | 13 pass |
+| light client LiteSVM | test VPS | 18 pass |
+| apps/explorer | test VPS | 32 pass |
+| services/cadre-api | test VPS and Mac | 31 pass (6 new unsigned pump/crank/fund tx tests byte-equal to the crank-side builders; prepaid proxy, keys, receipt headers, CORS, credit line, card probe) |
+| tools/cadre (int7 worker, `python -m unittest test_cadre`) | test VPS | 5 pass (new: int_mm owns only its rows) |
+| services/relayer | Mac (box: bad_alloc) | 33 pass |
+| services/storefront-x402 | Mac (box: bad_alloc) | 14 pass |
+| ~/cadre-web unit / lint / typecheck | Mac | 13 pass, clean, clean |
+
+Demo `scripts/demo.sh` on the test VPS: 11/11 PASS in 740.5 s (~/demo-takeover2.log), step 11
+(paid inference) 566 s. Two earlier runs that day failed only step 11 ("finalized by null": the
+token validator's 10000-shred history; fixed in scripts/localnet.sh).
+
+cadre-web live e2e (`npm run e2e` on the Mac, tunnel 1:1 to the box stack, cadre-api on 10711,
+stack up since 19:56 UTC): 18/18 once (21:25 UTC, before the x402 check was made stricter);
+with the stricter check (the x402 call must produce its own new receipt) 16/18 at 22:15 UTC:
+every AI check passed (prepaid top-up over x402, wallet-signed answer with receipt, x402 per
+request with its own receipt), the crank page showed the program's NothingToBuy reason, and
+bridge in failed to show a result within 60 s (the same step passed in the other runs; the
+bridge-out and register steps failed the same way in the 21:13 run and passed in the others).
+Two other runs broke on the environment (local index backfill at the first run, a network
+drop of the tunnel). The cadre-worker was OOM-killed once during the e2e (fixed in bdf5a80,
+measured: 64-token generation peak RSS 6.4 GB before, 2.3 GB after).
