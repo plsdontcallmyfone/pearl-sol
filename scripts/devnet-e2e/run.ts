@@ -302,7 +302,7 @@ async function bridgeInAndOrder(): Promise<string> {
   order = { nonce, jobId: job.job_id, postedHeight: job.posted_height };
   bridgedIn = await chainBalance(user.kp.publicKey);
   if (bridgedIn < amount * 1000n) throw new Error(`user chain balance ${bridgedIn} < ${amount * 1000n}`);
-  return `user bought ${b.tokens} on the curve, deposited ${amount} SPL (nonce ${depNonce}) -> unlocked at ${d.height}, final after ${depMin.toFixed(1)} min; ` +
+  return `user bought ${b.tokens} on ${b.venue === "pumpswap" ? "PumpSwap" : "the curve"}, deposited ${amount} SPL (nonce ${depNonce}) -> unlocked at ${d.height}, final after ${depMin.toFixed(1)} min; ` +
     `x402 order ${nonce} unlocked at ${od.height} (${((Date.now() - tOrd) / MIN).toFixed(1)} min): job ${job.job_id.slice(0, 16)} W=${job.worker_pay} P=${job.protocol_fee}`;
 }
 
@@ -419,7 +419,7 @@ sampleLag();
 try {
   await step("1. preflight: public endpoints, SPEC genesis params, light client", preflight);
   await step("2. fund throwaway e2e keys from ops", fund);
-  await step("3. bridge in (curve buy + deposit) and x402 storefront order, both unlocked K deep", bridgeInAndOrder);
+  await step("3. bridge in (pump.fun buy + deposit) and x402 storefront order, both unlocked K deep", bridgeInAndOrder);
   await step("4. bridge out (BridgeLock -> release_proof) and the paid job (mined, delivered, completed -> finalize_order_proof)", bridgeOutAndJob);
   await step("5. storefront buyback into the mining reserve", buyback);
   await step("6. refund: underpaid order held back and refunded on Solana", refund);
