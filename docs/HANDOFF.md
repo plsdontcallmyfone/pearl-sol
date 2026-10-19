@@ -594,8 +594,16 @@ CLAUDE.md "Who is working on what".
      true); unsigned pump-buy (pump buy_exact_quote_in_v3 on the curve, PumpSwap after), crank-buyback,
      fund-mining (simulated against the box's real pump/storefront/reserve programs); credit line from
      the payout lien in /v1/accounts; card_probe on agents; registered agents listed before paid
-     work. Test box cadre-api runs main with CADRE_PREPAID=gateway. ~/cadre-web sends X-Cadre-Wallet
-     (2ddf965).
+     work; crank txs accept `{payer}` (the site's field). Test box cadre-api runs main with
+     CADRE_PREPAID=gateway. ~/cadre-web sends X-Cadre-Wallet (2ddf965), e2e checks tightened (33ccde4).
+   - Worker memory: a decode step's [:r] view kept the 32-row padded int32 product alive (generate
+     keeps every step's C), about 50 MB per token; the box worker was OOM-killed at 7 GB during the
+     e2e. Fixed bdf5a80 (64 tokens: peak RSS 6.4 GB -> 2.3 GB, measured).
+   - cadre-web e2e against the box: 18/18 once; 16/18 in the last run with a stricter x402 check
+     (all AI checks pass incl. x402 with its own receipt; one wallet tx step timed out at 60 s, a
+     flake that moves between bridge in / bridge out / register across runs). TEST-REPORT last section.
+   - Open: an Instruct model registration; a GPU worker; cadre-proxy live check against this gateway;
+     the e2e wallet-tx flake (site result not shown within 60 s although the tx lands).
 
 ## M1 components (SPEC v2, all DONE)
 
