@@ -1,0 +1,2450 @@
+{
+  "address": "47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m",
+  "metadata": {
+    "name": "lightclient",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "pearl-sol Solana light client for the agent chain (SPEC v2 5.3)"
+  },
+  "instructions": [
+    {
+      "name": "accumulate",
+      "docs": [
+        "Append the next final headers (remaining accounts, `HeaderRecord`s in height order).",
+        "Permissionless. Each must be verified, final (or canonical at or below the final",
+        "floor), at height `start_height + count` and the child of the last appended header."
+      ],
+      "discriminator": [
+        90,
+        50,
+        248,
+        80,
+        201,
+        136,
+        103,
+        112
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "acc",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  99,
+                  99
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "begin_verify",
+      "docs": [
+        "Bind the work account to a pending header (resets all progress). Job blocks pass",
+        "the registered `JobCommit` as the only remaining account."
+      ],
+      "discriminator": [
+        248,
+        178,
+        84,
+        209,
+        83,
+        181,
+        5,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "proof_len",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "close_header",
+      "docs": [
+        "Close a header no longer needed, rent back to its relayer: a final header",
+        "`retain_final` below the final floor, a dead fork header at or below the floor,",
+        "or a pending header whose height is at or below the floor."
+      ],
+      "discriminator": [
+        232,
+        47,
+        169,
+        126,
+        9,
+        1,
+        200,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "acc",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  99,
+                  99
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "writable": true
+        },
+        {
+          "name": "relayer",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_work",
+      "docs": [
+        "Close a relayer-owned work account, lamports back to its authority."
+      ],
+      "discriminator": [
+        198,
+        66,
+        248,
+        164,
+        181,
+        178,
+        112,
+        223
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "connect",
+      "docs": [
+        "Promote a WorkDone header whose parent is now Verified: marks it Verified, extends",
+        "the tip when the parent is the tip, pays the relay reward. Permissionless; several",
+        "in one tx (parent first) connect a run of headers."
+      ],
+      "discriminator": [
+        77,
+        112,
+        250,
+        232,
+        24,
+        60,
+        112,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "parent"
+        },
+        {
+          "name": "header",
+          "writable": true
+        },
+        {
+          "name": "relayer",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fallback_gen_b",
+      "docs": [
+        "Fallback blocks: generate `count` 64-byte XOF blocks of B into scratch."
+      ],
+      "discriminator": [
+        185,
+        171,
+        50,
+        160,
+        3,
+        4,
+        146,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "fallback_hash_a",
+      "docs": [
+        "Fallback blocks: hash `count` chunks of A (straight from the XOF)."
+      ],
+      "discriminator": [
+        86,
+        16,
+        19,
+        210,
+        213,
+        169,
+        83,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "fallback_hash_bt",
+      "docs": [
+        "Fallback blocks: hash `count` chunks of B^T (after B is generated)."
+      ],
+      "discriminator": [
+        140,
+        220,
+        84,
+        8,
+        61,
+        108,
+        67,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "init_accumulator",
+      "docs": [
+        "Admin: start the final-header accumulator at the current final header (leaf 0).",
+        "Needed once (Initialize does not create it, so older deployments can add it)."
+      ],
+      "discriminator": [
+        19,
+        146,
+        136,
+        223,
+        231,
+        82,
+        156,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "acc",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  99,
+                  99
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_work",
+      "docs": [
+        "Set up a relayer-owned work account (created beforehand with any size, owner =",
+        "this program): `proof_cap` bytes for proofs, the rest is fallback scratch."
+      ],
+      "discriminator": [
+        238,
+        61,
+        195,
+        224,
+        63,
+        31,
+        134,
+        3
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "proof_cap",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Trusted start: a checkpoint header (genesis or a recent final header) with its",
+        "cumulative work and up to 11 timestamps (its own first, then its ancestors')."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  101,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "checkpoint_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "checkpoint_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "Params"
+            }
+          }
+        },
+        {
+          "name": "checkpoint",
+          "type": {
+            "array": [
+              "u8",
+              256
+            ]
+          }
+        },
+        {
+          "name": "cum_work",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "ts_hist",
+          "type": {
+            "vec": "u64"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mark_final",
+      "docs": [
+        "Mark a canonical header at or below the final floor as final (permanent)."
+      ],
+      "discriminator": [
+        76,
+        133,
+        127,
+        13,
+        232,
+        42,
+        56,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "prove_header",
+      "docs": [
+        "Check that `header` is a final header in the accumulator: MMR inclusion of its hash",
+        "at leaf `height - start_height`. `count` = the current leaf count with the short",
+        "proof (siblings to its peak, checked against the stored peak; fits a tx at any",
+        "size), or any count among the last ACC_ROOTS with the full proof (siblings and the",
+        "other peaks, checked against that root; fits a tx up to about 2^15 leaves). Return data:",
+        "`block_hash [32] || height u64 LE`. Read-only; callable by CPI."
+      ],
+      "discriminator": [
+        131,
+        159,
+        201,
+        36,
+        18,
+        55,
+        167,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "acc",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  99,
+                  99
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "header",
+          "type": {
+            "array": [
+              "u8",
+              256
+            ]
+          }
+        },
+        {
+          "name": "count",
+          "type": "u64"
+        },
+        {
+          "name": "proof",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "register_job",
+      "docs": [
+        "Record a job's commitments from the tx that created it (PostJob, or a",
+        "storefront-order BridgeUnlock), proved against a verified canonical header."
+      ],
+      "discriminator": [
+        87,
+        213,
+        177,
+        255,
+        131,
+        17,
+        178,
+        45
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "block"
+        },
+        {
+          "name": "job",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  106,
+                  111,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "job_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "job_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "tx",
+          "type": "bytes"
+        },
+        {
+          "name": "path",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "reorg",
+      "docs": [
+        "Switch the tip to a heavier verified branch. Remaining accounts: the new tip's",
+        "ancestors, newest first, ending with the first one already canonical (the fork",
+        "point). Refused below the final floor."
+      ],
+      "discriminator": [
+        59,
+        136,
+        173,
+        152,
+        253,
+        36,
+        66,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "new_tip"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "restore_header",
+      "docs": [
+        "Re-create the `HeaderRecord` of a closed final header from an accumulator proof",
+        "(as `prove_header`). The payer pays its rent and may close it again later. The",
+        "record is Verified and final, `cum_work` zero, `_pad[0] = 1` (restored)."
+      ],
+      "discriminator": [
+        100,
+        29,
+        236,
+        32,
+        178,
+        105,
+        61,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "acc",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  99,
+                  99
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  101,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "type": {
+            "array": [
+              "u8",
+              256
+            ]
+          }
+        },
+        {
+          "name": "count",
+          "type": "u64"
+        },
+        {
+          "name": "proof",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_params",
+      "docs": [
+        "Every parameter is admin-editable (mirror AdminConfig changes made on the chain)."
+      ],
+      "discriminator": [
+        27,
+        234,
+        178,
+        52,
+        147,
+        2,
+        187,
+        141
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "Params"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "submit_header",
+      "docs": [
+        "Store a header whose parent is verified, after the header-only checks."
+      ],
+      "discriminator": [
+        210,
+        0,
+        238,
+        28,
+        82,
+        84,
+        31,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "parent"
+        },
+        {
+          "name": "header",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  101,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "header",
+          "type": {
+            "array": [
+              "u8",
+              256
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "verify_jackpot",
+      "docs": [
+        "Step 3b: jackpot, `count` rank blocks per call (resumable). The call that completes",
+        "it checks the target. Then, if the parent is Verified (it is the tip, or it is the",
+        "optional remaining account), the header is marked Verified, extends the tip when",
+        "the parent is the tip, and the relay reward is paid; otherwise it is marked",
+        "WorkDone and waits for `connect`."
+      ],
+      "discriminator": [
+        110,
+        182,
+        231,
+        168,
+        97,
+        110,
+        101,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "canon",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  111,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "relayer",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "verify_noise",
+      "docs": [
+        "Step 3a: one side's noised strips (side 0 = A, 1 = B^T) into the work account,",
+        "`count` 8-column noise blocks per call (resumable)."
+      ],
+      "discriminator": [
+        248,
+        142,
+        152,
+        141,
+        47,
+        146,
+        137,
+        199
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "verify_opening",
+      "docs": [
+        "Step 2: one opening (side 0 = A, 1 = B^T) against its commitment."
+      ],
+      "discriminator": [
+        252,
+        111,
+        134,
+        99,
+        150,
+        92,
+        230,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "side",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "verify_proof_hash",
+      "docs": [
+        "Step 1: proof_hash, parse, dims, tile, exact leaf sets. Freezes the proof bytes.",
+        "Resumable: `count` 1 KiB chunks of the proof hash per call."
+      ],
+      "discriminator": [
+        174,
+        50,
+        253,
+        249,
+        66,
+        89,
+        240,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        },
+        {
+          "name": "header"
+        }
+      ],
+      "args": [
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "write_proof",
+      "discriminator": [
+        158,
+        128,
+        57,
+        75,
+        92,
+        21,
+        121,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "work",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Accumulator",
+      "discriminator": [
+        164,
+        66,
+        91,
+        139,
+        158,
+        26,
+        63,
+        105
+      ]
+    },
+    {
+      "name": "Canon",
+      "discriminator": [
+        52,
+        82,
+        107,
+        255,
+        86,
+        35,
+        96,
+        129
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "HeaderRecord",
+      "discriminator": [
+        18,
+        49,
+        52,
+        19,
+        42,
+        113,
+        151,
+        23
+      ]
+    },
+    {
+      "name": "JobCommit",
+      "discriminator": [
+        23,
+        8,
+        179,
+        188,
+        229,
+        50,
+        157,
+        113
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Accumulated",
+      "discriminator": [
+        5,
+        2,
+        178,
+        219,
+        41,
+        238,
+        39,
+        145
+      ]
+    },
+    {
+      "name": "HeaderFinal",
+      "discriminator": [
+        114,
+        132,
+        65,
+        240,
+        157,
+        221,
+        90,
+        139
+      ]
+    },
+    {
+      "name": "HeaderRestored",
+      "discriminator": [
+        103,
+        77,
+        232,
+        53,
+        69,
+        216,
+        100,
+        40
+      ]
+    },
+    {
+      "name": "HeaderSubmitted",
+      "discriminator": [
+        250,
+        198,
+        180,
+        112,
+        110,
+        21,
+        97,
+        120
+      ]
+    },
+    {
+      "name": "HeaderVerified",
+      "discriminator": [
+        78,
+        20,
+        219,
+        175,
+        64,
+        2,
+        113,
+        36
+      ]
+    },
+    {
+      "name": "JobRegistered",
+      "discriminator": [
+        155,
+        197,
+        214,
+        211,
+        47,
+        179,
+        242,
+        174
+      ]
+    },
+    {
+      "name": "TipChanged",
+      "discriminator": [
+        77,
+        165,
+        117,
+        229,
+        175,
+        137,
+        29,
+        79
+      ]
+    },
+    {
+      "name": "WorkVerified",
+      "discriminator": [
+        226,
+        166,
+        187,
+        143,
+        203,
+        165,
+        76,
+        53
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "BadParams",
+      "msg": "invalid parameters"
+    },
+    {
+      "code": 6001,
+      "name": "NotAdmin",
+      "msg": "only the admin may do this"
+    },
+    {
+      "code": 6002,
+      "name": "HashMismatch",
+      "msg": "hash does not match the header bytes"
+    },
+    {
+      "code": 6003,
+      "name": "BadHeader",
+      "msg": "bad header (version, parent link or height)"
+    },
+    {
+      "code": 6004,
+      "name": "ParentNotVerified",
+      "msg": "parent header is not verified"
+    },
+    {
+      "code": 6005,
+      "name": "TooDeep",
+      "msg": "at or below the final floor"
+    },
+    {
+      "code": 6006,
+      "name": "WrongTarget",
+      "msg": "target_bits is not the WTEMA target"
+    },
+    {
+      "code": 6007,
+      "name": "Timestamp",
+      "msg": "timestamp rule violated"
+    },
+    {
+      "code": 6008,
+      "name": "NotPending",
+      "msg": "header is not pending"
+    },
+    {
+      "code": 6009,
+      "name": "NotVerified",
+      "msg": "header is not verified"
+    },
+    {
+      "code": 6010,
+      "name": "JobMissing",
+      "msg": "job block needs its registered job"
+    },
+    {
+      "code": 6011,
+      "name": "BadWork",
+      "msg": "bad work account"
+    },
+    {
+      "code": 6012,
+      "name": "WrongTarget2",
+      "msg": "work account is bound to another header"
+    },
+    {
+      "code": 6013,
+      "name": "Frozen",
+      "msg": "proof bytes are frozen"
+    },
+    {
+      "code": 6014,
+      "name": "ProofTooLarge",
+      "msg": "proof does not fit the work account"
+    },
+    {
+      "code": 6015,
+      "name": "BadStep",
+      "msg": "verification steps out of order"
+    },
+    {
+      "code": 6016,
+      "name": "VerifyFailed",
+      "msg": "proof verification failed"
+    },
+    {
+      "code": 6017,
+      "name": "NotHeavier",
+      "msg": "branch is not heavier than the tip"
+    },
+    {
+      "code": 6018,
+      "name": "BadPath",
+      "msg": "bad reorg path"
+    },
+    {
+      "code": 6019,
+      "name": "NotFinal",
+      "msg": "header is not below the final floor"
+    },
+    {
+      "code": 6020,
+      "name": "NotCanonical",
+      "msg": "header is not canonical"
+    },
+    {
+      "code": 6021,
+      "name": "WrongRelayer",
+      "msg": "not the header's relayer"
+    },
+    {
+      "code": 6022,
+      "name": "CannotClose",
+      "msg": "header cannot be closed yet"
+    },
+    {
+      "code": 6023,
+      "name": "AccOrder",
+      "msg": "header is not the next one for the accumulator"
+    },
+    {
+      "code": 6024,
+      "name": "NotAccumulated",
+      "msg": "final header is not in the accumulator yet"
+    },
+    {
+      "code": 6025,
+      "name": "AccRoot",
+      "msg": "accumulator size is not current or recent"
+    },
+    {
+      "code": 6026,
+      "name": "AccProof",
+      "msg": "accumulator proof failed"
+    },
+    {
+      "code": 6027,
+      "name": "NotWorkDone",
+      "msg": "header is not WorkDone"
+    }
+  ],
+  "types": [
+    {
+      "name": "Accumulated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "height",
+            "type": "u64"
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "count",
+            "type": "u64"
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Accumulator",
+      "docs": [
+        "Final-header accumulator (R5). Fixed layout (see [`acc_layout`]) so other programs",
+        "read it raw."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "start_height",
+            "docs": [
+              "Height of leaf 0."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "count",
+            "docs": [
+              "Leaves (final headers) appended: heights start_height .. start_height + count."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "last_hash",
+            "docs": [
+              "Hash of the last appended header (height start_height + count - 1)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "peaks",
+            "docs": [
+              "MMR peaks by height: `peaks[b]` is the peak over 2^b leaves when bit b of count is set."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                64
+              ]
+            }
+          },
+          {
+            "name": "roots",
+            "docs": [
+              "`roots[n % ACC_ROOTS]` = root when the accumulator held n leaves."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                128
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Canon",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hashes",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                256
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "Params"
+              }
+            }
+          },
+          {
+            "name": "checkpoint_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "checkpoint_height",
+            "type": "u64"
+          },
+          {
+            "name": "tip_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "tip_height",
+            "type": "u64"
+          },
+          {
+            "name": "tip_work",
+            "docs": [
+              "Cumulative work of the tip, U256 little-endian."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "final_floor",
+            "docs": [
+              "Highest height that can never be reorged: max over time of tip - K."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "final_height",
+            "docs": [
+              "Highest header marked final."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "final_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "pool_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HeaderFinal",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HeaderRecord",
+      "docs": [
+        "One header. Fixed layout (see [`layout`]) so other programs read it raw."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "header",
+            "type": {
+              "array": [
+                "u8",
+                256
+              ]
+            }
+          },
+          {
+            "name": "cum_work",
+            "docs": [
+              "U256 little-endian."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          },
+          {
+            "name": "ts_hist",
+            "docs": [
+              "Own timestamp first, then up to 10 ancestors'."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                11
+              ]
+            }
+          },
+          {
+            "name": "relayer",
+            "type": "pubkey"
+          },
+          {
+            "name": "verified_slot",
+            "type": "u64"
+          },
+          {
+            "name": "ts_len",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "is_final",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "HeaderRestored",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HeaderSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HeaderVerified",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JobCommit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "job_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "job_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "header76",
+            "type": {
+              "array": [
+                "u8",
+                76
+              ]
+            }
+          },
+          {
+            "name": "config",
+            "type": {
+              "array": [
+                "u8",
+                52
+              ]
+            }
+          },
+          {
+            "name": "m",
+            "type": "u32"
+          },
+          {
+            "name": "n",
+            "type": "u32"
+          },
+          {
+            "name": "hash_a",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash_b",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "posted_height",
+            "type": "u64"
+          },
+          {
+            "name": "posted_block",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JobRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "job_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "posted_height",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chain_id",
+            "type": "u32"
+          },
+          {
+            "name": "finality_k",
+            "docs": [
+              "Finality depth K (chain parameter finality_k)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "target_block_time_ms",
+            "type": "u64"
+          },
+          {
+            "name": "half_life_ms",
+            "type": "u64"
+          },
+          {
+            "name": "pow_limit_bits",
+            "type": "u32"
+          },
+          {
+            "name": "min_difficulty_bits",
+            "type": "u32"
+          },
+          {
+            "name": "max_future_ms",
+            "type": "u64"
+          },
+          {
+            "name": "fallback_m",
+            "type": "u32"
+          },
+          {
+            "name": "fallback_n",
+            "type": "u32"
+          },
+          {
+            "name": "fallback_config",
+            "type": {
+              "array": [
+                "u8",
+                52
+              ]
+            }
+          },
+          {
+            "name": "relay_reward",
+            "docs": [
+              "Lamports paid from the pool to the relayer of each verified header."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "retain_final",
+            "docs": [
+              "Final headers this many blocks below the final floor may be closed."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TipChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          },
+          {
+            "name": "reorg_depth",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WorkVerified",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

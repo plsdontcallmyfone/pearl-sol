@@ -1,0 +1,3211 @@
+{
+  "address": "9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu",
+  "metadata": {
+    "name": "storefront",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "pearl-sol compute storefront (SPEC 5.1)"
+  },
+  "instructions": [
+    {
+      "name": "buy_job",
+      "docs": [
+        "Step 2 on the bonding curve. `nonce` must equal the bridge's next",
+        "deposit nonce (the Order PDA is keyed by it)."
+      ],
+      "discriminator": [
+        19,
+        71,
+        11,
+        45,
+        188,
+        216,
+        158,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "draft"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "draft",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  114,
+                  97,
+                  102,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "account",
+                "path": "draft.draft_id",
+                "account": "OrderDraft"
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "trader",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "trader_ata",
+          "writable": true
+        },
+        {
+          "name": "trader_wsol",
+          "writable": true
+        },
+        {
+          "name": "pump_global"
+        },
+        {
+          "name": "bonding_curve",
+          "writable": true
+        },
+        {
+          "name": "curve_base_vault",
+          "writable": true
+        },
+        {
+          "name": "curve_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "fee_config"
+        },
+        {
+          "name": "buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pump_event_authority"
+        },
+        {
+          "name": "pump_program",
+          "address": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        },
+        {
+          "name": "bridge_config",
+          "writable": true
+        },
+        {
+          "name": "bridge_vault",
+          "writable": true
+        },
+        {
+          "name": "bridge_deposit",
+          "writable": true
+        },
+        {
+          "name": "bridge_program"
+        },
+        {
+          "name": "buyback_vault",
+          "docs": [
+            "Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  121,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "share_record",
+          "docs": [
+            "(an Anchor `init` here overflows the 4 KB SBF stack frame of try_accounts)."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "buy_job_amm",
+      "docs": [
+        "Step 2 on PumpSwap (after graduation): the SOL is wrapped into the",
+        "trader's wSOL ATA, spent with `buy_exact_quote_in_v2` on the canonical",
+        "pool, and the ATA is closed again (rent and leftover back to the buyer)."
+      ],
+      "discriminator": [
+        187,
+        132,
+        17,
+        64,
+        27,
+        26,
+        109,
+        126
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "draft"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "draft",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  114,
+                  97,
+                  102,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "account",
+                "path": "draft.draft_id",
+                "account": "OrderDraft"
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "trader",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "trader_ata",
+          "writable": true
+        },
+        {
+          "name": "trader_wsol",
+          "writable": true
+        },
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "pool_base_vault",
+          "writable": true
+        },
+        {
+          "name": "pool_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "amm_global_config"
+        },
+        {
+          "name": "amm_user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "amm_fee_config"
+        },
+        {
+          "name": "amm_buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "amm_event_authority"
+        },
+        {
+          "name": "amm_program",
+          "address": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        },
+        {
+          "name": "bridge_config",
+          "writable": true
+        },
+        {
+          "name": "bridge_vault",
+          "writable": true
+        },
+        {
+          "name": "bridge_deposit",
+          "writable": true
+        },
+        {
+          "name": "bridge_program"
+        },
+        {
+          "name": "buyback_vault",
+          "docs": [
+            "Buyback vault: receives `buyback_bps` of sol_in (appended 2026-10-18)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  121,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "share_record",
+          "docs": [
+            "(an Anchor `init` here overflows the 4 KB SBF stack frame of try_accounts)."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "cancel_draft",
+      "docs": [
+        "Buyer abandons a draft (rent back)."
+      ],
+      "discriminator": [
+        234,
+        193,
+        92,
+        79,
+        29,
+        206,
+        188,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "draft"
+          ]
+        },
+        {
+          "name": "draft",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  114,
+                  97,
+                  102,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "account",
+                "path": "draft.draft_id",
+                "account": "OrderDraft"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "crank_buyback",
+      "docs": [
+        "Buyback on the bonding curve (see module docs \"Buyback\"): the vault PDA buys with",
+        "`buy_exact_quote_in_v3`, then the vault's tokens go to `config.buyback_dest`."
+      ],
+      "discriminator": [
+        37,
+        215,
+        1,
+        139,
+        147,
+        5,
+        99,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "docs": [
+            "Anyone (or config.buyback_cranker); pays the vault ATA rent if missing."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyback_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  121,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "vault_ata",
+          "writable": true
+        },
+        {
+          "name": "vault_wsol",
+          "writable": true
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "pump_global"
+        },
+        {
+          "name": "bonding_curve",
+          "writable": true
+        },
+        {
+          "name": "curve_base_vault",
+          "writable": true
+        },
+        {
+          "name": "curve_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "fee_config"
+        },
+        {
+          "name": "buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pump_event_authority"
+        },
+        {
+          "name": "pump_program",
+          "address": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "crank_buyback_amm",
+      "docs": [
+        "Buyback on PumpSwap after graduation: the spend is wrapped into the vault's wSOL",
+        "ATA, spent with `buy_exact_quote_in_v2` on the canonical pool, the ATA is closed",
+        "(its rent back to the cranker if this call created it), then routed as above."
+      ],
+      "discriminator": [
+        67,
+        8,
+        175,
+        228,
+        175,
+        56,
+        201,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "docs": [
+            "Anyone (or config.buyback_cranker); pays ATA rent if missing (wSOL ATA rent back)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyback_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  121,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "vault_ata",
+          "writable": true
+        },
+        {
+          "name": "vault_wsol",
+          "writable": true
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "pool_base_vault",
+          "writable": true
+        },
+        {
+          "name": "pool_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "amm_global_config"
+        },
+        {
+          "name": "amm_user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "amm_fee_config"
+        },
+        {
+          "name": "amm_buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "amm_event_authority"
+        },
+        {
+          "name": "amm_program",
+          "address": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "expire_order",
+      "docs": [
+        "Records that the job expired on the chain (M-of-N attesters over",
+        "`b\"pearl-sol:expired:v1\" || job_id`). Funds return over the bridge."
+      ],
+      "discriminator": [
+        174,
+        27,
+        85,
+        247,
+        105,
+        245,
+        220,
+        13
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Buyer, admin or an attester."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_order_proof",
+      "docs": [
+        "Proof mode expire: the chain's ExpireJob tx for `order.job_id` in a final header."
+      ],
+      "discriminator": [
+        132,
+        240,
+        65,
+        107,
+        31,
+        87,
+        175,
+        56
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Buyer, admin or an attester."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "lc_header"
+        }
+      ],
+      "args": [
+        {
+          "name": "tx",
+          "type": "bytes"
+        },
+        {
+          "name": "path",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "finalize_order",
+      "docs": [
+        "Records the job result (M1: M-of-N attester signatures through the",
+        "ed25519 precompile). Caller: buyer, admin or an attester."
+      ],
+      "discriminator": [
+        198,
+        89,
+        84,
+        237,
+        43,
+        9,
+        99,
+        55
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Buyer, admin or an attester."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "deliverer",
+          "type": "pubkey"
+        },
+        {
+          "name": "result_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "result_uri",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "finalize_order_proof",
+      "docs": [
+        "Proof mode finalize (see the module docs). `tx` is the CompleteJob tx bytes,",
+        "`path` its tx_root path (33-byte entries), `pair` which (evaluator, sig) pair of",
+        "the tx the ed25519 precompile instruction re-verifies. Caller: buyer, admin or",
+        "attester (result_uri is not proved)."
+      ],
+      "discriminator": [
+        120,
+        26,
+        39,
+        64,
+        82,
+        26,
+        148,
+        201
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Buyer, admin or an attester."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "lc_header"
+        }
+      ],
+      "args": [
+        {
+          "name": "deliverer",
+          "type": "pubkey"
+        },
+        {
+          "name": "result_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "result_uri",
+          "type": "string"
+        },
+        {
+          "name": "tx",
+          "type": "bytes"
+        },
+        {
+          "name": "path",
+          "type": "bytes"
+        },
+        {
+          "name": "pair",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Creates the config (signer = admin) and tops the trader PDA up to rent exemption."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "trader",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        },
+        {
+          "name": "attesters",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "mark_refunded",
+      "docs": [
+        "Marks a Pending (or Expired) Order Refunded once the bridge has refunded its",
+        "deposit to `order.buyer` (bridge `refund_deposit`). Anyone may call; the only",
+        "input is the bridge's refund record, checked by owner, address and content."
+      ],
+      "discriminator": [
+        96,
+        126,
+        45,
+        51,
+        100,
+        41,
+        17,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "refund_record"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "open_order",
+      "docs": [
+        "Step 1: the buyer stores the job spec. `recipient` = the buyer's",
+        "agent-chain address (poster of the job; same ed25519 key works on both)."
+      ],
+      "discriminator": [
+        206,
+        88,
+        88,
+        143,
+        38,
+        136,
+        50,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "draft",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  114,
+                  97,
+                  102,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "arg",
+                "path": "draft_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "draft_id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "pubkey"
+        },
+        {
+          "name": "spec",
+          "type": {
+            "defined": {
+              "name": "JobSpecArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_attesters",
+      "discriminator": [
+        128,
+        0,
+        241,
+        150,
+        15,
+        95,
+        22,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "attesters",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_buyback",
+      "docs": [
+        "Admin: buyback share, destination, reserve program, cranker allowlist, caps and",
+        "interval. Emits every resulting value."
+      ],
+      "discriminator": [
+        25,
+        230,
+        211,
+        170,
+        192,
+        101,
+        115,
+        219
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "p",
+          "type": {
+            "defined": {
+              "name": "BuybackParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_finalize_modes",
+      "docs": [
+        "Which finalize / expire paths are open (bit 1 signers, bit 2 proof) and the",
+        "light-client program whose final headers the proof path trusts."
+      ],
+      "discriminator": [
+        234,
+        138,
+        244,
+        26,
+        19,
+        198,
+        58,
+        33
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "modes",
+          "type": "u8"
+        },
+        {
+          "name": "light_client",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "settle_share",
+      "docs": [
+        "Settles one order's held buyback share once the Order is closed (permissionless):",
+        "Finalized -> released to the buyback (crankable); Refunded or Expired -> paid back",
+        "from the vault to `order.buyer`. Closes the ShareRecord (rent to the buyer)."
+      ],
+      "discriminator": [
+        147,
+        99,
+        189,
+        0,
+        48,
+        125,
+        83,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "share_record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.deposit_nonce",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        },
+        {
+          "name": "buyback_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  121,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_config",
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Order",
+      "discriminator": [
+        134,
+        173,
+        223,
+        185,
+        77,
+        86,
+        28,
+        51
+      ]
+    },
+    {
+      "name": "OrderDraft",
+      "discriminator": [
+        148,
+        232,
+        255,
+        45,
+        33,
+        168,
+        207,
+        28
+      ]
+    },
+    {
+      "name": "ShareRecord",
+      "discriminator": [
+        246,
+        216,
+        227,
+        196,
+        246,
+        62,
+        50,
+        54
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "BuybackAccrued",
+      "discriminator": [
+        59,
+        64,
+        97,
+        23,
+        228,
+        204,
+        206,
+        248
+      ]
+    },
+    {
+      "name": "BuybackConfigUpdated",
+      "discriminator": [
+        106,
+        226,
+        147,
+        39,
+        169,
+        115,
+        214,
+        165
+      ]
+    },
+    {
+      "name": "BuybackExecuted",
+      "discriminator": [
+        150,
+        109,
+        157,
+        10,
+        124,
+        24,
+        38,
+        189
+      ]
+    },
+    {
+      "name": "BuybackShareHeld",
+      "discriminator": [
+        161,
+        157,
+        242,
+        51,
+        120,
+        75,
+        219,
+        47
+      ]
+    },
+    {
+      "name": "BuybackShareRefunded",
+      "discriminator": [
+        187,
+        161,
+        229,
+        253,
+        136,
+        104,
+        189,
+        158
+      ]
+    },
+    {
+      "name": "ConfigUpdated",
+      "discriminator": [
+        40,
+        241,
+        230,
+        122,
+        11,
+        19,
+        198,
+        194
+      ]
+    },
+    {
+      "name": "OrderExpired",
+      "discriminator": [
+        241,
+        55,
+        48,
+        196,
+        160,
+        51,
+        40,
+        213
+      ]
+    },
+    {
+      "name": "OrderFinalized",
+      "discriminator": [
+        108,
+        182,
+        113,
+        19,
+        131,
+        132,
+        255,
+        94
+      ]
+    },
+    {
+      "name": "OrderPlaced",
+      "discriminator": [
+        96,
+        130,
+        204,
+        234,
+        169,
+        219,
+        216,
+        227
+      ]
+    },
+    {
+      "name": "OrderRefunded",
+      "discriminator": [
+        120,
+        155,
+        10,
+        169,
+        7,
+        98,
+        202,
+        187
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "signer is not allowed"
+    },
+    {
+      "code": 6001,
+      "name": "BadConfig",
+      "msg": "bad config value"
+    },
+    {
+      "code": 6002,
+      "name": "BadAttesterSet",
+      "msg": "attester set must be 1..=10 distinct keys with 1 <= threshold <= len"
+    },
+    {
+      "code": 6003,
+      "name": "BadAccount",
+      "msg": "unexpected account"
+    },
+    {
+      "code": 6004,
+      "name": "BadSpec",
+      "msg": "job spec outside the configured caps"
+    },
+    {
+      "code": 6005,
+      "name": "UriTooLong",
+      "msg": "uri longer than 200 bytes"
+    },
+    {
+      "code": 6006,
+      "name": "Paused",
+      "msg": "storefront is paused"
+    },
+    {
+      "code": 6007,
+      "name": "BelowMinOrder",
+      "msg": "sol_in below min_sol_in"
+    },
+    {
+      "code": 6008,
+      "name": "AboveMaxOrder",
+      "msg": "sol_in above max_sol_in"
+    },
+    {
+      "code": 6009,
+      "name": "WrongNonce",
+      "msg": "nonce is not the bridge's next deposit nonce"
+    },
+    {
+      "code": 6010,
+      "name": "MinTokensOut",
+      "msg": "fill below min_tokens_out"
+    },
+    {
+      "code": 6011,
+      "name": "Slippage",
+      "msg": "fill worse than max_slippage_bps from the pre-trade quote"
+    },
+    {
+      "code": 6012,
+      "name": "Overspent",
+      "msg": "spent more than sol_in"
+    },
+    {
+      "code": 6013,
+      "name": "BelowFloor",
+      "msg": "trader PDA fell below rent exemption"
+    },
+    {
+      "code": 6014,
+      "name": "CurveComplete",
+      "msg": "bonding curve is complete, use buy_job_amm"
+    },
+    {
+      "code": 6015,
+      "name": "OrderTooSmall",
+      "msg": "order too small to split into W and P"
+    },
+    {
+      "code": 6016,
+      "name": "NotPending",
+      "msg": "order is not pending"
+    },
+    {
+      "code": 6017,
+      "name": "NotEnoughSignatures",
+      "msg": "not enough valid attester signatures over this message"
+    },
+    {
+      "code": 6018,
+      "name": "Overflow",
+      "msg": "overflow"
+    },
+    {
+      "code": 6019,
+      "name": "ModeDisabled",
+      "msg": "this finalize path is disabled"
+    },
+    {
+      "code": 6020,
+      "name": "BadProof",
+      "msg": "chain proof does not verify"
+    },
+    {
+      "code": 6021,
+      "name": "TooSoon",
+      "msg": "buyback called before buyback_min_interval_secs"
+    },
+    {
+      "code": 6022,
+      "name": "NothingToBuy",
+      "msg": "nothing to buy back (below buyback_min_buy)"
+    }
+  ],
+  "types": [
+    {
+      "name": "BuybackAccrued",
+      "docs": [
+        "One order's buyback share released to the buyback by `settle_share` (Order finalized)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "vault_available",
+            "docs": [
+              "Crankable vault lamports (above rent and held shares) after this release."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_accrued",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BuybackConfigUpdated",
+      "docs": [
+        "`set_buyback`: every buyback setting after the change."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyback_bps",
+            "type": "u16"
+          },
+          {
+            "name": "destination",
+            "type": "u8"
+          },
+          {
+            "name": "reserve_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "cranker",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_per_call",
+            "type": "u64"
+          },
+          {
+            "name": "min_buy",
+            "type": "u64"
+          },
+          {
+            "name": "min_interval_secs",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BuybackExecuted",
+      "docs": [
+        "One buyback by the crank (curve or PumpSwap)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "buy",
+            "docs": [
+              "1-based index of this buy (= config.bb_buys)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "venue",
+            "docs": [
+              "VENUE_CURVE or VENUE_PUMPSWAP."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "sol_in",
+            "docs": [
+              "Lamports spent."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "tokens_out",
+            "docs": [
+              "Tokens (SPL units) this buy returned."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "routed",
+            "docs": [
+              "Tokens moved to the destination (tokens_out plus anything already in the vault ATA)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "destination",
+            "docs": [
+              "DEST_RESERVE or DEST_BURN."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "destination_account",
+            "docs": [
+              "The reserve ATA, or the mint for a burn."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quote",
+            "docs": [
+              "Fee-free pre-trade quote for `sol_in`'s cap (the fill check's reference)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "first_nonce",
+            "docs": [
+              "Orders whose share was released since the previous buy (0, 0, 0 when none): bridge",
+              "deposit nonces of the first and last such Order."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "last_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "orders",
+            "type": "u64"
+          },
+          {
+            "name": "available_before",
+            "docs": [
+              "Crankable vault lamports (above rent and held shares) before the buy, and what stays."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "carry",
+            "type": "u64"
+          },
+          {
+            "name": "total_spent",
+            "type": "u64"
+          },
+          {
+            "name": "total_tokens",
+            "type": "u64"
+          },
+          {
+            "name": "total_to_reserve",
+            "type": "u64"
+          },
+          {
+            "name": "total_burned",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BuybackParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "buyback_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "destination",
+            "type": {
+              "option": "u8"
+            }
+          },
+          {
+            "name": "reserve_program",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "cranker",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "max_per_call",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_buy",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_interval_secs",
+            "type": {
+              "option": "i64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "BuybackShareHeld",
+      "docs": [
+        "One order's share held in the vault by `buy_job*` (not crankable until settled)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "total_locked",
+            "type": "u64"
+          },
+          {
+            "name": "vault_lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BuybackShareRefunded",
+      "docs": [
+        "`settle_share` on a Refunded (4) or Expired (3) order: the share went back to the buyer."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "total_refunded",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "The pump coin (bridge mint)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bridge_program",
+            "docs": [
+              "token/programs/bridge."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "protocol_fee_bps",
+            "docs": [
+              "Share of the bought tokens that becomes P (mining pool), rest is W."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "max_slippage_bps",
+            "docs": [
+              "Max shortfall of the fill against the fee-free quote (covers pump's 1.25%)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "min_sol_in",
+            "type": "u64"
+          },
+          {
+            "name": "max_sol_in",
+            "type": "u64"
+          },
+          {
+            "name": "max_dim",
+            "docs": [
+              "Cap on each of m, n, k."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "max_blocks_cap",
+            "type": "u32"
+          },
+          {
+            "name": "max_deadline_blocks",
+            "type": "u64"
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "attesters",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "orders",
+            "type": "u64"
+          },
+          {
+            "name": "total_sol",
+            "type": "u64"
+          },
+          {
+            "name": "total_tokens",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "trader_bump",
+            "type": "u8"
+          },
+          {
+            "name": "finalize_modes",
+            "docs": [
+              "Enabled finalize / expire paths: MODE_SIGNERS | MODE_PROOF (appended in M2)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "light_client",
+            "docs": [
+              "Light-client program whose final headers the proof paths accept."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "buyback_bps",
+            "docs": [
+              "Share of each order's sol_in that goes to the buyback vault (PROVISIONAL default 1000)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "buyback_dest",
+            "docs": [
+              "DEST_RESERVE (0) or DEST_BURN (1)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "reserve_program",
+            "docs": [
+              "token/programs/reserve, whose creator PDA's ATA is the reserve destination."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "buyback_cranker",
+            "docs": [
+              "If set, only this key may crank a buyback; zero = permissionless."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "buyback_max_per_call",
+            "docs": [
+              "Most lamports one buyback spends; 0 = no cap."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "buyback_min_buy",
+            "docs": [
+              "Below this a buyback fails with NothingToBuy."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "buyback_min_interval_secs",
+            "type": "i64"
+          },
+          {
+            "name": "bb_last_ts",
+            "type": "i64"
+          },
+          {
+            "name": "bb_accrued",
+            "docs": [
+              "Lamports of order shares paid into the vault, all time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bb_spent",
+            "docs": [
+              "Lamports the vault spent on buys, all time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bb_tokens",
+            "docs": [
+              "Tokens (SPL units) the buys returned, all time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bb_to_reserve",
+            "type": "u64"
+          },
+          {
+            "name": "bb_burned",
+            "type": "u64"
+          },
+          {
+            "name": "bb_buys",
+            "type": "u64"
+          },
+          {
+            "name": "bb_pending_orders",
+            "docs": [
+              "Orders whose share arrived since the last buy, and their nonce range."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bb_pending_first_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "bb_pending_last_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "bb_locked",
+            "docs": [
+              "Shares held for orders not settled yet (settle_share): not crankable, refundable."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bb_refunded",
+            "docs": [
+              "Shares paid back to buyers of refunded or expired orders, all time."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "bridge_program",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "paused",
+            "type": {
+              "option": "bool"
+            }
+          },
+          {
+            "name": "protocol_fee_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "max_slippage_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "min_sol_in",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "max_sol_in",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "max_dim",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_blocks_cap",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_deadline_blocks",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JobSpec",
+      "docs": [
+        "Fixed-size job spec (SPEC 4.1 fields). Fixed arrays keep every field of",
+        "`Order` at a fixed offset, see `layout`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "m",
+            "type": "u32"
+          },
+          {
+            "name": "n",
+            "type": "u32"
+          },
+          {
+            "name": "k",
+            "type": "u32"
+          },
+          {
+            "name": "config",
+            "type": {
+              "array": [
+                "u8",
+                52
+              ]
+            }
+          },
+          {
+            "name": "hash_a",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash_b",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "deadline_blocks",
+            "docs": [
+              "Relative: blocks after the unlock height (see module docs)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_blocks",
+            "type": "u32"
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "evaluator_count",
+            "type": "u8"
+          },
+          {
+            "name": "evaluators",
+            "type": {
+              "array": [
+                "pubkey",
+                8
+              ]
+            }
+          },
+          {
+            "name": "data_uri_len",
+            "type": "u16"
+          },
+          {
+            "name": "data_uri",
+            "type": {
+              "array": [
+                "u8",
+                200
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "JobSpecArgs",
+      "docs": [
+        "Instruction form of the spec."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "m",
+            "type": "u32"
+          },
+          {
+            "name": "n",
+            "type": "u32"
+          },
+          {
+            "name": "k",
+            "type": "u32"
+          },
+          {
+            "name": "config",
+            "type": {
+              "array": [
+                "u8",
+                52
+              ]
+            }
+          },
+          {
+            "name": "hash_a",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash_b",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "data_uri",
+            "type": "string"
+          },
+          {
+            "name": "deadline_blocks",
+            "type": "u64"
+          },
+          {
+            "name": "max_blocks",
+            "type": "u32"
+          },
+          {
+            "name": "evaluators",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Order",
+      "docs": [
+        "One storefront order, readable by any program: fixed size, every field at",
+        "a fixed offset (`layout`). Status 1 Pending, 2 Finalized, 3 Expired, 4 Refunded."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "venue",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "deposit_nonce",
+            "docs": [
+              "Bridge deposit nonce; Order PDA = [\"order\", nonce LE]."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "job_id",
+            "docs": [
+              "sha256(\"pearl-sol:order-job:v1\" || nonce LE): the job id on the chain."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "recipient",
+            "docs": [
+              "Agent-chain poster / bridge recipient."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "body_hash",
+            "docs": [
+              "sha256 of the PostJob body the chain must execute."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "sol_spent",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "docs": [
+              "SPL base units deposited (= W + P in SPL units)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "worker_pay",
+            "docs": [
+              "W, chain base units."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee",
+            "docs": [
+              "P, chain base units."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "created_slot",
+            "type": "u64"
+          },
+          {
+            "name": "created_ts",
+            "type": "i64"
+          },
+          {
+            "name": "deliverer",
+            "type": "pubkey"
+          },
+          {
+            "name": "result_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "closed_slot",
+            "docs": [
+              "Slot of finalize or expire (0 while pending)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "result_uri_len",
+            "type": "u16"
+          },
+          {
+            "name": "result_uri",
+            "type": {
+              "array": [
+                "u8",
+                200
+              ]
+            }
+          },
+          {
+            "name": "spec",
+            "type": {
+              "defined": {
+                "name": "JobSpec"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderDraft",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "draft_id",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "spec",
+            "type": {
+              "defined": {
+                "name": "JobSpec"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderExpired",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "job_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderFinalized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "job_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "deliverer",
+            "type": "pubkey"
+          },
+          {
+            "name": "result_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderPlaced",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "job_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "venue",
+            "type": "u8"
+          },
+          {
+            "name": "sol_spent",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          },
+          {
+            "name": "worker_pay",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderRefunded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShareRecord",
+      "docs": [
+        "One order's buyback share, held until `settle_share` (PDA [\"share\", deposit nonce])."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,1330 @@
+{
+  "address": "8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi",
+  "metadata": {
+    "name": "reserve",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "collect_curve_fees",
+      "docs": [
+        "Permissionless: curve `sweep_creator_fee` + `collect_creator_fee_v2`",
+        "into the creator PDA, no buy. Works before and after graduation (old",
+        "curve fees); `crank_buyback_amm` then spends the lamports."
+      ],
+      "discriminator": [
+        79,
+        236,
+        227,
+        159,
+        186,
+        91,
+        47,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "creator_wsol",
+          "writable": true
+        },
+        {
+          "name": "pump_global"
+        },
+        {
+          "name": "bonding_curve",
+          "writable": true
+        },
+        {
+          "name": "curve_base_vault",
+          "writable": true
+        },
+        {
+          "name": "curve_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "creator_vault",
+          "writable": true
+        },
+        {
+          "name": "creator_vault_wsol",
+          "writable": true
+        },
+        {
+          "name": "user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "fee_config"
+        },
+        {
+          "name": "buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pump_event_authority"
+        },
+        {
+          "name": "pump_program",
+          "address": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "crank_buyback",
+      "docs": [
+        "Curve buyback: sweep + collect creator fees, then `buy_exact_quote_in_v3`",
+        "with the creator PDA as buyer, spending",
+        "`min(lamports - sol_floor, max_buy_per_call, max_sol_in)`."
+      ],
+      "discriminator": [
+        37,
+        215,
+        1,
+        139,
+        147,
+        5,
+        99,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "creator_wsol",
+          "writable": true
+        },
+        {
+          "name": "pump_global"
+        },
+        {
+          "name": "bonding_curve",
+          "writable": true
+        },
+        {
+          "name": "curve_base_vault",
+          "writable": true
+        },
+        {
+          "name": "curve_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "creator_vault",
+          "writable": true
+        },
+        {
+          "name": "creator_vault_wsol",
+          "writable": true
+        },
+        {
+          "name": "user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "fee_config"
+        },
+        {
+          "name": "buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pump_event_authority"
+        },
+        {
+          "name": "pump_program",
+          "address": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "crank_buyback_amm",
+      "docs": [
+        "PumpSwap buyback after graduation: PumpSwap `sweep_creator_fee` +",
+        "`collect_coin_creator_fee` (wSOL into the PDA's wSOL ATA), wrap any",
+        "native lamports above `sol_floor` (old curve fees), then",
+        "`buy_exact_quote_in_v2` on the canonical pool into the reserve."
+      ],
+      "discriminator": [
+        67,
+        8,
+        175,
+        228,
+        175,
+        56,
+        201,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "creator_wsol",
+          "writable": true
+        },
+        {
+          "name": "bonding_curve"
+        },
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "pool_base_vault",
+          "writable": true
+        },
+        {
+          "name": "pool_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "amm_global_config"
+        },
+        {
+          "name": "coin_creator_vault_authority"
+        },
+        {
+          "name": "coin_creator_vault_ata",
+          "writable": true
+        },
+        {
+          "name": "amm_user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "amm_fee_config"
+        },
+        {
+          "name": "amm_buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "amm_event_authority"
+        },
+        {
+          "name": "amm_program",
+          "address": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_sol_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "fund_mining",
+      "docs": [
+        "Admin or `config.funder`: deposit `amount` reserve tokens into the",
+        "bridge with `config.mining_pool` (agent chain) as recipient. CPI into",
+        "the token-side bridge `deposit(amount, agent_recipient)` (SPEC 2.3),",
+        "with the creator PDA as `sender` and the caller as rent `payer`."
+      ],
+      "discriminator": [
+        199,
+        168,
+        56,
+        125,
+        81,
+        128,
+        53,
+        251
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "Admin or config.funder; pays the bridge Deposit record rent."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "bridge_config",
+          "writable": true
+        },
+        {
+          "name": "bridge_vault",
+          "writable": true
+        },
+        {
+          "name": "bridge_deposit",
+          "writable": true
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "bridge_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Creates the config. The signer becomes admin. `mint` stays unset until",
+        "`launch` (or `update_config` for a coin launched elsewhere)."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "launch",
+      "docs": [
+        "Admin: pump `create_v2` with the creator PDA as creator, then a dev buy",
+        "of `dev_buy_lamports` (funded by the admin) with the creator PDA as the",
+        "buyer, so the tokens land in the reserve ATA. One launch per config."
+      ],
+      "discriminator": [
+        153,
+        241,
+        93,
+        225,
+        22,
+        69,
+        74,
+        61
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "New pump mint (keypair signs the transaction)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint_authority"
+        },
+        {
+          "name": "bonding_curve",
+          "writable": true
+        },
+        {
+          "name": "curve_base_vault",
+          "writable": true
+        },
+        {
+          "name": "curve_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "pump_global"
+        },
+        {
+          "name": "reserve_ata",
+          "writable": true
+        },
+        {
+          "name": "creator_wsol",
+          "writable": true
+        },
+        {
+          "name": "user_volume_accumulator",
+          "writable": true
+        },
+        {
+          "name": "fee_config"
+        },
+        {
+          "name": "buyback_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "mayhem_program",
+          "writable": true,
+          "address": "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e"
+        },
+        {
+          "name": "mayhem_global_params"
+        },
+        {
+          "name": "mayhem_sol_vault",
+          "writable": true
+        },
+        {
+          "name": "mayhem_state",
+          "writable": true
+        },
+        {
+          "name": "mayhem_token_vault",
+          "writable": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pump_event_authority"
+        },
+        {
+          "name": "pump_program",
+          "address": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "uri",
+          "type": "string"
+        },
+        {
+          "name": "dev_buy_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_config",
+      "docs": [
+        "Admin: change any limit, the cranker/funder keys, the bridge target or",
+        "(before any reserve tokens exist) the mint."
+      ],
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Buyback",
+      "discriminator": [
+        61,
+        57,
+        48,
+        132,
+        64,
+        49,
+        186,
+        125
+      ]
+    },
+    {
+      "name": "ConfigUpdated",
+      "discriminator": [
+        40,
+        241,
+        230,
+        122,
+        11,
+        19,
+        198,
+        194
+      ]
+    },
+    {
+      "name": "Launched",
+      "discriminator": [
+        209,
+        127,
+        29,
+        152,
+        129,
+        212,
+        189,
+        183
+      ]
+    },
+    {
+      "name": "MiningFunded",
+      "discriminator": [
+        77,
+        45,
+        235,
+        83,
+        32,
+        64,
+        167,
+        110
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "signer is not allowed"
+    },
+    {
+      "code": 6001,
+      "name": "BadConfig",
+      "msg": "bad config value"
+    },
+    {
+      "code": 6002,
+      "name": "BadAccount",
+      "msg": "unexpected account"
+    },
+    {
+      "code": 6003,
+      "name": "AlreadyLaunched",
+      "msg": "coin already launched"
+    },
+    {
+      "code": 6004,
+      "name": "NotLaunched",
+      "msg": "coin not launched"
+    },
+    {
+      "code": 6005,
+      "name": "TooSoon",
+      "msg": "crank called before min_interval_secs"
+    },
+    {
+      "code": 6006,
+      "name": "NothingToBuy",
+      "msg": "nothing to buy (below min_buy)"
+    },
+    {
+      "code": 6007,
+      "name": "MinTokensOut",
+      "msg": "fill below min_tokens_out"
+    },
+    {
+      "code": 6008,
+      "name": "Slippage",
+      "msg": "fill worse than max_slippage_bps from the pre-trade quote"
+    },
+    {
+      "code": 6009,
+      "name": "Overspent",
+      "msg": "spent more than the spend cap"
+    },
+    {
+      "code": 6010,
+      "name": "BelowFloor",
+      "msg": "creator PDA fell below sol_floor"
+    },
+    {
+      "code": 6011,
+      "name": "CurveComplete",
+      "msg": "bonding curve is complete, use crank_buyback_amm"
+    },
+    {
+      "code": 6012,
+      "name": "CurveNotComplete",
+      "msg": "bonding curve not complete yet, use crank_buyback"
+    },
+    {
+      "code": 6013,
+      "name": "ZeroAmount",
+      "msg": "amount is zero"
+    },
+    {
+      "code": 6014,
+      "name": "OverFundCap",
+      "msg": "amount above max_fund_per_call"
+    },
+    {
+      "code": 6015,
+      "name": "InsufficientReserve",
+      "msg": "reserve holds less than amount"
+    },
+    {
+      "code": 6016,
+      "name": "Overflow",
+      "msg": "overflow"
+    }
+  ],
+  "types": [
+    {
+      "name": "Buyback",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "venue",
+            "docs": [
+              "0 = bonding curve, 1 = PumpSwap"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "spent",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          },
+          {
+            "name": "quote",
+            "type": "u64"
+          },
+          {
+            "name": "spend_cap",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "The pump coin. Unset until `launch`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "cranker",
+            "docs": [
+              "If set, only this key may crank; default (zero) = permissionless."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "funder",
+            "docs": [
+              "Besides the admin, the key allowed to call `fund_mining` (crank service)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bridge_program",
+            "docs": [
+              "Token-side bridge program (token/programs/bridge)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mining_pool",
+            "docs": [
+              "Agent-chain `mining_pool` PDA, the `agent_recipient` of every deposit."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_buy_per_call",
+            "docs": [
+              "Most lamports one crank may spend."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_buy",
+            "docs": [
+              "Below this the crank fails with NothingToBuy (no dust buys)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_interval_secs",
+            "type": "i64"
+          },
+          {
+            "name": "max_slippage_bps",
+            "docs": [
+              "Max shortfall of the fill against the fee-free pre-trade quote. Pump's",
+              "fees (1.25% on the curve, up to 1.25% on PumpSwap) count against it."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "sol_floor",
+            "docs": [
+              "Lamports the creator PDA keeps (rent + pump volume accumulator rent)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_fund_per_call",
+            "docs": [
+              "0 = no cap."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "last_crank_ts",
+            "type": "i64"
+          },
+          {
+            "name": "total_bought",
+            "type": "u64"
+          },
+          {
+            "name": "total_spent",
+            "type": "u64"
+          },
+          {
+            "name": "total_funded",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "creator_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "cranker",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "funder",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "bridge_program",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "mining_pool",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "max_buy_per_call",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_buy",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_interval_secs",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "max_slippage_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "sol_floor",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "max_fund_per_call",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Launched",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "dev_buy_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MiningFunded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_funded",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

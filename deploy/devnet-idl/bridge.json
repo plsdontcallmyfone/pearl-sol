@@ -1,0 +1,1134 @@
+{
+  "address": "3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN",
+  "metadata": {
+    "name": "bridge",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "deposit",
+      "docs": [
+        "Locks `amount` SPL base units in the vault for `agent_recipient` on the agent chain.",
+        "`sender` may be a PDA signing through CPI (the reserve's `fund_mining`)."
+      ],
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "sender",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "sender_token",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.deposit_nonce",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "agent_recipient",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Creates the config PDA and the vault ATA for `mint`. The payer becomes admin."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "config"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "signers",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "refund_deposit",
+      "docs": [
+        "Returns Solana deposit `nonce` (its full amount) from the vault to `buyer`, who",
+        "must own `buyer_token`. The transaction must carry ed25519 precompile",
+        "instruction(s) with at least `threshold` configured signers over",
+        "`bridge_message(REFUND_DOMAIN, nonce, buyer, deposit.amount)`. Open whatever",
+        "`release_modes` says (inbound stays attested in M2). The refund record PDA is",
+        "the replay guard; signers must never sign this for a nonce they signed an",
+        "unlock for (and vice versa)."
+      ],
+      "discriminator": [
+        19,
+        19,
+        78,
+        50,
+        187,
+        10,
+        162,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Relayer (or anyone holding the signatures); pays for the refund record."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "deposit",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer_token",
+          "writable": true
+        },
+        {
+          "name": "refund",
+          "docs": [
+            "Refund record; `init` fails on a second refund of the same deposit."
+          ],
+          "writable": true
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "buyer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "docs": [
+        "Pays `amount` SPL from the vault to `recipient` for agent-chain withdrawal `nonce`.",
+        "The transaction must carry ed25519 precompile instruction(s) with at least",
+        "`threshold` configured signers over the SPEC section 6 withdraw message."
+      ],
+      "discriminator": [
+        253,
+        249,
+        15,
+        206,
+        28,
+        127,
+        193,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Relayer (or anyone holding the signatures); pays for the Processed PDA."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "recipient_token",
+          "writable": true
+        },
+        {
+          "name": "processed",
+          "docs": [
+            "`init` fails if this withdrawal was already released: the replay guard."
+          ],
+          "writable": true
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "release_proof",
+      "docs": [
+        "Proof mode: pays withdrawal `nonce` given its 88-byte log `entry`, its",
+        "`location` in the withdrawal log and a codec-encoded Commonware MMR proof",
+        "(node RPC `getWithdrawalProof`) against `withdraw_root` of `lc_header`, a",
+        "light-client header marked final. Anyone may submit; funds go to the entry's",
+        "`solana_recipient` only."
+      ],
+      "discriminator": [
+        26,
+        184,
+        52,
+        209,
+        181,
+        180,
+        194,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Anyone; pays for the Processed PDA."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "recipient_token",
+          "writable": true
+        },
+        {
+          "name": "processed",
+          "docs": [
+            "Same replay guard as `release`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "lc_header"
+        },
+        {
+          "name": "token_program",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "entry",
+          "type": "bytes"
+        },
+        {
+          "name": "location",
+          "type": "u64"
+        },
+        {
+          "name": "proof",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_release_modes",
+      "docs": [
+        "Which release paths are open (bit 1 signers, bit 2 proof; at least one) and the",
+        "light-client program whose final headers the proof path trusts."
+      ],
+      "discriminator": [
+        4,
+        235,
+        89,
+        57,
+        193,
+        130,
+        172,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "modes",
+          "type": "u8"
+        },
+        {
+          "name": "light_client",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_signers",
+      "discriminator": [
+        16,
+        210,
+        170,
+        26,
+        155,
+        87,
+        127,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "signers",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Deposit",
+      "discriminator": [
+        148,
+        146,
+        121,
+        66,
+        207,
+        173,
+        21,
+        227
+      ]
+    },
+    {
+      "name": "Processed",
+      "discriminator": [
+        118,
+        236,
+        99,
+        117,
+        190,
+        115,
+        171,
+        26
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "DepositEvent",
+      "discriminator": [
+        120,
+        248,
+        61,
+        83,
+        31,
+        142,
+        107,
+        144
+      ]
+    },
+    {
+      "name": "RefundEvent",
+      "discriminator": [
+        176,
+        159,
+        218,
+        59,
+        94,
+        213,
+        129,
+        218
+      ]
+    },
+    {
+      "name": "ReleaseEvent",
+      "discriminator": [
+        112,
+        22,
+        217,
+        145,
+        56,
+        223,
+        229,
+        6
+      ]
+    },
+    {
+      "name": "ReleaseModesChanged",
+      "discriminator": [
+        18,
+        161,
+        7,
+        230,
+        212,
+        139,
+        216,
+        253
+      ]
+    },
+    {
+      "name": "SignersChanged",
+      "discriminator": [
+        226,
+        80,
+        206,
+        220,
+        164,
+        177,
+        88,
+        190
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "BadSignerSet",
+      "msg": "signer set must be 1..=10 distinct keys"
+    },
+    {
+      "code": 6001,
+      "name": "BadThreshold",
+      "msg": "threshold must be between 1 and the number of signers"
+    },
+    {
+      "code": 6002,
+      "name": "NotAdmin",
+      "msg": "only the admin may do this"
+    },
+    {
+      "code": 6003,
+      "name": "ZeroAmount",
+      "msg": "amount must be greater than zero"
+    },
+    {
+      "code": 6004,
+      "name": "Overflow",
+      "msg": "arithmetic overflow"
+    },
+    {
+      "code": 6005,
+      "name": "WrongRecipient",
+      "msg": "recipient token account is not owned by the signed recipient"
+    },
+    {
+      "code": 6006,
+      "name": "NotEnoughSignatures",
+      "msg": "not enough valid signer signatures over this message"
+    },
+    {
+      "code": 6007,
+      "name": "BadModes",
+      "msg": "release modes must be a non-empty subset of signers|proof (proof needs a light client)"
+    },
+    {
+      "code": 6008,
+      "name": "ModeDisabled",
+      "msg": "this release path is disabled"
+    },
+    {
+      "code": 6009,
+      "name": "BadHeader",
+      "msg": "not a final light-client header"
+    },
+    {
+      "code": 6010,
+      "name": "BadProof",
+      "msg": "withdrawal proof does not verify"
+    },
+    {
+      "code": 6011,
+      "name": "WrongDeposit",
+      "msg": "deposit record does not match the nonce"
+    }
+  ],
+  "types": [
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_nonce",
+            "docs": [
+              "Nonce the next deposit gets (= number of deposits so far)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "release_modes",
+            "docs": [
+              "Enabled release paths: MODE_SIGNERS | MODE_PROOF (appended in M2; the offsets",
+              "above are unchanged for raw readers)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "light_client",
+            "docs": [
+              "Light-client program whose final headers `release_proof` accepts."
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Deposit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "sender",
+            "type": "pubkey"
+          },
+          {
+            "name": "recipient",
+            "docs": [
+              "Agent-chain recipient of `amount x 1000` lamports."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "SPL base units (6 dp)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "sender",
+            "type": "pubkey"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Processed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "source_chain",
+            "type": "u8"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RefundEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReleaseEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReleaseModesChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "modes",
+            "type": "u8"
+          },
+          {
+            "name": "light_client",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SignersChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
