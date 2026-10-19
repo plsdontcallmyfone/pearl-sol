@@ -1,0 +1,19 @@
+# systemd unit for cadre-api on a box that runs the Cadre stack (env in /home/pearl/cadre-api.env).
+[Unit]
+Description=Cadre public API (services/cadre-api)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pearl
+WorkingDirectory=/home/pearl/cadre-api/services/cadre-api
+EnvironmentFile=/home/pearl/cadre-api.env
+ExecStart=/home/pearl/.local/node/bin/node src/main.ts
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
