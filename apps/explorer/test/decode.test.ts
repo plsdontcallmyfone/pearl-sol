@@ -109,7 +109,7 @@ test("txFacts: job ids from SubmitResult / CompleteJob, order unlocks, PostJob",
   assert.equal(p.postHashA, Buffer.from(ha).toString("hex"));
   assert.equal(p.workerPay, "500");
   assert.equal(p.protocolFee, "100");
-  assert.deepEqual(D.txFacts("Transfer", txBytes(0, Buffer.alloc(40))), {});
+  assert.deepEqual(D.txFacts("Transfer", txBytes(0, Buffer.alloc(40))), { to: "11111111111111111111111111111111", amount: "0" });
 });
 
 test("anchorInstructions keeps only the named program's top-level and CPI frames", () => {
