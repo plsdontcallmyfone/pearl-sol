@@ -54,6 +54,8 @@ sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol
 | 8 | AdminConfig | key u8, value bytes (admin key only; every parameter is editable) |
 | 9 | SetRoute | solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32] (payout lien on the sender, 4.4) |
 | 10 | ClearRoute | account [32], route_nonce u64, sig [64] (ends a lien early; sig by its release key, 4.4) |
+| 11 | RegisterModel | name, manifest_uri, recipe, mining config, matrices (k, n, hash_b)* (model registry, 4.5) |
+| 12 | PostSegments | ticket_id [32], segments (matrix, m, max_blocks, hash_a, c_hash, a_uri)* (standing jobs of a paid inference ticket, 4.5) |
 
 - Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
@@ -223,6 +225,165 @@ proof reads.
 State: `Route ["route", account]` (schema tag 10): recipient, bps, until, cap,
 release_key, route_nonce, set_height, routed, pending, withdrawn, cleared; kept after
 the lien ends. RPC `getRoute`, `getAccount.route` (docs/RPC.md).
+
+### 4.5 Model registry and standing jobs (Lode inference, SYNTHESIS item 3, 2026-10-18)
+
+Why: posted-data matmul has no natural buyer (moving A and B costs far more than the
+compute, research/narratives/COMPUTE-TECH.md). Useful work pays when the data already sits
+on the miner: model weights. So a model's weight matrices are registered ONCE (B, the big
+operand, stays on the miners), and a paid inference request becomes a set of jobs whose B
+is a registered weight matrix and whose A is the activations the server computed. The
+miner serving the model runs exactly those GEMMs, so block rewards act as a rebate on the
+inference price. Only paid work earns: every standing job hangs off a paid ticket and the
+ticket's whole subsidy stays under `alpha x P` (3.4). The proof itself is unchanged: a
+standing job proves `C = A B` exactly in int32 with operands in [-64, 64].
+
+Quantization recipe (fixed by research/INT7-ACCURACY.md; measured +2.9% WikiText-2 PPL on
+Llama-3.2-1B with every job-shaped GEMM in int7, int8 W8A8 + SmoothQuant +1.5%). Recipe 1,
+`lode-w7a7-sq-asym-v1`:
+- weights: per output channel j, symmetric round-to-nearest onto [-64, 64] with scale
+  `s_w[j] = max_l |W'[j,l]| / 64`, where `W' = W diag(s)` has the SmoothQuant factors folded
+  in (`s_l = amax_x[l]^0.5 / amax_w[l]^0.5`, calibrated on 16 x 512 WikiText-2 train tokens;
+  q/k/v share one s, gate/up share one s, o_proj's s is shared per KV group). lm_head is
+  not smoothed. The registered B is `round(W'^T / s_w)` (k x n).
+- per matrix, outside the proof: `s_w` (n f32), `colsum(B)` (n i32, sum over k), `s` (k f32,
+  or none).
+- activations: per token (row of A), asymmetric onto [-64, 64]: `x' = x / s`,
+  `s_a = (max x' - min x') / 128`, `z = round(-64 - min x' / s_a)`,
+  `A = clamp(round(x' / s_a) + z, -64, 64)`.
+- output: `y[i,j] = s_a[i] * s_w[j] * (C[i,j] - z[i] * colsum[j])` (+ bias). The zero-point
+  correction and every scale are computed outside the proof.
+- attention (QK^T, softmax, PV), RoPE, RMSNorm, SiLU, residuals and the embedding lookup run
+  in fp32 and are never jobs (activation x activation has no registered B).
+
+What can be a standing job: a weight GEMM whose `B = W^T` (k x n) passes `check_shape` for
+the model's mining config (k >= 16r = 2048 at r = 128, k % 64 == 0, k <= 4r^2, n a multiple
+of the column period). Layers that do not fit run unmined (int7 or fp, the tool records
+which) and are not registered as matrices. Large n is split into column shards (output
+channel ranges) of at most 8192 so a miner's working set stays bounded; inputs shared by
+several projections are fused when they share the SmoothQuant factor (q/k/v -> one `qkv`
+matrix, n = 3072 on Llama-3.2-1B).
+
+Llama-3.2-1B (the demo model, `unsloth/Llama-3.2-1B`): 16 layers x {qkv 2048 x 3072, o
+2048 x 2048, gate 2048 x 8192, up 2048 x 8192, down 8192 x 2048} + lm_head 2048 x 128256 in 16
+shards of 8016 = 96 registered matrices, 1,235,746,816 MACs per token row, all mined. Not
+mined: attention (2 x 32 heads x 64 x T MACs per layer per token at context T), norms, RoPE,
+SiLU, the embedding lookup, scales and zero points.
+
+**`RegisterModel` (kind 11)**, body:
+```
+name (u8 len, 1..=64) | manifest_uri (u16 len, blob:<hex>) | recipe u8 (= 1)
+| rank u16 | rows_pattern [6] | cols_pattern [6]
+| count u16 (1..=512) | (k u32 | n u32 | hash_b [32]) * count
+```
+- `model_id = blake3("pearl-sol:model:v1" || registrant || name)`; registering an existing
+  id is refused (a new version is a new name).
+- Per matrix the chain checks `check_shape` of `(k, rank, patterns)` with m = the row
+  period, and `k x n <= 2^26`. It never reads the blobs (consensus must not depend on
+  local data): `hash_b` is the registrant's claim, which anyone holding the blobs can
+  recompute; miners and the attester refuse a matrix whose files do not match.
+- Matrix job header (fixed per matrix, so `hash_b` is computed once at registration):
+  `job_pubkey = model_id`, `terms_hash = blake3("pearl-sol:matrix-terms:v1" || model_id ||
+  index u16 || k u32 || n u32)`, `created_slot = 0`, `target_bits = 0`; config = `(k, rank,
+  rows_pattern, cols_pattern)`; `job_key_j = blake3(header76 || config52)` as for every
+  job, `hash_b_j = commit_b(job_key_j, B_j)`. The pow-bound seed (3.2) binds every block
+  proof to its header, so sharing one job key across many jobs allows no pre-mining.
+- Fee: the tx fee only. Registration deposit: OPEN DECISION (section 9).
+- State `Model ["model", model_id]` (schema tag 11): registrant, name, manifest_uri, recipe,
+  rank, patterns, matrices (k, n, hash_b), `macs_per_row = sum k x n`, registered_height,
+  and running totals (tickets, segments, segment blocks, subsidy). Index `["model_index",
+  i]` (tag 12) and a model counter (tag 13). RPC `getModel`, `listModels`.
+
+Blob-store layout (M2 blobs, node-local, not consensus): the model is a directory of files;
+every file is cut into raw chunks of at most 3 MiB, each chunk one blob. The manifest blob
+(`manifest_uri`, JSON, `"format": "lode-model-v1"`) lists the recipe, the architecture,
+every matrix (`index, name, layer, role, k, n, cols [lo, hi), hash_b`, its weight file and
+aux file) and every file (`size`, blake3 of the whole file, chunk blob ids in order).
+- weight file `w/<index>.i8`: `B^T` (n x k int8, row = output channel), the layout
+  commit_b hashes, so miners mmap it as is;
+- aux file `w/<index>.aux`: `"LQA1" || n u32 || k u32 || flags u32 (bit 0: has smooth) ||
+  s_w f32[n] || colsum i32[n] || [s f32[k]]` (little-endian);
+- non-GEMM tensors `t/<name>.<dtype>` (embedding bf16, norms f32), `config.json` and the
+  tokenizer files, raw.
+A node pins (never prunes) the manifest and every chunk it lists for each registered model
+whose manifest it holds. `putBlob` takes `"push": false` so a model upload is not pushed to
+every peer; others fetch on demand. `pearl model fetch` rebuilds the directory from blobs
+and checks every file hash and every `hash_b`.
+
+**Ticket** (one paid inference request): a `PostJob` body (4.1) whose config is the ticket
+form, so the existing storefront Order (5.1) carries it unchanged:
+```
+config [52] = "LODE-TK1" || model_id [32] || 0 [12]
+m = prompt tokens, n = max new tokens, k = 1
+hash_a = request_hash = blake3(request blob)        hash_b = server key (0 = first PostSegments sender)
+data_uri = request blob (blob:)                      max_blocks = block budget of all its segments
+W, P, deadline, evaluators, threshold as for any job
+```
+- The model must be registered; `R = round_up(m + n, row period) <= 4096` (rows the request
+  may produce, prompt plus generated tokens).
+- A ticket is a JobRecord with a ticket extension (`model_id, server, rows R, cap_total =
+  alpha x P, segments, blocks allocated, blocks mined, subsidy`). It is never mineable. W is
+  escrowed, P goes to the mining pool at post time (non-refundable), `cap_remaining` starts
+  at `alpha x P` and is the not-yet-allocated part of the ticket's subsidy cap.
+- Lifecycle as a job: Open -> Delivered (SubmitResult by the server only; `result_hash` =
+  blob id of the response blob, uri = that blob) -> Completed (CompleteJob, evaluator
+  signatures over the usual result message; W to the server) or Expired (after the
+  deadline; W back to the poster, the unallocated cap stays in the pool).
+- Request blob: JSON `{"format": "lode-request-v1", "model_id", "prompt_ids": [...],
+  "max_new_tokens", "sampling": "greedy"}`. Response blob: JSON `{"format":
+  "lode-response-v1", "model_id", "ticket_id", "request_hash", "rows", "prompt_ids",
+  "output_ids", "text", "segments": [{"matrix", "segment_id", "m"}]}`.
+
+**`PostSegments` (kind 12)**, sent by the ticket's server:
+```
+ticket_id [32] | count u8 (1..=64)
+| (matrix u16 | m u32 | max_blocks u32 | hash_a [32] | c_hash [32] | a_uri (u16 len, blob:)) * count
+```
+- Ticket must be Open or Delivered and `height <= deadline`; the sender must be the server
+  (or claims an unset server). `matrix < count`; `m` in `[period, R]`, a multiple of the row
+  period (the server pads A with zero rows); `max_blocks >= 1` and the ticket's segments
+  together use at most the ticket's `max_blocks`; `a_uri` a well-formed blob URI.
+- Each segment is a standing job: `segment_id = blake3("pearl-sol:segment:v1" || ticket_id
+  || matrix u16)` (one segment per matrix per ticket), a JobRecord with poster = server,
+  `(m, n, k)` and config from the registry, `hash_a` from the tx, `hash_b` = the registered
+  one, header = the matrix job header above, `data_uri = a_uri`, W = P = 0, deadline = the
+  ticket's, `result_hash = c_hash = blake3_keyed(C as i32 LE row-major, job_key)` (the
+  output the server used, committed at post time; status stays Open), evaluators = the
+  ticket's.
+- Subsidy cap, MAC-proportional: `seg_cap = floor(cap_total x m k n / (R x macs_per_row))`,
+  moved from the ticket's `cap_remaining` into the segment's. One segment per matrix and
+  `m <= R` give `sum seg_cap <= cap_total = alpha x P`, so the paid-work rule holds for the
+  whole ticket however its segments are mined, and a request that stops early (fewer rows)
+  earns proportionally less. Mining a segment is an ordinary job block (3.4): `subsidy =
+  min(pool x emission_ppm, seg cap_remaining)`; the ticket's and the model's totals are
+  updated in the same block.
+- Segments are mineable until the ticket's deadline whether or not the ticket completed (P
+  was paid when the ticket was posted). SubmitResult and CompleteJob are refused on a
+  segment (its output is committed at post time); ExpireJob closes it after the deadline
+  (nothing to refund).
+- A block on a segment needs `A` (the `a_uri` blob, `"PSA1" || m u32 || k u32 || A i8[m x
+  k]`) and `B_j` (the miner's copy of the registered model). The template's job object
+  carries `kind: "segment"` and the standing fields so a miner knows to load B from its
+  model store.
+
+How a paid inference request maps to jobs, pay and fees:
+1. Buyer -> inference gateway (5.4) -> storefront-x402 -> storefront `buy_job` with the ticket
+   as the Order spec. Price (storefront-x402, provisional knobs shared with matmul jobs):
+   `job = PRICE_BASE_LAMPORTS + 2 x macs_per_row x R x PRICE_LAMPORTS_PER_GFLOP / 1e9`, then
+   grossed up by the buyback share (5.1) plus the overhead. OPEN DECISION: inference price.
+2. The tokens bought split into W (80%) and P (`protocol_fee_bps`, 20%), bridge to the chain
+   and the relayer's order `BridgeUnlock` posts the ticket (job id = the order job id).
+3. The server runs the request in int7 (recipe 1). Every registered matrix's GEMM over all
+   rows of the request (prompt, then each generated token, stacked; padded to the row
+   period) is one segment; PostSegments posts them with the A blobs and C commitments.
+4. Miners mine the segments (one block per segment by default); each block's subsidy comes
+   from the pool under the segment's cap, its fees as usual.
+5. The server delivers the response blob (SubmitResult); the evaluators check it (5.4) and
+   sign; CompleteJob pays W to the server; the order is finalized on Solana by the light
+   client path (`finalize_order_proof` proves the ticket's CompleteJob), so `Order.result_hash`
+   is the response blob id and `result_uri` its blob URI.
+Totals per request: buyer pays `sol_in + overhead`; the server earns W plus, when it mines
+its own segments, up to `alpha x P` of subsidy and the blocks' fees.
 
 ## 5. Solana side
 
@@ -524,6 +685,35 @@ relay services/header-relay):
   `--settle` proves each withdrawal at the light client's own final height (block hash
   checked against the node's), falling back to the current-root proof on an older node.
   Refused below the withdrawal's block or above the node's final height.
+### 5.4 Inference gateway (Lode, 2026-10-18)
+
+`services/inference-gateway` (`lode-gateway`, port 10664) sits in front of storefront-x402
+and next to a model worker (`tools/lode/worker.py`, port 10665, the int7 model runner).
+The gateway's key is the ticket's server and its chain account.
+
+- `POST /v1/completions {"prompt", "max_tokens", "recipient"?}`: tokenizes (worker), builds
+  the request blob, puts it on the node, builds the ticket spec and forwards the buyer's
+  `X-PAYMENT` with it to storefront-x402 `POST /jobs`. No payment: the 402 with the
+  storefront's requirements goes back to the buyer (pay to the storefront wallet, as for any
+  job). Paid: the order is placed, the worker runs the request at once (greedy, recipe 1)
+  and the reply carries the tokens and the ticket / order ids. Settlement continues in the
+  background: wait for the ticket on the chain, PostSegments (A blobs + C commitments),
+  SubmitResult (response blob), attester signature, CompleteJob.
+- `GET /v1/requests/<ticket_id>`: ticket, segments (status, blocks mined, subsidy), order.
+  `GET /v1/models`, `GET /health`.
+- The buyer's chain key is the ticket's poster (an expired ticket refunds W to it), as for
+  storefront jobs.
+
+Evaluator rule for tickets (M1, services/attester): the response blob must hash to the
+ticket's `result_hash`, name the ticket's model and `request_hash`, and declare `rows`; the
+ticket must have one segment for every registered matrix with `m = round_up(rows, period)`;
+for each segment the attester loads A (blob) and B (its copy of the model, checked against
+`hash_b`), computes `C = A B` and requires `blake3_keyed(C, job_key) == c_hash`. Then it
+signs the result message. Not checked in M1: the non-GEMM steps (norms, attention, sampling)
+that connect one segment's C to the next segment's A, so a server could commit correct
+GEMMs over wrong activations. Follow-up: replay by the evaluator (greedy decoding is
+deterministic on one platform) or a TOPLOC-style activation check.
+
 ## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
 
 | Crate | Uses (commonware-*) | Job |
@@ -581,4 +771,7 @@ randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
   open: per-call cap (1 SOL), min buy (0.001 SOL), interval (600 s), cranker allowlist
   (5.1 "Buyback").
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
-- Name and ticker.
+- Name and ticker: Lode / LODE (chosen 2026-10-18).
+- Inference (4.5, 5.4): price per request (default = the matmul knobs over 2 x macs_per_row x R),
+  which models to register (default: Llama-3.2-1B for the demo), a model registration
+  deposit (default none, tx fee only), blocks per segment (default 1).
