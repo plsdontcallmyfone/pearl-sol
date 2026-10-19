@@ -232,15 +232,17 @@ async function setProofMode(program: PublicKey, ix: string, config: PublicKey): 
 
 /** The instruction (by Anchor name) of `program` in the newest tx touching `addr`. */
 async function lastIxName(addr: PublicKey, program: PublicKey, names: string[]): Promise<string | null> {
-  const [sig] = await conn.getSignaturesForAddress(addr, { limit: 1 });
-  if (!sig) return null;
-  const tx = await conn.getTransaction(sig.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-  if (!tx) return null;
-  const keys = tx.transaction.message.staticAccountKeys;
-  for (const ci of tx.transaction.message.compiledInstructions) {
-    if (!keys[ci.programIdIndex].equals(program)) continue;
-    const d = Buffer.from(ci.data).subarray(0, 8);
-    for (const n of names) if (d.equals(disc(n))) return `${n} (${sig.signature.slice(0, 16)}...)`;
+  // newest first; later txs touching the account (e.g. a buyback crank's settle_share on an
+  // Order) are skipped until one runs a named instruction
+  for (const sig of await conn.getSignaturesForAddress(addr, { limit: 20 })) {
+    const tx = await conn.getTransaction(sig.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (!tx) continue;
+    const keys = tx.transaction.message.staticAccountKeys;
+    for (const ci of tx.transaction.message.compiledInstructions) {
+      if (!keys[ci.programIdIndex].equals(program)) continue;
+      const d = Buffer.from(ci.data).subarray(0, 8);
+      for (const n of names) if (d.equals(disc(n))) return `${n} (${sig.signature.slice(0, 16)}...)`;
+    }
   }
   return null;
 }
