@@ -498,12 +498,36 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    RPC through the tunnel. 501 until other agents land: prepaid balance/top-up (gateway SPEC
    5.4, flag CADRE_PREPAID=gateway), pump-buy / crank / fund_mining tx builders, circulating
    supply (token-side explorer module), profiles from apps/explorer/src/agents.ts when it exists.
+15. TOKEN-SIDE BUYBACK CAP + PERMISSIONLESS fund_mining + PUBLIC NUMBERS (owner decisions
+   2026-10-18, SYNTHESIS items 6-7): DONE 2026-10-19 (commits 277e016..; SPEC 3.4, 5.1 "Reserve
+   exit", "Reserve cap", "Public numbers"; docs/EXPLORER.md; TEST-REPORT last section).
+   - storefront: with destination reserve, bought tokens go to the mining reserve while its ATA
+     holds less than `bb_reserve_cap`, the excess is SPL-burned in the same crank
+     (`BuybackToReserve` / `BuybackBurned`), `set_buyback_cap` (admin). Default cap 100M tokens
+     (PROVISIONAL); 0 = no cap (what an upgraded old config reads).
+   - reserve: `fund_mining` permissionless, rate limited (`set_fund_limits`: paused, 10M tokens
+     per call, 3600 s, 20M per 24 h window, all PROVISIONAL), mining_pool / bridge_program frozen
+     after the first funding, `migrate_config` grows old 276-byte configs. Creator-fee buybacks
+     still land in the reserve uncapped (base design).
+   - crank: `sf-set --reserveCap`, `fund-limits`, `migrate`, fund pre-checks the limits; `pearl
+     buyback` shows the cap, next buy and per-buy split; demo step 2 funds with the trader key,
+     buy 2 goes through the cap split.
+   - public numbers: tools/defillama (DefiLlama layout; fees = OrderPlaced.sol_spent +
+     BuybackShareHeld, holders revenue = BuybackAccrued; live check matched the Config counters
+     on the VPS stack), explorer `/api/supply` (+ `/circulating`, `/total` bare numbers; cadre-api
+     can import `supplyModel` from apps/explorer/src/supply.ts for its circulating_spl) and
+     `/revenue` (self-dealing excluded, unique payers, concentration, seller screen).
+   - Tests: reserve 18, storefront 23 (LiteSVM on the Mac with TOKEN_TARGET; litesvm's node
+     binding aborts on the box), pearl-cli 36, explorer 28, defillama 2, pearl-wallet 134.
+   - Devnet: upgrade steps in docs/DEVNET.md ("Steps for the 2026-10-19 token-side change"):
+     deploy, then `crank migrate` on the reserve at once, then `sf-set --reserveCap`.
+   - Demo with the new programs on the VPS: see TEST-REPORT (box stack was in use by other agents).
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose
 (mirrors the superseded agent/ vector; never submitted); its --pearl-job round trip uses k 2048.
 Owner decisions still open: dev buy size, chain params (block time, K, alpha,
-emission), name and ticker, storefront buyback cap / min buy / interval / cranker (item 13). If a session dies, check git log per path and
+emission), name and ticker, storefront buyback min buy / interval / cranker (item 13), reserve cap 100M and fund limits (item 15, PROVISIONAL). If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
 
 ## M1 components (SPEC v2, all DONE)
