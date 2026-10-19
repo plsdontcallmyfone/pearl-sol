@@ -1,0 +1,835 @@
+openapi: 3.1.0
+info:
+  title: Cadre API
+  version: 1.0.0
+  summary: Public backend for the Cadre website (stats, inference, agent profiles, wallet helpers).
+  description: |
+    Read-mostly JSON API over the Cadre agent chain and its Solana side (token chain).
+
+    - Every figure is a chain read (agent-chain node RPC, Solana RPC) or arithmetic over reads.
+      No USD and no estimates: there is no price source.
+    - Amounts are decimal strings of base units: agent-chain CADRE 9 dp ("chain units"),
+      Solana SPL CADRE 6 dp, SOL in lamports (9 dp). 1 SPL base unit = 1000 chain units.
+    - The API never holds or asks for a user key. Endpoints under `/v1/tx/*` that build a
+      transaction return it UNSIGNED; the user's wallet signs it. Broadcast endpoints only
+      relay transactions that are already fully signed.
+    - Errors always have the shape `{"error": {"code", "message", "details"?}, "request_id"}`.
+    - Caching: GET responses carry `Cache-Control` and a weak `ETag`; send `If-None-Match`
+      to get `304`. Rate limit: per client token bucket, `RateLimit-*` headers, `429` with
+      `Retry-After`. CORS: `Access-Control-Allow-Origin` is `*` unless the deployment sets an
+      allow-list.
+    - Endpoints that wait on another component answer `501` with code `pending_upstream`
+      or `pending` (never fake data); see each operation.
+  license:
+    name: ISC
+servers:
+  - url: https://cadre-api.64-95-13-106.sslip.io
+    description: Test box (local stack, not a public chain)
+  - url: http://127.0.0.1:10685
+    description: Local
+tags:
+  - name: meta
+  - name: stats
+  - name: inference
+  - name: agents
+  - name: mining
+  - name: wallet
+  - name: bridge
+  - name: tx
+  - name: market
+
+paths:
+  /v1:
+    get:
+      tags: [meta]
+      operationId: index
+      summary: Endpoint list and version
+      responses:
+        "200": { description: Index, content: { application/json: { schema: { $ref: "#/components/schemas/Index" } } } }
+  /v1/openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: openapi
+      summary: This contract
+      responses:
+        "200": { description: OpenAPI 3.1 YAML, content: { application/yaml: { schema: { type: string } } } }
+  /v1/health:
+    get:
+      tags: [meta]
+      operationId: health
+      summary: Liveness (the process answers)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /v1/ready:
+    get:
+      tags: [meta]
+      operationId: ready
+      summary: Readiness (node + Solana reachable, index complete)
+      description: 200 when the indexer has polled, the node and Solana answered, and every block up to the tip is indexed; 503 otherwise. Optional upstreams (gateway, storefront, pool) are reported but do not gate readiness.
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Ready" } } } }
+        "503": { description: Not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Ready" } } } }
+
+  /v1/summary:
+    get:
+      tags: [stats]
+      operationId: summary
+      summary: Headline stats
+      description: The explorer's summary (paid-block ratio, totals, payers, jobs, inference, light client) plus buyback, reserve, supply and light-client lag.
+      responses:
+        "200": { description: Summary, content: { application/json: { schema: { $ref: "#/components/schemas/Summary" } } } }
+  /v1/feed:
+    get:
+      tags: [stats]
+      operationId: feed
+      summary: Block feed, newest first (runs of fallback blocks grouped in `all`)
+      parameters:
+        - { name: filter, in: query, schema: { type: string, enum: [all, paid, fallback], default: all } }
+        - { name: before, in: query, schema: { type: integer, minimum: 1 }, description: "page: pass next_before" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 40 } }
+      responses:
+        "200": { description: Feed, content: { application/json: { schema: { $ref: "#/components/schemas/Feed" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/blocks/{id}:
+    get:
+      tags: [stats]
+      operationId: block
+      summary: One block (who paid, W, P, subsidy vs cap, proof, light-client verdict, txs)
+      parameters: [{ $ref: "#/components/parameters/BlockId" }]
+      responses:
+        "200": { description: Block, content: { application/json: { schema: { $ref: "#/components/schemas/Block" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/blocks/{id}/proof:
+    get:
+      tags: [stats]
+      operationId: blockProof
+      summary: The block's raw PoW proof (base64)
+      parameters: [{ $ref: "#/components/parameters/BlockId" }]
+      responses:
+        "200": { description: Proof, content: { application/json: { schema: { $ref: "#/components/schemas/Proof" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/jobs:
+    get:
+      tags: [stats]
+      operationId: jobs
+      summary: Jobs and inference tickets, newest first
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, delivered, completed, expired] } }
+        - { name: kind, in: query, schema: { type: string, enum: [job, ticket, segment] } }
+        - { name: poster, in: query, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Jobs, content: { application/json: { schema: { $ref: "#/components/schemas/JobList" } } } }
+  /v1/jobs/{id}:
+    get:
+      tags: [stats]
+      operationId: job
+      summary: One job (bound bar, payment, blocks mined, chain txs, order)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, pattern: "^[0-9a-fA-F]{6,64}$" }, description: "job id hex, or a prefix of at least 6" }]
+      responses:
+        "200": { description: Job, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/orders:
+    get:
+      tags: [stats]
+      operationId: orders
+      summary: Storefront orders (Solana), newest first
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, finalized, expired, refunded] } }
+        - { name: payer, in: query, schema: { $ref: "#/components/schemas/Address" }, description: x402 payer or buyer wallet }
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Orders, content: { application/json: { schema: { $ref: "#/components/schemas/OrderList" } } } }
+  /v1/orders/{nonce}:
+    get:
+      tags: [stats]
+      operationId: order
+      summary: One storefront order with its recorded Solana txs
+      parameters: [{ name: nonce, in: path, required: true, schema: { type: string, pattern: "^\\d+$" } }]
+      responses:
+        "200": { description: Order, content: { application/json: { schema: { $ref: "#/components/schemas/Order" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/payers:
+    get:
+      tags: [stats]
+      operationId: payers
+      summary: Payers ranked by protocol fees paid (buyer concentration)
+      parameters: [{ $ref: "#/components/parameters/Offset" }, { $ref: "#/components/parameters/Limit" }]
+      responses:
+        "200": { description: Payers, content: { application/json: { schema: { $ref: "#/components/schemas/Payers" } } } }
+  /v1/buyback:
+    get:
+      tags: [stats]
+      operationId: buyback
+      summary: Storefront buyback (vault lamports, program counters, recorded buys)
+      responses:
+        "200": { description: Buyback, content: { application/json: { schema: { $ref: "#/components/schemas/Buyback" } } } }
+  /v1/reserve:
+    get:
+      tags: [stats]
+      operationId: reserve
+      summary: Mining reserve (token account, totals, crank limits)
+      responses:
+        "200": { description: Reserve, content: { application/json: { schema: { $ref: "#/components/schemas/Reserve" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/supply:
+    get:
+      tags: [stats]
+      operationId: supply
+      summary: Supply components (mint supply, burned, reserve, bridge vault, chain escrow, circulating)
+      description: "`circulating_spl` is the token-side definition (apps/explorer supply module) when present, else null with `circulating_definition` saying it is pending."
+      responses:
+        "200": { description: Supply, content: { application/json: { schema: { $ref: "#/components/schemas/Supply" } } } }
+  /v1/revenue:
+    get:
+      tags: [stats]
+      operationId: revenue
+      summary: Revenue after wash screens, with unique payers and daily buckets
+      parameters: [{ name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }]
+      responses:
+        "200": { description: Revenue, content: { application/json: { schema: { $ref: "#/components/schemas/Revenue" } } } }
+  /v1/sol/tx/{sig}:
+    get:
+      tags: [stats]
+      operationId: solanaTransaction
+      summary: A Solana transaction (getTransaction, json encoding) while the RPC still has it
+      parameters: [{ $ref: "#/components/parameters/Signature" }]
+      responses:
+        "200": { description: Transaction, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/inference/models:
+    get:
+      tags: [inference]
+      operationId: inferenceModels
+      summary: Registered models with the storefront price for a request size
+      parameters:
+        - { name: prompt_tokens, in: query, schema: { type: integer, minimum: 1, maximum: 4096, default: 64 } }
+        - { name: max_tokens, in: query, schema: { type: integer, minimum: 1, maximum: 4096, default: 64 } }
+      responses:
+        "200": { description: Models, content: { application/json: { schema: { $ref: "#/components/schemas/Models" } } } }
+  /v1/inference/quote:
+    get:
+      tags: [inference]
+      operationId: inferenceQuote
+      summary: Exact price of one inference ticket (storefront-x402 GET /quote)
+      parameters:
+        - { name: model_id, in: query, required: true, schema: { $ref: "#/components/schemas/Hex32" } }
+        - { name: prompt_tokens, in: query, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: max_tokens, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200": { description: Quote, content: { application/json: { schema: { $ref: "#/components/schemas/Quote" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/inference/receipts:
+    get:
+      tags: [inference]
+      operationId: inferenceReceipts
+      summary: Inference tickets posted by an account (from the chain)
+      parameters:
+        - { name: account, in: query, required: true, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Receipts, content: { application/json: { schema: { $ref: "#/components/schemas/Receipts" } } } }
+  /v1/inference/receipts/{id}:
+    get:
+      tags: [inference]
+      operationId: inferenceReceipt
+      summary: One ticket receipt (chain ticket, job model, gateway record)
+      parameters: [{ name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }]
+      responses:
+        "200": { description: Receipt, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/inference/requests/{id}:
+    get:
+      tags: [inference]
+      operationId: inferenceRequest
+      summary: The gateway's settlement record for a ticket (gateway GET /v1/requests/{id})
+      parameters: [{ name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }]
+      responses:
+        "200": { description: Request, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/inference/x402/payment-tx:
+    post:
+      tags: [inference]
+      operationId: x402PaymentTx
+      summary: Unsigned x402 payment tx (native SOL) for the payer's wallet to sign
+      description: Pass the 402 body (or one of its `accepts`) from `/v1/openai/completions`. The storefront wallet must be this deployment's (checked). The wallet signs with `solana:signTransaction` (partial; the storefront adds the fee-payer signature at settlement), then the site sends `X-PAYMENT` (client `encodeXPayment`).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/X402PaymentTxRequest" } } }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /v1/inference/prepaid/{account}:
+    get:
+      tags: [inference]
+      operationId: prepaidBalance
+      summary: Prepaid inference balance (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      parameters: [{ $ref: "#/components/parameters/AccountPath" }]
+      responses:
+        "200": { description: Balance (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/prepaid/topup/quote:
+    post:
+      tags: [inference]
+      operationId: prepaidTopupQuote
+      summary: Top-up quote (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: Quote (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/prepaid/topup:
+    post:
+      tags: [inference]
+      operationId: prepaidTopup
+      summary: Top-up instructions / unsigned tx (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: Top-up (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/openai/{path}:
+    get:
+      tags: [inference]
+      operationId: openaiGet
+      summary: Pass-through to the gateway (GET models, requests/{id})
+      description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT` and `X-Cadre-*` headers; streams the reply as is (SSE included). Served paths - models, completions, chat/completions, embeddings, requests/{id} - as far as the gateway implements them.
+      parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [inference]
+      operationId: openaiPost
+      summary: Pass-through to the gateway (POST completions, chat/completions)
+      description: "Without payment the gateway answers 402 with the x402 requirements (`accepts`). With `X-PAYMENT` it answers 201 with the text, ticket and order, and an `X-PAYMENT-RESPONSE` header. Streaming replies (`text/event-stream`) are passed through."
+      parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } }, text/event-stream: { schema: { type: string } } } }
+        "201": { description: Paid completion, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "402": { description: Payment required (x402), content: { application/json: { schema: { $ref: "#/components/schemas/PaymentRequired" } } } }
+
+  /v1/agents:
+    get:
+      tags: [agents]
+      operationId: agents
+      summary: Agents ranked by paid work from distinct payers (never by counts)
+      parameters:
+        - { name: sort, in: query, schema: { type: string, enum: [paid, sol, payers], default: paid }, description: "paid = protocol fees behind completed work (self-dealt excluded); sol = SOL settled via storefront; payers = distinct payers (ties by P)" }
+        - { name: include_idle, in: query, schema: { type: string, enum: ["1"] } }
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Agents, content: { application/json: { schema: { $ref: "#/components/schemas/AgentList" } } } }
+  /v1/agents/{account}:
+    get:
+      tags: [agents]
+      operationId: agent
+      summary: Agent profile (REPUTATION 5.1)
+      parameters: [{ $ref: "#/components/parameters/AccountPath" }]
+      responses:
+        "200": { description: Profile, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/mining:
+    get:
+      tags: [mining]
+      operationId: mining
+      summary: Mining parameters, subsidy rule, mining pool balance, pool stats
+      responses:
+        "200": { description: Mining, content: { application/json: { schema: { $ref: "#/components/schemas/Mining" } } } }
+  /v1/miners/{account}:
+    get:
+      tags: [mining]
+      operationId: miner
+      summary: A miner's record (paid vs fallback blocks, subsidy, fees, matured) and pool shares
+      parameters: [{ $ref: "#/components/parameters/AccountPath" }]
+      responses:
+        "200": { description: Miner, content: { application/json: { schema: { $ref: "#/components/schemas/Miner" } } } }
+
+  /v1/accounts/{account}:
+    get:
+      tags: [wallet]
+      operationId: account
+      summary: Everything about one address on both chains
+      description: Chain balance, nonce and payout lien; agent registration; Solana SOL and CADRE SPL; mining record; recent chain txs and Solana signatures.
+      parameters:
+        - { $ref: "#/components/parameters/AccountPath" }
+        - { name: tx_limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }
+        - { name: sig_limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200": { description: Account, content: { application/json: { schema: { $ref: "#/components/schemas/Account" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/accounts/{account}/balances:
+    get:
+      tags: [wallet]
+      operationId: balances
+      summary: Balances only (chain + SOL + CADRE SPL)
+      parameters: [{ $ref: "#/components/parameters/AccountPath" }]
+      responses:
+        "200": { description: Balances, content: { application/json: { schema: { $ref: "#/components/schemas/Balances" } } } }
+  /v1/accounts/{account}/txs:
+    get:
+      tags: [wallet]
+      operationId: accountTxs
+      summary: Chain tx history (node getAccountTxs), paged
+      parameters:
+        - { $ref: "#/components/parameters/AccountPath" }
+        - { name: before, in: query, schema: { type: string, pattern: "^\\d+:\\d+$" }, description: the previous page's `next` }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Txs, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+
+  /v1/bridge:
+    get:
+      tags: [bridge]
+      operationId: bridge
+      summary: Bridge state and the cross-chain invariant (vault vs chain outside escrow)
+      responses:
+        "200": { description: Bridge, content: { application/json: { schema: { $ref: "#/components/schemas/Bridge" } } } }
+  /v1/bridge/transfers:
+    get:
+      tags: [bridge]
+      operationId: bridgeTransfers
+      summary: An owner's deposits (in) and withdrawals (out) with their stage
+      parameters: [{ name: owner, in: query, required: true, schema: { $ref: "#/components/schemas/Address" } }]
+      responses:
+        "200": { description: Transfers, content: { application/json: { schema: { $ref: "#/components/schemas/Transfers" } } } }
+  /v1/bridge/quote:
+    get:
+      tags: [bridge]
+      operationId: bridgeQuote
+      summary: What a bridge transfer receives, its fees and timing
+      parameters:
+        - { name: direction, in: query, required: true, schema: { type: string, enum: [in, out] } }
+        - { name: amount_spl, in: query, schema: { $ref: "#/components/schemas/Amount" }, description: "direction=in: SPL base units" }
+        - { name: amount, in: query, schema: { $ref: "#/components/schemas/Amount" }, description: "direction=out: chain units, a multiple of 1000" }
+      responses:
+        "200": { description: Quote, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/tx/bridge-deposit:
+    post:
+      tags: [tx, bridge]
+      operationId: buildBridgeDeposit
+      summary: Unsigned Solana tx locking CADRE SPL in the bridge (bridge in)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BridgeDepositRequest" } } }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /v1/tx/bridge-lock:
+    post:
+      tags: [tx, bridge]
+      operationId: buildBridgeLock
+      summary: The window.pearl transaction for a BridgeLock (bridge out); checks balance and fee
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BridgeLockRequest" } } }
+      responses:
+        "200": { description: Wallet call, content: { application/json: { schema: { $ref: "#/components/schemas/BridgeLockReply" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /v1/tx/chain:
+    post:
+      tags: [tx]
+      operationId: broadcastChainTx
+      summary: Relay a SIGNED agent-chain tx (node sendTx)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SignedTx" } } }
+      responses:
+        "200": { description: Accepted into the mempool, content: { application/json: { schema: { type: object, required: [tx_hash], properties: { tx_hash: { $ref: "#/components/schemas/Hex32" }, status: { type: string } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/tx/chain/{hash}:
+    get:
+      tags: [tx]
+      operationId: chainTxStatus
+      summary: Agent-chain tx status (pending | included, confirmations)
+      parameters: [{ name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }]
+      responses:
+        "200": { description: Tx, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/tx/solana:
+    post:
+      tags: [tx]
+      operationId: broadcastSolanaTx
+      summary: Relay a fully SIGNED Solana tx (sendTransaction); unsigned slots are refused
+      requestBody:
+        required: true
+        content: { application/json: { schema: { allOf: [{ $ref: "#/components/schemas/SignedTx" }, { type: object, properties: { skip_preflight: { type: boolean } } }] } } }
+      responses:
+        "200": { description: Sent, content: { application/json: { schema: { type: object, required: [signature], properties: { signature: { type: string }, status: { type: string } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/tx/solana/{sig}:
+    get:
+      tags: [tx]
+      operationId: solanaTxStatus
+      summary: Solana signature status
+      parameters: [{ $ref: "#/components/parameters/Signature" }]
+      responses:
+        "200": { description: Status, content: { application/json: { schema: { $ref: "#/components/schemas/SolanaStatus" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/pump/quote:
+    get:
+      tags: [market]
+      operationId: pumpQuote
+      summary: Fee-free quote for buying CADRE with SOL (pump curve, or PumpSwap after graduation)
+      parameters: [{ name: sol_in, in: query, required: true, schema: { $ref: "#/components/schemas/Amount" } }]
+      responses:
+        "200": { description: Quote, content: { application/json: { schema: { $ref: "#/components/schemas/PumpQuote" } } } }
+  /v1/crank:
+    get:
+      tags: [market]
+      operationId: crank
+      summary: Buyback vault, reserve limits and when fund_mining may run next
+      responses:
+        "200": { description: Crank view, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+  /v1/tx/pump-buy:
+    post:
+      tags: [market, tx]
+      operationId: buildPumpBuy
+      summary: Unsigned pump buy tx (501 pending)
+      responses:
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/tx/crank-buyback:
+    post:
+      tags: [market, tx]
+      operationId: buildCrankBuyback
+      summary: Unsigned crank buyback tx (501 pending)
+      responses:
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/tx/fund-mining:
+    post:
+      tags: [market, tx]
+      operationId: buildFundMining
+      summary: Unsigned fund_mining tx (501 pending)
+      responses:
+        "501": { $ref: "#/components/responses/Pending" }
+
+components:
+  parameters:
+    BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }
+    AccountPath: { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+    Signature: { name: sig, in: path, required: true, schema: { type: string, pattern: "^[1-9A-HJ-NP-Za-km-z]{64,90}$" } }
+    Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+  responses:
+    BadRequest: { description: Bad request, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unprocessable: { description: Valid but refused (insufficient funds, unknown payTo), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Pending: { description: "Waits on another component (code pending_upstream or pending)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unavailable: { description: An upstream is unreachable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  schemas:
+    Address: { type: string, pattern: "^[1-9A-HJ-NP-Za-km-z]{32,44}$", description: base58 32-byte key (same key on both chains) }
+    Hex32: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
+    Amount: { type: string, pattern: "^\\d+$", description: decimal string of base units }
+    Error:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [bad_request, not_found, method_not_allowed, rate_limited, insufficient_funds, pending_upstream, pending, node_unavailable, solana_unavailable, gateway_unavailable, upstream_unavailable, internal] }
+            message: { type: string }
+            details: {}
+        request_id: { type: string }
+    Index:
+      type: object
+      properties: { name: { type: string }, version: { type: string }, network: { type: string }, openapi: { type: string }, endpoints: { type: array, items: { type: string } } }
+    Health: { type: object, required: [ok], properties: { ok: { type: boolean }, version: { type: string }, uptime_s: { type: integer } } }
+    Ready:
+      type: object
+      required: [ready, checks]
+      properties:
+        ready: { type: boolean }
+        checks: { type: object, additionalProperties: { type: object, properties: { ok: { type: boolean }, detail: {} } } }
+        upstreams: { type: object, additionalProperties: { type: object, properties: { ok: { type: boolean }, detail: {} } } }
+        prepaid: { type: string, enum: ["off", gateway] }
+    Summary:
+      type: object
+      additionalProperties: true
+      properties:
+        name: { type: string }
+        ticker: { type: string }
+        chain: { type: [object, "null"], properties: { height: { type: integer }, finalized_height: { type: integer }, genesis_hash: { type: string }, finality_k: { type: integer }, target_block_time_ms: { type: [integer, "null"] } } }
+        index: { type: object, properties: { blocks_indexed: { type: integer }, blocks_on_chain: { type: integer }, complete: { type: boolean } } }
+        blocks: { type: object, properties: { total: { type: integer }, paid_job_blocks: { type: integer }, fallback_blocks: { type: integer }, paid_share: { type: string } } }
+        storefront: { type: object, additionalProperties: true }
+        fees: { type: object, additionalProperties: true, properties: { protocol_fees_paid: { $ref: "#/components/schemas/Amount" }, subsidy_paid: { $ref: "#/components/schemas/Amount" }, jobs_over_cap: { type: integer } } }
+        payers: { type: object, properties: { unique_payers: { type: integer }, unique_solana_buyers: { type: integer }, top_payer: { type: [string, "null"] }, top_payer_share_of_fees: { type: [string, "null"] } }, additionalProperties: true }
+        jobs: { type: object, additionalProperties: true }
+        inference: { type: object, additionalProperties: true }
+        light_client: { type: [object, "null"], additionalProperties: true }
+        light_client_lag: { type: [object, "null"], properties: { tip_height: { type: integer }, final_height: { type: integer }, chain_height: { type: integer }, behind_tip: { type: integer }, behind_final: { type: integer } } }
+        buyback: { $ref: "#/components/schemas/Buyback" }
+        reserve: { oneOf: [{ $ref: "#/components/schemas/Reserve" }, { type: "null" }] }
+        supply: { oneOf: [{ $ref: "#/components/schemas/Supply" }, { type: object, properties: { error: { type: string } } }] }
+        status: { type: object, additionalProperties: true }
+        as_of_ms: { type: [integer, "null"] }
+    FeedRow:
+      oneOf:
+        - { type: object, required: [kind, block], properties: { kind: { const: block }, block: { $ref: "#/components/schemas/BlockRow" } } }
+        - { type: object, required: [kind, from, to, count], properties: { kind: { const: fallback_run }, from: { type: integer }, to: { type: integer }, count: { type: integer }, fees: { $ref: "#/components/schemas/Amount" }, newest: { $ref: "#/components/schemas/BlockRow" }, oldest: { $ref: "#/components/schemas/BlockRow" } } }
+    Feed:
+      type: object
+      properties: { filter: { type: string }, before: { type: [integer, "null"] }, tip: { type: integer }, rows: { type: array, items: { $ref: "#/components/schemas/FeedRow" } }, next_before: { type: [integer, "null"] } }
+    BlockRow:
+      type: object
+      additionalProperties: true
+      properties:
+        height: { type: integer }
+        hash: { $ref: "#/components/schemas/Hex32" }
+        time_ms: { type: integer }
+        miner: { $ref: "#/components/schemas/Address" }
+        kind: { type: string, enum: [paid_job, paid_inference, fallback] }
+        job_id: { type: [string, "null"] }
+        ticket_id: { type: [string, "null"] }
+        paid_by: { type: [string, "null"] }
+        paid_via: { type: [string, "null"], enum: [storefront, post_job, null] }
+        order_nonce: { type: [string, "null"] }
+        sol_spent: { type: [string, "null"] }
+        worker_pay: { type: [string, "null"] }
+        protocol_fee: { type: [string, "null"] }
+        subsidy: { $ref: "#/components/schemas/Amount" }
+        fees: { $ref: "#/components/schemas/Amount" }
+        subsidy_cap: { type: [string, "null"] }
+        within_cap: { type: [boolean, "null"] }
+        proof_hash: { type: string }
+        light_client: { type: object, additionalProperties: true }
+    Block:
+      allOf:
+        - { $ref: "#/components/schemas/BlockRow" }
+        - type: object
+          additionalProperties: true
+          properties: { final: { type: boolean }, canonical: { type: boolean }, confirmations: { type: [integer, "null"] }, job: { type: [object, "null"] }, order: { type: [object, "null"] }, txs: { type: array, items: { type: object } }, withdrawals: { type: array, items: { type: object } } }
+    Proof: { type: object, properties: { height: { type: integer }, hash: { type: string }, proof_hash: { type: string }, bytes: { type: integer }, proof: { type: string, contentEncoding: base64 } } }
+    JobSummary:
+      type: object
+      additionalProperties: true
+      properties:
+        job_id: { $ref: "#/components/schemas/Hex32" }
+        kind: { type: string, enum: [job, ticket, segment] }
+        status: { type: string }
+        poster: { $ref: "#/components/schemas/Address" }
+        worker_pay: { $ref: "#/components/schemas/Amount" }
+        protocol_fee: { $ref: "#/components/schemas/Amount" }
+        subsidy_paid: { $ref: "#/components/schemas/Amount" }
+        subsidy_cap: { $ref: "#/components/schemas/Amount" }
+        within_cap: { type: boolean }
+        blocks_mined: { type: integer }
+        posted_height: { type: integer }
+        closed_height: { type: integer }
+        paid_via: { type: string }
+        standing: { type: [object, "null"] }
+    JobList: { type: object, properties: { total: { type: integer }, offset: { type: integer }, limit: { type: integer }, next_offset: { type: [integer, "null"] }, jobs: { type: array, items: { $ref: "#/components/schemas/JobSummary" } } } }
+    Job: { allOf: [{ $ref: "#/components/schemas/JobSummary" }, { type: object, additionalProperties: true, properties: { blocks: { type: array, items: { type: object } }, chain_txs: { type: array, items: { type: object } }, order: { type: [object, "null"] } } }] }
+    Order:
+      type: object
+      additionalProperties: true
+      properties:
+        nonce: { type: string }
+        status: { type: string, enum: [pending, finalized, expired, refunded] }
+        job_id: { $ref: "#/components/schemas/Hex32" }
+        buyer: { $ref: "#/components/schemas/Address" }
+        payer: { $ref: "#/components/schemas/Address" }
+        sol_spent: { $ref: "#/components/schemas/Amount" }
+        tokens_spl: { $ref: "#/components/schemas/Amount" }
+        settlement: { type: object }
+        solana_txs: { type: array, items: { type: object } }
+    OrderList: { type: object, properties: { total: { type: integer }, offset: { type: integer }, limit: { type: integer }, next_offset: { type: [integer, "null"] }, orders: { type: array, items: { $ref: "#/components/schemas/Order" } } } }
+    Payers:
+      type: object
+      properties:
+        total_protocol_fees: { $ref: "#/components/schemas/Amount" }
+        total: { type: integer }
+        payers: { type: array, items: { type: object, properties: { payer: { type: string }, jobs: { type: integer }, storefront_jobs: { type: integer }, protocol_fees: { type: string }, sol_spent: { type: string }, share_ppm: { type: integer } } } }
+    Buyback:
+      type: object
+      additionalProperties: true
+      description: "vault + vault_lamports always; the program counters (share_bps, accrued_lamports, spent_lamports, tokens_bought_spl, to_reserve_spl, burned_spl, buys, recent_buys, and any fields the token side adds, e.g. the reserve cap) when the storefront has buyback activity, else active: false"
+      properties: { vault: { type: string }, vault_lamports: { type: string }, active: { type: boolean } }
+    Reserve:
+      type: object
+      properties:
+        program: { type: string }
+        token_account: { type: [string, "null"] }
+        tokens_spl: { type: [string, "null"] }
+        creator_lamports: { type: string }
+        mint: { type: [string, "null"] }
+        mining_pool: { type: string }
+        totals: { type: object, properties: { bought_spl: { type: string }, spent_lamports: { type: string }, funded_spl: { type: string } } }
+        limits: { type: object, additionalProperties: true }
+        last_crank_ts: { type: [integer, "null"] }
+    Supply:
+      type: object
+      additionalProperties: true
+      properties:
+        mint: { type: string }
+        decimals: { type: integer }
+        initial_supply_spl: { type: [string, "null"] }
+        mint_supply_spl: { type: string }
+        burned_spl: { type: [string, "null"] }
+        reserve_spl: { type: [string, "null"] }
+        bridge_vault_spl: { type: [string, "null"] }
+        agent_chain: { type: [object, "null"] }
+        circulating_spl: { type: [string, "null"] }
+        circulating_definition: { type: string }
+    Revenue:
+      type: object
+      properties:
+        protocol_fees_paid: { type: string }
+        protocol_fees_screened: { type: string }
+        sol_settled_via_storefront: { type: string }
+        unique_payers_screened: { type: integer }
+        top_payer_share_ppm: { type: integer }
+        screens: { type: object, additionalProperties: true }
+        by_day: { type: array, items: { type: object, properties: { day: { type: string }, protocol_fees: { type: string }, sol_settled: { type: string }, unique_payers: { type: integer } } } }
+    Models:
+      type: object
+      properties:
+        total: { type: integer }
+        models:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              model_id: { $ref: "#/components/schemas/Hex32" }
+              name: { type: string }
+              macs_per_row: { type: string }
+              served_by_gateway: { type: [boolean, "null"] }
+              price: { type: [object, "null"], properties: { prompt_tokens: { type: integer }, max_tokens: { type: integer }, price_lamports: { type: string }, sol_in_lamports: { type: string }, buyback_lamports: { type: string }, work_flops: { type: string }, venue: { type: string }, pay_to: { type: [string, "null"] }, quote: { type: string } } }
+              price_error: { type: [string, "null"] }
+        gateway: { type: [object, "null"], properties: { reachable: { type: boolean }, error: { type: [string, "null"] }, openai_base_url: { type: string } } }
+        pricing_rule: { type: string }
+    Quote: { type: object, additionalProperties: true, properties: { price_lamports: { type: string }, sol_in_lamports: { type: string }, work_flops: { type: string }, ticket: { type: object }, payment: { type: object } } }
+    Receipts: { type: object, properties: { account: { type: string }, total: { type: integer }, receipts: { type: array, items: { type: object, additionalProperties: true } } } }
+    PaymentRequirements:
+      type: object
+      required: [scheme, network, maxAmountRequired, payTo, extra]
+      properties:
+        scheme: { const: exact }
+        network: { type: string }
+        maxAmountRequired: { type: string }
+        payTo: { type: string }
+        asset: { type: string }
+        resource: { type: string }
+        extra: { type: object, properties: { feePayer: { type: string }, assetKind: { type: string, enum: [native, spl] }, decimals: { type: integer } } }
+    PaymentRequired: { type: object, properties: { x402Version: { type: integer }, error: { type: string }, accepts: { type: array, items: { $ref: "#/components/schemas/PaymentRequirements" } }, cadre: { type: object } } }
+    X402PaymentTxRequest:
+      type: object
+      required: [payer, requirements]
+      properties:
+        payer: { $ref: "#/components/schemas/Address" }
+        requirements: { oneOf: [{ $ref: "#/components/schemas/PaymentRequirements" }, { $ref: "#/components/schemas/PaymentRequired" }] }
+    UnsignedSolanaTx:
+      type: object
+      required: [transaction, encoding, signers]
+      properties:
+        transaction: { type: string, contentEncoding: base64, description: wire tx with zeroed signature slots }
+        encoding: { const: base64 }
+        version: { const: legacy }
+        fee_payer: { type: string }
+        signers: { type: array, items: { type: string } }
+        recent_blockhash: { type: string }
+        last_valid_block_height: { type: integer }
+        summary: { type: object, additionalProperties: true }
+    BridgeDepositRequest: { type: object, required: [owner, amount_spl], properties: { owner: { $ref: "#/components/schemas/Address" }, amount_spl: { $ref: "#/components/schemas/Amount" }, recipient: { $ref: "#/components/schemas/Address" } } }
+    BridgeLockRequest: { type: object, required: [from, amount], properties: { from: { $ref: "#/components/schemas/Address" }, amount: { $ref: "#/components/schemas/Amount" }, solana_recipient: { $ref: "#/components/schemas/Address" } } }
+    BridgeLockReply:
+      type: object
+      properties:
+        window_pearl: { type: object, properties: { method: { const: signAndSendTransaction }, params: { type: object, properties: { transaction: { type: object, properties: { kind: { const: BridgeLock }, solanaRecipient: { type: string }, amount: { type: string }, fee: { type: string } } } } } } }
+        chain_id: { type: integer }
+        nonce: { type: integer }
+        fee: { type: string }
+        summary: { type: object }
+    SignedTx: { type: object, required: [tx], properties: { tx: { type: string, contentEncoding: base64 } } }
+    SolanaStatus: { type: object, properties: { signature: { type: string }, slot: { type: integer }, confirmations: { type: [integer, "null"] }, status: { type: [string, "null"] }, ok: { type: boolean }, err: {} } }
+    AgentRow:
+      type: object
+      properties:
+        account: { type: string }
+        registration: { type: [object, "null"] }
+        paid_protocol_fees: { type: string }
+        sol_settled_via_storefront: { type: string }
+        distinct_payers: { type: integer }
+        top_payer_share_ppm: { type: [integer, "null"] }
+        completed: { type: integer }
+        delivered_then_expired: { type: integer }
+        acceptance_ppm_by_fee: { type: [integer, "null"] }
+        self_dealt_protocol_fees: { type: string }
+        paid_job_blocks_mined: { type: integer }
+        last_delivery_height: { type: [integer, "null"] }
+        profile: { type: string }
+    AgentList: { type: object, properties: { source: { type: string }, sort: { type: string }, total: { type: integer }, offset: { type: integer }, limit: { type: integer }, next_offset: { type: [integer, "null"] }, agents: { type: array, items: { $ref: "#/components/schemas/AgentRow" } } } }
+    AgentProfile:
+      type: object
+      additionalProperties: true
+      properties:
+        source: { type: string }
+        account: { type: string }
+        registration: { type: [object, "null"] }
+        card_uri: { type: [string, "null"] }
+        as_server: { type: object, additionalProperties: true }
+        as_buyer: { type: object, additionalProperties: true }
+        as_miner: { $ref: "#/components/schemas/Miner" }
+    Miner:
+      type: object
+      additionalProperties: true
+      properties:
+        miner: { type: string }
+        blocks: { type: object, properties: { paid_job: { type: integer }, fallback: { type: integer }, total: { type: integer } } }
+        subsidy: { type: string }
+        fees: { type: string }
+        matured: { type: string }
+        immature: { type: string }
+        distinct_jobs: { type: integer }
+        distinct_posters: { type: integer }
+        pool: { type: [object, "null"] }
+    Mining: { type: object, additionalProperties: true, properties: { chain: { type: object }, params: { type: object }, mining_pool: { type: object }, subsidy_now: { type: object, properties: { max_per_block: { type: string }, rule: { type: string } } }, pool: { type: [object, "null"] } } }
+    Balances:
+      type: object
+      properties:
+        address: { type: string }
+        chain: { type: object, properties: { balance: { type: string }, nonce: { type: integer } } }
+        solana: { $ref: "#/components/schemas/SolanaBalances" }
+    SolanaBalances:
+      type: object
+      properties:
+        lamports: { type: string }
+        mint: { type: string }
+        spl: { type: string }
+        associated_token_account: { type: string }
+        token_accounts: { type: array, items: { type: object, properties: { address: { type: string }, amount_spl: { type: string } } } }
+    Account:
+      type: object
+      properties:
+        address: { type: string }
+        chain: { type: object, properties: { balance: { type: string }, nonce: { type: integer }, route: { type: [object, "null"] }, chain_id: { type: [integer, "null"] } } }
+        agent: { type: [object, "null"] }
+        solana: { oneOf: [{ $ref: "#/components/schemas/SolanaBalances" }, { type: object, properties: { error: { type: string } } }] }
+        mining: { $ref: "#/components/schemas/Miner" }
+        profile: { type: string }
+        history: { type: object, properties: { chain: { type: object }, solana: { type: array, items: { type: object } } } }
+    Bridge: { type: object, additionalProperties: true, properties: { mint: { type: string }, vault: { type: string }, vault_spl: { type: string }, deposit_nonce: { type: string }, chain_escrow: { type: object }, invariant: { type: object } } }
+    Transfer:
+      type: object
+      additionalProperties: true
+      properties:
+        direction: { type: string, enum: [in, out] }
+        amount_spl: { type: string }
+        amount_chain: { type: string }
+        stage: { type: string, enum: [submitted, unlocked, final, released, unknown] }
+    Transfers: { type: object, properties: { owner: { type: string }, deposits: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, withdrawals: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, stages: { type: object } } }
+    PumpQuote: { type: object, properties: { venue: { type: string, enum: [curve, pumpswap] }, sol_in_lamports: { type: string }, tokens_out_spl: { type: string }, reserves: { type: object }, note: { type: string } } }

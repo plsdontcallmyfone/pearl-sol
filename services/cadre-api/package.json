@@ -1,0 +1,13 @@
+{
+  "name": "@pearl-sol/cadre-api",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cadre public backend API (/v1): live stats from the explorer indexer, inference (models, prices, gateway pass-through), agent profiles, wallet helpers (balances, unsigned txs, broadcast of signed txs). Read-only on keys: it never holds a user key. No dependencies.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "live": "node tools/live-check.ts"
+  }
+}
