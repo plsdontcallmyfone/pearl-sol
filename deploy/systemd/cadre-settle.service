@@ -1,0 +1,13 @@
+[Unit]
+Description=Cadre devnet proof-mode settlement (bridge release_proof, storefront finalize/expire_order_proof; header-relay --settle --no-relay, payer ops)
+After=cadre-node.service
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+ExecStart=/bin/sh -c 'exec /opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana $TOKEN_RPC --payer /etc/lode/keys/ops.json --confirm-poll-ms $${HR_CONFIRM_POLL_MS:-50} --send-gap-ms $${HR_SEND_GAP_MS:-0} run --settle --no-relay --poll-ms 5000'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

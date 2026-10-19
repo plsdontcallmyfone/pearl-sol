@@ -8,6 +8,7 @@
 #   scripts/devnet-deploy.sh ctl N ACTION [UNITS]  systemctl ACTION on box N (default: every cadre-* unit there)
 #   scripts/devnet-deploy.sh status            heights, peers, units on every box
 #   scripts/devnet-deploy.sh ssh N [CMD]       shell as lode on box N
+#   scripts/devnet-deploy.sh relay-key [N]     create the header relay's fee payer on box N (default HEADER_RELAY_BOX), print its pubkey
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,9 +17,11 @@ source "$ROOT/deploy/devnet.env"
 ip_of() { local v="BOX${1}_IP"; echo "${!v}"; }
 sshb() { local n=$1 u=$2; shift 2; ssh -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$u@$(ip_of "$n")" "$@"; }
 scpb() { local n=$1; shift; scp -q -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes "$@"; }
-UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-header-relay cadre-storefront cadre-crank cadre-explorer cadre-api"
+UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-settle cadre-storefront cadre-crank cadre-explorer cadre-api"
 UNITSN="cadre-node cadre-miner"
-units_of() { [[ $1 == 0 ]] && echo "$UNITS0" || echo "$UNITSN"; }
+# the header relay runs on HEADER_RELAY_BOX (default 1): Solana devnet's public RPC allows about
+# 100 calls per 10 s per IP, and box 0's services already use most of box 0's
+units_of() { local u; [[ $1 == 0 ]] && u="$UNITS0" || u="$UNITSN"; [[ $1 == "${HEADER_RELAY_BOX:-1}" ]] && u="$u cadre-header-relay"; echo "$u"; }
 
 case "${1:-}" in
   sync)
@@ -30,13 +33,17 @@ case "${1:-}" in
   build) sshb 0 lode 'bash -lc "cd ~/pearl-sol && bash deploy/build.sh"' ;;
   ship)
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-    scpb 0 "lode@$BOX0_IP:/opt/lode/bin/agent-node" "lode@$BOX0_IP:/opt/lode/bin/pearl-miner" "$tmp/"
+    scpb 0 "lode@$BOX0_IP:/opt/lode/bin/agent-node" "lode@$BOX0_IP:/opt/lode/bin/pearl-miner" "lode@$BOX0_IP:/opt/lode/bin/header-relay" "$tmp/"
     for n in 1 2; do
       [[ -n "$(ip_of $n)" ]] || continue
       # copy beside the running binaries, then rename (overwriting a running executable fails: text file busy)
       scpb "$n" "$tmp/agent-node" "lode@$(ip_of $n):/opt/lode/bin/agent-node.new"
       scpb "$n" "$tmp/pearl-miner" "lode@$(ip_of $n):/opt/lode/bin/pearl-miner.new"
       sshb "$n" lode 'cd /opt/lode/bin && chmod 755 agent-node.new pearl-miner.new && mv -f agent-node.new agent-node && mv -f pearl-miner.new pearl-miner && sha256sum agent-node pearl-miner'
+      if [[ $n == "${HEADER_RELAY_BOX:-1}" ]]; then
+        scpb "$n" "$tmp/header-relay" "lode@$(ip_of $n):/opt/lode/bin/header-relay.new"
+        sshb "$n" lode 'cd /opt/lode/bin && chmod 755 header-relay.new && mv -f header-relay.new header-relay && sha256sum header-relay'
+      fi
     done
     ;;
   install)
@@ -50,8 +57,10 @@ case "${1:-}" in
     printf 'MINER_THREADS=%s\nMINER_EXTRA=%s\n' "$(eval echo "\${BOX${n}_MINER_THREADS}")" "$( [[ $n == 0 ]] && echo '--deliver --attester http://127.0.0.1:10661' )" > "$tmp/miner.env"
     [[ $n == 0 ]] && printf 'TOKEN_RPC=%s\nBRIDGE_PROGRAM=%s\nSTOREFRONT_PROGRAM=%s\nRESERVE_PROGRAM=%s\nLIGHTCLIENT_PROGRAM=%s\nPUBLIC_URL=https://storefront.%s.sslip.io\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nREFUND_GRACE_MS=%s\nCADRE_API_PUBLIC_URL=https://api.%s.sslip.io\nEXPLORER_URL=https://explorer.%s.sslip.io\n' \
       "$SOLANA_RPC" "$BRIDGE_PROGRAM" "$STOREFRONT_PROGRAM" "$RESERVE_PROGRAM" "$LIGHTCLIENT_PROGRAM" "$dash" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$REFUND_GRACE_MS" "$dash" "$dash" > "$tmp/services.env"
+    [[ $n == "${HEADER_RELAY_BOX:-1}" ]] && printf 'TOKEN_RPC=%s\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\n' \
+      "$SOLANA_RPC" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" > "$tmp/header-relay.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"
-    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true
+    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 644 header-relay.env /etc/lode/ || true
       install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api
       systemctl daemon-reload; systemctl reload caddy || systemctl restart caddy; rm -f /tmp/cadre-*.service /tmp/genesis.json /tmp/node.json /tmp/*.env /tmp/Caddyfile; echo installed on box $n"
     ;;
@@ -64,6 +73,15 @@ case "${1:-}" in
       sshb "$n" root "umask 077; cat > /etc/lode/keys/${f##*:}.json && chown lode:lode /etc/lode/keys/${f##*:}.json && chmod 600 /etc/lode/keys/${f##*:}.json" < "$src"
     done
     echo "box $n keys: ${files[*]}"
+    ;;
+  relay-key)
+    # the header relay's Solana fee payer, generated ON the relay box (never copied from the Mac);
+    # prints only the public key, which the deployer funds (devnet)
+    n="${2:-${HEADER_RELAY_BOX:-1}}"
+    sshb "$n" root 'set -e; f=/etc/lode/keys/relay.json; if [ ! -f "$f" ]; then umask 077; d=$(mktemp -d); openssl genpkey -algorithm ed25519 -out "$d/k.pem"; openssl pkey -in "$d/k.pem" -outform DER -out "$d/k.der"; openssl pkey -in "$d/k.pem" -pubout -outform DER -out "$d/p.der"; python3 -c "import sys,json; s=open(sys.argv[1],\"rb\").read()[-32:]; p=open(sys.argv[2],\"rb\").read()[-32:]; open(sys.argv[3],\"w\").write(json.dumps(list(s+p)))" "$d/k.der" "$d/p.der" "$f"; rm -rf "$d"; chown lode:lode "$f"; chmod 600 "$f"; fi
+      python3 -c "import json,sys; k=bytes(json.load(open(sys.argv[1]))[32:]); A=\"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz\"; n=int.from_bytes(k,\"big\"); o=\"\"
+while n: n,r=divmod(n,58); o=A[r]+o
+print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     ;;
   ctl) n="$2"; act="$3"; shift 3; u="${*:-$(units_of "$n")}"; sshb "$n" root "systemctl $act $u; systemctl --no-pager --plain list-units 'cadre-*' | grep cadre" ;;
   status)

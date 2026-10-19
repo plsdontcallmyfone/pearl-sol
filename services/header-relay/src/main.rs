@@ -88,6 +88,11 @@ enum Cmd {
         /// mode on (src/settle.rs).
         #[arg(long)]
         settle: bool,
+        /// With --settle: settle only, relay no headers (another relay, for example on a box
+        /// with its own RPC budget, keeps the light client up; settlement needs the
+        /// storefront admin or an attester as payer, the header relay does not).
+        #[arg(long)]
+        no_relay: bool,
     },
     /// Devnet seeding: BridgeUnlock to a user, BridgeLock back, PostJob, mine a job block.
     Seed {
@@ -144,8 +149,23 @@ fn main() -> Result<()> {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
-        Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs } => {
+        Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs, no_relay } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
+            if no_relay {
+                anyhow::ensure!(settle, "--no-relay only makes sense with --settle");
+                let settle_node = Node::new(&cli.node);
+                let mut st = settle::Settle::new();
+                println!("settle only (no header relay), every {poll_ms} ms");
+                loop {
+                    if let Err(e) = st.tick(&settle_node, &mut s) {
+                        eprintln!("settle: {e:#}");
+                    }
+                    if once {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(poll_ms));
+                }
+            }
             let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
             let settle_node = Node::new(&cli.node);
             let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu });
