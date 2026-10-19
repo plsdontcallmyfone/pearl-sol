@@ -38,10 +38,13 @@ def load_f32(path, shape=None):
 class Matrix:
     def __init__(self, d, m):
         self.index, self.name, self.k, self.n = m["index"], m["name"], m["k"], m["n"]
+        self.cols = tuple(m.get("cols", [0, m["n"]]))
+        self.klo, self.khi = m.get("k_range", [0, m["k"]])
         raw = np.fromfile(os.path.join(d, m["weights"]), dtype=np.int8)
         assert raw.size == self.n * self.k, f"{m['weights']}: {raw.size} bytes, expected n x k"
         self.qw = torch.from_numpy(raw).reshape(self.n, self.k)
-        aux = open(os.path.join(d, m["aux"]), "rb").read()
+        with open(os.path.join(d, m["aux"]), "rb") as f:
+            aux = f.read()
         assert aux[:4] == b"LQA1"
         n, k, flags = np.frombuffer(aux[4:16], dtype="<u4")
         assert (n, k) == (self.n, self.k)
@@ -82,10 +85,14 @@ class Model:
         self.L, self.H, self.KV, self.hd = a["layers"], a["heads"], a["kv_heads"], a["head_dim"]
         self.eps = a["rms_norm_eps"]
         self.mats = [Matrix(d, m) for m in self.man["matrices"]]
+        # base name -> column shards (concatenated) -> k shards (int32 partial products summed)
         self.by_name = {}
         for mm, m in zip(self.mats, self.man["matrices"]):
-            base = m["name"].split("[")[0]
-            self.by_name.setdefault(base, []).append(mm)
+            base = m["name"].split("[")[0].split("{")[0]
+            self.by_name.setdefault(base, {}).setdefault(mm.cols, []).append(mm)
+        for groups in self.by_name.values():
+            for ks in groups.values():
+                ks.sort(key=lambda x: x.klo)
         assert not self.man.get("unmined"), "unmined fp layers are not supported by this worker yet"
         t = {x["name"]: x for x in self.man["tensors"]}
         e = t["embed"]
@@ -105,16 +112,24 @@ class Model:
     # ------------------------------------------------------------------ forward
 
     def lin(self, name, x, cap):
-        """y = x W^T through every registered shard of `name` (concatenated)."""
+        """y = x W^T through every registered shard of `name`: column shards concatenated,
+        k shards summed as exact int32 partial products before the scales."""
         outs = []
-        for m in self.by_name[name]:
-            xs = x / m.smooth if m.smooth is not None else x
+        for cols in sorted(self.by_name[name]):
+            ks = self.by_name[name][cols]
+            smooth = None if ks[0].smooth is None else torch.cat([m.smooth for m in ks])
+            xs = x / smooth if smooth is not None else x
             v, s, z = quant_act(xs)
-            c = int_mm(v, m.qw)
-            if cap is not None:
-                cap[m.index][0].append(v)
-                cap[m.index][1].append(c)
-            outs.append(s * (c.float() - z * m.colsum) * m.sw)
+            c = None
+            for m in ks:
+                vs = v[:, m.klo:m.khi].contiguous()
+                part = int_mm(vs, m.qw)
+                if cap is not None:
+                    cap[m.index][0].append(vs)
+                    cap[m.index][1].append(part)
+                c = part if c is None else c + part
+            colsum = ks[0].colsum if len(ks) == 1 else sum(m.colsum for m in ks)
+            outs.append(s * (c.float() - z * colsum) * ks[0].sw)
         return outs[0] if len(outs) == 1 else torch.cat(outs, -1)
 
     def rms(self, x, w):

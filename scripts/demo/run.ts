@@ -77,7 +77,7 @@ const BIN = {
 };
 // Cadre inference (SPEC 4.5 / 5.4): the quantized model (tools/cadre/quantize.py), the worker's python,
 // the model store the miner, attester and gateway read registered matrices from
-const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-w7a7");
+const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-w7a7-k2048");
 const CADRE_PYTHON = process.env.CADRE_PYTHON ?? resolve(homedir(), "int7-exp/venv/bin/python");
 const MODEL_STORE = resolve(DEMO, "models");
 const GATEWAY_URL = "http://127.0.0.1:10664";

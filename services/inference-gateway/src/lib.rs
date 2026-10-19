@@ -862,22 +862,35 @@ impl Gateway {
         let params = self.node.call("getParams", json!({}))?;
         let chain_id = info["chain_id"].as_u64().ok_or_else(|| anyhow!("no chain_id"))? as u32;
         let fee = pearl_node::num(&params["min_fee"]).unwrap_or(1000);
-        let nonce = self.node.get_account(&me)?.nonce;
         let mut hs = Vec::with_capacity(bodies.len());
-        for (i, body) in bodies.into_iter().enumerate() {
-            let wire = tx::sign(&Tx { chain_id, from: me, nonce: nonce + i as u64, fee, body }, &self.key)?;
-            hs.push(self.node.send_tx(&wire).with_context(|| format!("send {what} {i}"))?);
-        }
-        let t0 = Instant::now();
-        for h in &hs {
-            loop {
-                let t = self.node.call("getTx", json!({"tx_hash": h}))?;
-                if t["status"] == json!("included") {
-                    break;
-                }
-                ensure!(t0.elapsed() < Duration::from_secs(600), "{what} tx {h} not included after 600 s");
-                std::thread::sleep(self.cfg.poll);
+        // the mempool takes at most 64 nonces ahead of the account: batches of 32, each
+        // included before the next is signed
+        let bodies: Vec<Body> = bodies;
+        for batch in bodies.chunks(32) {
+            let nonce = self.node.get_account(&me)?.nonce;
+            let mut bh = Vec::with_capacity(batch.len());
+            for (i, body) in batch.iter().enumerate() {
+                let wire = tx::sign(&Tx { chain_id, from: me, nonce: nonce + i as u64, fee, body: body.clone() }, &self.key)?;
+                let h = match self.node.send_tx(&wire) {
+                    Ok(h) => h,
+                    // the same tx from an earlier attempt is still in the pool
+                    Err(e) if format!("{e:#}").contains("already") => hex::encode(blake3::hash(&wire).as_bytes()),
+                    Err(e) => return Err(e).with_context(|| format!("send {what} {}", hs.len() + i)),
+                };
+                bh.push(h);
             }
+            let t0 = Instant::now();
+            for h in &bh {
+                loop {
+                    let t = self.node.call("getTx", json!({"tx_hash": h}))?;
+                    if t["status"] == json!("included") {
+                        break;
+                    }
+                    ensure!(t0.elapsed() < Duration::from_secs(600), "{what} tx {h} not included after 600 s");
+                    std::thread::sleep(self.cfg.poll);
+                }
+            }
+            hs.extend(bh);
         }
         Ok(hs)
     }
@@ -922,7 +935,11 @@ impl Gateway {
         let due = !t.pending.is_empty()
             && (t.single || t.state == "closing" || self.oldest_pending_age(&t) >= self.cfg.round_every || self.ledger.lock().unwrap().free(&t, p) < self.cfg.min_free_rows);
         if due {
-            self.post_round(&tid, id, &t, st["rounds"].as_u64().unwrap_or(0) as u16)?;
+            // a round the chain has started but this ledger has not recorded (an earlier attempt
+            // stopped half way) is resumed: same round, only the matrices still missing
+            let chain_rounds = st["rounds"].as_u64().unwrap_or(0) as u16;
+            let round = if (chain_rounds as usize) > t.rounds.len() { chain_rounds - 1 } else { chain_rounds };
+            self.post_round(&tid, id, &t, round)?;
         }
         let t = self.ledger.lock().unwrap().tickets.get(id).cloned().unwrap();
         let free = self.ledger.lock().unwrap().free(&t, p);
@@ -958,7 +975,13 @@ impl Gateway {
         // one segment per tx: a Solana light client registers each segment job from its posting
         // tx, and a Solana tx (1232 bytes) holds one such chain tx with its tx_root path
         let head = self.model.head();
-        let bodies: Vec<Body> = segs.iter().map(|s| Body::PostSegments { ticket_id: *tid, round, head, segments: vec![s.spec.clone()] }).collect();
+        let mut bodies = Vec::with_capacity(segs.len());
+        for s in &segs {
+            if self.node.get_job(&standing::segment_id(tid, s.spec.matrix, round))?.is_some() {
+                continue; // posted by an earlier attempt
+            }
+            bodies.push(Body::PostSegments { ticket_id: *tid, round, head, segments: vec![s.spec.clone()] });
+        }
         let txs = self.send_many(bodies, "PostSegments")?;
         let ids: Vec<String> = reqs.iter().map(|r| r.request_id.clone()).collect();
         self.with_ledger(|l| {

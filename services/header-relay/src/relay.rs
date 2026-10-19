@@ -211,7 +211,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
 
     /// Create and init the work accounts that do not exist yet.
     pub fn ensure_works(&mut self) -> Result<()> {
-        let size = client::work_size_for(&self.config()?.params);
+        let (size, proof_cap) = work_shape(&self.config()?.params);
         let keys: Vec<Pubkey> = self.works.iter().map(|k| k.pubkey()).collect();
         let have = self.ledger.accounts(&keys)?;
         for (i, h) in have.iter().enumerate() {
@@ -222,7 +222,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let w = self.works[i].insecure_clone();
             let pk = self.ledger.pk();
             let create = system_instruction::create_account(&pk, &w.pubkey(), rent, size as u64, &lightclient::ID);
-            ledger::send_wait(self.ledger, &[create, client::init_work(pk, w.pubkey(), 32 * 1024)], &[&w], 200_000)?;
+            ledger::send_wait(self.ledger, &[create, client::init_work(pk, w.pubkey(), proof_cap as u32)], &[&w], 200_000)?;
         }
         Ok(())
     }
@@ -794,6 +794,24 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         })
         .to_string()
     }
+}
+
+/// Largest common dimension k a relayed job block may have (`HR_MAX_JOB_K`, default 2048):
+/// proofs and noise strips grow with k. Registered matrices are cut into k shards of at most
+/// 2048 (SPEC 4.5) because a k = 8192 opening does not complete in one Solana tx.
+pub fn max_job_k() -> usize {
+    std::env::var("HR_MAX_JOB_K").ok().and_then(|v| v.parse().ok()).unwrap_or(2048)
+}
+
+/// `(work account size, proof capacity)`: proofs of a 4x8 tile at k are about 12 x k bytes
+/// (99,124 bytes measured at k = 8192), plus the scratch for the larger of the fallback B and
+/// the noised strips of a job tile ((h + w) x k = 12 x k).
+pub fn work_shape(p: &lightclient::Params) -> (usize, usize) {
+    let fk = u32::from_le_bytes(p.fallback_config[0..4].try_into().unwrap()) as usize;
+    let k = max_job_k().max(fk);
+    let proof_cap = (32 * 1024).max(13 * k + 8 * 1024);
+    let scratch = (fk * (p.fallback_n as usize).max(16)).max(12 * k);
+    (lightclient::work::PROOF_OFF + proof_cap + scratch, proof_cap)
 }
 
 fn describe(ixs: &[Instruction]) -> &'static str {

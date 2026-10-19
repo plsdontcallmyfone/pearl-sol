@@ -6,7 +6,9 @@ Recipe `cadre-w7a7-sq-asym-v1` (research/INT7-ACCURACY.md, config w7a7_sq_asym_l
   * activations (at serving time, tools/cadre/worker.py): per-token asymmetric int7.
 q/k/v are fused into one `qkv` matrix (they share their input and their smooth factor);
 gate and up stay separate; any output dimension above --max-n is split into equal column
-shards (n a multiple of 8). Matrices that cannot be a job (k < 16 r etc.) are recorded as
+shards (n a multiple of 8), any input dimension above --max-k (2048) into k shards whose
+int32 partial products the worker sums (exact; the Solana light client verifies job blocks
+up to k = 2048). Matrices that cannot be a job (k < 16 r etc.) are recorded as
 unmined and kept in fp (none on Llama-3.2-1B).
 
 Output directory (the model's files; `pearl model register` chunks them into blobs and adds
@@ -61,6 +63,14 @@ def shards(n, max_n):
         if n % s == 0 and (n // s) % 8 == 0 and n // s <= max_n:
             return [(i * (n // s), (i + 1) * (n // s)) for i in range(s)]
     return [(0, n)]
+
+
+def shards_k(k, max_k):
+    """Row ranges of B (input dims) of at most max_k each, multiples of 64, each >= 16 r."""
+    n = -(-k // max_k)
+    while k % n or (k // n) % 64:
+        n += 1
+    return [(i * (k // n), (i + 1) * (k // n)) for i in range(n)]
 
 
 def quant_weight(w):
@@ -124,6 +134,7 @@ def main():
     ap.add_argument("--calib", default=None, help="saved input absmax stats (torch file); computed if absent")
     ap.add_argument("--alpha", type=float, default=0.5)
     ap.add_argument("--max-n", type=int, default=8192)
+    ap.add_argument("--max-k", type=int, default=2048, help="k shards: the Solana light client verifies job blocks up to k = 2048")
     ap.add_argument("--layers", type=int, default=None, help="quantize only the first N layers (tests)")
     a = ap.parse_args()
 
@@ -134,7 +145,9 @@ def main():
     hd = cfg.get("head_dim") or cfg["hidden_size"] // H
     group = H // KV
 
-    if a.calib and os.path.exists(a.calib):
+    if a.calib == "none":
+        stats = None  # no SmoothQuant (tests on synthetic checkpoints)
+    elif a.calib and os.path.exists(a.calib):
         stats = torch.load(a.calib, weights_only=False)
     else:
         print("calibrating (16 x 512 WikiText-2 train tokens)...", file=sys.stderr)
@@ -154,6 +167,8 @@ def main():
     matrices, unmined, tensors = [], [], []
 
     def smooth_for(names, stat_name, kv_share=False):
+        if stats is None:
+            return None
         ax = stats[stat_name].float()
         wmax = torch.stack([W(n).abs().amax(0) for n in names]).amax(0)
         if kv_share:
@@ -164,20 +179,27 @@ def main():
     def emit(name, role, layer, w, smooth, input_name):
         """w: n x k fp32 source weight (unsmoothed)."""
         n, k = w.shape
-        if not job_shaped(k, min(n, a.max_n)):
+        ks = shards_k(k, a.max_k)
+        if not job_shaped(ks[0][1] - ks[0][0], min(n, a.max_n)):
             np.asarray(w.to(torch.bfloat16).view(torch.int16).numpy()).tofile(os.path.join(a.out, "t", f"{name}.bf16"))
             unmined.append({"name": name, "role": role, "layer": layer, "k": k, "n": n, "reason": "not job-shaped (k < 16r, k % 64, or n % 8)",
                             "file": f"t/{name}.bf16", "input": input_name})
             return
         ws = w * smooth[None, :] if smooth is not None else w
         for lo, hi in shards(n, a.max_n):
-            i = len(matrices)
-            q, s_w = quant_weight(ws[lo:hi])
-            q.numpy().tofile(os.path.join(a.out, "w", f"{i}.i8"))
-            write_aux(os.path.join(a.out, "w", f"{i}.aux"), q, s_w, smooth)
-            matrices.append({"index": i, "name": name if (lo, hi) == (0, n) else f"{name}[{lo}:{hi}]", "layer": layer, "role": role,
-                             "k": k, "n": hi - lo, "cols": [lo, hi], "weights": f"w/{i}.i8", "aux": f"w/{i}.aux", "hash_b": "",
-                             "input": input_name})
+            # per-output-channel scales over the whole input row, then k shards of it
+            q_full, s_w = quant_weight(ws[lo:hi])
+            for klo, khi in ks:
+                i = len(matrices)
+                q = q_full[:, klo:khi].contiguous()
+                q.numpy().tofile(os.path.join(a.out, "w", f"{i}.i8"))
+                write_aux(os.path.join(a.out, "w", f"{i}.aux"), q, s_w, None if smooth is None else smooth[klo:khi].contiguous())
+                label = name if (lo, hi) == (0, n) else f"{name}[{lo}:{hi}]"
+                if len(ks) > 1:
+                    label += f"{{{klo}:{khi}}}"
+                matrices.append({"index": i, "name": label, "layer": layer, "role": role,
+                                 "k": khi - klo, "n": hi - lo, "cols": [lo, hi], "k_range": [klo, khi], "k_total": k,
+                                 "weights": f"w/{i}.i8", "aux": f"w/{i}.aux", "hash_b": "", "input": input_name})
         print(f"{name}: {k} x {n} -> {len(shards(n, a.max_n))} matrix(es)", file=sys.stderr)
 
     for li in range(L):

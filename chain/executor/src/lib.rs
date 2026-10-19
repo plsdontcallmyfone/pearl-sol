@@ -739,6 +739,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             if let Err(e) = pearl_job::job::check_shape(&c, period, x.n as usize) {
                 return bad(format!("matrix {i} ({} x {}) cannot be a job: {e}", x.k, x.n));
             }
+            if x.k > pearl_job::standing::MAX_MATRIX_K {
+                return bad(format!("matrix {i} has k {} above {} (register it as k shards: the Solana light client verifies blocks up to that k)", x.k, pearl_job::standing::MAX_MATRIX_K));
+            }
             let e = x.k as u64 * x.n as u64;
             if e > pearl_job::standing::MAX_MATRIX_ENTRIES {
                 return bad(format!("matrix {i} has {e} entries, above 2^26 (split it into column shards)"));

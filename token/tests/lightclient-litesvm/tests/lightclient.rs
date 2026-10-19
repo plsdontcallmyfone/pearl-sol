@@ -390,13 +390,39 @@ fn job_block_needs_its_registered_job() {
 /// alone and its job block verifies; another segment id from the same tx is refused.
 #[test]
 fn standing_job_segment_registers_from_post_segments() {
+    segment_case(LOCAL_K, 64, None);
+}
+
+/// Why registered matrices are cut into k shards of at most 2048 (SPEC 4.5): a job block at
+/// k = 8192 (Llama-3.2-1B's whole down projection) uploads (a 99 KB proof, work account sized
+/// for it) but its A-side opening does not complete in one Solana transaction, so the light
+/// client could never verify it. At k = 2048 it does (the test above).
+#[test]
+fn a_k_8192_job_block_does_not_verify_on_the_light_client() {
+    let k = 8192usize;
+    let proof_cap = 13 * k + 8 * 1024;
+    let size = lightclient::work::PROOF_OFF + proof_cap + (LOCAL_K as usize * 64).max(12 * k);
+    let r = std::panic::catch_unwind(|| segment_case(8192, 64, Some((size, proof_cap))));
+    assert!(r.is_err(), "k = 8192 verified: the k <= 2048 registration limit can be raised");
+}
+
+fn segment_case(k: u32, n: u32, work: Option<(usize, usize)>) {
     use pearl_job::standing;
     use rand::{Rng, SeedableRng};
     let p = params(4);
     let g = genesis(0x1e100000);
     let mut env = Env::new(p, &g);
+    if let Some((size, cap)) = work {
+        let w = solana_sdk::signature::Keypair::new();
+        let rent = env.svm.minimum_balance_for_rent_exemption(size);
+        let create = solana_sdk::system_instruction::create_account(&env.payer.pubkey(), &w.pubkey(), rent, size as u64, &lightclient::ID);
+        let init = client::init_work(env.payer.pubkey(), w.pubkey(), cap as u32);
+        env.send(&[create, init], &[&w]).expect("large work account");
+        println!("work account {size} bytes, rent {rent} lamports");
+        env.work = w;
+    }
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
-    let (m, n, k) = (8u32, 64u32, LOCAL_K);
+    let m = 8u32;
     let a: Vec<i8> = (0..m as usize * k as usize).map(|_| rng.random_range(-64i8..=64)).collect();
     let bt: Vec<i8> = (0..k as usize * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
     let base = pearl_job::MiningConfig::localnet_default();
@@ -431,19 +457,24 @@ fn standing_job_segment_registers_from_post_segments() {
     let e = env.send(&[client::register_job(pk, &b1.hash, standing::segment_id(&ticket, matrix, 0), post.clone(), paths[0].clone())], &[]).unwrap_err();
     assert!(matches!(e, solana_sdk::transaction::TransactionError::InstructionError(..)), "a segment id the tx does not post");
     let cu = env.send(&[client::register_job(pk, &b1.hash, seg, post.clone(), paths[0].clone())], &[]).unwrap();
-    println!("register_job (segment): {cu} CU, chain tx {} bytes", post.len());
+    println!("register_job (segment, k {k}): {cu} CU, chain tx {} bytes", post.len());
     let ja = env.svm.get_account(&client::job_addr(&seg)).unwrap();
     let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut ja.data.as_slice()).unwrap();
     assert_eq!(jc.job_key, key);
     assert_eq!((jc.hash_a, jc.hash_b, jc.m, jc.n), (hash_a, hash_b, m, n));
     // a block mined on the segment (B from the model store layout, B^T) verifies
-    let job = pearl_job::Job { header: standing::matrix_job_header(&model, matrix, k, n), config: standing::matrix_config(&base, k), m, n, hash_a, hash_b };
+    let cfg = standing::matrix_config(&base, k);
+    let job = pearl_job::Job { header: standing::matrix_job_header(&model, matrix, k, n), config: cfg, m, n, hash_a, hash_b };
     let prep = pearl_job::PreparedJob::new_bt(job, &a, bt).unwrap();
     let b2 = child(&p, &b1, &Work::Job(&prep, seg), ChildOpts::default());
     env.submit(&b2).unwrap();
+    env.cu_log.clear();
     env.upload(&b2).unwrap();
-    let plan = env.plan(&b2);
+    let shape = client::Shape::new(false, p.fallback_m, p.fallback_n, &cfg.to_bytes(), b2.proof.len());
+    let plan = client::plan(&shape, client::TX_CU_BUDGET);
     env.steps(&b2, &plan).unwrap();
+    let total: u64 = env.cu_log.iter().map(|(_, c)| *c).sum();
+    println!("segment block k {k}: proof {} bytes, {} txs, {total} CU", b2.proof.len(), env.cu_log.len());
     assert_eq!(env.status(&b2.hash), lightclient::STATUS_VERIFIED);
 }
 

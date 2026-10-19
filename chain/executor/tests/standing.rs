@@ -108,7 +108,7 @@ fn register_body(name: &[u8]) -> RegisterModel {
         rank: c.rank,
         rows_pattern: c.rows_pattern.to_bytes(),
         cols_pattern: c.cols_pattern.to_bytes(),
-        matrices: vec![MatrixSpec { k: 2048, n: 3072, hash_b: [0x61; 32] }, MatrixSpec { k: 8192, n: 2048, hash_b: [0x62; 32] }],
+        matrices: vec![MatrixSpec { k: 2048, n: 3072, hash_b: [0x61; 32] }, MatrixSpec { k: 2048, n: 2048, hash_b: [0x62; 32] }],
     }
 }
 
@@ -131,8 +131,8 @@ fn ticket_body(model_id: &Hash, prompt: u32, max_new: u32, server: Pubkey, w: u6
 }
 
 fn seg(matrix: u16, m: u32, max_blocks: u32) -> Segment {
-    // the matrices of register_body(): 0 = 2048 x 3072 (hash_b 0x61..), 1 = 8192 x 2048 (0x62..)
-    let (k, n, hb) = if matrix == 1 { (8192, 2048, [0x62; 32]) } else { (2048, 3072, [0x61; 32]) };
+    // the matrices of register_body(): 0 = 2048 x 3072 (hash_b 0x61..), 1 = 2048 x 2048 (0x62..)
+    let (k, n, hb) = if matrix == 1 { (2048, 2048, [0x62; 32]) } else { (2048, 3072, [0x61; 32]) };
     Segment { matrix, m, k, n, max_blocks, hash_a: [matrix as u8 + 1; 32], hash_b: hb, c_hash: [matrix as u8 + 0x80; 32], a_uri: blob(0x90 + matrix as u8) }
 }
 
@@ -157,7 +157,7 @@ fn register_model_checks_shapes_and_uniqueness() {
     let (mut c, id) = setup();
     let m = c.model(&id);
     assert_eq!(m.registrant, pk(REGISTRANT));
-    assert_eq!(m.macs_per_row, 2048 * 3072 + 8192 * 2048);
+    assert_eq!(m.macs_per_row, 2048 * 3072 + 2048 * 2048);
     assert_eq!(m.matrices.len(), 2);
     assert_eq!(m.index, 0);
     let err = c.send(REGISTRANT, TxBody::RegisterModel(register_body(b"llama-test"))).unwrap_err();
@@ -171,8 +171,11 @@ fn register_model_checks_shapes_and_uniqueness() {
     bad.matrices[0].k = 1024; // k < 16r: not a job
     assert!(c.send(REGISTRANT, TxBody::RegisterModel(bad)).unwrap_err().contains("cannot be a job"));
     let mut bad = register_body(b"big");
-    bad.matrices[0] = MatrixSpec { k: 8192, n: 16384, hash_b: [1; 32] };
+    bad.matrices[0] = MatrixSpec { k: 2048, n: 40960, hash_b: [1; 32] };
     assert!(c.send(REGISTRANT, TxBody::RegisterModel(bad)).unwrap_err().contains("2^26"));
+    let mut bad = register_body(b"wide-k");
+    bad.matrices[0] = MatrixSpec { k: 8192, n: 2048, hash_b: [1; 32] };
+    assert!(c.send(REGISTRANT, TxBody::RegisterModel(bad)).unwrap_err().contains("k shards"));
     let mut bad = register_body(b"odd-n");
     bad.matrices[0].n = 3071;
     assert!(c.send(REGISTRANT, TxBody::RegisterModel(bad)).is_err());
@@ -235,9 +238,9 @@ fn ticket_segments_mine_within_alpha_p() {
     let s0 = standing::segment_id(&tid, 0, 0);
     let s1 = standing::segment_id(&tid, 1, 0);
     let (j0, j1) = (c.job(&s0), c.job(&s1));
-    let macs = 2048u64 * 3072 + 8192 * 2048;
+    let macs = 2048u64 * 3072 + 2048 * 2048;
     assert_eq!(j0.cap_remaining, (te.cap_total as u128 * 12 * 2048 * 3072 / (12 * macs as u128)) as u64);
-    assert_eq!(j1.cap_remaining, (te.cap_total as u128 * 12 * 8192 * 2048 / (12 * macs as u128)) as u64);
+    assert_eq!(j1.cap_remaining, (te.cap_total as u128 * 12 * 2048 * 2048 / (12 * macs as u128)) as u64);
     assert!(j0.cap_remaining + j1.cap_remaining <= te.cap_total);
     assert_eq!(c.job(&tid).cap_remaining, te.cap_total - j0.cap_remaining - j1.cap_remaining);
     // a segment is a standing job on the registered matrix

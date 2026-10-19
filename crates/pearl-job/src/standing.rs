@@ -26,6 +26,10 @@ pub const RECIPE_NAME: &str = "cadre-w7a7-sq-asym-v1";
 pub const MAX_TICKET_ROWS: u32 = 4096;
 /// Most matrices one model may register.
 pub const MAX_MODEL_MATRICES: usize = 384;
+/// Largest k of a registered matrix: wider weights are registered as k shards (row ranges of
+/// B, partial products summed outside the proof), since the Solana light client verifies job
+/// blocks only up to this k (a k = 8192 opening does not fit one Solana tx).
+pub const MAX_MATRIX_K: u32 = 2048;
 /// Largest registered matrix, k x n entries.
 pub const MAX_MATRIX_ENTRIES: u64 = 1 << 26;
 /// Most segments one PostSegments tx may carry.
