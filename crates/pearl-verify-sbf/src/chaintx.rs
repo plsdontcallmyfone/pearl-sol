@@ -39,6 +39,7 @@ pub const KIND_BRIDGE_UNLOCK: u8 = 6;
 pub const KIND_BRIDGE_LOCK: u8 = 7;
 pub const KIND_SET_ROUTE: u8 = 9;
 pub const KIND_CLEAR_ROUTE: u8 = 10;
+pub const KIND_POST_SEGMENTS: u8 = 12;
 const BODY: usize = 54;
 
 pub struct TxView<'a> {
@@ -205,6 +206,65 @@ pub fn job_from_tx(tx: &TxView, sha256: fn(&[&[u8]]) -> [u8; 32]) -> Result<JobC
         return Err(Error::Tx);
     }
     Ok(JobCommit { job_id, header76: header76(&header_id, &terms), config: f.config, m: f.m, n: f.n, hash_a: f.hash_a, hash_b: f.hash_b })
+}
+
+/// Calls `f` with every standing job a PostSegments tx posts (SPEC 4.5), in tx order. The tx repeats the
+/// registered model id, mining config and each matrix's k, n, hash_b (the chain checks them
+/// against its registry), so every segment job is rebuilt from the tx alone:
+/// `job_id = blake3("pearl-sol:segment:v1" || ticket || matrix u16 || round u16)`, header
+/// `model_id || blake3("pearl-sol:matrix-terms:v1" || model_id || matrix u16 || k u32 || n u32)`,
+/// config `k u32 | rank u16 | 0 u16 | rows [6] | cols [6] | 0 [32]`.
+pub fn for_each_segment(tx: &TxView, mut f: impl FnMut(JobCommit)) -> Result<(), Error> {
+    if tx.kind() != KIND_POST_SEGMENTS {
+        return Err(Error::Tx);
+    }
+    let mut r = Rd { b: tx.body(), pos: 0 };
+    let ticket = r.arr()?;
+    let round = r.u16()?;
+    let model = r.arr()?;
+    let rank = r.u16()?;
+    let rows: [u8; 6] = r.take(6)?.try_into().unwrap();
+    let cols: [u8; 6] = r.take(6)?.try_into().unwrap();
+    let count = r.u8()? as usize;
+    for _ in 0..count {
+        let matrix = r.u16()?;
+        let m = r.u32()?;
+        let k = r.u32()?;
+        let n = r.u32()?;
+        r.u32()?; // max_blocks
+        let hash_a = r.arr()?;
+        let hash_b = r.arr()?;
+        r.arr()?; // c_hash
+        let ul = r.u16()? as usize;
+        r.take(ul)?;
+        let mut config = [0u8; 52];
+        config[0..4].copy_from_slice(&k.to_le_bytes());
+        config[4..6].copy_from_slice(&rank.to_le_bytes());
+        config[8..14].copy_from_slice(&rows);
+        config[14..20].copy_from_slice(&cols);
+        let job_id = blake3::hash_parts(&[b"pearl-sol:segment:v1", &ticket, &matrix.to_le_bytes(), &round.to_le_bytes()]);
+        let terms = blake3::hash_parts(&[b"pearl-sol:matrix-terms:v1", &model, &matrix.to_le_bytes(), &k.to_le_bytes(), &n.to_le_bytes()]);
+        f(JobCommit { job_id, header76: header76(&model, &terms), config, m, n, hash_a, hash_b });
+    }
+    if r.pos != r.b.len() {
+        return Err(Error::Tx);
+    }
+    Ok(())
+}
+
+/// The job `job_id` created by `tx`: a PostJob, an order BridgeUnlock, or one segment of a
+/// PostSegments.
+pub fn job_by_id(tx: &TxView, job_id: &[u8; 32], sha256: fn(&[&[u8]]) -> [u8; 32]) -> Result<JobCommit, Error> {
+    if tx.kind() == KIND_POST_SEGMENTS {
+        let mut found = None;
+        for_each_segment(tx, |j| {
+            if j.job_id == *job_id {
+                found = Some(j);
+            }
+        })?;
+        return found.ok_or(Error::Tx);
+    }
+    job_from_tx(tx, sha256)
 }
 
 /// CompleteJob: `(job_id, offset of the first (pubkey, sig) pair in the tx, count)`.

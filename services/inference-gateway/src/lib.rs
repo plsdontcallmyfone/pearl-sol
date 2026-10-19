@@ -50,6 +50,8 @@ pub struct ModelInfo {
     pub base: MiningConfig,
     /// (k, n) per matrix.
     pub matrices: Vec<(u32, u32)>,
+    /// Registered hash_b per matrix.
+    pub hash_b: Vec<[u8; 32]>,
     pub macs_per_row: u64,
 }
 
@@ -64,8 +66,19 @@ impl ModelInfo {
             .iter()
             .map(|x| Ok((x["k"].as_u64().ok_or_else(|| anyhow!("k"))? as u32, x["n"].as_u64().ok_or_else(|| anyhow!("n"))? as u32)))
             .collect::<Result<Vec<_>>>()?;
+        let hash_b = m["matrices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| pearl_job::spec::parse_key32(x["hash_b"].as_str().unwrap_or("")))
+            .collect::<Result<Vec<_>>>()?;
         let macs_per_row = matrices.iter().map(|(k, n)| *k as u64 * *n as u64).sum();
-        Ok(Self { model_id, name: m["name"].as_str().unwrap_or("").to_string(), base, matrices, macs_per_row })
+        Ok(Self { model_id, name: m["name"].as_str().unwrap_or("").to_string(), base, matrices, hash_b, macs_per_row })
+    }
+
+    /// The registry fields every PostSegments repeats.
+    pub fn head(&self) -> tx::SegmentsHead {
+        tx::SegmentsHead { model_id: self.model_id, rank: self.base.rank, rows_pattern: self.base.rows_pattern.to_bytes(), cols_pattern: self.base.cols_pattern.to_bytes() }
     }
 
     pub fn period(&self) -> u32 {
@@ -137,8 +150,11 @@ pub fn prepare_round(model: &ModelInfo, dirs: &[(PathBuf, u32)], m: u32, blocks_
         let spec = SegmentSpec {
             matrix: i as u16,
             m,
+            k: k as u32,
+            n: n as u32,
             max_blocks: blocks_per_segment.max(1),
             hash_a: commit_a(&key, &a),
+            hash_b: model.hash_b.get(i).copied().unwrap_or([0; 32]),
             c_hash: result_hash(&key, &c),
             a_uri: pearl_job::data::blob_uri(&pearl_job::data::blob_id(&a_blob)),
         };
@@ -837,6 +853,35 @@ impl Gateway {
         }
     }
 
+    /// Send several txs from the server key back to back (consecutive nonces) and wait until
+    /// every one is included. Returns their hashes.
+    fn send_many(&self, bodies: Vec<Body>, what: &str) -> Result<Vec<String>> {
+        let _g = self.send_lock.lock().unwrap();
+        let me = self.server();
+        let info = self.node.call("getChainInfo", json!({}))?;
+        let params = self.node.call("getParams", json!({}))?;
+        let chain_id = info["chain_id"].as_u64().ok_or_else(|| anyhow!("no chain_id"))? as u32;
+        let fee = pearl_node::num(&params["min_fee"]).unwrap_or(1000);
+        let nonce = self.node.get_account(&me)?.nonce;
+        let mut hs = Vec::with_capacity(bodies.len());
+        for (i, body) in bodies.into_iter().enumerate() {
+            let wire = tx::sign(&Tx { chain_id, from: me, nonce: nonce + i as u64, fee, body }, &self.key)?;
+            hs.push(self.node.send_tx(&wire).with_context(|| format!("send {what} {i}"))?);
+        }
+        let t0 = Instant::now();
+        for h in &hs {
+            loop {
+                let t = self.node.call("getTx", json!({"tx_hash": h}))?;
+                if t["status"] == json!("included") {
+                    break;
+                }
+                ensure!(t0.elapsed() < Duration::from_secs(600), "{what} tx {h} not included after 600 s");
+                std::thread::sleep(self.cfg.poll);
+            }
+        }
+        Ok(hs)
+    }
+
     /// Background loop: one settlement pass every `round_every`.
     pub fn run_rounds(self: Arc<Self>) {
         loop {
@@ -910,10 +955,11 @@ impl Gateway {
             let uri = self.node.put_blob(&s.a_blob)?;
             ensure!(uri == s.spec.a_uri, "node stored A under {uri}, expected {}", s.spec.a_uri);
         }
-        let mut txs = vec![];
-        for chunk in segs.chunks(48) {
-            txs.push(self.send_wait(Body::PostSegments { ticket_id: *tid, round, segments: chunk.iter().map(|s| s.spec.clone()).collect() }, "PostSegments")?);
-        }
+        // one segment per tx: a Solana light client registers each segment job from its posting
+        // tx, and a Solana tx (1232 bytes) holds one such chain tx with its tx_root path
+        let head = self.model.head();
+        let bodies: Vec<Body> = segs.iter().map(|s| Body::PostSegments { ticket_id: *tid, round, head, segments: vec![s.spec.clone()] }).collect();
+        let txs = self.send_many(bodies, "PostSegments")?;
         let ids: Vec<String> = reqs.iter().map(|r| r.request_id.clone()).collect();
         self.with_ledger(|l| {
             let mut off = 0u32;

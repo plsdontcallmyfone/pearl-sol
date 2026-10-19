@@ -79,3 +79,36 @@ fn result_message_matches_agent_types() {
     assert_eq!(key.verifying_key().to_bytes(), k(&r["pubkey"]));
     assert_eq!(hex::encode(key.sign(&ours).to_bytes()), r["sig"].as_str().unwrap());
 }
+
+/// SPEC 4.5: the gateway's PostSegments bytes equal the chain's vector.
+#[test]
+fn post_segments_matches_agent_types() {
+    let Some(v) = vectors("standing.json") else {
+        eprintln!("standing.json missing, skipping");
+        return;
+    };
+    let t = v.as_array().unwrap().iter().find(|x| x["name"] == "post_segments").unwrap();
+    let b = &t["body"];
+    let p6 = |s: &Value| -> [u8; 6] { hex::decode(s.as_str().unwrap()).unwrap().try_into().unwrap() };
+    let segments = b["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| tx::SegmentSpec {
+            matrix: n(&g["matrix"]) as u16,
+            m: n(&g["m"]) as u32,
+            k: n(&g["k"]) as u32,
+            n: n(&g["n"]) as u32,
+            max_blocks: n(&g["max_blocks"]) as u32,
+            hash_a: k(&g["hash_a"]),
+            hash_b: k(&g["hash_b"]),
+            c_hash: k(&g["c_hash"]),
+            a_uri: g["a_uri"].as_str().unwrap().into(),
+        })
+        .collect();
+    let head = tx::SegmentsHead { model_id: k(&b["model_id"]), rank: n(&b["rank"]) as u16, rows_pattern: p6(&b["rows_pattern"]), cols_pattern: p6(&b["cols_pattern"]) };
+    let body = Body::PostSegments { ticket_id: k(&b["ticket_id"]), round: n(&b["round"]) as u16, head, segments };
+    let key = SigningKey::from_bytes(&k(&t["seed"]));
+    let tx = Tx { chain_id: n(&t["chain_id"]) as u32, from: k(&t["from"]), nonce: n(&t["nonce"]), fee: n(&t["fee"]), body };
+    assert_eq!(hex::encode(tx::sign(&tx, &key).unwrap()), t["tx"].as_str().unwrap());
+}

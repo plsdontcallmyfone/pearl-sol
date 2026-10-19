@@ -35,10 +35,22 @@ pub mod kind {
 pub struct SegmentSpec {
     pub matrix: u16,
     pub m: u32,
+    pub k: u32,
+    pub n: u32,
     pub max_blocks: u32,
     pub hash_a: [u8; 32],
+    pub hash_b: [u8; 32],
     pub c_hash: [u8; 32],
     pub a_uri: String,
+}
+
+/// The registry fields every PostSegments repeats: model id and mining config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentsHead {
+    pub model_id: [u8; 32],
+    pub rank: u16,
+    pub rows_pattern: [u8; 6],
+    pub cols_pattern: [u8; 6],
 }
 
 /// Unsigned LEB128, as Commonware's `varint` for lengths.
@@ -61,8 +73,9 @@ pub enum Body {
     SubmitResult { job_id: [u8; 32], result_hash: [u8; 32], uri: String },
     CompleteJob { job_id: [u8; 32], sigs: Vec<([u8; 32], [u8; 64])> },
     ExpireJob { job_id: [u8; 32] },
-    /// `ticket_id [32] | round u16 | count u8 | (matrix u16 | m u32 | max_blocks u32 | hash_a | c_hash | a_uri (u16 len))*`
-    PostSegments { ticket_id: [u8; 32], round: u16, segments: Vec<SegmentSpec> },
+    /// `ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_pattern [6] | count u8
+    /// | (matrix u16 | m u32 | k u32 | n u32 | max_blocks u32 | hash_a | hash_b | c_hash | a_uri (u16 len))*`
+    PostSegments { ticket_id: [u8; 32], round: u16, head: SegmentsHead, segments: Vec<SegmentSpec> },
     /// Any kind, body bytes as given.
     Raw { kind: u8, body: Vec<u8> },
 }
@@ -103,17 +116,24 @@ impl Body {
                 }
             }
             Body::ExpireJob { job_id } => v.extend_from_slice(job_id),
-            Body::PostSegments { ticket_id, round, segments } => {
+            Body::PostSegments { ticket_id, round, head, segments } => {
                 ensure!(!segments.is_empty() && segments.len() <= pearl_job::standing::MAX_SEGMENTS_PER_TX, "1..=64 segments per tx");
                 v.extend_from_slice(ticket_id);
                 v.extend_from_slice(&round.to_le_bytes());
+                v.extend_from_slice(&head.model_id);
+                v.extend_from_slice(&head.rank.to_le_bytes());
+                v.extend_from_slice(&head.rows_pattern);
+                v.extend_from_slice(&head.cols_pattern);
                 v.push(segments.len() as u8);
                 for g in segments {
                     ensure!(g.a_uri.len() <= 512, "a_uri too long");
                     v.extend_from_slice(&g.matrix.to_le_bytes());
                     v.extend_from_slice(&g.m.to_le_bytes());
+                    v.extend_from_slice(&g.k.to_le_bytes());
+                    v.extend_from_slice(&g.n.to_le_bytes());
                     v.extend_from_slice(&g.max_blocks.to_le_bytes());
                     v.extend_from_slice(&g.hash_a);
+                    v.extend_from_slice(&g.hash_b);
                     v.extend_from_slice(&g.c_hash);
                     v.extend_from_slice(&(g.a_uri.len() as u16).to_le_bytes());
                     v.extend_from_slice(g.a_uri.as_bytes());

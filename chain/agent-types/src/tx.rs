@@ -137,13 +137,18 @@ impl RegisterModel {
 }
 
 /// One standing job of a ticket (SPEC 4.5):
-/// `matrix u16 | m u32 | max_blocks u32 | hash_a [32] | c_hash [32] | a_uri (u16 len)`.
+/// `matrix u16 | m u32 | k u32 | n u32 | max_blocks u32 | hash_a [32] | hash_b [32] | c_hash [32] | a_uri (u16 len)`.
+/// `k`, `n`, `hash_b` repeat the registered matrix (the chain checks them) so a light client
+/// can rebuild the job from this tx alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     pub matrix: u16,
     pub m: u32,
+    pub k: u32,
+    pub n: u32,
     pub max_blocks: u32,
     pub hash_a: Hash,
+    pub hash_b: Hash,
     pub c_hash: Hash,
     pub a_uri: Vec<u8>,
 }
@@ -287,8 +292,9 @@ pub enum TxBody {
     /// Model registry entry (SPEC 4.5).
     RegisterModel(RegisterModel),
     /// Standing jobs of a paid inference ticket, one round:
-    /// `ticket_id [32] | round u16 | count u8 | Segment*` (SPEC 4.5).
-    PostSegments { ticket_id: Hash, round: u16, segments: Vec<Segment> },
+    /// `ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_pattern [6]
+    /// | count u8 | Segment*` (SPEC 4.5); model id and mining config repeat the registry's.
+    PostSegments { ticket_id: Hash, round: u16, model_id: Hash, rank: u16, rows_pattern: [u8; 6], cols_pattern: [u8; 6], segments: Vec<Segment> },
     /// Evaluators reject the current delivery of a job (SPEC 4.1):
     /// `job_id [32] | deliverer [32] | result_hash [32] | count u8 | (pubkey [32], sig [64])*`,
     /// each sig RAW ed25519 over [`reject_message`]. `deliverer` and `result_hash` must be
@@ -381,10 +387,10 @@ impl TxBody {
                 w.bytes(account).u64(*route_nonce).bytes(sig);
             }
             Self::RegisterModel(m) => m.write(w),
-            Self::PostSegments { ticket_id, round, segments } => {
-                w.bytes(ticket_id).u16(*round).u8(segments.len() as u8);
+            Self::PostSegments { ticket_id, round, model_id, rank, rows_pattern, cols_pattern, segments } => {
+                w.bytes(ticket_id).u16(*round).bytes(model_id).u16(*rank).bytes(rows_pattern).bytes(cols_pattern).u8(segments.len() as u8);
                 for g in segments {
-                    w.u16(g.matrix).u32(g.m).u32(g.max_blocks).bytes(&g.hash_a).bytes(&g.c_hash).bytes16(&g.a_uri);
+                    w.u16(g.matrix).u32(g.m).u32(g.k).u32(g.n).u32(g.max_blocks).bytes(&g.hash_a).bytes(&g.hash_b).bytes(&g.c_hash).bytes16(&g.a_uri);
                 }
             }
             Self::RejectResult { job_id, deliverer, result_hash, sigs } => {
@@ -440,6 +446,10 @@ impl TxBody {
             TxKind::PostSegments => {
                 let ticket_id = r.arr()?;
                 let round = r.u16()?;
+                let model_id = r.arr()?;
+                let rank = r.u16()?;
+                let rows_pattern = r.arr()?;
+                let cols_pattern = r.arr()?;
                 let count = r.u8()? as usize;
                 if count > MAX_SEGMENTS {
                     return Err(DecodeError::TooLarge("segments"));
@@ -449,13 +459,16 @@ impl TxBody {
                     segments.push(Segment {
                         matrix: r.u16()?,
                         m: r.u32()?,
+                        k: r.u32()?,
+                        n: r.u32()?,
                         max_blocks: r.u32()?,
                         hash_a: r.arr()?,
+                        hash_b: r.arr()?,
                         c_hash: r.arr()?,
                         a_uri: r.bytes16(MAX_URI, "a_uri")?,
                     });
                 }
-                Self::PostSegments { ticket_id, round, segments }
+                Self::PostSegments { ticket_id, round, model_id, rank, rows_pattern, cols_pattern, segments }
             }
             TxKind::RejectResult => Self::RejectResult {
                 job_id: r.arr()?,

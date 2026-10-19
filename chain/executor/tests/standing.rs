@@ -131,7 +131,15 @@ fn ticket_body(model_id: &Hash, prompt: u32, max_new: u32, server: Pubkey, w: u6
 }
 
 fn seg(matrix: u16, m: u32, max_blocks: u32) -> Segment {
-    Segment { matrix, m, max_blocks, hash_a: [matrix as u8 + 1; 32], c_hash: [matrix as u8 + 0x80; 32], a_uri: blob(0x90 + matrix as u8) }
+    // the matrices of register_body(): 0 = 2048 x 3072 (hash_b 0x61..), 1 = 8192 x 2048 (0x62..)
+    let (k, n, hb) = if matrix == 1 { (8192, 2048, [0x62; 32]) } else { (2048, 3072, [0x61; 32]) };
+    Segment { matrix, m, k, n, max_blocks, hash_a: [matrix as u8 + 1; 32], hash_b: hb, c_hash: [matrix as u8 + 0x80; 32], a_uri: blob(0x90 + matrix as u8) }
+}
+
+/// PostSegments with the registered model's id and mining config.
+fn post(ticket_id: Hash, round: u16, model: &Hash, segments: Vec<Segment>) -> TxBody {
+    let c = pearl_job::MiningConfig::localnet_default();
+    TxBody::PostSegments { ticket_id, round, model_id: *model, rank: c.rank, rows_pattern: c.rows_pattern.to_bytes(), cols_pattern: c.cols_pattern.to_bytes(), segments }
 }
 
 fn setup() -> (Chain, Hash) {
@@ -205,20 +213,25 @@ fn ticket_segments_mine_within_alpha_p() {
     assert!(c.block(Some(tid), &[]).unwrap_err().to_string().contains("not mineable"));
 
     // segment rules
-    assert!(c.send(BUYER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 12, 1)] }).unwrap_err().contains("server"));
+    assert!(c.send(BUYER, post(tid, 0, &model, vec![seg(0, 12, 1)])).unwrap_err().contains("server"));
     for (g, why) in [(seg(2, 12, 1), "no matrix"), (seg(0, 10, 1), "multiple"), (seg(0, 16, 1), "budget"), (seg(0, 12, 5), "blocks"), (seg(0, 12, 0), "max_blocks")] {
-        let e = c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![g] }).unwrap_err();
+        let e = c.send(SERVER, post(tid, 0, &model, vec![g])).unwrap_err();
         assert!(e.contains(why), "{why}: {e}");
     }
     let mut g = seg(0, 12, 1);
     g.a_uri = b"ipfs://a".to_vec();
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![g] }).unwrap_err().contains("blob"));
+    assert!(c.send(SERVER, post(tid, 0, &model, vec![g])).unwrap_err().contains("blob"));
+    // the tx must repeat the registry: model id, k / n / hash_b of the matrix
+    assert!(c.send(SERVER, post(tid, 0, &[9; 32], vec![seg(0, 12, 1)])).unwrap_err().contains("model"));
+    let mut g = seg(0, 12, 1);
+    g.hash_b = [0x99; 32];
+    assert!(c.send(SERVER, post(tid, 0, &model, vec![g])).unwrap_err().contains("registered"));
     // SubmitResult by anyone but the server is refused
     c.fund(pk(8), 1000);
     assert!(c.send(8, TxBody::SubmitResult { job_id: tid, result_hash: [1; 32], uri: blob(0x52) }).unwrap_err().contains("server"));
 
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 12, 1), seg(1, 12, 3)] }).unwrap();
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 12, 1)] }).is_err(), "one segment per matrix per round");
+    c.send(SERVER, post(tid, 0, &model, vec![seg(0, 12, 1), seg(1, 12, 3)])).unwrap();
+    assert!(c.send(SERVER, post(tid, 0, &model, vec![seg(1, 12, 1)])).is_err(), "one segment per matrix per round");
     let s0 = standing::segment_id(&tid, 0, 0);
     let s1 = standing::segment_id(&tid, 1, 0);
     let (j0, j1) = (c.job(&s0), c.job(&s1));
@@ -263,7 +276,7 @@ fn ticket_segments_mine_within_alpha_p() {
     c.send(SERVER, TxBody::CompleteJob { job_id: tid, sigs: vec![AttesterSig { pubkey: pk(EVAL), sig: sign_plain(&seed(EVAL), &msg) }] }).unwrap();
     assert_eq!(c.bal(&pk(SERVER)), before + w - 1000, "every row was used: all of W");
     assert_eq!(c.job(&tid).status, JobStatus::Completed);
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 1, segments: vec![seg(1, 4, 1)] }).unwrap_err().contains("closed"));
+    assert!(c.send(SERVER, post(tid, 1, &model, vec![seg(1, 4, 1)])).unwrap_err().contains("closed"));
 }
 
 #[test]
@@ -278,7 +291,7 @@ fn order_ticket_server_claimed_by_first_poster_and_partial_rows_earn_less() {
     assert_eq!(t.poster, pk(BUYER));
     assert_eq!(t.ticket().unwrap().server, [0; 32]);
     // the first PostSegments claims the server; the request stopped early (8 of 16 rows)
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 8, 1), seg(1, 8, 1)] }).unwrap();
+    c.send(SERVER, post(tid, 0, &model, vec![seg(0, 8, 1), seg(1, 8, 1)])).unwrap();
     assert_eq!(c.job(&tid).ticket().unwrap().server, pk(SERVER));
     let caps = c.job(&standing::segment_id(&tid, 0, 0)).cap_remaining + c.job(&standing::segment_id(&tid, 1, 0)).cap_remaining;
     let cap_total = p * 8 / 10;
@@ -323,15 +336,15 @@ fn balance_ticket_rounds_and_pay_for_rows_used() {
     let tid = schema::job_id_for_post(&pk(BUYER), n);
     assert_eq!(c.job(&tid).ticket().unwrap().rows, 64);
     // round 0: 8 rows over both matrices, in two txs (the second continues the round)
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(0, 8, 1)] }).unwrap();
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 12, 1)] }).unwrap_err().contains("has m 8"));
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 2, segments: vec![seg(1, 8, 1)] }).unwrap_err().contains("round 2"));
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg(1, 8, 1)] }).unwrap();
+    c.send(SERVER, post(tid, 0, &model, vec![seg(0, 8, 1)])).unwrap();
+    assert!(c.send(SERVER, post(tid, 0, &model, vec![seg(1, 12, 1)])).unwrap_err().contains("has m 8"));
+    assert!(c.send(SERVER, post(tid, 2, &model, vec![seg(1, 8, 1)])).unwrap_err().contains("round 2"));
+    c.send(SERVER, post(tid, 0, &model, vec![seg(1, 8, 1)])).unwrap();
     // round 1: 16 more rows; a second segment for matrix 0 in a new round
-    c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 1, segments: vec![seg(0, 16, 1), seg(1, 16, 1)] }).unwrap();
+    c.send(SERVER, post(tid, 1, &model, vec![seg(0, 16, 1), seg(1, 16, 1)])).unwrap();
     let te = *c.job(&tid).ticket().unwrap();
     assert_eq!((te.rounds, te.round_rows, te.rows_used, te.segments), (2, 16, 24, 4));
-    assert!(c.send(SERVER, TxBody::PostSegments { ticket_id: tid, round: 2, segments: vec![seg(0, 44, 1)] }).unwrap_err().contains("budget"));
+    assert!(c.send(SERVER, post(tid, 2, &model, vec![seg(0, 44, 1)])).unwrap_err().contains("budget"));
     let r1 = standing::segment_id(&tid, 0, 1);
     assert_ne!(r1, standing::segment_id(&tid, 0, 0));
     assert_eq!(c.job(&r1).m, 16);

@@ -84,10 +84,11 @@ fn body_json(b: &TxBody) -> Value {
             "name": String::from_utf8_lossy(&m.name), "manifest_uri": String::from_utf8_lossy(&m.manifest_uri),
             "recipe": m.recipe, "rank": m.rank, "rows_pattern": hex::encode(m.rows_pattern), "cols_pattern": hex::encode(m.cols_pattern),
             "matrices": m.matrices.iter().map(|x| json!({"k": x.k, "n": x.n, "hash_b": hex::encode(x.hash_b)})).collect::<Vec<_>>()}),
-        TxBody::PostSegments { ticket_id, round, segments } => json!({
-            "ticket_id": hex::encode(ticket_id), "round": round,
-            "segments": segments.iter().map(|g| json!({"matrix": g.matrix, "m": g.m, "max_blocks": g.max_blocks,
-                "hash_a": hex::encode(g.hash_a), "c_hash": hex::encode(g.c_hash), "a_uri": String::from_utf8_lossy(&g.a_uri)})).collect::<Vec<_>>()}),
+        TxBody::PostSegments { ticket_id, round, model_id, rank, rows_pattern, cols_pattern, segments } => json!({
+            "ticket_id": hex::encode(ticket_id), "round": round, "model_id": hex::encode(model_id), "rank": rank,
+            "rows_pattern": hex::encode(rows_pattern), "cols_pattern": hex::encode(cols_pattern),
+            "segments": segments.iter().map(|g| json!({"matrix": g.matrix, "m": g.m, "k": g.k, "n": g.n, "max_blocks": g.max_blocks,
+                "hash_a": hex::encode(g.hash_a), "hash_b": hex::encode(g.hash_b), "c_hash": hex::encode(g.c_hash), "a_uri": String::from_utf8_lossy(&g.a_uri)})).collect::<Vec<_>>()}),
         TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => json!({
             "job_id": hex::encode(job_id), "deliverer": b58(deliverer), "result_hash": hex::encode(result_hash),
             "sigs": sigs_json(sigs)}),
@@ -334,11 +335,18 @@ fn build() -> Vec<(&'static str, Value)> {
             TxBody::PostSegments {
                 ticket_id: order_job_id(44),
                 round: 0,
+                model_id: [0x45; 32],
+                rank: 128,
+                rows_pattern: rows,
+                cols_pattern: cols,
                 segments: vec![Segment {
                     matrix: 1,
                     m: 12,
+                    k: 8192,
+                    n: 2048,
                     max_blocks: 1,
                     hash_a: [0x71; 32],
+                    hash_b: [0x62; 32],
                     c_hash: [0x72; 32],
                     a_uri: format!("blob:{}", hex::encode([0x73u8; 32])).into_bytes(),
                 }],

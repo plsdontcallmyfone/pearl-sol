@@ -698,7 +698,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 self.ov.put_route(account, &r);
             }
             TxBody::RegisterModel(m) => self.register_model(&tx.from, m).await?,
-            TxBody::PostSegments { ticket_id, round, segments } => self.post_segments(&tx.from, ticket_id, *round, segments).await?,
+            TxBody::PostSegments { ticket_id, round, model_id, rank, rows_pattern, cols_pattern, segments } => {
+                self.post_segments(&tx.from, ticket_id, *round, (model_id, *rank, rows_pattern, cols_pattern), segments).await?
+            }
             TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => {
                 self.reject_result(h, job_id, deliverer, result_hash, sigs).await?
             }
@@ -774,7 +776,14 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
     }
 
     /// PostSegments (SPEC 4.5): standing jobs of a ticket, MAC-proportional caps.
-    async fn post_segments(&mut self, from: &Pubkey, ticket_id: &Hash, round: u16, segments: &[agent_types::Segment]) -> Result<(), TxError> {
+    async fn post_segments(
+        &mut self,
+        from: &Pubkey,
+        ticket_id: &Hash,
+        round: u16,
+        head: (&Hash, u16, &[u8; 6], &[u8; 6]),
+        segments: &[agent_types::Segment],
+    ) -> Result<(), TxError> {
         let h = self.env.height;
         if segments.is_empty() || segments.len() > agent_types::tx::MAX_SEGMENTS {
             return bad("PostSegments carries 1..=64 segments");
@@ -794,6 +803,10 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         }
         let Some(mut model) = self.ov.model(&te.model_id).await? else { return bad("ticket's model is not registered") };
         let base = model.base_config().map_err(TxError::Invalid)?;
+        // the tx repeats the model id and mining config so a light client can rebuild each job
+        if head.0 != &te.model_id || head.1 != base.rank || *head.2 != base.rows_pattern.to_bytes() || *head.3 != base.cols_pattern.to_bytes() {
+            return bad("PostSegments' model id or mining config is not the ticket model's");
+        }
         let period = base.rows_pattern.period() as u64;
         // rounds: this tx continues the current round or starts the next one (all its segments share m)
         let m0 = segments[0].m;
@@ -820,6 +833,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         let mut c = self.ov.counters().await?;
         for g in segments {
             let Some(mx) = model.matrices.get(g.matrix as usize).copied() else { return bad(format!("model has no matrix {}", g.matrix)) };
+            if (g.k, g.n, g.hash_b) != (mx.k, mx.n, mx.hash_b) {
+                return bad(format!("segment of matrix {} names k, n or hash_b other than the registered ones", g.matrix));
+            }
             if g.m == 0 || g.m as u64 > te.rows || g.m as u64 % period != 0 {
                 return bad(format!("segment m {} must be a positive multiple of {period} and at most the ticket's {} rows", g.m, te.rows));
             }

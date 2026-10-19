@@ -510,8 +510,9 @@ pub mod lightclient {
         Ok(())
     }
 
-    /// Record a job's commitments from the tx that created it (PostJob, or a
-    /// storefront-order BridgeUnlock), proved against a verified canonical header.
+    /// Record a job's commitments from the tx that created it (PostJob, a storefront-order
+    /// BridgeUnlock, or a PostSegments for a standing job), proved against a verified
+    /// canonical header.
     pub fn register_job(ctx: Context<RegisterJob>, job_id: [u8; 32], tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
         let c = &ctx.accounts.config;
         let canon = ctx.accounts.canon.load()?;
@@ -522,7 +523,8 @@ pub mod lightclient {
         let th = pv::chaintx::tx_hash(&tx);
         pv::chaintx::verify_tx_path(&th, &path, &h.tx_root()).map_err(|e| verr(e))?;
         let view = pv::chaintx::TxView::new(&tx, c.params.chain_id).map_err(|e| verr(e))?;
-        let jc = pv::chaintx::job_from_tx(&view, sha256).map_err(|e| verr(e))?;
+        // PostJob, order BridgeUnlock, or one standing job of a PostSegments (SPEC 4.5)
+        let jc = pv::chaintx::job_by_id(&view, &job_id, sha256).map_err(|e| verr(e))?;
         require!(jc.job_id == job_id, LcError::JobMissing);
         let cfg = pv::config::MiningConfig::from_bytes(&jc.config).map_err(|e| verr(e))?;
         cfg.check_shape(jc.m, jc.n).map_err(|e| verr(e))?;

@@ -487,3 +487,44 @@ fn final_header_accumulator() {
         assert!(acc::verify(sha, n as u64, n as u64, &hs[0], &[], &root).is_err());
     }
 }
+
+/// SPEC 4.5: a PostSegments tx (chain vector) gives the light client every segment job, with
+/// the ids, header and config the chain uses (crates/pearl-job standing).
+#[test]
+fn post_segments_vector_rebuilds_segment_jobs() {
+    use pearl_job::standing;
+    let v = vectors("standing.json");
+    let ps = v.as_array().unwrap().iter().find(|x| x["name"] == "post_segments").unwrap();
+    let tx = hex::decode(ps["tx"].as_str().unwrap()).unwrap();
+    let view = chaintx::TxView::new(&tx, ps["chain_id"].as_u64().unwrap() as u32).unwrap();
+    let mut jobs = vec![];
+    chaintx::for_each_segment(&view, |j| jobs.push(j)).unwrap();
+    assert_eq!(jobs.len(), 1);
+    let b = &ps["body"];
+    let g = &b["segments"][0];
+    let key32 = |s: &serde_json::Value| -> [u8; 32] { hex::decode(s.as_str().unwrap()).unwrap().try_into().unwrap() };
+    let (ticket, model) = (key32(&b["ticket_id"]), key32(&b["model_id"]));
+    let (matrix, k, n) = (g["matrix"].as_u64().unwrap() as u16, g["k"].as_u64().unwrap() as u32, g["n"].as_u64().unwrap() as u32);
+    let j = &jobs[0];
+    assert_eq!(j.job_id, standing::segment_id(&ticket, matrix, b["round"].as_u64().unwrap() as u16));
+    assert_eq!(j.header76, standing::matrix_job_header(&model, matrix, k, n).to_bytes());
+    assert_eq!((j.m, j.n), (g["m"].as_u64().unwrap() as u32, n));
+    assert_eq!(j.hash_a, key32(&g["hash_a"]));
+    assert_eq!(j.hash_b, key32(&g["hash_b"]));
+    assert_eq!(&j.config[0..4], &k.to_le_bytes());
+    assert_eq!(&j.config[4..6], &(b["rank"].as_u64().unwrap() as u16).to_le_bytes());
+    assert_eq!(hex::encode(&j.config[8..14]), b["rows_pattern"].as_str().unwrap());
+    assert_eq!(hex::encode(&j.config[14..20]), b["cols_pattern"].as_str().unwrap());
+    assert!(j.config[20..].iter().all(|&x| x == 0) && j.config[6..8] == [0, 0]);
+    // by id, and a wrong id or a truncated body is refused
+    assert_eq!(chaintx::job_by_id(&view, &j.job_id, sha).unwrap().job_id, j.job_id);
+    assert!(chaintx::job_by_id(&view, &[0; 32], sha).is_err());
+    let mut short = tx.clone();
+    short.remove(54 + 40);
+    assert!(chaintx::for_each_segment(&chaintx::TxView::any_chain(&short).unwrap(), |_| {}).is_err());
+    // a real segment job (localnet config): its block proof verifies with the rebuilt commit
+    let base = pearl_job::MiningConfig::localnet_default();
+    let mut config = [0u8; 52];
+    config.copy_from_slice(&standing::matrix_config(&base, 2048).to_bytes());
+    assert_eq!(&config[8..14], &base.rows_pattern.to_bytes());
+}

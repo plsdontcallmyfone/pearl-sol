@@ -156,6 +156,14 @@ pub fn jobs_in(txs: &[Vec<u8>]) -> Vec<([u8; 32], usize)> {
     let mut out = vec![];
     for (i, t) in txs.iter().enumerate() {
         let Ok(v) = pv::chaintx::TxView::any_chain(t) else { continue };
+        if v.kind() == pv::chaintx::KIND_POST_SEGMENTS {
+            // standing jobs (SPEC 4.5): one job per segment, all from this tx
+            let mut js = vec![];
+            if pv::chaintx::for_each_segment(&v, |j| js.push(j.job_id)).is_ok() {
+                out.extend(js.into_iter().map(|j| (j, i)));
+            }
+            continue;
+        }
         if v.kind() != pv::chaintx::KIND_POST_JOB && v.kind() != pv::chaintx::KIND_BRIDGE_UNLOCK {
             continue;
         }

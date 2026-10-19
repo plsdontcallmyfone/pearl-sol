@@ -386,6 +386,67 @@ fn job_block_needs_its_registered_job() {
     assert_eq!(env.status(&b3.hash), lightclient::STATUS_PENDING);
 }
 
+/// SPEC 4.5: a standing job (one segment of a PostSegments tx) is registered from that tx
+/// alone and its job block verifies; another segment id from the same tx is refused.
+#[test]
+fn standing_job_segment_registers_from_post_segments() {
+    use pearl_job::standing;
+    use rand::{Rng, SeedableRng};
+    let p = params(4);
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+    let (m, n, k) = (8u32, 64u32, LOCAL_K);
+    let a: Vec<i8> = (0..m as usize * k as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let bt: Vec<i8> = (0..k as usize * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let base = pearl_job::MiningConfig::localnet_default();
+    let model = standing::model_id(&[0x21; 32], b"lc-test");
+    let (ticket, matrix, round) = ([0x22u8; 32], 3u16, 1u16);
+    let key = standing::matrix_job_key(&model, matrix, k, n, &base);
+    let (hash_a, hash_b) = (pearl_job::job::commit_a(&key, &a), standing::commit_bt(&key, &bt));
+    // PostSegments body (chain/agent-types tx.rs): ticket | round | model | rank | rows | cols | count | segment
+    let mut body = ticket.to_vec();
+    body.extend_from_slice(&round.to_le_bytes());
+    body.extend_from_slice(&model);
+    body.extend_from_slice(&base.rank.to_le_bytes());
+    body.extend_from_slice(&base.rows_pattern.to_bytes());
+    body.extend_from_slice(&base.cols_pattern.to_bytes());
+    body.push(1);
+    body.extend_from_slice(&matrix.to_le_bytes());
+    for x in [m, k, n, 1u32] {
+        body.extend_from_slice(&x.to_le_bytes());
+    }
+    body.extend_from_slice(&hash_a);
+    body.extend_from_slice(&hash_b);
+    body.extend_from_slice(&[0x77; 32]); // c_hash
+    let uri = b"blob:00";
+    body.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+    body.extend_from_slice(uri);
+    let post = tx_bytes(&[0x31; 32], 0, 12, &body);
+    let (root, paths) = tx_root(&[post.clone()]);
+    let b1 = child(&p, &g, &Work::Fallback, ChildOpts { tx_root: root, ..Default::default() });
+    env.relay(&b1).unwrap();
+    let seg = standing::segment_id(&ticket, matrix, round);
+    let pk = env.payer.pubkey();
+    let e = env.send(&[client::register_job(pk, &b1.hash, standing::segment_id(&ticket, matrix, 0), post.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(matches!(e, solana_sdk::transaction::TransactionError::InstructionError(..)), "a segment id the tx does not post");
+    let cu = env.send(&[client::register_job(pk, &b1.hash, seg, post.clone(), paths[0].clone())], &[]).unwrap();
+    println!("register_job (segment): {cu} CU, chain tx {} bytes", post.len());
+    let ja = env.svm.get_account(&client::job_addr(&seg)).unwrap();
+    let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut ja.data.as_slice()).unwrap();
+    assert_eq!(jc.job_key, key);
+    assert_eq!((jc.hash_a, jc.hash_b, jc.m, jc.n), (hash_a, hash_b, m, n));
+    // a block mined on the segment (B from the model store layout, B^T) verifies
+    let job = pearl_job::Job { header: standing::matrix_job_header(&model, matrix, k, n), config: standing::matrix_config(&base, k), m, n, hash_a, hash_b };
+    let prep = pearl_job::PreparedJob::new_bt(job, &a, bt).unwrap();
+    let b2 = child(&p, &b1, &Work::Job(&prep, seg), ChildOpts::default());
+    env.submit(&b2).unwrap();
+    env.upload(&b2).unwrap();
+    let plan = env.plan(&b2);
+    env.steps(&b2, &plan).unwrap();
+    assert_eq!(env.status(&b2.hash), lightclient::STATUS_VERIFIED);
+}
+
 /// Single-leaf and two-leaf Commonware MMR roots (BackwardFold, no inactive peaks),
 /// matching the verifier that tests/crosscheck.rs checks against commonware-storage.
 fn mmr_two(e0: &[u8], e1: &[u8]) -> ([u8; 32], Vec<u8>, Vec<u8>) {

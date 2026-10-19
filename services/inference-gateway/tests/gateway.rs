@@ -24,7 +24,10 @@ fn tmp(tag: &str) -> PathBuf {
 
 fn model() -> ModelInfo {
     let base = MiningConfig::localnet_default();
-    ModelInfo { model_id: standing::model_id(&[1; 32], b"m"), name: "test-model".into(), base, matrices: vec![(2048, 16), (2048, 8)], macs_per_row: 2048 * 24 }
+    let mut md = ModelInfo { model_id: standing::model_id(&[1; 32], b"m"), name: "test-model".into(), base, matrices: vec![(2048, 16), (2048, 8)], hash_b: vec![], macs_per_row: 2048 * 24 };
+    let b = bts(&md);
+    md.hash_b = (0..2).map(|i| standing::commit_bt(&md.job_key(i as u16), &b[i])).collect();
+    md
 }
 
 fn bts(model: &ModelInfo) -> Vec<Vec<i8>> {
@@ -81,7 +84,8 @@ fn a_round_stacks_requests_and_is_mineable() {
         assert!(a[11 * k as usize..].iter().all(|&x| x == 0), "padding rows are zero");
         let header = standing::matrix_job_header(&md.model_id, i as u16, k, n);
         let key = md.job_key(i as u16);
-        let job = Job { header, config: standing::matrix_config(&md.base, k), m: 12, n, hash_a: s.spec.hash_a, hash_b: standing::commit_bt(&key, &b[i]) };
+        assert_eq!((s.spec.k, s.spec.n, s.spec.hash_b), (k, n, standing::commit_bt(&key, &b[i])), "the tx repeats the registered matrix");
+        let job = Job { header, config: standing::matrix_config(&md.base, k), m: 12, n, hash_a: s.spec.hash_a, hash_b: s.spec.hash_b };
         let prep = PreparedJob::new_bt(job.clone(), &a, b[i].clone()).expect("commitments match");
         assert_eq!(pearl_job::freivalds::result_hash(&prep.job_key, &prep.product()), s.spec.c_hash, "c_hash = keyed hash of the stacked A B");
         let hdr = BlockHeader { version: 1, height: 5, target_bits: 0x207fffff, job_id: [7; 32], miner: [8; 32], ..Default::default() };

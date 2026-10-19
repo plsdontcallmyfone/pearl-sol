@@ -839,8 +839,9 @@ fn standing_jobs_over_rpc_and_model_blobs_pinned() {
         api.send(&Tx::signed(&seed(3), CHAIN, 0, 10, TxBody::PostJob(ticket))).await.unwrap();
         api.mine(9).await;
         let tid = schema_job_id(&pk(3), 0);
-        let seg = Segment { matrix: 0, m: 4, max_blocks: 2, hash_a: [6; 32], c_hash: [7; 32], a_uri: a.into_bytes() };
-        api.send(&Tx::signed(&seed(4), CHAIN, 0, 10, TxBody::PostSegments { ticket_id: tid, round: 0, segments: vec![seg] })).await.unwrap();
+        let seg = Segment { matrix: 0, m: 4, k: 2048, n: 8, max_blocks: 2, hash_a: [6; 32], hash_b: [0x61; 32], c_hash: [7; 32], a_uri: a.into_bytes() };
+        let body = TxBody::PostSegments { ticket_id: tid, round: 0, model_id: model, rank: c.rank, rows_pattern: c.rows_pattern.to_bytes(), cols_pattern: c.cols_pattern.to_bytes(), segments: vec![seg] };
+        api.send(&Tx::signed(&seed(4), CHAIN, 0, 10, body)).await.unwrap();
         api.mine(9).await;
         let t = api.call("getTicket", json!({"ticket_id": hex::encode(tid)})).await;
         assert_eq!(t["kind"], json!("ticket"));
