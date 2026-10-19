@@ -17,7 +17,7 @@ const spl = require('@solana/spl-token');
 
 const ROOT = path.resolve(__dirname, '../../..');
 const FIX = path.join(ROOT, 'fixtures/pump');
-const TARGET = path.join(ROOT, 'token/target');
+const TARGET = process.env.TOKEN_TARGET || path.join(ROOT, 'token/target'); // TOKEN_TARGET: a build dir elsewhere (e.g. fetched from the VPS)
 const P = (s) => new PublicKey(s);
 const PUMP = P('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const AMM = P('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
@@ -326,7 +326,25 @@ test('crank_buyback_amm on PumpSwap after graduation', async (t) => {
   ok([await crankAmmIx(LAMPORTS_PER_SOL, 1)], [cranker], 'amm crank again');
 });
 
-test('fund_mining deposits reserve tokens into the bridge vault for the mining pool', async (t) => {
+// fund_mining is permissionless and rate limited (owner decision 2026-10-18, SPEC 2.2).
+const fundLimitsIx = (p, who = admin.publicKey) => program.methods
+  .setFundLimits({ paused: null, maxPerCall: null, minIntervalSecs: null, windowSecs: null, maxPerWindow: null, ...p })
+  .accountsStrict({ admin: who, config: CONFIG }).instruction();
+const evts = (logs) => logs.map((l) => l.match(/^Program data: (.+)$/)).filter(Boolean).map((m) => program.coder.events.decode(m[1])).filter(Boolean)
+  .map((e) => ({ name: e.name.charAt(0).toLowerCase() + e.name.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase()), data: e.data }));
+const field = (d, k) => d[k] ?? d[k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase())];
+
+test('fund_mining defaults after initialize (PROVISIONAL 2026-10-19)', () => {
+  const c = config();
+  assert.equal(c.layout, 1, 'config layout 1 (fund limits)');
+  assert.equal(c.fundPaused, false);
+  assert.equal(c.maxFundPerCall.toString(), '10000000000000', '10M tokens per call');
+  assert.equal(c.fundMinIntervalSecs.toString(), '3600');
+  assert.equal(c.fundWindowSecs.toString(), '86400');
+  assert.equal(c.fundMaxPerWindow.toString(), '20000000000000', '20M tokens per 24 h');
+});
+
+test('fund_mining: permissionless, rate limited, pausable; the destination freezes at the first funding', async (t) => {
   const so = path.join(TARGET, 'deploy/bridge.so'), idlPath = path.join(TARGET, 'idl/bridge.json');
   if (!fs.existsSync(so) || !fs.existsSync(idlPath)) return t.skip('bridge not built');
   const bidl = JSON.parse(fs.readFileSync(idlPath));
@@ -338,26 +356,97 @@ test('fund_mining deposits reserve tokens into the bridge vault for the mining p
   const relayer = Keypair.generate().publicKey;
   ok([await bridge.methods.initialize([relayer], 1).accountsStrict({ admin: admin.publicKey, config: bcfg, mint: MINT, vault, tokenProgram: T22, associatedTokenProgram: ATAP, systemProgram: SystemProgram.programId }).instruction()], [admin], 'bridge initialize');
   const miningPool = Keypair.generate().publicKey;
-  const funder = Keypair.generate();
-  svm.airdrop(funder.publicKey, BigInt(LAMPORTS_PER_SOL));
-  ok([await updateIx({ bridgeProgram: BRIDGE, miningPool, funder: funder.publicKey, maxFundPerCall: bn(50_000_000_000_000n) })], [admin], 'wire bridge');
+  const stranger = Keypair.generate();
+  svm.airdrop(stranger.publicKey, BigInt(LAMPORTS_PER_SOL));
+  ok([await updateIx({ bridgeProgram: BRIDGE, miningPool })], [admin], 'wire bridge');
   const fundIx = async (signer, amount) => {
     const bc = bridge.coder.accounts.decode('config', Buffer.from(svm.getAccount(bcfg).data));
     const dep = pda([Buffer.from('deposit'), new BN(bc.depositNonce.toString()).toArrayLike(Buffer, 'le', 8)], BRIDGE);
     return { dep, ix: await program.methods.fundMining(bn(amount)).accountsStrict({ authority: signer, config: CONFIG, creator: CREATOR, mint: MINT, reserveAta: RESERVE_ATA, bridgeConfig: bcfg, bridgeVault: vault, bridgeDeposit: dep, token2022Program: T22, systemProgram: SystemProgram.programId, bridgeProgram: BRIDGE }).instruction() };
   };
+  const M = 1_000_000_000_000n; // 1M tokens (6 dp)
+
+  // set_fund_limits: admin only, validated, emits every value
+  fails([await fundLimitsIx({ paused: true }, stranger.publicKey)], [stranger], /Unauthorized|signer is not allowed/, 'stranger set_fund_limits');
+  fails([await fundLimitsIx({ minIntervalSecs: bn(-1) })], [admin], /BadConfig/, 'negative interval');
+  const rl = ok([await fundLimitsIx({ minIntervalSecs: bn(600), windowSecs: bn(3600), maxPerWindow: bn(15n * M), maxPerCall: bn(10n * M) })], [admin], 'set_fund_limits');
+  const le = evts(rl.logs).find((e) => e.name === 'fundLimitsUpdated');
+  assert.ok(le, 'FundLimitsUpdated emitted');
+  assert.equal(field(le.data, 'maxPerWindow').toString(), (15n * M).toString());
+  assert.equal(field(le.data, 'minIntervalSecs').toString(), '600');
+  assert.equal(field(le.data, 'paused'), false);
+
+  // anyone may fund; the caller pays the Deposit rent, tokens go to the fixed mining pool
   const r0 = tokenAmount(RESERVE_ATA);
-  const AMT = 10_000_000_000_000n; // 10M tokens
-  const { dep, ix } = await fundIx(funder.publicKey, AMT);
-  ok([ix], [funder], 'fund_mining by funder');
-  assert.equal(tokenAmount(RESERVE_ATA), r0 - AMT);
-  assert.equal(tokenAmount(vault), AMT);
+  const { dep, ix } = await fundIx(stranger.publicKey, 10n * M);
+  fails([(await fundIx(stranger.publicKey, 10n * M + 1n)).ix], [stranger], /OverFundCap/, 'over the per-call cap');
+  const r1 = ok([ix], [stranger], 'fund_mining by a stranger');
+  assert.equal(tokenAmount(RESERVE_ATA), r0 - 10n * M);
+  assert.equal(tokenAmount(vault), 10n * M);
   const d = bridge.coder.accounts.decode('deposit', Buffer.from(svm.getAccount(dep).data));
   assert.equal(d.recipient.toBase58(), miningPool.toBase58());
   assert.equal(d.sender.toBase58(), CREATOR.toBase58());
-  assert.equal(d.amount.toString(), AMT.toString());
-  assert.equal(config().totalFunded.toString(), AMT.toString());
-  fails([(await fundIx(trader.publicKey, 1n)).ix], [trader], /Unauthorized/, 'fund_mining by stranger');
-  fails([(await fundIx(admin.publicKey, 60_000_000_000_000n)).ix], [admin], /OverFundCap/, 'fund over cap');
-  console.log(`  funded ${AMT}, reserve left ${tokenAmount(RESERVE_ATA)}`);
+  const fe = evts(r1.logs).find((e) => e.name === 'miningFunded');
+  assert.ok(fe, 'MiningFunded emitted');
+  assert.equal(field(fe.data, 'caller').toBase58(), stranger.publicKey.toBase58());
+  assert.equal(field(fe.data, 'reserveLeft').toString(), (r0 - 10n * M).toString());
+  assert.equal(field(fe.data, 'windowUsed').toString(), (10n * M).toString());
+  assert.equal(field(fe.data, 'calls').toString(), '1');
+  const c1 = config();
+  assert.equal(c1.totalFunded.toString(), (10n * M).toString());
+  assert.equal(c1.fundCalls.toString(), '1');
+  assert.equal(c1.fundLastTs.toString(), now.toString());
+
+  // interval, then the window cap
+  fails([(await fundIx(stranger.publicKey, M)).ix], [stranger], /FundTooSoon/, 'inside the min interval');
+  setTime(now + 600n);
+  fails([(await fundIx(stranger.publicKey, 6n * M)).ix], [stranger], /OverWindowCap/, 'past the window cap');
+  ok([(await fundIx(admin.publicKey, 5n * M)).ix], [admin], 'up to the window cap');
+  assert.equal(config().fundWindowUsed.toString(), (15n * M).toString());
+  setTime(now + 600n);
+  fails([(await fundIx(stranger.publicKey, M)).ix], [stranger], /OverWindowCap/, 'window full');
+  setTime(now + 3000n); // the window (3600 s from the first funding) has rolled over
+  ok([(await fundIx(stranger.publicKey, 10n * M)).ix], [stranger], 'new window');
+  assert.equal(config().fundWindowUsed.toString(), (10n * M).toString());
+  assert.equal(config().fundWindowStart.toString(), now.toString());
+
+  // pause: nobody funds, admin included; unpause restores it
+  setTime(now + 3600n);
+  ok([await fundLimitsIx({ paused: true })], [admin], 'pause');
+  fails([(await fundIx(admin.publicKey, M)).ix], [admin], /FundPaused/, 'admin while paused');
+  fails([(await fundIx(stranger.publicKey, M)).ix], [stranger], /FundPaused/, 'stranger while paused');
+  ok([await fundLimitsIx({ paused: false })], [admin], 'unpause');
+  ok([(await fundIx(stranger.publicKey, M)).ix], [stranger], 'after unpause');
+
+  // no admin-key exit: once funded, the pool and the bridge program cannot be changed
+  fails([await updateIx({ miningPool: stranger.publicKey })], [admin], /DestinationFrozen/, 'redirect the mining pool');
+  fails([await updateIx({ bridgeProgram: TOK })], [admin], /DestinationFrozen/, 'swap the bridge program');
+  ok([await updateIx({ miningPool, bridgeProgram: BRIDGE })], [admin], 'same values are fine');
+  // the old funder key no longer matters; total funded = everything that left the reserve
+  assert.equal(config().totalFunded.toString(), (26n * M).toString());
+  assert.equal(r0 - tokenAmount(RESERVE_ATA), 26n * M);
+  assert.equal(tokenAmount(vault), 26n * M, 'every funded token is in the bridge vault');
+  console.log(`  funded ${26n * M} in 4 calls, reserve left ${tokenAmount(RESERVE_ATA)}; fund_mining CU ${r1.cu}`);
+});
+
+test('migrate_config grows a pre-2026-10-19 config and sets the fund defaults', async () => {
+  const cur = Buffer.from(svm.getAccount(CONFIG).data);
+  const OLD = cur.length - 58; // layout u8, fund_paused u8, 7 x 8 bytes
+  const snapshot = svm.getAccount(CONFIG);
+  const rentOld = BigInt(svm.minimumBalanceForRentExemption(BigInt(OLD)));
+  svm.setAccount(CONFIG, { lamports: rentOld, data: cur.subarray(0, OLD), owner: RESERVE, executable: false, rentEpoch: 0 });
+  fails([await fundLimitsIx({ paused: true })], [admin], /AccountDidNotDeserialize|3003/, 'old layout does not deserialize');
+  const mig = (who) => program.methods.migrateConfig().accountsStrict({ admin: who, config: CONFIG, systemProgram: SystemProgram.programId }).instruction();
+  fails([await mig(trader.publicKey)], [trader], /Unauthorized|signer is not allowed/, 'stranger migrate');
+  ok([await mig(admin.publicKey)], [admin], 'migrate_config');
+  const c = config();
+  assert.equal(svm.getAccount(CONFIG).data.length, cur.length);
+  assert.equal(c.layout, 1);
+  assert.equal(c.fundMinIntervalSecs.toString(), '3600');
+  assert.equal(c.fundMaxPerWindow.toString(), '20000000000000');
+  assert.equal(c.totalFunded.toString(), (26n * 1_000_000_000_000n).toString(), 'old fields kept');
+  assert.equal(c.mint.toBase58(), MINT.toBase58());
+  assert.ok(lamports(CONFIG) >= BigInt(svm.minimumBalanceForRentExemption(BigInt(cur.length))), 'rent topped up by the admin');
+  ok([await mig(admin.publicKey)], [admin], 'second migrate is a no-op');
+  svm.setAccount(CONFIG, snapshot);
 });

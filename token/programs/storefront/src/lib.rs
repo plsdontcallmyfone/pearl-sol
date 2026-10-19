@@ -92,6 +92,12 @@
 //!   (Token-2022 BurnChecked; lowers the Solana mint supply). `BuybackExecuted` logs SOL
 //!   in, tokens out, the destination and the order nonces whose shares were released
 //!   since the previous buy.
+//! - Reserve cap (owner decision 2026-10-18, SPEC 5.1 "Reserve cap"): with destination
+//!   reserve, a buy's tokens go to the mining reserve only while the reserve ATA holds
+//!   less than `config.bb_reserve_cap`; the part that would lift it above the cap is
+//!   burned in the same instruction. `BuybackToReserve` / `BuybackBurned` log each part.
+//!   `bb_reserve_cap` 0 = no cap (a config written before the field reads 0 and keeps the
+//!   old behaviour); `set_buyback_cap` (admin) edits it.
 //! - `set_buyback` (admin): share, destination, reserve program, cranker, caps, interval;
 //!   emits `BuybackConfigUpdated` with every value. Defaults: 1000 bps and destination
 //!   reserve (owner decision 2026-10-18); 1 SOL per call, min 0.001 SOL, 600 s, cranker
@@ -200,6 +206,13 @@ pub const DEFAULT_BUYBACK_BPS: u16 = 1000;
 pub const DEFAULT_BUYBACK_MAX_PER_CALL: u64 = 1_000_000_000;
 pub const DEFAULT_BUYBACK_MIN_BUY: u64 = 1_000_000;
 pub const DEFAULT_BUYBACK_MIN_INTERVAL_SECS: i64 = 600;
+/// PROVISIONAL (2026-10-19): 100M tokens (6 dp) = 10% of the 1B supply. Above it buybacks burn.
+pub const DEFAULT_BB_RESERVE_CAP: u64 = 100_000_000_000_000;
+/// `BuybackBurned.reason`.
+pub const BURN_ABOVE_CAP: u8 = 0;
+pub const BURN_DESTINATION: u8 = 1;
+/// Token-2022 / SPL Token mint: supply u64 offset.
+const MINT_SUPPLY_OFFSET: usize = 36;
 /// Token-2022 / SPL Token mint: decimals byte.
 const MINT_DECIMALS_OFFSET: usize = 44;
 
@@ -308,6 +321,7 @@ pub mod storefront {
         c.buyback_max_per_call = DEFAULT_BUYBACK_MAX_PER_CALL;
         c.buyback_min_buy = DEFAULT_BUYBACK_MIN_BUY;
         c.buyback_min_interval_secs = DEFAULT_BUYBACK_MIN_INTERVAL_SECS;
+        c.bb_reserve_cap = DEFAULT_BB_RESERVE_CAP;
         c.apply(params)?;
         let have = ctx.accounts.trader.lamports();
         if have < RENT_MIN {
@@ -367,6 +381,15 @@ pub mod storefront {
             min_buy: c.buyback_min_buy,
             min_interval_secs: c.buyback_min_interval_secs,
         });
+        Ok(())
+    }
+
+    /// Admin: the mining reserve's token cap for buybacks (0 = no cap). While the reserve
+    /// ATA holds less, bought tokens go to it; the rest is burned (SPEC 5.1 "Reserve cap").
+    pub fn set_buyback_cap(ctx: Context<AdminOnly>, reserve_cap: u64) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        c.bb_reserve_cap = reserve_cap;
+        emit!(BuybackCapUpdated { config: c.key(), reserve_cap });
         Ok(())
     }
 
@@ -990,9 +1013,11 @@ struct RouteAccounts<'info> {
     token_2022_program: AccountInfo<'info>,
 }
 
-/// Sends the vault's whole token balance to the configured destination, updates the
-/// totals and emits `BuybackExecuted`.
+/// Sends the vault's whole token balance on: with DEST_RESERVE to the mining reserve up
+/// to `bb_reserve_cap` and the rest burned, with DEST_BURN all burned. Updates the totals
+/// and emits `BuybackToReserve` / `BuybackBurned` per part, then `BuybackExecuted`.
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn finish_buyback<'info>(
     r: RouteAccounts<'info>,
     config: &mut Account<'info, Config>,
@@ -1011,32 +1036,59 @@ fn finish_buyback<'info>(
         *d.get(MINT_DECIMALS_OFFSET).ok_or(StorefrontError::BadAccount)?
     };
     let dest = config.buyback_dest;
-    let dest_account = if dest == DEST_RESERVE {
+    let cap = config.bb_reserve_cap;
+    let buy = config.bb_buys.saturating_add(1);
+    let (to_reserve, reserve_before) = if dest == DEST_RESERVE {
         require_keys_neq!(config.reserve_program, Pubkey::default(), StorefrontError::BadConfig);
         require_keys_eq!(r.reserve_ata.key(), reserve_ata(&config.reserve_program, &r.mint.key()), StorefrontError::BadAccount);
+        let before = token_amount(&r.reserve_ata)?;
+        (reserve_share(routed, before, cap), before)
+    } else {
+        (0, 0)
+    };
+    let to_burn = routed - to_reserve;
+    if to_reserve > 0 {
         let mut data = vec![12u8]; // TransferChecked
-        data.extend_from_slice(&routed.to_le_bytes());
+        data.extend_from_slice(&to_reserve.to_le_bytes());
         data.push(decimals);
         call(&r.token_2022_program, data, &[(&r.vault_ata, true, false), (&r.mint, false, false), (&r.reserve_ata, true, false), (&r.vault, false, true)], &[seeds])?;
-        r.reserve_ata.key()
-    } else {
+        emit!(BuybackToReserve {
+            buy,
+            tokens: to_reserve,
+            reserve_before,
+            reserve_after: token_amount(&r.reserve_ata)?,
+            reserve_cap: cap,
+        });
+    }
+    let c = config;
+    if to_burn > 0 {
         let mut data = vec![15u8]; // BurnChecked
-        data.extend_from_slice(&routed.to_le_bytes());
+        data.extend_from_slice(&to_burn.to_le_bytes());
         data.push(decimals);
         call(&r.token_2022_program, data, &[(&r.vault_ata, true, false), (&r.mint, true, false), (&r.vault, false, true)], &[seeds])?;
-        r.mint.key()
-    };
-    let c = config;
+        let supply_after = {
+            let d = r.mint.try_borrow_data()?;
+            require!(d.len() >= MINT_SUPPLY_OFFSET + 8, StorefrontError::BadAccount);
+            u64::from_le_bytes(d[MINT_SUPPLY_OFFSET..MINT_SUPPLY_OFFSET + 8].try_into().unwrap())
+        };
+        emit!(BuybackBurned {
+            buy,
+            tokens: to_burn,
+            reason: if dest == DEST_RESERVE { BURN_ABOVE_CAP } else { BURN_DESTINATION },
+            reserve_before,
+            reserve_cap: cap,
+            supply_after,
+            total_burned: c.bb_burned.saturating_add(to_burn),
+        });
+    }
+    let dest_account = if to_reserve > 0 { r.reserve_ata.key() } else { r.mint.key() };
     let (first, last, orders) = if c.bb_pending_orders > 0 { (c.bb_pending_first_nonce, c.bb_pending_last_nonce, c.bb_pending_orders) } else { (0, 0, 0) };
     c.bb_last_ts = now;
-    c.bb_buys = c.bb_buys.saturating_add(1);
+    c.bb_buys = buy;
     c.bb_spent = c.bb_spent.saturating_add(spent);
     c.bb_tokens = c.bb_tokens.saturating_add(got);
-    if dest == DEST_RESERVE {
-        c.bb_to_reserve = c.bb_to_reserve.saturating_add(routed);
-    } else {
-        c.bb_burned = c.bb_burned.saturating_add(routed);
-    }
+    c.bb_to_reserve = c.bb_to_reserve.saturating_add(to_reserve);
+    c.bb_burned = c.bb_burned.saturating_add(to_burn);
     c.bb_pending_orders = 0;
     c.bb_pending_first_nonce = 0;
     c.bb_pending_last_nonce = 0;
@@ -1046,7 +1098,7 @@ fn finish_buyback<'info>(
         sol_in: spent,
         tokens_out: got,
         routed,
-        destination: dest,
+        destination: if to_reserve > 0 { DEST_RESERVE } else { DEST_BURN },
         destination_account: dest_account,
         quote,
         first_nonce: first,
@@ -1060,6 +1112,16 @@ fn finish_buyback<'info>(
         total_burned: c.bb_burned,
     });
     Ok(())
+}
+
+/// Tokens of a buy of `routed` that go to the reserve holding `reserve_balance` under
+/// `cap` (0 = no cap); the rest is burned.
+pub fn reserve_share(routed: u64, reserve_balance: u64, cap: u64) -> u64 {
+    if cap == 0 {
+        routed
+    } else {
+        routed.min(cap.saturating_sub(reserve_balance))
+    }
 }
 
 /// `tx` is included under `tx_root` of the (final) header bytes `header`.
@@ -1310,6 +1372,10 @@ pub struct Config {
     pub bb_locked: u64,
     /// Shares paid back to buyers of refunded or expired orders, all time.
     pub bb_refunded: u64,
+    // ---- reserve cap (appended 2026-10-19; SPEC 5.1 "Reserve cap")
+    /// With DEST_RESERVE, bought tokens go to the reserve only while its ATA holds less than
+    /// this; the rest is burned. 0 = no cap. PROVISIONAL default DEFAULT_BB_RESERVE_CAP.
+    pub bb_reserve_cap: u64,
 }
 
 /// One order's buyback share, held until `settle_share` (PDA ["share", deposit nonce]).
@@ -1831,7 +1897,7 @@ pub struct BuybackCurve<'info> {
     /// CHECK: pump validates (ATA(vault, wSOL, SPL), unused for SOL coins).
     #[account(mut)]
     pub vault_wsol: UncheckedAccount<'info>,
-    /// CHECK: checked = the reserve ATA when the destination is the reserve; unused for burn.
+    /// CHECK: checked = the reserve ATA when the destination is the reserve (its balance is read for bb_reserve_cap); unused for burn.
     #[account(mut)]
     pub reserve_ata: UncheckedAccount<'info>,
     /// CHECK: pump validates.
@@ -1891,7 +1957,7 @@ pub struct BuybackAmm<'info> {
     /// CHECK: checked = ATA(vault, wSOL, SPL); created and closed here.
     #[account(mut)]
     pub vault_wsol: UncheckedAccount<'info>,
-    /// CHECK: checked = the reserve ATA when the destination is the reserve; unused for burn.
+    /// CHECK: checked = the reserve ATA when the destination is the reserve (its balance is read for bb_reserve_cap); unused for burn.
     #[account(mut)]
     pub reserve_ata: UncheckedAccount<'info>,
     /// CHECK: checked = canonical pool for mint.
@@ -2102,6 +2168,39 @@ pub struct BuybackExecuted {
     pub total_spent: u64,
     pub total_tokens: u64,
     pub total_to_reserve: u64,
+    pub total_burned: u64,
+}
+
+/// `set_buyback_cap`.
+#[event]
+pub struct BuybackCapUpdated {
+    pub config: Pubkey,
+    pub reserve_cap: u64,
+}
+
+/// The part of buy `buy` that went to the mining reserve (DEST_RESERVE, under the cap).
+#[event]
+pub struct BuybackToReserve {
+    pub buy: u64,
+    pub tokens: u64,
+    /// Reserve ATA balance before and after this transfer.
+    pub reserve_before: u64,
+    pub reserve_after: u64,
+    pub reserve_cap: u64,
+}
+
+/// The part of buy `buy` that was burned: BURN_ABOVE_CAP (0, the reserve was at
+/// `reserve_cap`) or BURN_DESTINATION (1, buyback_dest = burn).
+#[event]
+pub struct BuybackBurned {
+    pub buy: u64,
+    pub tokens: u64,
+    pub reason: u8,
+    /// Reserve ATA balance before the buy's reserve part (0 for BURN_DESTINATION).
+    pub reserve_before: u64,
+    pub reserve_cap: u64,
+    /// Mint supply after the burn.
+    pub supply_after: u64,
     pub total_burned: u64,
 }
 

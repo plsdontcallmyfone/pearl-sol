@@ -125,6 +125,7 @@ pub fn standing_json(j: &JobRecord) -> Value {
             "cap_total": t.cap_total.to_string(), "cap_unallocated": j.cap_remaining.to_string(),
             "segments": t.segments, "blocks_allocated": t.blocks_allocated, "blocks_mined": t.blocks_mined,
             "subsidy_paid": t.subsidy_paid.to_string(),
+            "rounds": t.rounds, "round_rows": t.round_rows, "rows_used": t.rows_used, "rows_free": t.rows - t.rows_used.min(t.rows),
         }),
         Some(schema::JobExt::Segment { ticket_id, model_id, matrix }) => json!({
             "ticket_id": hex::encode(ticket_id), "model_id": hex::encode(model_id), "matrix": matrix,
@@ -446,10 +447,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     None => 0,
                 };
                 let mut segs = Vec::new();
-                for i in 0..count {
-                    let sid = pearl_job::standing::segment_id(&id, i as u16);
+                for (round, i) in (0..te.rounds).flat_map(|r| (0..count).map(move |i| (r, i))) {
+                    let sid = pearl_job::standing::segment_id(&id, i as u16, round);
                     if let Some(sj) = self.job(&sid).await? {
-                        segs.push(json!({"segment_id": hex::encode(sid), "matrix": i, "m": sj.m, "k": sj.k, "n": sj.n,
+                        segs.push(json!({"segment_id": hex::encode(sid), "round": round, "matrix": i, "m": sj.m, "k": sj.k, "n": sj.n,
                             "status": sj.status.name(), "mineable": executor::check_mineable(&sj, next).is_ok(),
                             "max_blocks": sj.max_blocks, "blocks_mined": sj.blocks_mined,
                             "cap": (sj.cap_remaining + sj.subsidy_paid).to_string(), "subsidy_paid": sj.subsidy_paid.to_string(),

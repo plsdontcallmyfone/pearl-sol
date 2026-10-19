@@ -15,8 +15,14 @@
 //!   pre-trade quote read from the curve or pool.
 //! - `fund_mining` moves reserve tokens into the bridge vault with the
 //!   agent-chain `mining_pool` as recipient (bridge `deposit` CPI). This is the
-//!   only way tokens leave the reserve.
-//! - Every limit is admin-editable through `update_config`.
+//!   only way tokens leave the reserve. PERMISSIONLESS and rate limited (owner
+//!   decision 2026-10-18, SPEC 2.2 "fund_mining"): anyone may call it, bounded by
+//!   `max_fund_per_call`, `fund_min_interval_secs` and `fund_max_per_window` per
+//!   `fund_window_secs`; the admin can pause it (`fund_paused`) and edit the limits
+//!   (`set_fund_limits`) but cannot move reserve tokens anywhere else: `mining_pool`
+//!   and `bridge_program` freeze at the first funding.
+//! - Every limit is admin-editable through `update_config` / `set_fund_limits`.
+//! - `migrate_config` (admin) grows a config written before the fund-limit fields.
 //!
 //! Risk (SPEC 2.2): pump's admin can reassign a coin's creator (community
 //! takeover). Future fees would then go elsewhere; tokens already in the
@@ -36,6 +42,14 @@ declare_id!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
 declare_id!("8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi");
 
 pub const CONFIG_SEED: &[u8] = b"config";
+/// fund_mining defaults, PROVISIONAL (2026-10-19): 10M tokens (6 dp) per call, one call
+/// per hour, at most 20M tokens per 24 h window (2% of the 1B supply a day).
+pub const DEFAULT_FUND_MAX_PER_CALL: u64 = 10_000_000_000_000;
+pub const DEFAULT_FUND_MIN_INTERVAL_SECS: i64 = 3_600;
+pub const DEFAULT_FUND_WINDOW_SECS: i64 = 86_400;
+pub const DEFAULT_FUND_MAX_PER_WINDOW: u64 = 20_000_000_000_000;
+/// Config layout: 1 = with the fund-limit fields (2026-10-19).
+pub const CONFIG_LAYOUT: u8 = 1;
 pub const CREATOR_SEED: &[u8] = b"creator";
 pub const MAYHEM_ID: Pubkey = pubkey!("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e");
 
@@ -55,7 +69,8 @@ pub mod reserve {
         c.min_interval_secs = 600;
         c.max_slippage_bps = 300;
         c.sol_floor = 5_000_000;
-        c.max_fund_per_call = 0;
+        c.max_fund_per_call = DEFAULT_FUND_MAX_PER_CALL;
+        c.set_fund_defaults();
         c.apply(params)?;
         Ok(())
     }
@@ -65,6 +80,56 @@ pub mod reserve {
     pub fn update_config(ctx: Context<AdminOnly>, params: ConfigParams) -> Result<()> {
         ctx.accounts.config.apply(params)?;
         emit!(ConfigUpdated { config: ctx.accounts.config.key() });
+        Ok(())
+    }
+
+    /// Admin: fund_mining pause and rate limits. Emits every resulting value.
+    pub fn set_fund_limits(ctx: Context<AdminOnly>, p: FundLimitParams) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        c.apply_fund_limits(p)?;
+        emit!(FundLimitsUpdated {
+            config: c.key(),
+            paused: c.fund_paused,
+            max_per_call: c.max_fund_per_call,
+            min_interval_secs: c.fund_min_interval_secs,
+            window_secs: c.fund_window_secs,
+            max_per_window: c.fund_max_per_window,
+        });
+        Ok(())
+    }
+
+    /// Admin: grow a config written before the fund-limit fields (layout 0) to the current
+    /// size and set those fields to the defaults. No-op on a current config.
+    pub fn migrate_config(ctx: Context<MigrateConfig>) -> Result<()> {
+        let info = ctx.accounts.config.to_account_info();
+        require_keys_eq!(*info.owner, ID, ReserveError::BadAccount);
+        let new_len = 8 + Config::INIT_SPACE;
+        let old_len = info.data_len();
+        {
+            let d = info.try_borrow_data()?;
+            require!(old_len >= 40 && &d[..8] == Config::DISCRIMINATOR, ReserveError::BadAccount);
+            require!(d[8..40] == ctx.accounts.admin.key().to_bytes(), ReserveError::Unauthorized);
+        }
+        if old_len >= new_len {
+            return Ok(());
+        }
+        let rent = Rent::get()?.minimum_balance(new_len);
+        if info.lamports() < rent {
+            anchor_lang::solana_program::program::invoke(
+                &system_instruction::transfer(ctx.accounts.admin.key, info.key, rent - info.lamports()),
+                &[ctx.accounts.admin.to_account_info(), info.clone(), ctx.accounts.system_program.to_account_info()],
+            )?;
+        }
+        #[allow(deprecated)]
+        info.realloc(new_len, true)?;
+        let mut c = {
+            let d = info.try_borrow_data()?;
+            Config::try_deserialize(&mut &d[..])?
+        };
+        c.set_fund_defaults();
+        let mut d = info.try_borrow_mut_data()?;
+        c.try_serialize(&mut &mut d[..])?;
+        emit!(ConfigUpdated { config: info.key() });
         Ok(())
     }
 
@@ -388,16 +453,21 @@ pub mod reserve {
         Ok(())
     }
 
-    /// Admin or `config.funder`: deposit `amount` reserve tokens into the
+    /// Permissionless, rate limited: deposit `amount` reserve tokens into the
     /// bridge with `config.mining_pool` (agent chain) as recipient. CPI into
     /// the token-side bridge `deposit(amount, agent_recipient)` (SPEC 2.3),
     /// with the creator PDA as `sender` and the caller as rent `payer`.
+    /// Refused while `fund_paused`, above `max_fund_per_call`, inside
+    /// `fund_min_interval_secs` of the last funding, or past `fund_max_per_window`
+    /// in the current `fund_window_secs` window.
     pub fn fund_mining(ctx: Context<FundMining>, amount: u64) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let a = &ctx.accounts;
-        let k = a.authority.key();
-        require!(k == a.config.admin || (a.config.funder != Pubkey::default() && k == a.config.funder), ReserveError::Unauthorized);
+        require!(a.config.layout >= CONFIG_LAYOUT, ReserveError::NeedsMigration);
+        require!(!a.config.fund_paused, ReserveError::FundPaused);
         require!(amount > 0, ReserveError::ZeroAmount);
         require!(a.config.max_fund_per_call == 0 || amount <= a.config.max_fund_per_call, ReserveError::OverFundCap);
+        let window_used = a.config.fund_window_check(now, amount)?;
         require_keys_neq!(a.config.mining_pool, Pubkey::default(), ReserveError::BadConfig);
         require_keys_eq!(a.reserve_ata.key(), ata(&a.creator.key(), &a.mint.key(), &TOKEN_2022_ID), ReserveError::BadAccount);
         let before = token_amount(&a.reserve_ata)?;
@@ -426,9 +496,25 @@ pub mod reserve {
         )?;
         let after = token_amount(&a.reserve_ata)?;
         require!(before - after == amount, ReserveError::BadAccount);
+        let caller = ctx.accounts.authority.key();
         let c = &mut ctx.accounts.config;
         c.total_funded = c.total_funded.saturating_add(amount);
-        emit!(MiningFunded { amount, recipient: c.mining_pool, total_funded: c.total_funded });
+        if c.fund_window_secs > 0 && (c.fund_window_start == 0 || now >= c.fund_window_start.saturating_add(c.fund_window_secs)) {
+            c.fund_window_start = now;
+        }
+        c.fund_window_used = window_used;
+        c.fund_last_ts = now;
+        c.fund_calls = c.fund_calls.saturating_add(1);
+        emit!(MiningFunded {
+            amount,
+            recipient: c.mining_pool,
+            total_funded: c.total_funded,
+            caller,
+            reserve_left: after,
+            window_start: c.fund_window_start,
+            window_used,
+            calls: c.fund_calls,
+        });
         Ok(())
     }
 }
@@ -511,11 +597,12 @@ pub struct Config {
     pub mint: Pubkey,
     /// If set, only this key may crank; default (zero) = permissionless.
     pub cranker: Pubkey,
-    /// Besides the admin, the key allowed to call `fund_mining` (crank service).
+    /// UNUSED since fund_mining became permissionless (2026-10-19); kept for the layout.
     pub funder: Pubkey,
     /// Token-side bridge program (token/programs/bridge).
     pub bridge_program: Pubkey,
-    /// Agent-chain `mining_pool` PDA, the `agent_recipient` of every deposit.
+    /// Agent-chain `mining_pool` PDA, the `agent_recipient` of every deposit. Frozen
+    /// (with bridge_program) once total_funded > 0.
     pub mining_pool: Pubkey,
     /// Most lamports one crank may spend.
     pub max_buy_per_call: u64,
@@ -535,6 +622,30 @@ pub struct Config {
     pub total_funded: u64,
     pub bump: u8,
     pub creator_bump: u8,
+    // ---- fund limits (appended 2026-10-19; `migrate_config` grows an older config)
+    /// CONFIG_LAYOUT once the fields below are set (0 = an unmigrated config).
+    pub layout: u8,
+    /// Admin pause of fund_mining.
+    pub fund_paused: bool,
+    /// Minimum seconds between two fund_mining calls.
+    pub fund_min_interval_secs: i64,
+    /// Rolling window for fund_max_per_window; 0 = no window cap.
+    pub fund_window_secs: i64,
+    /// Most tokens fund_mining may move per window; 0 = no window cap.
+    pub fund_max_per_window: u64,
+    pub fund_last_ts: i64,
+    pub fund_window_start: i64,
+    pub fund_window_used: u64,
+    pub fund_calls: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct FundLimitParams {
+    pub paused: Option<bool>,
+    pub max_per_call: Option<u64>,
+    pub min_interval_secs: Option<i64>,
+    pub window_secs: Option<i64>,
+    pub max_per_window: Option<u64>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -563,10 +674,14 @@ impl Config {
         if let Some(v) = p.funder {
             self.funder = v;
         }
+        // The funding destination freezes at the first fund_mining: afterwards the admin
+        // key cannot redirect reserve tokens (SPEC 2.2).
         if let Some(v) = p.bridge_program {
+            require!(v == self.bridge_program || self.total_funded == 0, ReserveError::DestinationFrozen);
             self.bridge_program = v;
         }
         if let Some(v) = p.mining_pool {
+            require!(v == self.mining_pool || self.total_funded == 0, ReserveError::DestinationFrozen);
             self.mining_pool = v;
         }
         if let Some(v) = p.max_buy_per_call {
@@ -591,6 +706,55 @@ impl Config {
             self.max_fund_per_call = v;
         }
         Ok(())
+    }
+
+    fn set_fund_defaults(&mut self) {
+        self.layout = CONFIG_LAYOUT;
+        if self.max_fund_per_call == 0 {
+            self.max_fund_per_call = DEFAULT_FUND_MAX_PER_CALL;
+        }
+        self.fund_min_interval_secs = DEFAULT_FUND_MIN_INTERVAL_SECS;
+        self.fund_window_secs = DEFAULT_FUND_WINDOW_SECS;
+        self.fund_max_per_window = DEFAULT_FUND_MAX_PER_WINDOW;
+    }
+
+    fn apply_fund_limits(&mut self, p: FundLimitParams) -> Result<()> {
+        require!(self.layout >= CONFIG_LAYOUT, ReserveError::NeedsMigration);
+        if let Some(v) = p.paused {
+            self.fund_paused = v;
+        }
+        if let Some(v) = p.max_per_call {
+            self.max_fund_per_call = v;
+        }
+        if let Some(v) = p.min_interval_secs {
+            require!(v >= 0, ReserveError::BadConfig);
+            self.fund_min_interval_secs = v;
+        }
+        if let Some(v) = p.window_secs {
+            require!(v >= 0, ReserveError::BadConfig);
+            self.fund_window_secs = v;
+        }
+        if let Some(v) = p.max_per_window {
+            self.fund_max_per_window = v;
+        }
+        Ok(())
+    }
+
+    /// Checks the interval and the window cap for funding `amount` at `now`; returns the
+    /// window's use after it.
+    fn fund_window_check(&self, now: i64, amount: u64) -> Result<u64> {
+        require!(
+            self.fund_last_ts == 0 || now >= self.fund_last_ts.saturating_add(self.fund_min_interval_secs),
+            ReserveError::FundTooSoon
+        );
+        if self.fund_window_secs == 0 || self.fund_max_per_window == 0 {
+            return Ok(0);
+        }
+        let fresh = self.fund_window_start == 0 || now >= self.fund_window_start.saturating_add(self.fund_window_secs);
+        let used = if fresh { 0 } else { self.fund_window_used };
+        let next = used.checked_add(amount).ok_or(ReserveError::Overflow)?;
+        require!(next <= self.fund_max_per_window, ReserveError::OverWindowCap);
+        Ok(next)
     }
 
     fn check_cranker(&self, k: &Pubkey) -> Result<()> {
@@ -643,6 +807,17 @@ pub struct AdminOnly<'info> {
     pub admin: Signer<'info>,
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ ReserveError::Unauthorized)]
     pub config: Account<'info, Config>,
+}
+
+#[derive(Accounts)]
+pub struct MigrateConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    /// CHECK: the reserve config PDA, read raw (an old layout does not deserialize); owner,
+    /// discriminator and admin are checked in the handler.
+    #[account(mut, seeds = [CONFIG_SEED], bump)]
+    pub config: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -897,7 +1072,7 @@ pub struct AmmCrank<'info> {
 
 #[derive(Accounts)]
 pub struct FundMining<'info> {
-    /// Admin or config.funder; pays the bridge Deposit record rent.
+    /// Anyone (fund_mining is permissionless); pays the bridge Deposit record rent.
     #[account(mut)]
     pub authority: Signer<'info>,
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
@@ -958,6 +1133,23 @@ pub struct MiningFunded {
     pub amount: u64,
     pub recipient: Pubkey,
     pub total_funded: u64,
+    /// Appended 2026-10-19 (older decoders stop after total_funded).
+    pub caller: Pubkey,
+    pub reserve_left: u64,
+    pub window_start: i64,
+    pub window_used: u64,
+    pub calls: u64,
+}
+
+/// `set_fund_limits`: every fund_mining limit after the change.
+#[event]
+pub struct FundLimitsUpdated {
+    pub config: Pubkey,
+    pub paused: bool,
+    pub max_per_call: u64,
+    pub min_interval_secs: i64,
+    pub window_secs: i64,
+    pub max_per_window: u64,
 }
 
 #[error_code]
@@ -996,4 +1188,14 @@ pub enum ReserveError {
     InsufficientReserve,
     #[msg("overflow")]
     Overflow,
+    #[msg("fund_mining is paused")]
+    FundPaused,
+    #[msg("fund_mining called before fund_min_interval_secs")]
+    FundTooSoon,
+    #[msg("amount above fund_max_per_window for this window")]
+    OverWindowCap,
+    #[msg("mining_pool / bridge_program are frozen after the first fund_mining")]
+    DestinationFrozen,
+    #[msg("config predates the fund limits: run migrate_config")]
+    NeedsMigration,
 }

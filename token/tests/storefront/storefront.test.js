@@ -17,7 +17,7 @@ const spl = require('@solana/spl-token');
 
 const ROOT = path.resolve(__dirname, '../../..');
 const FIX = path.join(ROOT, 'fixtures/pump');
-const TARGET = path.join(ROOT, 'token/target');
+const TARGET = process.env.TOKEN_TARGET || path.join(ROOT, 'token/target'); // TOKEN_TARGET: a build dir elsewhere (e.g. fetched from the VPS)
 const P = (s) => new PublicKey(s);
 const PUMP = P('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const AMM = P('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
@@ -609,6 +609,7 @@ test('buyback: defaults after initialize (share and destination decided 2026-10-
   assert.equal(c.buybackMaxPerCall.toString(), '1000000000');
   assert.equal(c.buybackMinBuy.toString(), '1000000');
   assert.equal(c.buybackMinIntervalSecs.toString(), '600');
+  assert.equal(c.bbReserveCap.toString(), '100000000000000', 'reserve cap 100M tokens (PROVISIONAL 2026-10-19)');
 });
 
 test('buyback: set_buyback is admin-only, validated, and emits every value', async () => {
@@ -788,6 +789,84 @@ test('buyback: burn destination lowers the mint supply by exactly the tokens bou
   ok([await setBbIx({ buybackBps: 1000 })], [admin], 'share back to 1000');
 });
 
+const capIx = (cap, who = admin.publicKey) => sf.methods.setBuybackCap(bn(cap)).accountsStrict({ admin: who, config: CONFIG }).instruction();
+test('buyback: reserve cap (owner decision 2026-10-18): reserve below the cap, the excess burned, all burned at the cap; bridge bound holds', async () => {
+  advance(61);
+  // set_buyback_cap: admin only, emits the value
+  fails([await capIx(1n, buyer.publicKey)], [buyer], /Unauthorized/, 'stranger set_buyback_cap');
+  assert.equal(config().buybackDest, 0, 'destination reserve');
+  const res0 = tokenAmount(RESERVE_ATA);
+  const ROOM = 1_000_000_000n; // 1000 tokens of room under the cap
+  const rc = ok([await capIx(res0 + ROOM)], [admin], 'cap = reserve + 1000 tokens');
+  const ce = events(rc.logs).find((x) => x.name === 'buybackCapUpdated');
+  assert.ok(ce && ce.data.reserveCap.toString() === (res0 + ROOM).toString(), 'BuybackCapUpdated');
+
+  // buy 1 crosses the cap: ROOM to the reserve, the rest burned, in one instruction
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 2));
+  const supply0 = mintSupply(), bridge0 = tokenAmount(VAULT), c0 = config();
+  const r1 = ok([await crankIx(cranker.publicKey)], [cranker], 'crank across the cap');
+  CU.crank_buyback_split = r1.cu;
+  const ev1 = events(r1.logs);
+  const x1 = ev1.find((x) => x.name === 'buybackExecuted').data;
+  const got = BigInt(x1.tokensOut.toString());
+  assert.ok(got > ROOM, `a 0.05 SOL buy gets more than 1000 tokens (${got})`);
+  const tr = ev1.find((x) => x.name === 'buybackToReserve').data, bu = ev1.find((x) => x.name === 'buybackBurned').data;
+  assert.equal(tr.tokens.toString(), ROOM.toString(), 'reserve part = room under the cap');
+  assert.equal(tr.reserveBefore.toString(), res0.toString());
+  assert.equal(tr.reserveAfter.toString(), (res0 + ROOM).toString());
+  assert.equal(tr.buy.toString(), x1.buy.toString());
+  assert.equal(bu.tokens.toString(), (got - ROOM).toString(), 'the excess is burned');
+  assert.equal(bu.reason, 0, 'reason = above cap');
+  assert.equal(bu.supplyAfter.toString(), mintSupply().toString());
+  assert.equal(bu.totalBurned.toString(), config().bbBurned.toString());
+  assert.equal(tokenAmount(RESERVE_ATA), res0 + ROOM, 'reserve exactly at the cap');
+  assert.equal(supply0 - mintSupply(), got - ROOM, 'SPL burn: supply down by the excess');
+  assert.equal(x1.destination, 0);
+  assert.equal(x1.destinationAccount.toBase58(), RESERVE_ATA.toBase58());
+  assert.equal(BigInt(x1.routed.toString()), got);
+  const c1 = config();
+  assert.equal(BigInt(c1.bbToReserve.toString()) - BigInt(c0.bbToReserve.toString()), ROOM);
+  assert.equal(BigInt(c1.bbBurned.toString()) - BigInt(c0.bbBurned.toString()), got - ROOM);
+  assert.equal(tokenAmount(VAULT_ATA), 0n);
+  assert.equal(tokenAmount(VAULT), bridge0, 'bridge vault untouched by the split buy');
+
+  // buy 2 at the cap: everything burned, no reserve part
+  advance(61);
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  const supply1 = mintSupply(), bridge1 = tokenAmount(VAULT);
+  const r2 = ok([await crankIx(cranker.publicKey)], [cranker], 'crank at the cap');
+  const ev2 = events(r2.logs);
+  const got2 = BigInt(ev2.find((x) => x.name === 'buybackExecuted').data.tokensOut.toString());
+  assert.equal(ev2.filter((x) => x.name === 'buybackToReserve').length, 0, 'no reserve part at the cap');
+  const bu2 = ev2.find((x) => x.name === 'buybackBurned').data;
+  assert.equal(bu2.tokens.toString(), got2.toString());
+  assert.equal(ev2.find((x) => x.name === 'buybackExecuted').data.destination, 1, 'all burned');
+  assert.equal(ev2.find((x) => x.name === 'buybackExecuted').data.destinationAccount.toBase58(), MINT.toBase58());
+  assert.equal(tokenAmount(RESERVE_ATA), res0 + ROOM);
+  assert.equal(supply1 - mintSupply(), got2);
+
+  // the bridge never moves; the chain-side supply outside the escrow stays backed by the
+  // Solana supply: 1e18 - escrow <= 1000 x mint supply. The chain escrow is modelled from
+  // the invariant vault SPL x 1000 == 1e18 - escrow (every unlocked lamport is a vault token).
+  assert.equal(tokenAmount(VAULT), bridge1, 'bridge vault untouched by the burns');
+  const escrow = 10n ** 18n - tokenAmount(VAULT) * 1000n;
+  assert.ok(10n ** 18n - escrow <= 1000n * mintSupply(), `bound: ${10n ** 18n - escrow} <= ${1000n * mintSupply()}`);
+  assert.ok(mintSupply() < 10n ** 15n, 'supply below 1B after the burns');
+
+  // cap 0 = no cap: all to the reserve again
+  advance(61);
+  ok([await capIx(0n)], [admin], 'no cap');
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  const res2 = tokenAmount(RESERVE_ATA), supply2 = mintSupply();
+  const r3 = ok([await crankIx(cranker.publicKey)], [cranker], 'crank, no cap');
+  const got3 = BigInt(events(r3.logs).find((x) => x.name === 'buybackExecuted').data.tokensOut.toString());
+  assert.equal(tokenAmount(RESERVE_ATA) - res2, got3);
+  assert.equal(mintSupply(), supply2);
+  assert.equal(events(r3.logs).filter((x) => x.name === 'buybackBurned').length, 0);
+  ok([await capIx(100_000_000_000_000n)], [admin], 'cap back to the default');
+  console.log(`  cap split: ${ROOM} to the reserve, ${got - ROOM} burned (CU ${r1.cu}); at the cap ${got2} burned`);
+});
+
 let graduated = false;
 test('graduation: curve completes + migrate_v2; buy_job then refuses', async () => {
   const { ix: open, draft } = await openIx();
@@ -848,7 +927,10 @@ test('buyback after graduation: curve crank refuses, crank_buyback_amm buys on P
   await settleAll();
   const avail = crankable();
   assert.ok(avail > 1_000_000n, `vault has the AMM orders' shares (${avail})`);
-  const res0 = tokenAmount(RESERVE_ATA), c0 = lamports(cranker.publicKey), bridge0 = tokenAmount(VAULT);
+  const res0 = tokenAmount(RESERVE_ATA), c0 = lamports(cranker.publicKey), bridge0 = tokenAmount(VAULT), supply0 = mintSupply();
+  // the reserve cap applies on PumpSwap too: 1000 tokens of room, the rest burned
+  const ROOM = 1_000_000_000n;
+  ok([await capIx(res0 + ROOM)], [admin], 'cap = reserve + 1000 tokens');
   const r = ok([await crankAmmIx(cranker.publicKey)], [cranker], 'crank_buyback_amm');
   CU.crank_buyback_amm = r.cu;
   console.log(`  crank_buyback_amm CU ${r.cu}, tx ${r.size} bytes`);
@@ -858,7 +940,13 @@ test('buyback after graduation: curve crank refuses, crank_buyback_amm buys on P
   assert.ok(got > 0n);
   const spent = BigInt(e.solIn.toString());
   assert.ok(spent <= avail && spent >= (avail * 999n) / 1000n, `spent ${spent} of ${avail}`);
-  assert.equal(tokenAmount(RESERVE_ATA) - res0, got);
+  assert.ok(got > ROOM);
+  assert.equal(tokenAmount(RESERVE_ATA) - res0, ROOM, 'reserve filled to the cap');
+  assert.equal(supply0 - mintSupply(), got - ROOM, 'the excess burned');
+  const ev = events(r.logs);
+  assert.equal(ev.find((x) => x.name === 'buybackToReserve').data.tokens.toString(), ROOM.toString());
+  assert.equal(ev.find((x) => x.name === 'buybackBurned').data.tokens.toString(), (got - ROOM).toString());
+  ok([await capIx(100_000_000_000_000n)], [admin], 'cap back to the default');
   assert.equal(svm.getAccount(VAULT_WSOL), null, 'vault wSOL ATA closed');
   assert.equal(lamports(BB_VAULT), RENT_MIN + locked() + avail - spent, 'vault back to rent + held (+ unspent)');
   assert.ok(c0 - lamports(cranker.publicKey) <= 10_000n, 'cranker got the wSOL ATA rent back (paid only the fee)');
