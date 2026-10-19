@@ -374,6 +374,10 @@ test("market: pump quote from the curve, crank view (unsigned txs: test/market-t
   assert.equal(c.body.fund_mining.code, "needs_migration");
   assert.equal(c.body.fund_mining.next_allowed_ts, null);
   assert.equal((await post("/v1/tx/pump-buy", {})).status, 400);
+  // the site sends {payer}: accepted as the cranker (the fake reserve then refuses with needs_migration)
+  const fm = await post("/v1/tx/fund-mining", { payer: OWNER });
+  assert.notEqual(fm.status, 400, JSON.stringify(fm.body));
+  assert.equal((await post("/v1/tx/fund-mining", {})).status, 400);
 });
 
 void d;

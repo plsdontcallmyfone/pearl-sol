@@ -577,9 +577,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [cranker]
               properties:
                 cranker: { $ref: "#/components/schemas/Address" }
+                payer: { $ref: "#/components/schemas/Address", description: "alias of cranker (the site's name)" }
                 max_sol_in: { $ref: "#/components/schemas/Amount" }
                 min_out_bps: { type: integer, minimum: 0, maximum: 5000, default: 300 }
       responses:
@@ -598,9 +598,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [cranker]
               properties:
                 cranker: { $ref: "#/components/schemas/Address" }
+                payer: { $ref: "#/components/schemas/Address", description: "alias of cranker (the site's name)" }
                 amount_spl: { $ref: "#/components/schemas/Amount" }
       responses:
         "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }

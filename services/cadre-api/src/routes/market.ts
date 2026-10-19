@@ -295,7 +295,7 @@ export function registerMarket(api: Api, d: Deps) {
 
   api.post("/v1/tx/crank-buyback", async (c) => {
     const b0 = await c.json();
-    const cranker = addr(b0.cranker, "cranker");
+    const cranker = addr(b0.cranker ?? b0.payer, "cranker");
     const maxSolIn = b0.max_sol_in === undefined ? CRANK_MAX_SOL_IN : amount(b0.max_sol_in, "max_sol_in");
     const minOutBps = bps(b0.min_out_bps, "min_out_bps", CRANK_MIN_OUT_BPS);
     const { c: sc, spend, vault, now } = await storeCrankState(d, cranker, maxSolIn);
@@ -346,7 +346,7 @@ export function registerMarket(api: Api, d: Deps) {
 
   api.post("/v1/tx/fund-mining", async (c) => {
     const b0 = await c.json();
-    const cranker = addr(b0.cranker, "cranker");
+    const cranker = addr(b0.cranker ?? b0.payer, "cranker");
     const want = b0.amount_spl === undefined || b0.amount_spl === null ? undefined : amount(b0.amount_spl, "amount_spl");
     const st = await fundState(d, want);
     if (!st.ok) {
