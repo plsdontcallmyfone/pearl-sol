@@ -31,6 +31,7 @@ ISC, gitignored; re-clone if missing).
     10660-10669     relayer, indexer, miner/pool services
     10670-10679     web frontends
     10685-10689     cadre-api (public site backend): 10685 server, 10686-10689 its tests
+    10710-10719     ~/cadre-web (Cadre website app): 10710 dev/prod server, 10711-10719 its e2e mocks
 
 Validators run LOCALLY on this Mac via scripts/localnet.sh: the owner told this
 repo to proceed locally on 2026-10-16, an exception to the global claude-host rule
