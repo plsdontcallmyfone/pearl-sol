@@ -237,7 +237,7 @@ impl Out {
 }
 
 pub const HELP: &str = "\
-send <to> <amount>             transfer LODE  on the agent chain
+send <to> <amount>             transfer LODE on the agent chain
 bridge in <amount>             Solana SPL -> chain (bridge deposit)
 bridge out <amount> [--to X]   chain -> Solana (BridgeLock, released when K deep)
 bridge status                  escrow, vault, in flight, invariant
