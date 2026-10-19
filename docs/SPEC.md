@@ -293,13 +293,20 @@ What can be a standing job: a weight GEMM whose `B = W^T` (k x n) passes `check_
 the model's mining config (k >= 16r = 2048 at r = 128, k % 64 == 0, k <= 4r^2, n a multiple
 of the column period). Layers that do not fit run unmined (int7 or fp, the tool records
 which) and are not registered as matrices. Large n is split into column shards (output
-channel ranges) of at most 8192 so a miner's working set stays bounded; inputs shared by
+channel ranges) of at most 8192 so a miner's working set stays bounded; large k into k shards
+(row ranges of B) of at most 2048 (`MAX_MATRIX_K`; RegisterModel refuses more), whose exact
+int32 partial products the server sums before the scales (per-channel scales and the
+activation quantization stay over the whole row, so C is unchanged). Why 2048: the Solana
+light client verifies a k = 2048 job block (7.24M CU over 34 txs in LiteSVM) but a k = 8192
+opening does not complete in one Solana tx, and an unverifiable header would stall it.
+Inputs shared by
 several projections are fused when they share the SmoothQuant factor (q/k/v -> one `qkv`
 matrix, n = 3072 on Llama-3.2-1B).
 
 Llama-3.2-1B (the demo model, `unsloth/Llama-3.2-1B`): 16 layers x {qkv 2048 x 3072, o
-2048 x 2048, gate 2048 x 8192, up 2048 x 8192, down 8192 x 2048} + lm_head 2048 x 128256 in 16
-shards of 8016 = 96 registered matrices, 1,235,746,816 MACs per token row, all mined. Not
+2048 x 2048, gate 2048 x 8192, up 2048 x 8192, down 8192 x 2048 in 4 k shards of 2048} +
+lm_head 2048 x 128256 in 16 shards of 8016 = 144 registered matrices, 1,235,746,816 MACs per
+token row, all mined. Not
 mined: attention (2 x 32 heads x 64 x T MACs per layer per token at context T), norms, RoPE,
 SiLU, the embedding lookup, scales and zero points.
 
@@ -384,7 +391,7 @@ ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_
   posting block. A Solana tx carries one such chain tx with its path, so the gateway posts one
   segment per PostSegments (measured: 322-byte chain tx, register_job 52,995 CU in LiteSVM).
   Cost on real Solana: one register_job tx and one JobCommit account (rent, about 0.003 SOL)
-  per segment, 96 per round on Llama-3.2-1B; a model-level commit would cut this (follow-up).
+  per segment, 144 per round on Llama-3.2-1B; a model-level commit would cut this (follow-up).
 - Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
   The server serves requests off chain against the ticket's row budget R and posts their GEMMs
   in rounds: round r stacks the rows of every request served in that period (each request's
