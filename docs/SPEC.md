@@ -226,7 +226,7 @@ State: `Route ["route", account]` (schema tag 10): recipient, bps, until, cap,
 release_key, route_nonce, set_height, routed, pending, withdrawn, cleared; kept after
 the lien ends. RPC `getRoute`, `getAccount.route` (docs/RPC.md).
 
-### 4.5 Model registry and standing jobs (Lode inference, SYNTHESIS item 3, 2026-10-18)
+### 4.5 Model registry and standing jobs (Cadre inference, SYNTHESIS item 3, 2026-10-18)
 
 Why: posted-data matmul has no natural buyer (moving A and B costs far more than the
 compute, research/narratives/COMPUTE-TECH.md). Useful work pays when the data already sits
@@ -240,7 +240,7 @@ standing job proves `C = A B` exactly in int32 with operands in [-64, 64].
 
 Quantization recipe (fixed by research/INT7-ACCURACY.md; measured +2.9% WikiText-2 PPL on
 Llama-3.2-1B with every job-shaped GEMM in int7, int8 W8A8 + SmoothQuant +1.5%). Recipe 1,
-`lode-w7a7-sq-asym-v1`:
+`cadre-w7a7-sq-asym-v1`:
 - weights: per output channel j, symmetric round-to-nearest onto [-64, 64] with scale
   `s_w[j] = max_l |W'[j,l]| / 64`, where `W' = W diag(s)` has the SmoothQuant factors folded
   in (`s_l = amax_x[l]^0.5 / amax_w[l]^0.5`, calibrated on 16 x 512 WikiText-2 train tokens;
@@ -274,7 +274,7 @@ SiLU, the embedding lookup, scales and zero points.
 ```
 name (u8 len, 1..=64) | manifest_uri (u16 len, blob:<hex>) | recipe u8 (= 1)
 | rank u16 | rows_pattern [6] | cols_pattern [6]
-| count u16 (1..=512) | (k u32 | n u32 | hash_b [32]) * count
+| count u16 (1..=384) | (k u32 | n u32 | hash_b [32]) * count
 ```
 - `model_id = blake3("pearl-sol:model:v1" || registrant || name)`; registering an existing
   id is refused (a new version is a new name).
@@ -296,7 +296,7 @@ name (u8 len, 1..=64) | manifest_uri (u16 len, blob:<hex>) | recipe u8 (= 1)
 
 Blob-store layout (M2 blobs, node-local, not consensus): the model is a directory of files;
 every file is cut into raw chunks of at most 3 MiB, each chunk one blob. The manifest blob
-(`manifest_uri`, JSON, `"format": "lode-model-v1"`) lists the recipe, the architecture,
+(`manifest_uri`, JSON, `"format": "cadre-model-v1"`) lists the recipe, the architecture,
 every matrix (`index, name, layer, role, k, n, cols [lo, hi), hash_b`, its weight file and
 aux file) and every file (`size`, blake3 of the whole file, chunk blob ids in order).
 - weight file `w/<index>.i8`: `B^T` (n x k int8, row = output channel), the layout
@@ -313,7 +313,7 @@ and checks every file hash and every `hash_b`.
 **Ticket** (one paid inference request): a `PostJob` body (4.1) whose config is the ticket
 form, so the existing storefront Order (5.1) carries it unchanged:
 ```
-config [52] = "LODE-TK1" || model_id [32] || 0 [12]
+config [52] = "CADRE-T1" || model_id [32] || 0 [12]
 m = prompt tokens, n = max new tokens, k = 1
 hash_a = request_hash = blake3(request blob)        hash_b = server key (0 = first PostSegments sender)
 data_uri = request blob (blob:)                      max_blocks = block budget of all its segments
@@ -329,9 +329,9 @@ W, P, deadline, evaluators, threshold as for any job
   blob id of the response blob, uri = that blob) -> Completed (CompleteJob, evaluator
   signatures over the usual result message; W to the server) or Expired (after the
   deadline; W back to the poster, the unallocated cap stays in the pool).
-- Request blob: JSON `{"format": "lode-request-v1", "model_id", "prompt_ids": [...],
+- Request blob: JSON `{"format": "cadre-request-v1", "model_id", "prompt_ids": [...],
   "max_new_tokens", "sampling": "greedy"}`. Response blob: JSON `{"format":
-  "lode-response-v1", "model_id", "ticket_id", "request_hash", "rows", "prompt_ids",
+  "cadre-response-v1", "model_id", "ticket_id", "request_hash", "rows", "prompt_ids",
   "output_ids", "text", "segments": [{"matrix", "segment_id", "m"}]}`.
 
 **`PostSegments` (kind 12)**, sent by the ticket's server:
@@ -685,10 +685,10 @@ relay services/header-relay):
   `--settle` proves each withdrawal at the light client's own final height (block hash
   checked against the node's), falling back to the current-root proof on an older node.
   Refused below the withdrawal's block or above the node's final height.
-### 5.4 Inference gateway (Lode, 2026-10-18)
+### 5.4 Inference gateway (Cadre, 2026-10-18)
 
-`services/inference-gateway` (`lode-gateway`, port 10664) sits in front of storefront-x402
-and next to a model worker (`tools/lode/worker.py`, port 10665, the int7 model runner).
+`services/inference-gateway` (`cadre-gateway`, port 10664) sits in front of storefront-x402
+and next to a model worker (`tools/cadre/worker.py`, port 10665, the int7 model runner).
 The gateway's key is the ticket's server and its chain account.
 
 - `POST /v1/completions {"prompt", "max_tokens", "recipient"?}`: tokenizes (worker), builds
@@ -771,7 +771,7 @@ randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
   open: per-call cap (1 SOL), min buy (0.001 SOL), interval (600 s), cranker allowlist
   (5.1 "Buyback").
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
-- Name and ticker: Lode / LODE (chosen 2026-10-18).
+- Name and ticker: Cadre / CADRE (owner, 2026-10-18; was Lode).
 - Inference (4.5, 5.4): price per request (default = the matmul knobs over 2 x macs_per_row x R),
   which models to register (default: Llama-3.2-1B for the demo), a model registration
   deposit (default none, tx fee only), blocks per segment (default 1).
