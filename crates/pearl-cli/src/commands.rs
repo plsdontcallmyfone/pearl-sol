@@ -80,6 +80,11 @@ pub enum Cmd {
     },
     #[command(subcommand)]
     Mine(MineCmd),
+    /// Model registry (SPEC 4.5): ls | show | register | fetch.
+    #[command(subcommand)]
+    Model(crate::model::ModelCmd),
+    /// An inference ticket and its standing jobs (segments).
+    Ticket { id: String },
     /// Look up a transaction by hash.
     Tx { hash: String },
     /// Render the dashboard from a live read into an HTML (and .txt) file.
@@ -251,6 +256,7 @@ register <name> [uri]          RegisterAgent
 agent [address]                registration + lien
 buyback [--limit 10]           storefront buyback: share, vault, totals, latest buys
 mine start [--threads 2] | mine stop | mine status
+model ls | model show <id> | model register <dir> | model fetch <id> <dir> | ticket <id>
 balance | address | status | tx <hash> | dashboard | quit";
 
 /// Common commands, shown under the no-command overview.
@@ -603,6 +609,14 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             Ok(Out::new(json!({"account": a, "agent": agent, "route": route}), t).view(view))
         }
         Cmd::Mine(m) => mine(ctx, m, shell),
+        Cmd::Model(m) => {
+            let o = crate::model::exec(ctx, m)?;
+            Ok(Out::new(o.json, o.text).view(o.view))
+        }
+        Cmd::Ticket { id } => {
+            let o = crate::model::ticket(ctx, id)?;
+            Ok(Out::new(o.json, o.text).view(o.view))
+        }
         Cmd::Tx { hash } => {
             let v = ctx.call("getTx", json!({"tx_hash": hash}))?;
             ensure!(!v.is_null(), "no tx {hash}");

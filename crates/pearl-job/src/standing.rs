@@ -199,6 +199,9 @@ pub struct ManifestMatrix {
     pub weights: String,
     /// `w/<index>.aux`.
     pub aux: String,
+    /// Fields this crate does not use (kept on rewrite).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The model manifest (JSON). `files` maps every path under the model directory.
@@ -226,6 +229,9 @@ pub struct Manifest {
     pub model_id: String,
     #[serde(default)]
     pub registrant: String,
+    /// Fields this crate does not use (tensors, macs_per_row, ...), kept on rewrite.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Manifest {
@@ -244,6 +250,39 @@ impl Manifest {
     pub fn macs_per_row(&self) -> u64 {
         self.matrices.iter().map(|m| m.k as u64 * m.n as u64).sum()
     }
+}
+
+/// `hash_b` from B^T (n x k row-major, the stored layout): `blake3_keyed(pad1024(B^T), job_key)`,
+/// equal to `commit_b(job_key, B, k, n)`.
+pub fn commit_bt(job_key: &Hash256, bt: &[i8]) -> Hash256 {
+    blake3_digest(&crate::merkle::pad_to_chunk_boundary(crate::job::as_u8(bt)), Some(job_key))
+}
+
+/// Every file under `dir` (except `manifest.json`), relative path -> size, blake3, chunk
+/// blob URIs. Paths use `/`.
+pub fn list_files(dir: &Path) -> Result<std::collections::BTreeMap<String, ManifestFile>> {
+    fn walk(root: &Path, d: &Path, out: &mut std::collections::BTreeMap<String, ManifestFile>) -> Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(d)?.collect::<std::result::Result<_, _>>()?;
+        entries.sort_by_key(|e| e.path());
+        for e in entries {
+            let p = e.path();
+            if p.is_dir() {
+                walk(root, &p, out)?;
+                continue;
+            }
+            let rel = p.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+            if rel == "manifest.json" || rel.ends_with(".part") {
+                continue;
+            }
+            let b = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+            let blobs = chunks(&b).map(|c| crate::data::blob_uri(&crate::data::blob_id(c))).collect();
+            out.insert(rel, ManifestFile { size: b.len() as u64, blake3: hex::encode(blake3::hash(&b).as_bytes()), blobs });
+        }
+        Ok(())
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
 }
 
 /// Split `bytes` into blob-sized chunks.
@@ -332,6 +371,29 @@ mod tests {
         }
         let bt: Vec<i8> = vec![1, 2, 3, -1, -2, -3];
         assert_eq!(colsum_bt(&bt, 2, 3), vec![6, -6]);
+    }
+
+    #[test]
+    fn commit_bt_matches_commit_b() {
+        let (_, b) = crate::data::random_matrices(1, 16, 2048, Some(3));
+        let bt = crate::job::transpose(&b, 2048, 16);
+        let key = [5u8; 32];
+        assert_eq!(commit_bt(&key, &bt), crate::job::commit_b(&key, &b, 2048, 16));
+    }
+
+    #[test]
+    fn list_files_chunks_every_file() {
+        let d = std::env::temp_dir().join(format!("cadre-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("w")).unwrap();
+        std::fs::write(d.join("manifest.json"), b"{}").unwrap();
+        std::fs::write(d.join("w/0.i8"), vec![1u8; MODEL_CHUNK_BYTES + 10]).unwrap();
+        std::fs::write(d.join("config.json"), b"{}").unwrap();
+        let f = list_files(&d).unwrap();
+        assert_eq!(f.keys().cloned().collect::<Vec<_>>(), vec!["config.json".to_string(), "w/0.i8".to_string()]);
+        assert_eq!(f["w/0.i8"].blobs.len(), 2);
+        assert_eq!(f["w/0.i8"].size, MODEL_CHUNK_BYTES as u64 + 10);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -1,0 +1,29 @@
+[package]
+name = "cadre-gateway"
+description = "Cadre inference gateway (SPEC 5.4): paid inference requests in front of storefront-x402; runs the int7 model worker, posts the request's GEMMs as standing jobs, delivers the response"
+edition = "2021"
+license = "ISC"
+version = "0.1.0"
+workspace = "../../crates"
+
+[lib]
+name = "cadre_gateway"
+
+[[bin]]
+name = "cadre-gateway"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+bs58.workspace = true
+base64.workspace = true
+clap.workspace = true
+ed25519-dalek.workspace = true
+tiny_http.workspace = true
+ureq.workspace = true
+blake3.workspace = true
+pearl-job.workspace = true
+pearl-node.workspace = true

@@ -7,6 +7,7 @@ mod commands;
 mod ctx;
 mod fmt;
 mod html;
+mod model;
 mod snapshot;
 mod solana;
 #[cfg(test)]
