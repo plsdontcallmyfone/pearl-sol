@@ -5,7 +5,7 @@ After=cadre-node.service network-online.target
 [Service]
 User=lode
 EnvironmentFile=/etc/lode/services.env
-Environment=CADRE_API_PORT=10685 CADRE_API_HOST=127.0.0.1 NODE_RPC=http://127.0.0.1:10630 STATE_DIR=/var/lib/lode/cadre-api POLL_MS=5000
+Environment=CADRE_API_PORT=10685 CADRE_API_HOST=127.0.0.1 NODE_RPC=http://127.0.0.1:10630 STATE_DIR=/var/lib/lode/cadre-api POLL_MS=5000 SOL_POLL_MS=30000
 Environment=STOREFRONT_URL=http://127.0.0.1:10662 GATEWAY_URL=off POOL_URL=off CADRE_PREPAID=off
 Environment=CADRE_ALLOWED_ORIGINS=* CADRE_TRUST_PROXY=1 CADRE_RATE_LIMIT_PER_MIN=300 CADRE_RATE_BURST=120
 Environment=CADRE_NETWORK=devnet SOLANA_CLUSTER=devnet

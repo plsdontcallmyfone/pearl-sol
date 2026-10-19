@@ -68,7 +68,7 @@ export class Deps {
 
   constructor(cfg: Config, ix?: Indexer) {
     this.cfg = cfg;
-    this.ix = ix ?? new Indexer({ nodeUrl: cfg.nodeRpc, solUrl: cfg.solanaRpc, stateDir: cfg.stateDir, pollMs: cfg.pollMs, log: (m) => console.log(JSON.stringify({ msg: m })) });
+    this.ix = ix ?? new Indexer({ nodeUrl: cfg.nodeRpc, solUrl: cfg.solanaRpc, stateDir: cfg.stateDir, pollMs: cfg.pollMs, solPollMs: Number(process.env.SOL_POLL_MS ?? 0), log: (m) => console.log(JSON.stringify({ msg: m })) });
     this.node = new JsonRpc(cfg.nodeRpc, 15_000);
     this.sol = new SolanaRpc(cfg.solanaRpc);
   }

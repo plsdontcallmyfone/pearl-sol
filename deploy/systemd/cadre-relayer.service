@@ -5,7 +5,7 @@ After=cadre-node.service
 [Service]
 User=lode
 EnvironmentFile=/etc/lode/services.env
-Environment=SIGNER_KEYS=/etc/lode/keys/attester.json TOKEN_PAYER=/etc/lode/keys/ops.json AGENT_KEY=/etc/lode/keys/ops.json STATE_FILE=/var/lib/lode/relayer.json HEALTH_PORT=10660 POLL_MS=5000 COMMITMENT=finalized
+Environment=SIGNER_KEYS=/etc/lode/keys/attester.json TOKEN_PAYER=/etc/lode/keys/ops.json AGENT_KEY=/etc/lode/keys/ops.json STATE_FILE=/var/lib/lode/relayer.json HEALTH_PORT=10660 POLL_MS=10000 COMMITMENT=finalized
 WorkingDirectory=/home/lode/pearl-sol/services/relayer
 ExecStart=/home/lode/.local/node/bin/node src/main.ts
 Restart=always

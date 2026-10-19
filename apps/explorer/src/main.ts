@@ -21,6 +21,7 @@ const ix = new Indexer({
   solUrl: env.SOLANA_RPC ?? "http://127.0.0.1:10600",
   stateDir: env.STATE_DIR ?? join(here, "..", ".state"),
   pollMs: Number(env.POLL_MS ?? 3000),
+  solPollMs: Number(env.SOL_POLL_MS ?? 0),
 });
 ix.start();
 serve(ix, port, host);

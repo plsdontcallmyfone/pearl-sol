@@ -81,6 +81,9 @@ export interface IndexerOptions {
   solUrl: string;
   stateDir: string;
   pollMs?: number;
+  /** Solana side at most this often (default: every poll). A public RPC such as Solana devnet
+   * allows about 100 calls per 10 s per IP, shared by every service on the box. */
+  solPollMs?: number;
   /** blocks fetched per poll while backfilling */
   backfillPerPoll?: number;
   log?: (msg: string) => void;
@@ -89,6 +92,7 @@ export interface IndexerOptions {
 const STATE_VERSION = 2; // 2: tx facts carry signers / deliverer / to / name / uri (agent profiles)
 
 export class Indexer {
+  private lastSolPoll = 0;
   o: Required<IndexerOptions>;
   node: JsonRpc;
   sol: SolanaRpc;
@@ -118,7 +122,7 @@ export class Indexer {
   private listeners = new Set<() => void>();
 
   constructor(opts: IndexerOptions) {
-    this.o = { pollMs: 3000, backfillPerPoll: 2000, log: (m) => console.log(m), ...opts };
+    this.o = { pollMs: 3000, solPollMs: 0, backfillPerPoll: 2000, log: (m) => console.log(m), ...opts };
     this.node = new JsonRpc(opts.nodeUrl);
     this.sol = new SolanaRpc(opts.solUrl);
   }
@@ -153,7 +157,8 @@ export class Indexer {
       this.status.nodeOk = false;
       this.status.nodeError = (e as Error).message;
     }
-    if (this.genesis) {
+    if (this.genesis && Date.now() - this.lastSolPoll >= this.o.solPollMs) {
+      this.lastSolPoll = Date.now();
       try {
         await this.pollSolana();
         this.status.solOk = true;
