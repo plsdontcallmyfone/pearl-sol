@@ -481,6 +481,23 @@ owning its paths, max 3 heavy builds at once (all local; claude-host is destroye
    big max_future_ms on localnet (scripts/ owner); fallback blocks could skip the 24.7 KB
    proof upload (A, B derive from the header; ~70% of fees); demo block time 1.5 s is 40x
    the spec's 60 s.
+15. CADRE API (public site backend, owner 2026-10-19): DONE 2026-10-19 (commits 64a4177..;
+   docs/API.md, contract services/cadre-api/openapi.yaml). `services/cadre-api` (:10685, Node
+   built-ins, no deps) serves /v1 over its own instance of the explorer Indexer + the
+   explorer's page models: summary/feed/blocks/jobs/orders/payers, buyback, reserve, supply,
+   revenue with wash screens, agents (REPUTATION 5.1 subset, sorted by screened P/SOL, never
+   counts), mining/miners, accounts on both chains, bridge transfers + quotes, UNSIGNED txs
+   (bridge deposit, x402 payment; BridgeLock as the window.pearl JSON form), relay of signed
+   chain/Solana txs, inference models with exact storefront prices (storefront-x402 GET
+   /quote now prices tickets), receipts, OpenAI pass-through /v1/openai/* to the gateway (SSE).
+   CORS, token-bucket rate limit, ETag/304, one error shape, /v1/health + /v1/ready. Typed
+   client services/cadre-api/client/index.ts. 22 tests (fake stack, web3.js byte checks,
+   storefront verifyExact on the built x402 tx, OpenAPI route parity). LIVE on the test box:
+   https://cadre-api.64-95-13-106.sslip.io (caddy, 443 only, systemd cadre-api, own clone
+   ~/cadre-api); live check 28 pass / 1 pending, figures cross-checked against node + Solana
+   RPC through the tunnel. 501 until other agents land: prepaid balance/top-up (gateway SPEC
+   5.4, flag CADRE_PREPAID=gateway), pump-buy / crank / fund_mining tx builders, circulating
+   supply (token-side explorer module), profiles from apps/explorer/src/agents.ts when it exists.
 Not done in M2 (later): chunked blob manifests, persistent history index, multi-hop
 blob push, getPeers across real hosts, USDC storefront, demo coverage of
 PumpSwap/expiry/reorgs/restarts. agent-cli selftest's terms_hash vector keeps the old k on purpose

@@ -18,6 +18,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 /** Storefront quote for a ticket of this size; null + reason when the storefront cannot price it. */
 async function ticketQuote(d: Deps, modelId: string, promptTokens: number, maxTokens: number) {
   const r = await d.upstreamJson("storefront", `/quote?model_id=${modelId}&prompt_tokens=${promptTokens}&max_tokens=${maxTokens}`, { timeoutMs: 10_000 });
+  if (r.status === 400 && /^m must be/.test(String(r.body?.error))) return { ok: false as const, status: 501, error: "this storefront-x402 build does not quote inference tickets (needs commit 64a4177 or later)" };
   if (r.status !== 200) return { ok: false as const, status: r.status, error: r.body?.error ?? `storefront HTTP ${r.status}` };
   if (!r.body?.ticket) return { ok: false as const, status: 501, error: "this storefront-x402 build does not quote inference tickets (needs commit 64a4177 or later)" };
   return { ok: true as const, quote: r.body };
