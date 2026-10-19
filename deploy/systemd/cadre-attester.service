@@ -1,0 +1,13 @@
+[Unit]
+Description=Cadre devnet attester (chain attester 1 of 1, node mode)
+After=cadre-node.service
+
+[Service]
+User=lode
+WorkingDirectory=/var/lib/lode
+ExecStart=/opt/lode/bin/pearl-attester --keypair /etc/lode/keys/attester.json --port 10661 --rpc http://127.0.0.1:10630 --mode node
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

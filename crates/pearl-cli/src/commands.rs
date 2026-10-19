@@ -1513,7 +1513,7 @@ fn mine(ctx: &Ctx, m: &MineCmd, shell: bool) -> Result<Out> {
             let key = ctx.opts.key.clone().ok_or_else(|| anyhow!("mine start needs --key (the payout key file)"))?;
             let bin = miner_bin(ctx)?;
             let mut cmd = std::process::Command::new(&bin);
-            cmd.args(["--rpc", &ctx.opts.rpc, "--threads", &threads.to_string()]).arg("--payout").arg(&key);
+            cmd.args(["--rpc", &ctx.rpc, "--threads", &threads.to_string()]).arg("--payout").arg(&key);
             if !shell && !ctx.ui.is_plain() {
                 // --json: foreground, its JSON log lines on our stdout
                 let st = cmd.status().with_context(|| format!("run {}", bin.display()))?;
@@ -1739,7 +1739,7 @@ mod tests {
         let j = &o.json;
         assert_eq!(j["buyback_bps"], 1000);
         assert_eq!(j["destination"], "reserve");
-        let reserve = solana::pk("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
+        let reserve = solana::reserve_program();
         assert_eq!(j["destination_account"], b58(&solana::reserve_ata(&reserve, &solana::pk(crate::stub::OTHER))));
         assert_eq!(j["vault"], b58(&solana::buyback_vault_pda()));
         assert_eq!(j["available_lamports"], "50000000", "held shares are not counted");

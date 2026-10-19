@@ -1,0 +1,15 @@
+[Unit]
+Description=Cadre devnet explorer
+After=cadre-node.service
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+Environment=EXPLORER_PORT=10670 EXPLORER_HOST=127.0.0.1 NODE_RPC=http://127.0.0.1:10630 STATE_DIR=/var/lib/lode/explorer POLL_MS=5000
+WorkingDirectory=/home/lode/pearl-sol/apps/explorer
+ExecStart=/bin/sh -c 'SOLANA_RPC=$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

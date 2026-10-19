@@ -1,0 +1,15 @@
+[Unit]
+Description=Cadre devnet crank (reserve creator-fee buyback + storefront buyback)
+After=network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+Environment=KEYPAIR=/etc/lode/keys/ops.json RESERVE_IDL=/opt/lode/idl/reserve.json STOREFRONT_IDL=/opt/lode/idl/storefront.json CRANK_INTERVAL_SECS=600
+WorkingDirectory=/home/lode/pearl-sol/services/crank
+ExecStart=/bin/sh -c 'RPC_URL=$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts run'
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

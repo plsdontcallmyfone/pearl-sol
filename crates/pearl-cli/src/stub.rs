@@ -78,7 +78,7 @@ fn answer(method: &str, params: &Value) -> Result<Value, String> {
     let b64 = |b: Vec<u8>| base64::engine::general_purpose::STANDARD.encode(b);
     Ok(match method {
         "getAccountInfo" if params[0].as_str() == Some(&crate::solana::b58(&crate::solana::storefront_config_pda())) => {
-            json!({"value": {"data": [b64(store_config_bytes()), "base64"], "lamports": 1, "owner": crate::solana::STOREFRONT_PROGRAM}})
+            json!({"value": {"data": [b64(store_config_bytes()), "base64"], "lamports": 1, "owner": crate::solana::LOCALNET.storefront}})
         }
         "getAccountInfo" if params[0].as_str() == Some(OTHER) => {
             let mut m = vec![0u8; 82];
@@ -170,12 +170,13 @@ fn key_file() -> PathBuf {
 
 pub fn ctx(url: &str, text_mode: bool) -> Ctx {
     let opts = Opts {
-        rpc: url.into(),
-        sol_rpc: url.into(),
+        network: crate::ctx::Network::Localnet,
+        rpc: Some(url.into()),
+        sol_rpc: Some(url.into()),
         key: Some(key_file()),
         sol_key: None,
         address: None,
-        pool: "http://127.0.0.1:9".into(),
+        pool: Some("http://127.0.0.1:9".into()),
         credit_url: None,
         miner_bin: None,
         json: !text_mode,

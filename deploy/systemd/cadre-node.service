@@ -1,0 +1,15 @@
+[Unit]
+Description=Cadre devnet agent-chain node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=lode
+ExecStart=/opt/lode/bin/agent-node run --config /etc/lode/node.json
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

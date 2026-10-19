@@ -7,13 +7,13 @@ if ! command -v ~/.cargo/bin/rustup >/dev/null; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y -q --default-toolchain 1.94.1 --profile minimal
 fi
 source ~/.cargo/env
-rustup toolchain install 1.95.0 --profile minimal -q
+rustup toolchain install 1.95.0 --profile minimal >/dev/null
 if [[ ! -x ~/.local/share/solana/install/active_release/bin/solana ]]; then
   sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.12/install)" >/dev/null
 fi
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
 if ! command -v ~/.cargo/bin/avm >/dev/null; then
-  cargo install --git https://github.com/coral-xyz/anchor --tag v0.31.1 avm --locked -q
+  cargo install --git https://github.com/coral-xyz/anchor --tag v0.31.1 avm --locked
 fi
 ~/.cargo/bin/avm install 0.31.1 >/dev/null 2>&1 || true
 ~/.cargo/bin/avm use 0.31.1

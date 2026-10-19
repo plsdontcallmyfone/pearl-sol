@@ -13,16 +13,21 @@ use serde_json::Value;
 use pearl_node::{read_key_file, HttpNode};
 
 use crate::solana::{Pubkey, SolRpc};
+pub use crate::solana::Network;
 use crate::term::Ui;
 
 #[derive(Args, Debug, Clone)]
 pub struct Opts {
-    /// Agent-chain node JSON-RPC.
-    #[arg(long, env = "PEARL_RPC", default_value = "http://127.0.0.1:10630", global = true)]
-    pub rpc: String,
-    /// Token-chain (Solana) JSON-RPC.
-    #[arg(long, env = "PEARL_SOL_RPC", default_value = "http://127.0.0.1:10600", global = true)]
-    pub sol_rpc: String,
+    /// Network profile: endpoint defaults and Solana program ids (docs/DEVNET.md).
+    /// `devnet` = the public Cadre devnet, `localnet` = scripts/demo.sh on this machine.
+    #[arg(long, env = "PEARL_NETWORK", value_enum, default_value_t = Network::Devnet, global = true)]
+    pub network: Network,
+    /// Agent-chain node JSON-RPC (default: the network's).
+    #[arg(long, env = "PEARL_RPC", global = true)]
+    pub rpc: Option<String>,
+    /// Token-chain (Solana) JSON-RPC (default: the network's).
+    #[arg(long, env = "PEARL_SOL_RPC", global = true)]
+    pub sol_rpc: Option<String>,
     /// Agent-chain key file (Solana JSON array, or base58 / hex). Never printed.
     #[arg(long, env = "PEARL_KEY", global = true)]
     pub key: Option<PathBuf>,
@@ -34,8 +39,9 @@ pub struct Opts {
     #[arg(long, env = "PEARL_ADDRESS", global = true)]
     pub address: Option<String>,
     /// Mining pool (services/pool) HTTP endpoint, read for /Mining.
-    #[arg(long, env = "PEARL_POOL", default_value = "http://127.0.0.1:10663", global = true)]
-    pub pool: String,
+    /// Default: localnet :10663; the public devnet runs no pool.
+    #[arg(long, env = "PEARL_POOL", global = true)]
+    pub pool: Option<String>,
     /// Agent Credit HTTP endpoint (GET returns 2xx when up). Unset = not connected.
     #[arg(long, env = "PEARL_CREDIT_URL", global = true)]
     pub credit_url: Option<String>,
@@ -56,6 +62,10 @@ pub struct Opts {
 
 pub struct Ctx {
     pub opts: Opts,
+    /// Resolved endpoints (flag, env, else the network profile).
+    pub rpc: String,
+    pub sol_rpc: String,
+    pub pool: Option<String>,
     pub node: HttpNode,
     pub sol: SolRpc,
     key: Option<SigningKey>,
@@ -81,9 +91,17 @@ impl Ctx {
             (None, None) => None,
         };
         let sol_me = sol_key.as_ref().map(|k| k.verifying_key().to_bytes()).or(if key.is_none() { me } else { None });
+        crate::solana::set_network(opts.network);
+        let p = opts.network.profile();
+        let rpc = opts.rpc.clone().unwrap_or_else(|| p.rpc.into());
+        let sol_rpc = opts.sol_rpc.clone().unwrap_or_else(|| p.sol_rpc.into());
+        let pool = opts.pool.clone().or(p.pool.map(String::from));
         Ok(Self {
-            node: HttpNode::new(&opts.rpc),
-            sol: SolRpc::new(&opts.sol_rpc),
+            node: HttpNode::new(&rpc),
+            sol: SolRpc::new(&sol_rpc),
+            rpc,
+            sol_rpc,
+            pool,
             opts,
             key,
             sol_key,

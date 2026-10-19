@@ -230,7 +230,10 @@ pub fn gather(ctx: &Ctx) -> Snapshot {
 
     // pool (optional service)
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(800)).build();
-    let get = |path: &str| -> Option<Value> { agent.get(&format!("{}{}", ctx.opts.pool.trim_end_matches('/'), path)).call().ok()?.into_json().ok() };
+    let get = |path: &str| -> Option<Value> {
+        let base = ctx.pool.as_deref()?;
+        agent.get(&format!("{}{}", base.trim_end_matches('/'), path)).call().ok()?.into_json().ok()
+    };
     sn.pool = get("/stats");
     if sn.pool.is_some() {
         if let Some(me) = &sn.me {

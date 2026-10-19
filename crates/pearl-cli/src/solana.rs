@@ -16,10 +16,78 @@ use sha2::{Digest, Sha256};
 
 pub type Pubkey = [u8; 32];
 
-/// token/programs/bridge `declare_id!`.
-pub const BRIDGE_PROGRAM: &str = "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8";
-/// token/programs/storefront `declare_id!`.
-pub const STOREFRONT_PROGRAM: &str = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr";
+/// Network profile: endpoints and our Solana program ids (`declare_id!`; the devnet ids
+/// come from the `devnet` feature build, docs/DEVNET.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Network {
+    Devnet,
+    Localnet,
+}
+
+pub struct Profile {
+    pub rpc: &'static str,
+    pub sol_rpc: &'static str,
+    pub pool: Option<&'static str>,
+    pub bridge: &'static str,
+    pub storefront: &'static str,
+    pub reserve: &'static str,
+    pub lightclient: &'static str,
+}
+
+pub const LOCALNET: Profile = Profile {
+    rpc: "http://127.0.0.1:10630",
+    sol_rpc: "http://127.0.0.1:10600",
+    pool: Some("http://127.0.0.1:10663"),
+    bridge: "7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8",
+    storefront: "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr",
+    reserve: "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p",
+    lightclient: "BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5",
+};
+
+pub const DEVNET: Profile = Profile {
+    rpc: "https://rpc.64-95-12-116.sslip.io",
+    sol_rpc: "https://api.devnet.solana.com",
+    pool: None,
+    bridge: "3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN",
+    storefront: "9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu",
+    reserve: "8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi",
+    lightclient: "47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m",
+};
+
+impl Network {
+    pub fn profile(self) -> &'static Profile {
+        match self {
+            Network::Devnet => &DEVNET,
+            Network::Localnet => &LOCALNET,
+        }
+    }
+}
+
+static NETWORK: std::sync::OnceLock<Network> = std::sync::OnceLock::new();
+
+/// Set once per process by `Ctx::new` (tests always use localnet).
+pub fn set_network(n: Network) {
+    let _ = NETWORK.set(n);
+}
+
+pub fn profile() -> &'static Profile {
+    NETWORK.get().copied().unwrap_or(Network::Localnet).profile()
+}
+
+/// token/programs/bridge `declare_id!` of the active network.
+pub fn bridge_program() -> Pubkey {
+    pk(profile().bridge)
+}
+
+/// token/programs/storefront `declare_id!` of the active network.
+pub fn storefront_program() -> Pubkey {
+    pk(profile().storefront)
+}
+
+/// token/programs/reserve `declare_id!` of the active network.
+pub fn reserve_program() -> Pubkey {
+    pk(profile().reserve)
+}
 pub const ATA_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 pub const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const SYSTEM_PROGRAM: Pubkey = [0; 32];
@@ -61,16 +129,16 @@ pub fn ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
 }
 
 pub fn bridge_config_pda() -> Pubkey {
-    find_pda(&[b"config"], &pk(BRIDGE_PROGRAM)).0
+    find_pda(&[b"config"], &bridge_program()).0
 }
 
 pub fn storefront_config_pda() -> Pubkey {
-    find_pda(&[b"config"], &pk(STOREFRONT_PROGRAM)).0
+    find_pda(&[b"config"], &storefront_program()).0
 }
 
 /// Storefront buyback vault (system-owned, data-less): holds the order shares until a buy.
 pub fn buyback_vault_pda() -> Pubkey {
-    find_pda(&[b"buyback"], &pk(STOREFRONT_PROGRAM)).0
+    find_pda(&[b"buyback"], &storefront_program()).0
 }
 
 /// The mining reserve's token account: ATA(reserve creator PDA, mint, Token-2022).
@@ -79,13 +147,13 @@ pub fn reserve_ata(reserve_program: &Pubkey, mint: &Pubkey) -> Pubkey {
 }
 
 pub fn deposit_pda(nonce: u64) -> Pubkey {
-    find_pda(&[b"deposit", &nonce.to_le_bytes()], &pk(BRIDGE_PROGRAM)).0
+    find_pda(&[b"deposit", &nonce.to_le_bytes()], &bridge_program()).0
 }
 
 /// `Processed ["processed", [chain], nonce]`: CHAIN_AGENT = a released withdrawal,
 /// CHAIN_TOKEN = the refund record of a Solana deposit.
 pub fn processed_pda(chain: u8, nonce: u64) -> Pubkey {
-    find_pda(&[b"processed", &[chain], &nonce.to_le_bytes()], &pk(BRIDGE_PROGRAM)).0
+    find_pda(&[b"processed", &[chain], &nonce.to_le_bytes()], &bridge_program()).0
 }
 
 /// Anchor instruction discriminator `sha256("global:<name>")[..8]`.
@@ -583,7 +651,7 @@ pub fn deposit_ix(cfg: &BridgeConfig, sender: &Pubkey, amount_spl: u64, agent_re
     data.extend_from_slice(&amount_spl.to_le_bytes());
     data.extend_from_slice(agent_recipient);
     Ix {
-        program: pk(BRIDGE_PROGRAM),
+        program: bridge_program(),
         accounts: vec![
             Meta::ws(*sender),
             Meta::ws(*sender),
@@ -628,7 +696,7 @@ mod tests {
     #[test]
     fn pda_and_ata_known_values() {
         // Vectors from @solana/web3.js findProgramAddressSync (scripts/demo/node_modules).
-        let (a, bump) = find_pda(&[b"config"], &pk(BRIDGE_PROGRAM));
+        let (a, bump) = find_pda(&[b"config"], &bridge_program());
         assert_eq!((b58(&a).as_str(), bump), ("3bFavSyLdta8R3fqG156PReV7J8xqA95oELVdRvjpQvf", 255));
         assert_eq!(b58(&processed_pda(CHAIN_AGENT, 3)), "B7axfUiHmBbsDsixZGCLUYDX354P1fSZ1HRFPbQm3LK7");
         let owner = pk("4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T");

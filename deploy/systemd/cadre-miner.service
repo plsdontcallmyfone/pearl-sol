@@ -1,0 +1,16 @@
+[Unit]
+Description=Cadre devnet miner (block producer; --deliver on box 0 only)
+After=cadre-node.service
+Requires=cadre-node.service
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/miner.env
+WorkingDirectory=/var/lib/lode
+ExecStart=/bin/sh -c 'exec /opt/lode/bin/pearl-miner --rpc http://127.0.0.1:10630 --payout /etc/lode/keys/miner.json --threads $MINER_THREADS --stats-secs 60 --results-dir /var/lib/lode/results $MINER_EXTRA'
+Nice=10
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
