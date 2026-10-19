@@ -60,6 +60,9 @@ pub async fn serve_http(addr: SocketAddr, mb: Mailbox) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", post(http_rpc))
         .route("/health", get(|| async { "ok" }))
+        // a putBlob of the largest blob (blobs::MAX_BLOB_BYTES_LIMIT, 7 MiB) is about 9.4 MiB of
+        // base64 JSON; axum's default 2 MiB limit refused every blob over about 1.5 MiB
+        .layer(axum::extract::DefaultBodyLimit::max(12 << 20))
         .with_state(mb);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "HTTP JSON-RPC listening");
