@@ -33,8 +33,10 @@ case "${1:-}" in
     scpb 0 "lode@$BOX0_IP:/opt/lode/bin/agent-node" "lode@$BOX0_IP:/opt/lode/bin/pearl-miner" "$tmp/"
     for n in 1 2; do
       [[ -n "$(ip_of $n)" ]] || continue
-      scpb "$n" "$tmp/agent-node" "$tmp/pearl-miner" "lode@$(ip_of $n):/opt/lode/bin/"
-      sshb "$n" lode 'chmod 755 /opt/lode/bin/*; sha256sum /opt/lode/bin/agent-node /opt/lode/bin/pearl-miner'
+      # copy beside the running binaries, then rename (overwriting a running executable fails: text file busy)
+      scpb "$n" "$tmp/agent-node" "lode@$(ip_of $n):/opt/lode/bin/agent-node.new"
+      scpb "$n" "$tmp/pearl-miner" "lode@$(ip_of $n):/opt/lode/bin/pearl-miner.new"
+      sshb "$n" lode 'cd /opt/lode/bin && chmod 755 agent-node.new pearl-miner.new && mv -f agent-node.new agent-node && mv -f pearl-miner.new pearl-miner && sha256sum agent-node pearl-miner'
     done
     ;;
   install)
