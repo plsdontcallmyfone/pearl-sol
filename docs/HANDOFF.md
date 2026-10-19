@@ -563,6 +563,40 @@ CLAUDE.md "Who is working on what".
      state, ticket rejection after the replay check, buyer-named evaluators through the
      gateway API (gateway agent's scope).
 
+17. CADRE INFERENCE: STANDING JOBS + PREPAID GATEWAY (SYNTHESIS item 3, owner decisions 2026-10-18:
+   prepaid balance, OpenAI-compatible gateway, receipts, measured throughput). Demo step 11 PASSES
+   on the test box 2026-10-19 (11/11 in 740.5 s, log ~/demo-takeover2.log on the box): RegisterModel
+   Llama-3.2-1B int7 (144 matrices, k shards <= 2048, 835 blobs, 1.78 GB, upload 55 s); x402 top-up
+   of 256 rows (95411375 lamports); wallet-signed chat completion and streamed completion with
+   receipts (ticket, order, rows, charged lamports, status + explorer links); 2 rounds, 288 standing
+   jobs, 288 blocks; ticket completed (56 of 256 rows used, W pro rata), Order finalized by
+   finalize_order_proof; settled 471 s after payment.
+   - Root causes fixed in the takeover: the token validator kept only 10000 shreds (about 6 s of
+     50 ms slots), so the demo could not find the finalize tx (scripts/localnet.sh now keeps 5M,
+     LOCALNET_LEDGER_SHREDS); cadre-api's pass-through used fetch with a whole-reply 300 s
+     AbortSignal (and undici's own 300 s headers/body timeouts), which cut a slow completion: it now
+     uses node:http with a 30 min reply-headers limit and a 10 min stream-idle limit; the worker's
+     torch pool oversubscribed under the miner (demo now runs it at cores / 2). The putBlob 413 was
+     the node's default blob quota under a 1.78 GB model (fixed earlier by DEVNET_BLOBS in the demo).
+   - Measured throughput (real runs only; data in docs/measurements/cadre-worker-2026-10-19.jsonl):
+     4-core test box, torch 2.5.1 CPU. bench.py at load 7: 3.1 tok/s decode (8-token prompt), 2.9
+     (64), 1.0 (256). Under the demo miner (load about 20): 0.41 tok/s at 4 threads, 1.33 at 2,
+     1.04 at 1. Through the gateway in the passing demo (2 threads, miner mining the round's
+     segments): 0.37 tok/s (chat, ttft 10.8 s) and 0.63 tok/s (stream, ttft 3.5 s). A GPU worker
+     is the obvious next step; nothing here is a GPU figure.
+   - Known limit: the registered model is the BASE unsloth/Llama-3.2-1B (not Instruct), so chat
+     answers are base-model text (the demo's chat reply repeats the question; the text completion
+     answers "Paris"). Registering an Instruct quantization is a model choice (SPEC 9).
+   - Cadre web asks (CLAUDE.md) all served in cadre-api (8b31544, 0f912c2): CORS allows
+     X-Cadre-Wallet + DELETE and exposes the receipt headers; prepaid proxied by default
+     (/v1/inference/balance, balance/topup(+quote), balance/close, prepaid/{account}); pass-through
+     serves keys, balance, prepaid, receipts, stats; served_by_gateway compares cadre.model_id (live:
+     true); unsigned pump-buy (pump buy_exact_quote_in_v3 on the curve, PumpSwap after), crank-buyback,
+     fund-mining (simulated against the box's real pump/storefront/reserve programs); credit line from
+     the payout lien in /v1/accounts; card_probe on agents; registered agents listed before paid
+     work. Test box cadre-api runs main with CADRE_PREPAID=gateway. ~/cadre-web sends X-Cadre-Wallet
+     (2ddf965).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

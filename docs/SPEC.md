@@ -873,6 +873,11 @@ balance's x402 price / R (the storefront knobs over `2 x macs_per_row x R`, 5.1/
 prompt and completion tokens cost the same. A DEFAULT, not a market price (owner decision
 open); no USD figure is shown because the stack has no price source.
 
+Measured throughput (2026-10-19, 4-core CPU test box, int7 torch worker, real runs only, data
+in docs/measurements/cadre-worker-2026-10-19.jsonl): 1.0-3.1 decode tokens/s with the box
+otherwise lightly loaded, 0.4-1.4 under the demo's miner, 0.37-0.63 through the gateway in the
+passing demo. `GET /v1/stats` serves the gateway's own measured figures; nothing is estimated.
+
 Settlement rounds: every `--round-secs` (default 60) the gateway posts one round per ticket
 with served rows (A blobs + PostSegments); it delivers and completes a ticket when its free
 rows drop below `--min-free-rows` (default 64), when it is within `--close-margin-blocks`
