@@ -94,5 +94,16 @@ class Cadre(unittest.TestCase):
         self.assertEqual(r["completion_tokens"], len(r["output_ids"]))
 
 
+class IntMm(unittest.TestCase):
+    def test_small_row_product_is_exact_and_owns_only_its_rows(self):
+        # decode steps multiply 1 row; the padded 32-row product must not stay alive behind a view
+        g = torch.Generator().manual_seed(1)
+        v = torch.randint(-64, 65, (1, 256), dtype=torch.int8, generator=g)
+        qw = torch.randint(-64, 65, (96, 256), dtype=torch.int8, generator=g)
+        c = worker.int_mm(v, qw)
+        self.assertTrue(torch.equal(c, v.int() @ qw.int().t()))
+        self.assertEqual(c.untyped_storage().nbytes(), 1 * 96 * 4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

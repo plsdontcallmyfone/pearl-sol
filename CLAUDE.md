@@ -44,35 +44,26 @@ these two validators and stop them when idle.
 `lsof -ti :<port>` before binding. Kill by PID only. Always pass `-u` and `-k`
 explicitly; never touch `solana config`.
 
-## Cadre web asks (from ~/cadre-web, Cadre website app row; updated 2026-10-19 by the takeover)
+## Cadre web asks (from ~/cadre-web, Cadre website app row; ALL SERVED 2026-10-19 by the standing jobs / inference takeover)
 
 The site reads only cadre-api (`NEXT_PUBLIC_CADRE_API`) and signs only in the Cadre Wallet
 (`window.pearl` for the chain, Wallet Standard "Cadre Wallet" for Solana). Anything missing
 shows "Unavailable" with the API's reason in the UI; nothing is stubbed with data.
-SERVED = in cadre-api today and used by the site. OPEN = still needed.
 
-- SERVED: /v1/summary, /v1/feed, /v1/blocks|jobs|orders/{id}, /v1/tx/chain/{hash},
+- SERVED earlier: /v1/summary, /v1/feed, /v1/blocks|jobs|orders/{id}, /v1/tx/chain/{hash},
   /v1/accounts/{addr}(+/balances), /v1/bridge, /v1/bridge/transfers, /v1/bridge/quote,
   /v1/tx/bridge-deposit, /v1/tx/bridge-lock, /v1/pump/quote, /v1/crank, /v1/mining,
   /v1/miners/{addr}, /v1/agents, /v1/agents/{account}, /v1/inference/models,
   /v1/inference/receipts, /v1/inference/x402/payment-tx, /v1/openai/* pass-through.
-- OPEN `POST /v1/tx/pump-buy`, `/v1/tx/crank-buyback`, `/v1/tx/fund-mining` (501 today): the
-  site's Buy and Crank buttons call them and say "not live yet" until they return a tx.
-- OPEN prepaid: cadre-api proxies gateway `/v1/prepaid/...` but SPEC 5.4 names `/v1/balance`
-  and `/v1/balance/topup`; `GET /v1/balance` needs wallet auth, so the unauthenticated
-  `GET /v1/inference/prepaid/{account}` cannot read it as is (accept signed headers).
-- OPEN pass-through headers: allow (CORS ALLOW_HEADERS) and forward `X-Cadre-Wallet` (SPEC 5.4);
-  today only `x-cadre-account` / `x-cadre-nonce` pass, and a browser request carrying
-  X-Cadre-Wallet fails CORS preflight, so the site sends X-Cadre-Account until then. Also add
-  the receipt headers (X-Cadre-Request, -Ticket, -Order, -Rows, -Charged-Lamports, -Receipt,
-  -Explorer) to EXPOSE_HEADERS so browsers can read them.
-- OPEN `/v1/inference/models`: `served_by_gateway` compares the gateway's `id` (registry name,
-  e.g. llama-3.2-1b-w7a7) with the chain's `model_id` (hex), so it reads false while served.
-- OPEN pass-through paths: allow `keys` (POST /v1/keys, DELETE /v1/keys/{id}) so the site's
-  "Create API key" works through /v1/openai/keys.
-- OPEN `/v1/accounts/{addr}`: Agent Credit line (`credit`) if any; agent `registration`
-  is null for registered agents in /v1/agents (demo-agent shows none).
-- OPEN `/v1/agents/{account}`: `card_probe {ok, status, checked_at}` for the card URI.
+- SERVED 2026-10-19 (8b31544, 0f912c2, later): unsigned `POST /v1/tx/pump-buy`, `/v1/tx/crank-buyback`,
+  `/v1/tx/fund-mining` (409 with the program's reason when it would fail now; `{payer}` accepted as
+  the cranker); prepaid proxied by default (`GET /v1/inference/prepaid/{account}`, wallet-signed
+  `GET /v1/inference/balance`, `POST /v1/inference/balance/topup` (+`/quote`, `/close`), old
+  `/v1/inference/prepaid/topup` kept); CORS allows `X-Cadre-Wallet` and DELETE, receipt headers
+  copied and exposed; pass-through serves `keys` (POST, DELETE), balance, prepaid, receipts, stats;
+  `served_by_gateway` compares the gateway's `cadre.model_id`; `/v1/accounts/{addr}.credit` (the payout
+  lien as the credit line); `card_probe` on agents and the list; registered agents listed before
+  paid work. Details in docs/API.md. ~/cadre-web sends X-Cadre-Wallet since 2ddf965.
 
 ## Who is working on what
 

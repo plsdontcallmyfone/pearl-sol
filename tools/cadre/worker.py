@@ -60,9 +60,13 @@ def int_mm(v, qw):
     """Exact int32 C = v @ qw^T (v: r x k int8, qw: n x k int8). _int_mm wants > 16 rows."""
     r = v.shape[0]
     pad = max(32, -(-r // 8) * 8)
-    if pad != r:
-        v = torch.cat([v, torch.zeros(pad - r, v.shape[1], dtype=torch.int8)])
-    return torch._int_mm(v, qw.t())[:r]
+    if pad == r:
+        return torch._int_mm(v, qw.t())
+    v = torch.cat([v, torch.zeros(pad - r, v.shape[1], dtype=torch.int8)])
+    # clone: a [:r] view keeps the whole padded product alive, and generate() keeps every
+    # step's C for the receipt (32x the memory per decoded token: the test-box worker grew
+    # about 50 MB per token and was OOM-killed at 7 GB)
+    return torch._int_mm(v, qw.t())[:r].clone()
 
 
 def quant_act(x):
