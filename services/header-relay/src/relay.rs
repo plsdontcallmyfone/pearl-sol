@@ -559,6 +559,10 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         let states: HashMap<Signature, TxState> = sigs.iter().copied().zip(self.ledger.states(&sigs)?).collect();
         let mut cu_fail = false;
+        // one isBlockhashValid per distinct blockhash per poll (the txs fired in one pass share
+        // theirs): asking once per pending tx overran a public RPC's per-method limit, and the
+        // 429 backoff made passes outlive blockhashes, so txs expired and were re-fired forever
+        let mut bh_valid: HashMap<Hash, bool> = HashMap::new();
         let mut check = |t: &mut Tx, ledger: &mut L, stats: &mut Stats| -> Result<Option<String>> {
             let Some(sig) = t.sig else { return Ok(None) };
             match states.get(&sig) {
@@ -571,8 +575,18 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                     return Ok(Some(e.clone()));
                 }
                 _ => {
-                    if t.sent.elapsed() > Duration::from_secs(20) && !ledger.blockhash_valid(&t.bh)? {
-                        Self::fire(ledger, t, bh, stats)?; // expired unconfirmed: send again
+                    if t.sent.elapsed() > Duration::from_secs(20) {
+                        let ok = match bh_valid.get(&t.bh) {
+                            Some(v) => *v,
+                            None => {
+                                let v = ledger.blockhash_valid(&t.bh)?;
+                                bh_valid.insert(t.bh, v);
+                                v
+                            }
+                        };
+                        if !ok {
+                            Self::fire(ledger, t, bh, stats)?; // expired unconfirmed: send again
+                        }
                     }
                 }
             }
