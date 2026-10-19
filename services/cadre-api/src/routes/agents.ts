@@ -16,6 +16,28 @@ import { optionalExport } from "../optional.ts";
 import { minerStats } from "./mining.ts";
 import { intParam } from "./stats.ts";
 import { addr } from "./wallet.ts";
+import { CardProber } from "../../../../apps/explorer/src/agentcard.ts";
+
+/** One card prober per process (the explorer's rules: http(s) only, no private hosts, size cap, re-probe interval). */
+let prober = new CardProber();
+/** Tests swap in a prober with a fake fetcher. */
+export function useCardProber(p: CardProber) {
+  prober = p;
+}
+
+/** The agent card probe for the API: `{ok, status, checked_at, ...}`; null when there is no card URI. */
+export async function cardProbe(account: string, uri: string | null | undefined, wait: boolean) {
+  if (!uri) return null;
+  let st = prober.get(account);
+  if (!st || st.uri !== uri || wait) {
+    const p = prober.probe(account, uri);
+    if (wait) st = await p;
+    else p.catch(() => null);
+  }
+  st = prober.get(account);
+  if (!st || st.uri !== uri) return { ok: null, status: "pending", checked_at: null, error: null, last_ok_at: null, uri };
+  return { ok: st.ok, status: prober.health(st), checked_at: st.checked_at ? new Date(st.checked_at).toISOString() : null, error: st.error, last_ok_at: st.last_ok_at ? new Date(st.last_ok_at).toISOString() : null, uri, card_name: (st.card as any)?.name ?? null };
+}
 
 const s = (v: bigint) => v.toString();
 const pct = (a: bigint, b: bigint) => (b === 0n ? null : Number((a * 1_000_000n) / b));
@@ -130,12 +152,15 @@ export function registerAgents(api: Api, d: Deps) {
       const pa = big(x.as_server.completed.protocol_fees), pb = big(y.as_server.completed.protocol_fees);
       return pb > pa ? 1 : pb < pa ? -1 : x.account.localeCompare(y.account);
     });
-    const withWork = c.query.get("include_idle") === "1" ? rows : rows.filter((r) => r.as_server.completed.count > 0 || r.as_server.delivered_then_expired.count > 0 || r.as_miner.blocks.paid_job > 0);
+    // registered agents (RegisterAgent) are listed even before their first paid work
+    const regs = new Map(await Promise.all(rows.map(async (r) => [r.account, await d.chain<any>("getAgent", { account: r.account }).catch(() => null)] as const)));
+    const withWork = c.query.get("include_idle") === "1" ? rows : rows.filter((r) => regs.get(r.account) || r.as_server.completed.count > 0 || r.as_server.delivered_then_expired.count > 0 || r.as_miner.blocks.paid_job > 0);
     const pageRows = withWork.slice(offset, offset + limit);
     const agents = await Promise.all(
       pageRows.map(async (r) => ({
         account: r.account,
-        registration: await d.chain<any>("getAgent", { account: r.account }).catch(() => null),
+        registration: regs.get(r.account) ?? null,
+        card_probe: await cardProbe(r.account, regs.get(r.account)?.uri, false),
         paid_protocol_fees: r.as_server.completed.protocol_fees,
         sol_settled_via_storefront: r.as_server.completed.sol_settled_via_storefront,
         distinct_payers: r.as_server.distinct_payers,
@@ -156,7 +181,8 @@ export function registerAgents(api: Api, d: Deps) {
     const a = addr(c.params.account, "account");
     const ext = await optionalExport<(ix: unknown, a: string) => any>("../../../apps/explorer/src/agents.ts", ["agentModel"]);
     const registration = await d.chain<any>("getAgent", { account: a }).catch(() => null);
-    if (ext) return { source: "apps/explorer/src/agents.ts", registration, ...(await ext(d.ix, a)) };
-    return { source: "cadre-api (REPUTATION 5.1 subset over the explorer index)", registration, card_uri: registration?.uri || null, ...profile(d, a) };
+    const card_probe = await cardProbe(a, registration?.uri, true);
+    if (ext) return { source: "apps/explorer/src/agents.ts", registration, card_probe, ...(await ext(d.ix, a)) };
+    return { source: "cadre-api (REPUTATION 5.1 subset over the explorer index)", registration, card_uri: registration?.uri || null, card_probe, ...profile(d, a) };
   }, { cache: 5 });
 }

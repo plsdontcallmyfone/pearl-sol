@@ -119,6 +119,35 @@ export async function transfersModel(d: Deps, owner: string) {
   };
 }
 
+/** Agent Credit's on-chain program (ac_pearl, ~/agent-credit Anchor.toml): reads payout liens. */
+export const AGENT_CREDIT_PROGRAM = process.env.AGENT_CREDIT_PROGRAM ?? "9CQZ262KH4ECi9d22Jhj4bzuQ25zYFzruXsawLaUfyH3";
+
+/**
+ * The account's Agent Credit line as the chain enforces it: the payout lien (SPEC 4.4,
+ * SetRoute) that repays the lender from the account's income. `limit` is the lien's cap
+ * (chain units), `repaid` what it routed so far. Null when the account never set a lien.
+ * `agent_credit_program.deployed` says whether Agent Credit's Solana program is on this cluster.
+ */
+export async function creditLine(d: Deps, route: any) {
+  if (!route) return null;
+  const [prog] = await d.accounts([AGENT_CREDIT_PROGRAM]).catch(() => [null]);
+  return {
+    source: "chain payout lien (SPEC 4.4 SetRoute)",
+    active: !!route.active,
+    lender: route.solana_recipient,
+    limit: route.cap,
+    repaid: route.routed,
+    withdrawn: route.withdrawn,
+    pending: route.pending,
+    remaining: route.remaining_cap ?? null,
+    route_bps: route.route_bps,
+    until_height: route.until_height,
+    cleared: !!route.cleared,
+    set_height: route.set_height,
+    agent_credit_program: { program: AGENT_CREDIT_PROGRAM, deployed: !!prog && /^BPFLoader/.test((prog as any).owner ?? "") },
+  };
+}
+
 export function registerWallet(api: Api, d: Deps) {
   api.get("/v1/accounts/:addr", async (c) => {
     const a = addr(c.params.addr);
@@ -130,10 +159,12 @@ export function registerWallet(api: Api, d: Deps) {
       solanaBalances(d, a).catch((e) => ({ error: (e as Error).message })),
       d.solana<any[]>("getSignaturesForAddress", [a, { limit: intParam(c.query, "sig_limit", 20, 1, 100), commitment: "confirmed" }]).catch(() => []),
     ]);
+    const lien = acct.route ?? route ?? null;
     return {
       address: a,
-      chain: { balance: acct.balance, nonce: acct.nonce, route: acct.route ?? route ?? null, chain_id: d.ix.chainInfo?.chain_id ?? null },
+      chain: { balance: acct.balance, nonce: acct.nonce, route: lien, chain_id: d.ix.chainInfo?.chain_id ?? null },
       agent,
+      credit: await creditLine(d, lien),
       solana: sol,
       mining: minerStats(d, a),
       profile: `/v1/agents/${a}`,

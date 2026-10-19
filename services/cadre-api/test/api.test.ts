@@ -11,6 +11,8 @@ import { configFromEnv, Deps } from "../src/deps.ts";
 import { build } from "../src/app.ts";
 import { J1, MINER, MODEL, OWNER, POSTER, SERVER, SF_WALLET, T1, h64, makeState, startFakeStack, type FakeState } from "./fake.ts";
 import { parseWireTx } from "../src/sol.ts";
+import { useCardProber } from "../src/routes/agents.ts";
+import { CardProber, cardConfig } from "../../../apps/explorer/src/agentcard.ts";
 
 let st: FakeState;
 let stack: Awaited<ReturnType<typeof startFakeStack>>;
@@ -165,6 +167,29 @@ test("stats: summary, feed, blocks, jobs, orders, payers, supply, reserve, reven
   assert.equal(rev.body.unique_payers_screened, 1);
 });
 
+test("agents: card probe on the profile and in the list; credit line from the payout lien", async () => {
+  const seen: string[] = [];
+  useCardProber(new CardProber(cardConfig(), async (uri: string) => (seen.push(uri), { ok: true as const, card: { name: "server-one card" } as any })));
+  const p = await get(`/v1/agents/${SERVER}?probe=1`);
+  assert.equal(p.body.registration.name, "server-one");
+  assert.equal(p.body.card_probe.ok, true);
+  assert.equal(p.body.card_probe.status, "ok");
+  assert.equal(p.body.card_probe.card_name, "server-one card");
+  assert.match(p.body.card_probe.checked_at, /^\d{4}-/);
+  assert.deepEqual(seen, ["https://agent.example/card.json"]);
+  const l = await get("/v1/agents?sort=paid&limit=7");
+  const row = l.body.agents.find((a: any) => a.account === SERVER);
+  assert.equal(row.registration.name, "server-one");
+  assert.equal(row.card_probe.ok, true);
+  const m = await get(`/v1/accounts/${MINER}`);
+  assert.equal(m.body.credit.limit, "1000000000000000");
+  assert.equal(m.body.credit.repaid, "1000000500");
+  assert.equal(m.body.credit.lender, SF_WALLET);
+  assert.equal(m.body.credit.active, true);
+  assert.equal(m.body.credit.agent_credit_program.deployed, false);
+  assert.equal((await get(`/v1/accounts/${OWNER}`)).body.credit, null);
+});
+
 test("agents: profile and list sorted by screened P, never by counts", async () => {
   const p = await get(`/v1/agents/${SERVER}`);
   assert.equal(p.status, 200);
@@ -262,7 +287,8 @@ test("inference: models with prices, quote, receipts, pass-through (402, paid, S
   const m = await get("/v1/inference/models?prompt_tokens=6&max_tokens=10");
   assert.equal(m.status, 200, JSON.stringify(m.body));
   assert.equal(m.body.models[0].model_id, MODEL);
-  assert.equal(m.body.models[0].served_by_gateway, true);
+  assert.equal(m.body.models[0].served_by_gateway, true, "gateway id is the name, model_id under cadre");
+  assert.equal(m.body.models[0].gateway.id, "llama-test");
   assert.equal(m.body.models[0].price.price_lamports, "25111112");
   const q = await get(`/v1/inference/quote?model_id=${MODEL}&prompt_tokens=6&max_tokens=10`);
   assert.equal(q.body.ticket.model_id, MODEL);
@@ -280,12 +306,61 @@ test("inference: models with prices, quote, receipts, pass-through (402, paid, S
   assert.match(sse.headers.get("content-type")!, /event-stream/);
   assert.match(await sse.text(), /data: \[DONE\]/);
   const models = await get("/v1/openai/models");
-  assert.equal(models.body.data[0].id, MODEL);
+  assert.equal(models.body.data[0].cadre.model_id, MODEL);
   assert.equal((await get("/v1/openai/admin")).status, 404);
+});
+
+test("prepaid through the gateway: balance (public + wallet-signed), top-up 402 -> paid, quote, close, keys, receipt headers, CORS", async () => {
   const pp = await get(`/v1/inference/prepaid/${OWNER}`);
-  assert.equal(pp.status, 501);
-  assert.equal(pp.body.error.code, "pending_upstream");
-  assert.equal((await post("/v1/inference/prepaid/topup", {})).status, 501);
+  assert.equal(pp.status, 200, JSON.stringify(pp.body));
+  assert.equal(pp.body.rows_free, 200);
+  // wallet auth headers are forwarded unchanged; the site's old X-Cadre-Account is sent as X-Cadre-Wallet
+  const auth = { "x-cadre-wallet": OWNER, "x-cadre-timestamp": "1", "x-cadre-signature": "ab".repeat(64) };
+  const b = await get("/v1/inference/balance", auth);
+  assert.equal(b.body.wallet, OWNER);
+  assert.equal(st.gatewayCalls.at(-1)!.path, "/v1/balance");
+  assert.equal(st.gatewayCalls.at(-1)!.headers["x-cadre-signature"], "ab".repeat(64));
+  await get("/v1/inference/balance", { "x-cadre-account": OWNER, "x-cadre-timestamp": "1", "x-cadre-signature": "cd".repeat(64) });
+  assert.equal(st.gatewayCalls.at(-1)!.headers["x-cadre-wallet"], OWNER);
+  assert.equal((await get(`/v1/inference/balance?wallet=${OWNER}`)).body.wallet, OWNER);
+  const t402 = await post("/v1/inference/balance/topup", { rows: 256 });
+  assert.equal(t402.status, 402);
+  assert.equal(t402.body.accepts[0].maxAmountRequired, "95411375");
+  const q = await post("/v1/inference/balance/topup/quote", { rows: 256 }, { "x-payment": "ignored" });
+  assert.equal(q.status, 200);
+  assert.equal(q.body.price_lamports, "95411375");
+  assert.equal(st.gatewayCalls.at(-1)!.headers["x-payment"], undefined);
+  const paid = await post("/v1/inference/prepaid/topup", { rows: 256 }, { "x-payment": "pay" });
+  assert.equal(paid.status, 201);
+  assert.equal(st.gatewayCalls.at(-1)!.path, "/v1/balance/topup");
+  assert.equal((await post("/v1/inference/balance/close", {}, auth)).status, 202);
+  // keys through the pass-through (POST and DELETE), body byte for byte
+  const k = await post("/v1/openai/keys", {}, auth);
+  assert.equal(k.status, 201);
+  assert.equal(st.gatewayCalls.at(-1)!.body, "{}");
+  const del = await fetch(base + "/v1/openai/keys/k1", { method: "DELETE", headers: auth });
+  assert.equal(del.status, 200);
+  assert.equal(st.gatewayCalls.at(-1)!.method, "DELETE");
+  // receipt headers copied and exposed
+  const c = await post("/v1/openai/completions", { prompt: "hi" }, auth);
+  assert.equal(c.headers.get("x-cadre-ticket"), T1);
+  assert.equal(c.headers.get("x-cadre-explorer"), "http://e/job/" + T1);
+  assert.match(c.headers.get("access-control-expose-headers")!, /x-cadre-charged-lamports/);
+  const pre = await fetch(base + "/v1/openai/chat/completions", { method: "OPTIONS", headers: { origin: "http://site", "access-control-request-headers": "x-cadre-wallet" } });
+  assert.equal(pre.status, 204);
+  assert.match(pre.headers.get("access-control-allow-headers")!, /x-cadre-wallet/);
+  assert.match(pre.headers.get("access-control-allow-methods")!, /DELETE/);
+});
+
+test("prepaid off: 501 pending_upstream", async () => {
+  const s2 = await boot({ CADRE_PREPAID: "off" });
+  try {
+    const r = await fetch(s2.url + `/v1/inference/prepaid/${OWNER}`);
+    assert.equal(r.status, 501);
+    assert.equal(((await r.json()) as any).error.code, "pending_upstream");
+  } finally {
+    s2.s.close();
+  }
 });
 
 test("market: pump quote from the curve, crank view; unsigned pump/crank txs pending", async () => {

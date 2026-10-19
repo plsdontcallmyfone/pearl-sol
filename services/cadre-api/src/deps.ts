@@ -4,6 +4,9 @@
 
 import { Indexer } from "../../../apps/explorer/src/indexer.ts";
 import { JsonRpc, SolanaRpc } from "../../../apps/explorer/src/rpc.ts";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
 import { ApiError } from "./http.ts";
 import { bridgeConfigPda, decodeBridgeConfig, type BridgeConfig } from "./sol.ts";
 
@@ -22,7 +25,7 @@ export interface Config {
   rateLimitPerMin: number;
   rateBurst: number;
   trustProxy: boolean;
-  /** Prepaid balances / top-ups: "off" until the gateway's prepaid API (SPEC 5.4) lands; "gateway" proxies it. */
+  /** Prepaid balances / top-ups: "gateway" (default) proxies the gateway's prepaid API (SPEC 5.4); "off" answers 501. */
   prepaid: "off" | "gateway";
   /** Cluster name shown to wallets (solana:<cluster>), e.g. localnet, devnet. */
   solanaCluster: string;
@@ -48,7 +51,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: stri
     rateLimitPerMin: Number(env.CADRE_RATE_LIMIT_PER_MIN ?? 300),
     rateBurst: Number(env.CADRE_RATE_BURST ?? 120),
     trustProxy: env.CADRE_TRUST_PROXY === "1",
-    prepaid: env.CADRE_PREPAID === "gateway" ? "gateway" : "off",
+    prepaid: env.CADRE_PREPAID === "off" ? "off" : "gateway",
     solanaCluster: env.SOLANA_CLUSTER ?? "localnet",
     network: env.CADRE_NETWORK ?? "localnet",
     publicUrl: opt("CADRE_PUBLIC_URL", null),
@@ -111,12 +114,33 @@ export class Deps {
     return v;
   }
 
-  /** GET/POST to an HTTP upstream with a timeout; returns the fetch Response. */
-  async upstream(name: "gateway" | "storefront" | "pool", path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+  /**
+   * GET/POST to an HTTP upstream; returns the fetch Response. `timeoutMs` bounds the whole
+   * exchange. With `idleMs` (streams, long completions) `timeoutMs` bounds only the time to the
+   * reply's headers and the body is cut only after `idleMs` without a byte, so a slow but live
+   * SSE stream or completion is never aborted mid-way.
+   */
+  async upstream(name: "gateway" | "storefront" | "pool", path: string, init: RequestInit & { timeoutMs?: number; idleMs?: number } = {}): Promise<Response> {
     const base = name === "gateway" ? this.cfg.gatewayUrl : name === "storefront" ? this.cfg.storefrontUrl : this.cfg.poolUrl;
     if (!base) throw new ApiError(501, "upstream_not_configured", `${name} is not configured on this deployment`);
+    const { timeoutMs, idleMs, ...rest } = init;
+    const url = base.replace(/\/$/, "") + path;
     try {
-      return await fetch(base.replace(/\/$/, "") + path, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 20_000) });
+      if (!idleMs) return await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs ?? 20_000) });
+      const ac = new AbortController();
+      let timer = setTimeout(() => ac.abort(new Error(`no reply headers in ${timeoutMs ?? 20_000} ms`)), timeoutMs ?? 20_000);
+      // node:http, not fetch: fetch (undici) has its own 300 s headers and body timeouts, which cut
+      // a completion that takes longer than 300 s to its first byte (found on the test box)
+      const r = await nodeFetch(url, rest, ac.signal);
+      clearTimeout(timer);
+      if (!r.body) return r;
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => ac.abort(new Error(`upstream idle for ${idleMs} ms`)), idleMs);
+      };
+      arm();
+      const body = r.body.pipeThrough(new TransformStream({ transform(chunk, ctl) { arm(); ctl.enqueue(chunk); }, flush() { clearTimeout(timer); } }));
+      return new Response(body, { status: r.status, statusText: r.statusText, headers: r.headers });
     } catch (e) {
       throw new ApiError(503, `${name}_unavailable`, `${name} unreachable: ${(e as Error).message.slice(0, 160)}`);
     }
@@ -133,4 +157,25 @@ export class Deps {
     }
     return { status: r.status, body, headers: r.headers };
   }
+}
+
+/** fetch over node:http(s) with no built-in timeouts: the caller's signal is the only limit. */
+export function nodeFetch(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const headers: Record<string, string> = {};
+    new Headers(init.headers as HeadersInit | undefined).forEach((v, k) => (headers[k] = v));
+    const body = init.body == null ? null : typeof init.body === "string" ? Buffer.from(init.body) : Buffer.from(init.body as Uint8Array);
+    if (body) headers["content-length"] = String(body.length);
+    const req = (u.protocol === "https:" ? httpsRequest : httpRequest)(u, { method: init.method ?? "GET", headers, signal }, (res) => {
+      const h = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) h.set(k, Array.isArray(v) ? v.join(", ") : v);
+      const status = res.statusCode ?? 502;
+      const noBody = status === 204 || status === 304 || init.method === "HEAD";
+      if (noBody) res.resume();
+      resolve(new Response(noBody ? null : (Readable.toWeb(res) as ReadableStream), { status, statusText: res.statusMessage, headers: h }));
+    });
+    req.on("error", reject);
+    req.end(body ?? undefined);
+  });
 }

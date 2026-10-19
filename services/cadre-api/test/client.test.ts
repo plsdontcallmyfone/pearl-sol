@@ -52,7 +52,7 @@ test("typed reads, ETag reuse, errors", async () => {
   assert.equal((await api.inferenceModels()).models[0].model_id, MODEL);
   assert.equal((await api.ready()).ready, true);
   await assert.rejects(api.block(999), (e: unknown) => e instanceof CadreApiError && e.status === 404 && e.code === "not_found");
-  await assert.rejects(api.prepaidBalance(OWNER), (e: unknown) => e instanceof CadreApiError && e.pending && e.code === "pending_upstream");
+  assert.equal((await api.prepaidBalance(OWNER)).rows_free, 200);
   assert.equal(formatUnits("1234500000", 9), "1.2345");
   assert.equal(formatUnits("5", 6), "0.000005");
 });

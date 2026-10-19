@@ -163,7 +163,7 @@ export async function startFakeStack(st: FakeState) {
       case "getDeposit": return p.solana_nonce === 3 ? { processed: true, height: 4, recipient: OWNER, amount_spl: "2000", confirmations: 8, final: true } : { processed: false };
       case "getAccount": return { account: p.account, balance: p.account === OWNER ? "5000000000" : "0", nonce: p.account === OWNER ? 3 : 0, route: null };
       case "getAgent": return p.account === SERVER ? { account: SERVER, name: "server-one", uri: "https://agent.example/card.json", registered_height: 2, updated_height: 2 } : null;
-      case "getRoute": return null;
+      case "getRoute": return p.account === MINER ? { account: MINER, solana_recipient: SF_WALLET, route_bps: 5000, until_height: 10279, cap: "1000000000000000", release_key: null, route_nonce: 0, set_height: 9, routed: "1000000500", pending: "500", withdrawn: "1000000000", cleared: false, active: true, remaining_cap: "999998999999500" } : null;
       case "getAccountTxs": return { account: p.account, txs: [], next: null, tip_height: st.height, finalized_height: st.height - 2 };
       case "getEscrow": return { escrow: key("escrow"), escrow_balance: "999999995000000000", pool: key("pool"), pool_balance: "1000000000", total_supply: "1000000000000000000", outside_escrow: "5000000000", outside_escrow_spl: "5000000", height: st.height };
       case "listModels": return { total: 1, models: [{ model_id: MODEL, name: "llama-test", macs_per_row: "1000", row_period: 4 }] };
@@ -224,7 +224,22 @@ export async function startFakeStack(st: FakeState) {
   const gateway = http((method, path, headers, body) => {
     st.gatewayCalls.push({ method, path, headers, body });
     if (path === "/health") return { status: 200, body: { ok: true } };
-    if (path === "/v1/models") return { status: 200, body: { data: [{ id: MODEL, name: "llama-test" }] } };
+    // like cadre-gateway: `id` is the registry name, the chain's hex id is cadre.model_id
+    if (path === "/v1/models") return { status: 200, body: { object: "list", data: [{ id: "llama-test", object: "model", cadre: { model_id: MODEL } }] } };
+    const bal = (w: string) => ({ wallet: w, tickets: [{ ticket_id: T1, order: "4", status: "open", rows: 256, rows_free: 200 }], rows_free: 200 });
+    if (path.startsWith("/v1/prepaid/") && method === "GET") return { status: 200, body: bal(path.slice("/v1/prepaid/".length)) };
+    if (path.startsWith("/v1/balance") && method === "GET") {
+      const w = headers["x-cadre-wallet"] ?? new URL(path, "http://x").searchParams.get("wallet");
+      return w ? { status: 200, body: bal(w) } : { status: 400, body: { error: { message: "authenticate, or pass ?wallet=ADDR" } } };
+    }
+    if (path === "/v1/balance/topup" && method === "POST") {
+      if (!headers["x-payment"]) return { status: 402, body: { x402Version: 1, error: "X-PAYMENT header is required", accepts: [{ scheme: "exact", network: "solana-localnet", maxAmountRequired: "95411375", payTo: SF_WALLET, extra: { feePayer: SF_WALLET, assetKind: "native" } }] } };
+      return { status: 201, body: { ticket_id: T1, order: "4", rows: 256, wallet: OWNER } };
+    }
+    if (path === "/v1/balance/close" && method === "POST") return headers["x-cadre-wallet"] ? { status: 202, body: { closing: 1 } } : { status: 400, body: { error: { message: "authenticate to close your balance" } } };
+    if (path === "/v1/keys" && method === "POST") return headers["x-cadre-wallet"] ? { status: 201, body: { key_id: "k1", api_key: "cadre_sk_00" } } : { status: 401, body: { error: { message: "wallet-signed" } } };
+    if (path.startsWith("/v1/keys/") && method === "DELETE") return { status: 200, body: { revoked: path.slice("/v1/keys/".length) } };
+    if (path === "/v1/completions" && method === "POST" && headers["x-cadre-wallet"]) return { status: 200, body: { text: "ok" }, headers: { "x-cadre-request": "req_1", "x-cadre-ticket": T1, "x-cadre-order": "4", "x-cadre-rows": "9", "x-cadre-charged-lamports": "123", "x-cadre-receipt": "http://g/v1/requests/req_1", "x-cadre-explorer": "http://e/job/" + T1 } };
     if (path === "/v1/completions" && method === "POST") {
       if (!headers["x-payment"]) return { status: 402, body: { x402Version: 1, error: "X-PAYMENT header is required", accepts: [{ scheme: "exact", network: "solana-localnet", maxAmountRequired: "24000000", payTo: SF_WALLET, asset: "So11111111111111111111111111111111111111112", extra: { feePayer: SF_WALLET, assetKind: "native", decimals: 9 } }] } };
       return { status: 201, body: { ticket_id: T1, text: "hi" }, headers: { "x-payment-response": "eyJzdWNjZXNzIjp0cnVlfQ==" } };

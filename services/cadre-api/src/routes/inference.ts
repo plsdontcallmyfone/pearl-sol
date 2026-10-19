@@ -2,9 +2,10 @@
 // from the chain, the x402 payment tx a wallet signs, and a pass-through to the inference
 // gateway's OpenAI-style endpoints (services/inference-gateway, SPEC 5.4).
 //
-// Prepaid balances and top-ups belong to the gateway (SPEC 5.4 prepaid API, being built
-// by another agent). Until it lands they answer 501 `pending_upstream` (CADRE_PREPAID=off,
-// the default); CADRE_PREPAID=gateway proxies them to the gateway. Never fake data.
+// Prepaid balances, top-ups, API keys and receipts are the gateway's (SPEC 5.4); this API
+// proxies them (CADRE_PREPAID=gateway, the default; =off answers 501). Wallet-signed requests
+// (cadre-auth-v1) are signed over the GATEWAY path (/v1/balance, /v1/keys, ...); the proxy
+// forwards the auth headers and the body byte for byte. Never fake data.
 
 import * as M from "../../../../apps/explorer/src/models.ts";
 import { Api, ApiError, badRequest, notFound, reply } from "../http.ts";
@@ -25,10 +26,28 @@ async function ticketQuote(d: Deps, modelId: string, promptTokens: number, maxTo
 }
 
 function pendingPrepaid(what: string) {
-  return new ApiError(501, "pending_upstream", `${what}: prepaid balances and top-ups come from the inference gateway's prepaid API (SPEC 5.4), which is not deployed here yet`, {
-    flag: "CADRE_PREPAID=gateway enables the proxy once the gateway serves it",
+  return new ApiError(501, "pending_upstream", `${what}: prepaid balances and top-ups come from the inference gateway's prepaid API (SPEC 5.4), which this deployment does not proxy (CADRE_PREPAID=off)`, {
+    flag: "CADRE_PREPAID=gateway (the default) proxies it",
     today: "pay per request with x402: POST /v1/openai/completions without X-PAYMENT returns the 402 requirements; POST /v1/inference/x402/payment-tx builds the tx to sign",
   });
+}
+
+/** Request headers the gateway reads (auth, x402, content type). X-Cadre-Account is the
+ *  site's old name for X-Cadre-Wallet (before CORS allowed it) and is sent as X-Cadre-Wallet. */
+export function gatewayHeaders(c: { headers: Record<string, unknown>; ip: string }): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const k of ["content-type", "authorization", "x-payment", "x-cadre-wallet", "x-cadre-signature", "x-cadre-timestamp", "accept"]) {
+    const v = c.headers[k];
+    if (typeof v === "string") headers[k] = v;
+  }
+  if (!headers["x-cadre-wallet"] && typeof c.headers["x-cadre-account"] === "string") headers["x-cadre-wallet"] = c.headers["x-cadre-account"] as string;
+  headers["x-forwarded-for"] = c.ip;
+  return headers;
+}
+
+/** Gateway model entry for a chain model: the gateway lists `id` = registry name and `cadre.model_id` = hex. */
+export function gatewayEntryFor(served: any[], m: { model_id: string; name?: string }) {
+  return served.find((s) => (s?.cadre?.model_id ?? "").toLowerCase() === m.model_id.toLowerCase()) ?? (m.name ? served.find((s) => s?.id === m.name && !s?.cadre?.model_id) : undefined) ?? null;
 }
 
 export function registerInference(api: Api, d: Deps) {
@@ -46,7 +65,7 @@ export function registerInference(api: Api, d: Deps) {
     const models = await Promise.all(
       (chain.models ?? []).map(async (m: any) => {
         const q = await ticketQuote(d, m.model_id, pt, mt).catch((e) => ({ ok: false as const, status: 503, error: (e as Error).message }));
-        const gw = served?.find((s) => s.id === m.model_id) ?? null;
+        const gw = served ? gatewayEntryFor(served, m) : null;
         return {
           ...m,
           served_by_gateway: served ? !!gw : null,
@@ -169,33 +188,52 @@ export function registerInference(api: Api, d: Deps) {
     };
   });
 
-  // prepaid (SPEC 5.4, gateway): proxied when CADRE_PREPAID=gateway, else 501 pending_upstream
-  const prepaid = (what: string, path: (c: any) => string, method: "GET" | "POST") => async (c: any) => {
+  // prepaid (SPEC 5.4): proxied to the gateway unless CADRE_PREPAID=off
+  const toGateway = (what: string, path: (c: any) => string, method: "GET" | "POST", opts: { quote?: boolean } = {}) => async (c: any) => {
     if (d.cfg.prepaid !== "gateway") throw pendingPrepaid(what);
     const body = method === "POST" ? await c.raw() : undefined;
-    const r = await d.upstream("gateway", path(c), { method, body, headers: { "content-type": "application/json" }, timeoutMs: 20_000 });
+    const headers = gatewayHeaders(c);
+    if (opts.quote) delete headers["x-payment"];
+    if (method === "POST" && !headers["content-type"]) headers["content-type"] = "application/json";
+    if (opts.quote) {
+      // the 402 reply of an unpaid top-up is the quote: its x402 requirements and price
+      const g = await d.upstreamJson("gateway", path(c), { method, body, headers, timeoutMs: 20_000 });
+      if (g.status !== 402) return reply({ status: g.status, body: g.body });
+      const acc = g.body?.accepts?.[0];
+      return { rows: JSON.parse(Buffer.from(body ?? "").toString() || "{}").rows ?? null, price_lamports: acc?.maxAmountRequired ?? null, requirements: g.body, pay: "sign POST /v1/inference/x402/payment-tx {payer, requirements}, then POST /v1/inference/balance/topup with X-PAYMENT" };
+    }
+    const r = await d.upstream("gateway", path(c), { method, body, headers, timeoutMs: 120_000 });
     return reply({ upstream: r });
   };
-  api.get("/v1/inference/prepaid/:account", prepaid("prepaid balance", (c) => `/v1/prepaid/${encodeURIComponent(addr(c.params.account, "account"))}`, "GET"), { cache: "no-store" });
-  api.post("/v1/inference/prepaid/topup", prepaid("prepaid top-up", () => "/v1/prepaid/topup", "POST"));
-  api.post("/v1/inference/prepaid/topup/quote", prepaid("prepaid top-up quote", () => "/v1/prepaid/topup/quote", "POST"));
+  const wallet = (c: any) => encodeURIComponent(addr(c.params.account, "account"));
+  api.get("/v1/inference/prepaid/:account", toGateway("prepaid balance", (c) => `/v1/prepaid/${wallet(c)}`, "GET"), { cache: "no-store" });
+  api.get("/v1/inference/balance", toGateway("prepaid balance", (c) => `/v1/balance${c.query.get("wallet") ? `?wallet=${encodeURIComponent(addr(c.query.get("wallet"), "wallet"))}` : ""}`, "GET"), { cache: "no-store" });
+  api.post("/v1/inference/balance/topup", toGateway("prepaid top-up", () => "/v1/balance/topup", "POST"));
+  api.post("/v1/inference/balance/topup/quote", toGateway("prepaid top-up quote", () => "/v1/balance/topup", "POST", { quote: true }));
+  api.post("/v1/inference/balance/close", toGateway("prepaid close", () => "/v1/balance/close", "POST"));
+  // earlier names of the same (the site's first build used them)
+  api.post("/v1/inference/prepaid/topup", toGateway("prepaid top-up", () => "/v1/balance/topup", "POST"));
+  api.post("/v1/inference/prepaid/topup/quote", toGateway("prepaid top-up quote", () => "/v1/balance/topup", "POST", { quote: true }));
 
-  // OpenAI-style pass-through: base URL /v1/openai -> gateway /v1/*
+  // OpenAI-style pass-through: base URL /v1/openai -> gateway /v1/* (the whole gateway API v1)
   const pass = async (c: any) => {
     const rest = c.params.rest ?? "";
     if (!/^[a-z0-9/_.-]*$/i.test(rest) || rest.includes("..")) throw badRequest("bad path");
-    const allowed = ["models", "completions", "chat/completions", "embeddings"];
-    if (!allowed.some((a) => rest === a || rest.startsWith(a + "/")) && !rest.startsWith("requests/")) throw new ApiError(404, "not_found", `the gateway pass-through serves ${allowed.join(", ")} and requests/{id}`);
-    const headers: Record<string, string> = {};
-    for (const k of ["content-type", "authorization", "x-payment", "x-cadre-account", "x-cadre-signature", "x-cadre-timestamp", "x-cadre-nonce", "accept"]) {
-      const v = c.headers[k];
-      if (typeof v === "string") headers[k] = v;
-    }
-    headers["x-forwarded-for"] = c.ip;
-    const body = c.method === "POST" ? await c.raw() : undefined;
-    const r = await d.upstream("gateway", `/v1/${rest}${c.query.toString() ? "?" + c.query.toString() : ""}`, { method: c.method === "HEAD" ? "GET" : c.method, headers, body, timeoutMs: 300_000 });
+    const allowed = ["models", "completions", "chat/completions", "embeddings", "keys", "balance", "prepaid", "receipts", "requests", "stats"];
+    if (!allowed.some((a) => rest === a || rest.startsWith(a + "/"))) throw new ApiError(404, "not_found", `the gateway pass-through serves ${allowed.join(", ")}`);
+    const body = c.method === "POST" || c.method === "DELETE" ? await c.raw() : undefined;
+    // completions can take minutes on a CPU worker: bound the wait for the reply headers and
+    // the silence between streamed bytes, never the whole answer
+    const r = await d.upstream("gateway", `/v1/${rest}${c.query.toString() ? "?" + c.query.toString() : ""}`, {
+      method: c.method === "HEAD" ? "GET" : c.method,
+      headers: gatewayHeaders(c),
+      body: body && body.length ? body : c.method === "POST" ? body : undefined,
+      timeoutMs: 1_800_000,
+      idleMs: 600_000,
+    });
     return reply({ upstream: r });
   };
   api.get("/v1/openai/:rest*", pass, { cache: "no-store" });
   api.post("/v1/openai/:rest*", pass, { cost: 10 });
+  api.delete("/v1/openai/:rest*", pass, { cost: 5 });
 }

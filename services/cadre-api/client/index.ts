@@ -209,10 +209,12 @@ export class CadreApi {
   inferenceReceipt(ticketId: Hex32) { return this.get<Record<string, any>>(`/v1/inference/receipts/${ticketId}`); }
   inferenceRequest(ticketId: Hex32) { return this.get<Record<string, any>>(`/v1/inference/requests/${ticketId}`); }
   x402PaymentTx(body: { payer: Address; requirements: PaymentRequirements | PaymentRequired }) { return this.post<UnsignedSolanaTx & { payer_signs: Address; lamports: Amount; network: string }>("/v1/inference/x402/payment-tx", body); }
-  /** 501 pending_upstream until the gateway's prepaid API (SPEC 5.4) is deployed. */
+  /** The gateway's prepaid API (SPEC 5.4); 501 pending_upstream only on a deployment with CADRE_PREPAID=off. */
   prepaidBalance(account: Address) { return this.get<Record<string, unknown>>(`/v1/inference/prepaid/${account}`); }
-  prepaidTopupQuote(body: Record<string, unknown>) { return this.post<Record<string, unknown>>("/v1/inference/prepaid/topup/quote", body); }
-  prepaidTopup(body: Record<string, unknown>) { return this.post<Record<string, unknown>>("/v1/inference/prepaid/topup", body); }
+  /** The x402 requirements and price of a top-up of `rows` (the gateway's unpaid 402 reply). */
+  prepaidTopupQuote(body: Record<string, unknown>) { return this.post<Record<string, unknown>>("/v1/inference/balance/topup/quote", body); }
+  /** Without X-PAYMENT the reply is 402 with the requirements; pay them and send again. */
+  prepaidTopup(body: Record<string, unknown>) { return this.post<Record<string, unknown>>("/v1/inference/balance/topup", body); }
 
   /**
    * POST /v1/openai/completions. Without `xPayment` the gateway answers 402: this returns

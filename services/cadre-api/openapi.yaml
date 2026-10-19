@@ -268,35 +268,77 @@ paths:
     get:
       tags: [inference]
       operationId: prepaidBalance
-      summary: Prepaid inference balance (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      summary: Prepaid inference balance of a wallet (public; the gateway's GET /v1/prepaid/{wallet}, SPEC 5.4)
       parameters: [{ $ref: "#/components/parameters/AccountPath" }]
       responses:
-        "200": { description: Balance (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "200": { description: "Balance `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}`", content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/balance:
+    get:
+      tags: [inference]
+      operationId: balance
+      summary: Prepaid balance, wallet-authenticated (the gateway's GET /v1/balance)
+      description: "Send `X-Cadre-Wallet`, `X-Cadre-Timestamp`, `X-Cadre-Signature` signed over the GATEWAY path `/v1/balance` (cadre-auth-v1, SPEC 5.4), or `Authorization: Bearer cadre_sk_...`, or `?wallet=`. Forwarded unchanged."
+      parameters: [{ name: wallet, in: query, schema: { type: string } }]
+      responses:
+        "200": { description: Balance, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/balance/topup:
+    post:
+      tags: [inference]
+      operationId: balanceTopup
+      summary: Top up a prepaid balance over x402 (the gateway's POST /v1/balance/topup)
+      description: "Body `{rows?}`. Without `X-PAYMENT`: 402 with the storefront's requirements. With it: 201 `{ticket_id, order, rows, wallet}` (wallet = the x402 payer)."
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "201": { description: Balance ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "402": { description: Payment required (x402), content: { application/json: { schema: { $ref: "#/components/schemas/PaymentRequired" } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/balance/topup/quote:
+    post:
+      tags: [inference]
+      operationId: balanceTopupQuote
+      summary: Price of a top-up of `rows` (the gateway's unpaid 402 reply, as 200)
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: "`{rows, price_lamports, requirements, pay}`", content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/balance/close:
+    post:
+      tags: [inference]
+      operationId: balanceClose
+      summary: Settle and complete the wallet's open balance tickets now (wallet-authenticated; the gateway's POST /v1/balance/close)
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "202": { description: "`{closing: n}`", content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "501": { $ref: "#/components/responses/Pending" }
   /v1/inference/prepaid/topup/quote:
     post:
       tags: [inference]
       operationId: prepaidTopupQuote
-      summary: Top-up quote (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      summary: Alias of POST /v1/inference/balance/topup/quote (earlier name)
       requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
       responses:
-        "200": { description: Quote (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "200": { description: Quote, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
         "501": { $ref: "#/components/responses/Pending" }
   /v1/inference/prepaid/topup:
     post:
       tags: [inference]
       operationId: prepaidTopup
-      summary: Top-up instructions / unsigned tx (gateway SPEC 5.4; 501 pending_upstream until it lands)
+      summary: Alias of POST /v1/inference/balance/topup (earlier name)
       requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
       responses:
-        "200": { description: Top-up (gateway shape), content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "201": { description: Balance ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "402": { description: Payment required (x402), content: { application/json: { schema: { $ref: "#/components/schemas/PaymentRequired" } } } }
         "501": { $ref: "#/components/responses/Pending" }
   /v1/openai/{path}:
     get:
       tags: [inference]
       operationId: openaiGet
       summary: Pass-through to the gateway (GET models, requests/{id})
-      description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT` and `X-Cadre-*` headers; streams the reply as is (SSE included). Served paths - models, completions, chat/completions, embeddings, requests/{id} - as far as the gateway implements them.
+      description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT`, `X-Cadre-Wallet`, `X-Cadre-Timestamp` and `X-Cadre-Signature` headers (`X-Cadre-Account` is sent as `X-Cadre-Wallet`) and the body byte for byte, so a cadre-auth-v1 signature over the gateway path (`/v1/{path}`) verifies; streams the reply as is (SSE included) and copies the receipt headers (`X-Cadre-Request`, `-Ticket`, `-Order`, `-Rows`, `-Charged-Lamports`, `-Receipt`, `-Explorer`, all exposed to browsers). Served paths - models, completions, chat/completions, embeddings, keys, balance, prepaid, receipts, requests, stats. Only the wait for the reply headers (30 min) and silence between streamed bytes (10 min) are bounded, never the whole answer.
       parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
@@ -305,7 +347,7 @@ paths:
     post:
       tags: [inference]
       operationId: openaiPost
-      summary: Pass-through to the gateway (POST completions, chat/completions)
+      summary: Pass-through to the gateway (POST completions, chat/completions, keys, balance/topup, balance/close)
       description: "Without payment the gateway answers 402 with the x402 requirements (`accepts`). With `X-PAYMENT` it answers 201 with the text, ticket and order, and an `X-PAYMENT-RESPONSE` header. Streaming replies (`text/event-stream`) are passed through."
       parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
       requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
@@ -313,12 +355,20 @@ paths:
         "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } }, text/event-stream: { schema: { type: string } } } }
         "201": { description: Paid completion, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
         "402": { description: Payment required (x402), content: { application/json: { schema: { $ref: "#/components/schemas/PaymentRequired" } } } }
+    delete:
+      tags: [inference]
+      operationId: openaiDelete
+      summary: Pass-through to the gateway (DELETE keys/{key_id}, wallet-signed)
+      parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/agents:
     get:
       tags: [agents]
       operationId: agents
-      summary: Agents ranked by paid work from distinct payers (never by counts)
+      summary: Agents ranked by paid work from distinct payers (never by counts); registered agents are listed before their first paid work; each row has `registration` and `card_probe`
       parameters:
         - { name: sort, in: query, schema: { type: string, enum: [paid, sol, payers], default: paid }, description: "paid = protocol fees behind completed work (self-dealt excluded); sol = SOL settled via storefront; payers = distinct payers (ties by P)" }
         - { name: include_idle, in: query, schema: { type: string, enum: ["1"] } }
@@ -330,7 +380,7 @@ paths:
     get:
       tags: [agents]
       operationId: agent
-      summary: Agent profile (REPUTATION 5.1)
+      summary: "Agent profile (REPUTATION 5.1) with `registration` and `card_probe {ok, status (ok, failing, stale, pending), checked_at, error, last_ok_at, uri, card_name}` for the card URI (null without one)"
       parameters: [{ $ref: "#/components/parameters/AccountPath" }]
       responses:
         "200": { description: Profile, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
@@ -357,7 +407,7 @@ paths:
       tags: [wallet]
       operationId: account
       summary: Everything about one address on both chains
-      description: Chain balance, nonce and payout lien; agent registration; Solana SOL and CADRE SPL; mining record; recent chain txs and Solana signatures.
+      description: "Chain balance, nonce and payout lien; `credit` (the Agent Credit line as the chain enforces it, from the payout lien: limit = cap, repaid = routed, lender, active; null without a lien; `agent_credit_program.deployed` says whether Agent Credit's Solana program is on this cluster); agent registration; Solana SOL and CADRE SPL; mining record; recent chain txs and Solana signatures."
       parameters:
         - { $ref: "#/components/parameters/AccountPath" }
         - { name: tx_limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }

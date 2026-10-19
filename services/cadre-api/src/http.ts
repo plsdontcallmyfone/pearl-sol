@@ -82,8 +82,10 @@ export interface ServerOptions {
 
 const json = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 1);
 
-export const ALLOW_HEADERS = ["content-type", "authorization", "x-payment", "x-cadre-account", "x-cadre-signature", "x-cadre-timestamp", "x-cadre-nonce", "if-none-match"];
-export const EXPOSE_HEADERS = ["etag", "x-request-id", "x-payment-response", "ratelimit-limit", "ratelimit-remaining", "ratelimit-reset", "retry-after", "x-cadre-upstream"];
+export const ALLOW_HEADERS = ["content-type", "authorization", "x-payment", "x-cadre-wallet", "x-cadre-account", "x-cadre-signature", "x-cadre-timestamp", "x-cadre-nonce", "if-none-match"];
+/** The gateway's receipt headers (SPEC 5.4), copied from upstream replies and readable by browsers. */
+export const RECEIPT_HEADERS = ["x-cadre-request", "x-cadre-ticket", "x-cadre-order", "x-cadre-rows", "x-cadre-charged-lamports", "x-cadre-receipt", "x-cadre-explorer"];
+export const EXPOSE_HEADERS = ["etag", "x-request-id", "x-payment-response", "ratelimit-limit", "ratelimit-remaining", "ratelimit-reset", "retry-after", "x-cadre-upstream", ...RECEIPT_HEADERS];
 
 export class Api {
   routes: Route[] = [];
@@ -112,6 +114,9 @@ export class Api {
   }
   post(p: string, h: Handler, o?: { cache?: Cache; cost?: number }) {
     this.add("POST", p, h, { cache: "no-store", cost: 5, ...o });
+  }
+  delete(p: string, h: Handler, o?: { cache?: Cache; cost?: number }) {
+    this.add("DELETE", p, h, { cache: "no-store", cost: 5, ...o });
   }
 
   // ------------------------------------------------------------ helpers
@@ -216,7 +221,7 @@ export class Api {
         status = 204;
         res.writeHead(204, {
           ...base,
-          "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+          "access-control-allow-methods": "GET, HEAD, POST, DELETE, OPTIONS",
           "access-control-allow-headers": ALLOW_HEADERS.join(", "),
           "access-control-max-age": "600",
         });
@@ -288,7 +293,7 @@ export class Api {
       if (r.upstream) {
         const u = r.upstream;
         const h: Record<string, string> = { "cache-control": "no-store" };
-        for (const k of ["content-type", "x-payment-response", "x-request-id"]) {
+        for (const k of ["content-type", "x-payment-response", "x-request-id", ...RECEIPT_HEADERS]) {
           const v = u.headers.get(k);
           if (v) h[k === "x-request-id" ? "x-upstream-request-id" : k] = v;
         }
