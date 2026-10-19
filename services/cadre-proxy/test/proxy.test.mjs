@@ -279,7 +279,7 @@ test("config snippets for every client point at the proxy base URL and model", (
     const s = configSnippet(c, { baseUrl: "http://127.0.0.1:10695", model: "llama-3.2-1b-w7a7", apiKey: "cadre-local", contextLength: 4096 });
     assert.ok(s.includes("http://127.0.0.1:10695/v1"), c);
     assert.ok(s.includes("llama-3.2-1b-w7a7"), c);
-    assert.ok(!s.includes("—"), "no em dashes");
+    assert.ok(!s.includes(String.fromCharCode(0x2014)), "no em dashes");
   }
   assert.match(configSnippet("openclaw", { baseUrl: "http://h:1", model: "m", apiKey: "k" }), /"api": "openai-completions"/);
   assert.match(configSnippet("kilo", { baseUrl: "http://h:1", model: "m", apiKey: "k" }), /"baseURL": "http:\/\/h:1\/v1"/);
