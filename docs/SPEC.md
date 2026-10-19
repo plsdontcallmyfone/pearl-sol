@@ -792,6 +792,10 @@ and next to a model worker (`tools/cadre/worker.py`, port 10665, the int7 model 
 gateway's key is the server of its tickets (it posts their segments, delivers, receives W).
 Other services (cadre-proxy, services/cadre-api) build against the API below; changes are
 additive only.
+services/cadre-proxy (127.0.0.1:10695) is such a client: a local OpenAI-compatible proxy with
+its own wallet (key in a 0600 file, never printed), wallet-signature or API-key auth to this
+API, per request / day / total spend caps booked from the receipts, SSE pass-through, and
+config snippets for Hermes, OpenClaw, Kilo and Cline (services/cadre-proxy/README.md).
 
 Payment model (owner decision 2026-10-18): PREPAID BALANCE. A buyer tops up once (SOL over
 x402 through the storefront: one Order = one balance ticket of R rows, default 4096), then

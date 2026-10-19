@@ -189,3 +189,19 @@ Live, read-only against the VPS demo stack through a tunnel:
   exactly. The first run found reserve/bridge reading 0 (wrong ATA program id), fixed in
   992d459 with a vector test. `/revenue` screenshots (desktop + phone, headless):
   screenshots/explorer/revenue*.png.
+
+## Agent layer (2026-10-19: RejectResult, open evaluation, profiles, cadre-proxy)
+
+| Suite | Where | Result |
+|---|---|---|
+| chain workspace (`cargo test --workspace`, HEAD + RejectResult) | test VPS | 95 pass, 0 fail (new: executor reject 4, node RPC reject_rpc 1, state reject roundtrip 1, vectors reject.json) |
+| pearl-attester (`cargo test -p pearl-attester`) | test VPS | 13 pass (6 attester + 7 evaluator: accept -> CompleteJob, wrong C -> exact RejectResult bytes, hash/size rejects, holds, unavailable grace, threshold 2 via peer, unfunded) |
+| storefront-x402 (`npm test`, LiteSVM) | Mac | 14 pass (+2: GET /evaluators, buyer-named evaluators posted as given) |
+| extension (`npx vitest run`) | Mac | 62 pass, 3 skipped (reject vectors) |
+| ~/pearl-wallet src/shared/pearl + src/background/pearl | Mac | 70 + 14 pass (reject vectors, snapshot fixture) |
+| apps/explorer | Mac | 32 pass (+12 agent profile, card probe, routes) |
+| pearl-cli | test VPS | 38 pass (+2 `pearl agent`) |
+| services/cadre-proxy (`node --test test/*.test.mjs`) | Mac | 9 pass (mock gateway) |
+
+Live: explorer agent profile + `pearl agent` read-only against the test box's chain (:10630).
+cadre-proxy live check against the real gateway still pending (nothing on 10664 then).

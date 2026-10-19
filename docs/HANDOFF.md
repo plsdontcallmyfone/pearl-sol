@@ -530,6 +530,39 @@ Owner decisions still open: dev buy size, chain params (block time, K, alpha,
 emission), name and ticker, storefront buyback min buy / interval / cranker (item 13), reserve cap 100M and fund limits (item 15, PROVISIONAL). If a session dies, check git log per path and
 CLAUDE.md "Who is working on what".
 
+16. AGENT LAYER (owner decisions 2026-10-18, SYNTHESIS 3/4/9/10 + RejectResult): DONE 2026-10-19
+   (commits 5efc421, c904965..072290f; SPEC 2, 4.1, 4.2, 5.4; docs/EVALUATORS.md, RPC, CLI,
+   EXPLORER).
+   - RejectResult (tx kind 13): job evaluators reject the current delivery with threshold raw
+     ed25519 sigs over `pearl-sol:reject:v1 || job_id || deliverer || result_hash`; job back
+     to Open, Reject / RejectCount / RejectStats records (tags 14-16), the rejected deliverer
+     cannot redeliver that plain job (closes first-deliverer griefing). RPC getJob
+     reject_count, getJobRejects, getRejectStats, getAccountTxs role `rejected`. Vectors
+     chain/agent-types/vectors/reject.json; codecs + byte tests in extension/ and
+     ~/pearl-wallet (dev b3716f8e1, pushed). Light client / relayer unaffected (they prove
+     CompleteJob / ExpireJob only; a rejected job completes or expires later as before).
+   - Open evaluation: docs/EVALUATORS.md (what is signed, the plain-job check, reject only on
+     provable deliverer faults, ticket rule, how to run); `pearl-evaluator`
+     (services/attester, :10667): polls Delivered jobs naming its key, CompleteJob on accept,
+     RejectResult on provable failure, holds otherwise, threshold > 1 via peers'
+     GET /signatures/<job>. Tickets are accepted or held, never auto-rejected (glue not
+     checked yet). storefront-x402 GET /evaluators; buyers already name evaluators with
+     spec.evaluators / `pearl job post --evaluator`. services/agent-cli is the superseded
+     SVM CLI and was not changed.
+   - Agent profiles (no new state): apps/explorer /agent/<addr>, /api/agent/<addr>, /agents
+     (ranked by third-party-signed P behind completed work, self-dealing excluded, stale
+     hidden); `pearl agent <addr> [--json]` reads the explorer. Explorer index state version 2
+     (re-indexes once). A2A agent card probe at RegisterAgent.uri (http(s), no private
+     addresses, 5 s, 64 KiB), display only.
+   - services/cadre-proxy (:10695): local OpenAI-compatible proxy with its own wallet (0600
+     file, never printed), SPEC 5.4 wallet-sig / API-key auth, spend caps + ledger, SSE
+     pass-through, loopback-only x402 top-up, config snippets for Hermes / OpenClaw / Kilo /
+     Cline (README lists which formats are verified). NOT yet live-checked: no gateway was
+     listening on the test box's 10664 at the time.
+   - Not done: evaluator fee / bonds (owner: later), card JWS verification, persisted probe
+     state, ticket rejection after the replay check, buyer-named evaluators through the
+     gateway API (gateway agent's scope).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
