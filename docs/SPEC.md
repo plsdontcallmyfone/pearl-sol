@@ -751,7 +751,10 @@ Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/
 | `GET /health` | none | `{ok, server, model_id, model}` |
 | `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
 | `POST /v1/balance/topup` | x402 (`X-PAYMENT`) | body `{rows?}`; no payment: 402 with the storefront's requirements; paid: 201 `{ticket_id, order, rows, wallet}` (wallet = the x402 payer = the ticket's poster) |
-| `GET /v1/balance` | wallet or key | `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}` |
+| `GET /v1/balance` | wallet or key, or `?wallet=` | `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}` |
+| `GET /v1/prepaid/<wallet>` | none | the same as `GET /v1/balance?wallet=` (balances are public chain state) |
+| `GET /v1/receipts?wallet=<wallet>` | none | the wallet's newest receipts (up to 200) |
+| `GET /v1/receipts/<request_id>` | none | alias of `/v1/requests/<request_id>` |
 | `POST /v1/balance/close` | wallet or key | settle and complete the wallet's open tickets now (refund of the unused rows on the chain) |
 | `POST /v1/keys` | wallet | `{key_id, api_key}` (the key is shown once) |
 | `DELETE /v1/keys/<key_id>` | wallet | revoke |
