@@ -1,0 +1,14 @@
+{
+  "name": "cadre-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local OpenAI-compatible endpoint with its own wallet and spend caps, forwarding to the Cadre inference gateway",
+  "license": "ISC",
+  "type": "module",
+  "bin": { "cadre-proxy": "src/cli.mjs" },
+  "scripts": {
+    "start": "node src/cli.mjs serve",
+    "test": "node --test test/"
+  },
+  "engines": { "node": ">=20" }
+}
