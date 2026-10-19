@@ -229,6 +229,22 @@ the RejectResult carried.
 Rejections recorded against a deliverer over all jobs; zeros when there are none:
 `{"account", "rejected": 1, "rejected_fee": "2000000", "first_height": 41, "last_height": 41}`.
 
+Job objects carry `kind` (`"job"`, `"ticket"` or `"segment"`) and `standing` (null for a plain job).
+A ticket's `standing`: `{model_id, server, rows, prompt_tokens, max_new_tokens, request_hash, cap_total, cap_unallocated,
+segments, blocks_allocated, blocks_mined, subsidy_paid, rounds, round_rows, rows_used, rows_free}`; a segment's:
+`{ticket_id, model_id, matrix, c_hash}` (its header_id is the model id, its hash_b the registered matrix's). Templates
+naming a segment carry the same, so a miner loads B from its model store (SPEC 4.5).
+
+### getModel `{"model_id": "hex"}` -> Model or null
+`{model_id, registrant, name, manifest_uri, recipe, recipe_name, config, row_period, macs_per_row, registered_height, index,
+tickets, segments, blocks_mined, subsidy_paid, matrix_count, matrices: [{index, k, n, macs, hash_b, job_key}]}`.
+
+### listModels `{}` -> `{total, models}` (the same objects without `matrices`)
+
+### getTicket `{"ticket_id": "hex"}` -> Job (a ticket) plus `segment_list`, or null
+`segment_list`: `[{segment_id, round, matrix, m, k, n, status, mineable, max_blocks, blocks_mined, cap, subsidy_paid, data_uri, c_hash}]`
+over every round. Error if the job is not a ticket.
+
 ### listJobs `{"status"?: "open|delivered|completed|expired|mineable", "offset"?: 0, "limit"?: 50}`
 `{"total": 12, "jobs": [Job]}`, in posting order. `limit` is at most 200.
 
@@ -357,7 +373,9 @@ instead of an off-chain URL. `id = blake3(bytes)`, URI `blob:<64 lowercase hex>`
   Jobs whose data exceeds one blob (m*k + k*n + 16 > max_blob_bytes) keep using another
   URI scheme for now (no chunked manifests yet).
 
-### putBlob `{"data": "base64"}` (or `"data_hex"`)
+### putBlob `{"data": "base64", "push"?: true}` (or `"data_hex"`)
+`push: false` stores the blob on this node only (model uploads); peers fetch it on demand. A node pins the manifest
+and every chunk of each registered model whose manifest it holds (never pruned).
 `{"blob_id": "hex", "uri": "blob:hex", "size": 131088, "new": true}`. `new` false = already
 stored (no rate cost). Errors: `empty blob`, `blob is N bytes, max_blob_bytes is M`,
 `blob store full (...)`, `rate limited: try again later`.
@@ -430,6 +448,8 @@ Result `{"subscribed": [...]}`. Notifications:
 | 8 AdminConfig | `key u8, value_len u16, value` |
 | 9 SetRoute | `solana_recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]` (zero key = no early release) |
 | 10 ClearRoute | `account [32], route_nonce u64, sig [64]` (raw ed25519 by the lien's release key over the route-clear message) |
+| 11 RegisterModel | `name_len u8, name, manifest_uri_len u16, manifest_uri (blob:), recipe u8 (=1), rank u16, rows_pattern [6], cols_pattern [6], count u16, (k u32, n u32, hash_b [32])*` (SPEC 4.5) |
+| 12 PostSegments | `ticket_id [32], round u16, count u8, (matrix u16, m u32, max_blocks u32, hash_a [32], c_hash [32], a_uri_len u16, a_uri)*` (the ticket's server; SPEC 4.5) |
 | 13 RejectResult | `job_id [32], deliverer [32], result_hash [32], count u8, (pubkey [32], sig [64])*` (job evaluators, raw ed25519 over the reject message; reopens the job) |
 
 Rules worth knowing:
