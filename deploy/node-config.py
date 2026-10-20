@@ -22,7 +22,10 @@ for i in range(3):
     seeds.append(f"{pub}@{ip}:10640")
 seed_hex = bytes(json.load(open(key(n)))[:32]).hex()
 ip = env[f"BOX{n}_IP"]
-print(json.dumps({
+# BOXn_BLOBS (devnet.env, JSON in single quotes): this node's blob store limits (docs/NODE.md);
+# box 0 holds the registered model's blobs (Llama-3.2-1B int7, about 1.8 GB, put with push=false)
+blobs = json.loads(env[f"BOX{n}_BLOBS"].strip("'")) if env.get(f"BOX{n}_BLOBS") else None
+cfg = {
     "data_dir": "/var/lib/lode/chain",
     "genesis": "/etc/lode/genesis.json",
     "p2p_key": seed_hex,
@@ -34,4 +37,7 @@ print(json.dumps({
     "seeds": seeds,
     "verifier": "pearl",
     "tip_interval_ms": 2000,
-}, indent=2))
+}
+if blobs:
+    cfg["blobs"] = blobs
+print(json.dumps(cfg, indent=2))

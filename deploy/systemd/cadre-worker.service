@@ -1,0 +1,17 @@
+[Unit]
+Description=Cadre devnet inference worker (tools/cadre/worker.py, Llama-3.2-1B-Instruct int7 on CPU; half the cores, the miner has the rest)
+After=network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/inference.env
+Environment=HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONUNBUFFERED=1
+WorkingDirectory=/var/lib/lode
+ExecStart=/bin/sh -c 'exec /home/lode/cadre-venv/bin/python /home/lode/pearl-sol/tools/cadre/worker.py --model $CADRE_MODEL_DIR --port 10665 --threads $WORKER_THREADS'
+# measured peak 2.3 GB RSS for 64 tokens (docs/HANDOFF.md item 17); the cap keeps an outlier off the node
+MemoryMax=4G
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

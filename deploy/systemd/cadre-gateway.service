@@ -1,0 +1,14 @@
+[Unit]
+Description=Cadre devnet inference gateway (cadre-gateway, SPEC 5.4: OpenAI API, prepaid balances, receipts, standing-job rounds)
+After=cadre-node.service cadre-worker.service cadre-storefront.service
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/inference.env
+WorkingDirectory=/var/lib/lode
+ExecStart=/bin/sh -c 'exec /opt/lode/bin/cadre-gateway --key /etc/lode/keys/gateway.json --model-dir $CADRE_MODEL_DIR --rpc http://127.0.0.1:10630 --storefront http://127.0.0.1:10662 --worker http://127.0.0.1:10665 --attester http://127.0.0.1:10661 --port 10664 --work-dir /var/lib/lode/gateway --explorer-url $EXPLORER_URL $GATEWAY_EXTRA'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

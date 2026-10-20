@@ -10,6 +10,7 @@
 #   scripts/devnet-deploy.sh ssh N [CMD]       shell as lode on box N
 #   scripts/devnet-deploy.sh rpc-url [N]       copy keys/devnet/solana-rpc-url (dedicated Solana RPC) to box N (default all), then ctl restart
 #   scripts/devnet-deploy.sh relay-key [N]     create the header relay's fee payer on box N (default HEADER_RELAY_BOX), print its pubkey
+#   scripts/devnet-deploy.sh svc-key N NAME    create /etc/lode/keys/NAME.json on box N (e.g. gateway), print its pubkey
 #   scripts/devnet-deploy.sh site              ~/cadre-web main -> box 0 (git bundle), npm ci + build for devnet, restart cadre-web
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
@@ -19,7 +20,7 @@ source "$ROOT/deploy/devnet.env"
 ip_of() { local v="BOX${1}_IP"; echo "${!v}"; }
 sshb() { local n=$1 u=$2; shift 2; ssh -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$u@$(ip_of "$n")" "$@"; }
 scpb() { local n=$1; shift; scp -q -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes "$@"; }
-UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-settle cadre-storefront cadre-crank cadre-explorer cadre-api cadre-web"
+UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-settle cadre-storefront cadre-crank cadre-explorer cadre-api cadre-web cadre-worker cadre-gateway"
 UNITSN="cadre-node cadre-miner"
 # the header relay runs on HEADER_RELAY_BOX (default 1): Solana devnet's public RPC allows about
 # 100 calls per 10 s per IP, and box 0's services already use most of box 0's
@@ -64,11 +65,14 @@ case "${1:-}" in
     printf 'MINER_THREADS=%s\nMINER_EXTRA=%s\n' "$(eval echo "\${BOX${n}_MINER_THREADS}")" "$( [[ $n == 0 ]] && echo '--deliver --attester http://127.0.0.1:10661' )" > "$tmp/miner.env"
     [[ $n == 0 ]] && printf 'TOKEN_RPC=%s\nBRIDGE_PROGRAM=%s\nSTOREFRONT_PROGRAM=%s\nRESERVE_PROGRAM=%s\nLIGHTCLIENT_PROGRAM=%s\nPUBLIC_URL=https://storefront.%s.sslip.io\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nREFUND_GRACE_MS=%s\nCADRE_API_PUBLIC_URL=https://api.%s.sslip.io\nEXPLORER_URL=https://explorer.%s.sslip.io\n' \
       "$SOLANA_RPC" "$BRIDGE_PROGRAM" "$STOREFRONT_PROGRAM" "$RESERVE_PROGRAM" "$LIGHTCLIENT_PROGRAM" "$dash" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$REFUND_GRACE_MS" "$dash" "$dash" > "$tmp/services.env"
+    # inference (box 0): the registered model dir (pearl model register writes its manifest.json there), worker threads = half the cores
+    [[ $n == 0 ]] && printf 'CADRE_MODEL_DIR=/var/lib/lode/cadre-model\nWORKER_THREADS=%s\nEXPLORER_URL=https://explorer.%s.sslip.io\nGATEWAY_EXTRA=%s\n' \
+      "${BOX0_WORKER_THREADS:-2}" "$dash" "${GATEWAY_EXTRA:-}" > "$tmp/inference.env"
     is_relay_box "$n" && printf 'TOKEN_RPC=%s\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nHR_LANE=%s\n' \
       "$SOLANA_RPC" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$(relay_lane "$n")" > "$tmp/header-relay.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"
-    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 644 header-relay.env /etc/lode/ || true
-      install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 755 with-rpc /opt/lode/bin/with-rpc; rm -f /tmp/with-rpc; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api
+    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 644 header-relay.env /etc/lode/ || true; [ -f inference.env ] && install -o lode -g lode -m 644 inference.env /etc/lode/ || true
+      install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 755 with-rpc /opt/lode/bin/with-rpc; rm -f /tmp/with-rpc; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api /var/lib/lode/gateway /var/lib/lode/models
       systemctl daemon-reload; systemctl reload caddy || systemctl restart caddy; rm -f /tmp/cadre-*.service /tmp/genesis.json /tmp/node.json /tmp/*.env /tmp/Caddyfile; echo installed on box $n"
     ;;
   rpc-url)
@@ -92,11 +96,13 @@ case "${1:-}" in
     done
     echo "box $n keys: ${files[*]}"
     ;;
-  relay-key)
-    # the header relay's Solana fee payer, generated ON the relay box (never copied from the Mac);
-    # prints only the public key, which the deployer funds (devnet)
-    n="${2:-$(relay_boxes | awk '{print $1}')}"
-    sshb "$n" root 'set -e; f=/etc/lode/keys/relay.json; if [ ! -f "$f" ]; then umask 077; d=$(mktemp -d); openssl genpkey -algorithm ed25519 -out "$d/k.pem"; openssl pkey -in "$d/k.pem" -outform DER -out "$d/k.der"; openssl pkey -in "$d/k.pem" -pubout -outform DER -out "$d/p.der"; python3 -c "import sys,json; s=open(sys.argv[1],\"rb\").read()[-32:]; p=open(sys.argv[2],\"rb\").read()[-32:]; open(sys.argv[3],\"w\").write(json.dumps(list(s+p)))" "$d/k.der" "$d/p.der" "$f"; rm -rf "$d"; chown lode:lode "$f"; chmod 600 "$f"; fi
+  relay-key|svc-key)
+    # relay-key [N]: the header relay's Solana fee payer, generated ON the relay box (never copied from the Mac);
+    # svc-key N NAME: /etc/lode/keys/NAME.json on box N the same way (gateway: the inference gateway's chain key).
+    # Prints only the public key.
+    if [[ $1 == svc-key ]]; then n="$2"; kname="${3:?svc-key N NAME}"; [[ $kname =~ ^[a-z0-9-]+$ ]] || { echo "bad key name"; exit 1; }
+    else n="${2:-$(relay_boxes | awk '{print $1}')}"; kname=relay; fi
+    sshb "$n" root 'set -e; f=/etc/lode/keys/'"$kname"'.json; if [ ! -f "$f" ]; then umask 077; d=$(mktemp -d); openssl genpkey -algorithm ed25519 -out "$d/k.pem"; openssl pkey -in "$d/k.pem" -outform DER -out "$d/k.der"; openssl pkey -in "$d/k.pem" -pubout -outform DER -out "$d/p.der"; python3 -c "import sys,json; s=open(sys.argv[1],\"rb\").read()[-32:]; p=open(sys.argv[2],\"rb\").read()[-32:]; open(sys.argv[3],\"w\").write(json.dumps(list(s+p)))" "$d/k.der" "$d/p.der" "$f"; rm -rf "$d"; chown lode:lode "$f"; chmod 600 "$f"; fi
       python3 -c "import json,sys; k=bytes(json.load(open(sys.argv[1]))[32:]); A=\"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz\"; n=int.from_bytes(k,\"big\"); o=\"\"
 while n: n,r=divmod(n,58); o=A[r]+o
 print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
@@ -123,5 +129,5 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     sshb 0 root "systemctl enable --now cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
     ;;
   ssh) n="$2"; shift 2; sshb "$n" lode "$@" ;;
-  *) sed -n '2,13p' "$0"; exit 1 ;;
+  *) sed -n '2,14p' "$0"; exit 1 ;;
 esac
