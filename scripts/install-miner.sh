@@ -10,9 +10,14 @@
 # Flags (each also has an env form):
 #   --pool URL       mine for a pearl-pool (CADRE_POOL); shares there, the pool pays the key
 #   --solo           mine solo against the node (default; clears a pool set earlier)
-#   --rpc URL        agent-chain node JSON-RPC (CADRE_RPC); default: Cadre devnet node 0
+#   --rpc URL[,URL]  agent-chain node JSON-RPC (CADRE_RPC); repeat or comma-separate for several
+#                    nodes: the miner fails over between them. Default: the 3 Cadre devnet nodes.
+#                    Given URLs come first; the devnet nodes are added when they serve the devnet.
 #   --threads N      mining threads (CADRE_THREADS); default: half the cores, at least 1
 #   --no-service     do not install or start the systemd user service (CADRE_NO_SERVICE=1)
+#   --no-linger      do not enable lingering (CADRE_NO_LINGER=1); by default the service keeps
+#                    running after logout when `sudo -n` works (root or passwordless sudo),
+#                    otherwise the command is printed
 #   --dry-run        show every step and command, change nothing (CADRE_DRY_RUN=1)
 #   -h, --help
 # Source (one of):
@@ -27,9 +32,10 @@ set -euo pipefail
 
 main() {
   DEFAULT_RPC="https://rpc.64-95-12-116.sslip.io"
-  # The other public devnet nodes (docs/DEVNET.md): used when the default does not answer and
-  # no --rpc was given. All three serve the same chain.
+  # The three public devnet nodes (docs/DEVNET.md), one chain: written together so pearl-miner
+  # fails over between them. DEVNET_GENESIS tells whether a given --rpc serves this chain.
   DEVNET_RPCS=("$DEFAULT_RPC" "https://rpc.64-95-13-213.sslip.io" "https://rpc.64-95-12-22.sslip.io")
+  DEVNET_GENESIS="51c86b676bfd1b9f0877e6994cff95ab92cc1f2c784b39fc943b8b0d4d52028a"
   DEFAULT_API="https://api.64-95-12-116.sslip.io"   # cadre-api of the same devnet (miner lookups)
   DEFAULT_REPO="https://github.com/plsdontcallmyfone/pearl-sol.git"
   TOOLCHAIN="1.95.0"
@@ -38,6 +44,7 @@ main() {
   CADRE_REF="${CADRE_REF:-main}"
   DRY="${CADRE_DRY_RUN:-0}"
   NO_SERVICE="${CADRE_NO_SERVICE:-0}"
+  NO_LINGER="${CADRE_NO_LINGER:-0}"
   local opt_rpc="${CADRE_RPC:-}" opt_pool="${CADRE_POOL:-}" opt_threads="${CADRE_THREADS:-}" opt_solo=0
 
   while [[ $# -gt 0 ]]; do
@@ -45,11 +52,12 @@ main() {
       --pool) [[ $# -ge 2 && -n "$2" ]] || die "--pool needs a URL" "example: --pool http://127.0.0.1:10663"; opt_pool="$2"; shift 2 ;;
       --pool=*) opt_pool="${1#*=}"; shift ;;
       --solo) opt_solo=1; shift ;;
-      --rpc) [[ $# -ge 2 && -n "$2" ]] || die "--rpc needs a URL" "example: --rpc $DEFAULT_RPC"; opt_rpc="$2"; shift 2 ;;
-      --rpc=*) opt_rpc="${1#*=}"; shift ;;
+      --rpc) [[ $# -ge 2 && -n "$2" ]] || die "--rpc needs a URL" "example: --rpc $DEFAULT_RPC"; opt_rpc="${opt_rpc:+$opt_rpc,}$2"; shift 2 ;;
+      --rpc=*) opt_rpc="${opt_rpc:+$opt_rpc,}${1#*=}"; shift ;;
       --threads) [[ $# -ge 2 ]] || die "--threads needs a number" "example: --threads 4"; opt_threads="$2"; shift 2 ;;
       --threads=*) opt_threads="${1#*=}"; shift ;;
       --no-service) NO_SERVICE=1; shift ;;
+      --no-linger) NO_LINGER=1; shift ;;
       --dry-run) DRY=1; shift ;;
       -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//' || true; [[ -f "${BASH_SOURCE[0]:-}" ]] || echo "see the header of install-miner.sh"; exit 0 ;;
       *) die "unknown option: $1" "run with --help for the list" ;;
@@ -321,25 +329,24 @@ write_config() {
   threads="${threads:-${old_threads:-$(( cores / 2 > 0 ? cores / 2 : 1 ))}}"
   (( threads > cores )) && warn "$threads threads on $cores cores: more threads than cores only slows each one down"
 
-  local probe
-  probe="$(chain_info "$rpc")"
-  if [[ "$probe" != *'"result"'* && -z "$1" ]] && is_devnet_rpc "$rpc"; then
-    local alt
-    for alt in "${DEVNET_RPCS[@]}"; do
-      [[ "$alt" == "$rpc" ]] && continue
-      probe="$(chain_info "$alt")"
-      if [[ "$probe" == *'"result"'* ]]; then
-        warn "devnet node $rpc did not answer; using $alt (same chain; --rpc picks one yourself)"
-        rpc="$alt"; RPC_USED="$rpc"; break
-      fi
-    done
-  fi
-  if [[ "$probe" == *'"result"'* ]]; then
-    local h; h="$(printf '%s' "$probe" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | head -1)"
-    ok "node $rpc answers${h:+ (height $h)}"
-    FINALITY_K="$(printf '%s' "$probe" | sed -n 's/.*"finality_k":\([0-9]*\).*/\1/p' | head -1)"
-  else
-    warn "node $rpc did not answer getChainInfo; the miner retries, but check the URL (--rpc)"
+  rpc="$(rpc_list "$rpc")"; RPC_USED="$rpc"
+  local u probe answered=0
+  local -a urls; IFS=, read -r -a urls <<< "$rpc"
+  for u in "${urls[@]}"; do
+    probe="$(chain_info "$u")"
+    if [[ "$probe" == *'"result"'* ]]; then
+      local h; h="$(printf '%s' "$probe" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | head -1)"
+      ok "node $u answers${h:+ (height $h)}"
+      [[ -n "${FINALITY_K:-}" ]] || FINALITY_K="$(printf '%s' "$probe" | sed -n 's/.*"finality_k":\([0-9]*\).*/\1/p' | head -1)"
+      answered=$((answered + 1))
+    else
+      warn "node $u did not answer getChainInfo now"
+    fi
+  done
+  if (( answered == 0 )); then
+    warn "no node answered; the miner keeps retrying, but check the URLs (--rpc)"
+  elif (( ${#urls[@]} > 1 )); then
+    ok "$answered of ${#urls[@]} nodes answer; pearl-miner fails over between them"
   fi
   if [[ -n "$pool" ]]; then
     if curl -sf -m 10 "${pool%/}/health" >/dev/null 2>&1; then ok "pool $pool answers /health"
@@ -393,6 +400,20 @@ chain_info() {
 }
 is_devnet_rpc() { local u; for u in "${DEVNET_RPCS[@]}"; do [[ "$1" == "$u" ]] && return 0; done; return 1; }
 
+# The node list to write: the given URLs (comma-separated, order kept), then every devnet node not
+# already listed, when the first given URL is a devnet node or reports the devnet genesis hash. A
+# node of another chain (a localnet, say) is written as given: devnet nodes would be another chain.
+rpc_list() {
+  local given="$1" out="" u
+  local -a urls; IFS=, read -r -a urls <<< "$given"
+  for u in "${urls[@]}"; do u="${u// /}"; [[ -n "$u" && ",$out," != *",$u,"* ]] && out="${out:+$out,}$u"; done
+  local first="${out%%,*}"
+  if is_devnet_rpc "$first" || [[ "$(chain_info "$first")" == *"\"genesis_hash\":\"$DEVNET_GENESIS\""* ]]; then
+    for u in "${DEVNET_RPCS[@]}"; do [[ ",$out," == *",$u,"* ]] || out="$out,$u"; done
+  fi
+  printf '%s' "$out"
+}
+
 # ---------- 8. service ----------
 install_service() {
   local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" unit="cadre-miner.service"
@@ -437,14 +458,36 @@ EOF
   fi
   sleep 3
   systemctl --user is-active -q cadre-miner || die "cadre-miner stopped right after start" "see: journalctl --user -u cadre-miner -n 50"
-  if [[ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo no)" != yes ]]; then
-    warn "user services stop when you log out; to keep mining after logout run: sudo loginctl enable-linger $(id -un)"
-  fi
+  enable_linger
   echo
   echo "  Status:  systemctl --user status cadre-miner"
   echo "  Logs:    journalctl --user -u cadre-miner -f"
   echo "  Stop:    systemctl --user stop cadre-miner     (disable: systemctl --user disable --now cadre-miner)"
   echo "  Start:   systemctl --user start cadre-miner"
+}
+
+# Lingering keeps the user service running after logout. Done here only when it cannot block:
+# as root, or with sudo that needs no password (`sudo -n`); otherwise the command is printed.
+enable_linger() {
+  local me; me="$(id -un)"
+  [[ "$(loginctl show-user "$me" -p Linger --value 2>/dev/null || echo no)" == yes ]] && { ok "lingering on: the miner keeps running after logout"; return; }
+  local cmd="sudo loginctl enable-linger $me"
+  if [[ $NO_LINGER == 1 ]]; then
+    info "--no-linger: the service stops when you log out; to keep it running: $cmd"
+    return
+  fi
+  local sudo=""
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    if have sudo && sudo -n true 2>/dev/null; then sudo="sudo -n"; else
+      warn "user services stop when you log out; to keep mining after logout run: $cmd"
+      return
+    fi
+  fi
+  if $sudo loginctl enable-linger "$me" 2>/dev/null; then
+    ok "lingering enabled for $me: the miner keeps running after logout (undo: sudo loginctl disable-linger $me)"
+  else
+    warn "could not enable lingering; to keep mining after logout run: $cmd"
+  fi
 }
 
 # ---------- after: how to see it work ----------
@@ -454,11 +497,12 @@ print_check() {
   echo "  Is it mining?  The log shows a stats line every ${STATS_USED:-60} s (nonces_per_s) and"
   echo "  a block_accepted line for each block this miner wins. How soon the first one comes depends on"
   echo "  your share of the network's hashrate."
-  if is_devnet_rpc "$RPC_USED"; then
+  local first="${RPC_USED%%,*}"
+  if [[ ",$RPC_USED," == *",$DEFAULT_RPC,"* ]]; then
     echo "  Blocks credited to your address:  curl -s $DEFAULT_API/v1/miners/$PAYOUT"
   fi
   echo "  Balance:  curl -s -X POST -H 'content-type: application/json' \\"
-  echo "              -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccount\",\"params\":{\"account\":\"$PAYOUT\"}}' $RPC_USED"
+  echo "              -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccount\",\"params\":{\"account\":\"$PAYOUT\"}}' $first"
   echo "  Earnings: a block on a paid AI job earns a subsidy (plus fees); with no job open the miner"
   echo "  mines fallback blocks, which earn the block's fees only (often 0). Both pay out ${FINALITY_K:-K} blocks later."
 }

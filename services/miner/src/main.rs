@@ -10,14 +10,16 @@ use clap::Parser;
 use pearl_miner::pool::{PoolMiner, PoolMinerConfig};
 use pearl_miner::{HttpAttester, Miner, MinerConfig, ResultAttester};
 use pearl_pool::client::HttpPool;
-use pearl_node::{read_key_file, HttpNode, DEFAULT_RPC};
+use pearl_node::{read_key_file, FailoverNode, DEFAULT_RPC};
 
 #[derive(Parser)]
 #[command(name = "pearl-miner", about = "v2 agent-chain block producer (useful PoW on posted jobs, CPU)")]
 struct Args {
-    /// Node JSON-RPC endpoint (pool mode: used only to fetch `blob:` job data).
-    #[arg(long, default_value = DEFAULT_RPC)]
-    rpc: String,
+    /// Node JSON-RPC endpoint (pool mode: used only to fetch `blob:` job data). Repeat it, or
+    /// give a comma-separated list, for several nodes of the same chain: the miner stays on one
+    /// and moves to the next when it cannot be reached (an `rpc_failover` log line).
+    #[arg(long, default_value = DEFAULT_RPC, value_delimiter = ',', action = clap::ArgAction::Append)]
+    rpc: Vec<String>,
     /// Payout key file (Solana JSON array, or base58 / hex of the 64-byte keypair or 32-byte seed).
     /// Also signs SubmitResult / CompleteJob with --deliver.
     #[arg(long, default_value = "keys/localnet/miner-keypair.json")]
@@ -76,12 +78,12 @@ fn main() -> Result<()> {
             stats_every: Duration::from_secs(a.stats_secs.max(1)),
             max_shares: a.shares,
         };
-        let data_node = HttpNode::new(&a.rpc);
+        let data_node = nodes(&a.rpc)?;
         let mut m = PoolMiner::new(&pool, key.verifying_key().to_bytes(), cfg, Box::new(|v| println!("{v}")));
         m.data_node = Some(&data_node);
         return m.run(&|| false);
     }
-    let node = HttpNode::new(&a.rpc);
+    let node = nodes(&a.rpc)?;
     let attester = HttpAttester::new(&a.attester);
     let cfg = MinerConfig {
         threads: a.threads.max(1),
@@ -100,4 +102,9 @@ fn main() -> Result<()> {
     let att: Option<&dyn ResultAttester> = if a.deliver { Some(&attester) } else { None };
     let mut miner = Miner::new(&node, att, key, cfg, Box::new(|v| println!("{v}")));
     miner.run(&|| false)
+}
+
+fn nodes(urls: &[String]) -> Result<FailoverNode> {
+    let urls: Vec<String> = urls.iter().map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect();
+    Ok(FailoverNode::new(&urls)?.with_log(Box::new(|v| println!("{v}"))))
 }

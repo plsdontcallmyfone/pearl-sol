@@ -13,6 +13,80 @@ agent-node mine --rpc URL --miner KEY [--blocks N]     # fallback blocks over RP
 agent-node pubkey SEED_HEX                             # p2p / account key of a 32-byte seed
 ```
 
+## Join the public devnet with your own node
+
+Verified 2026-10-20 on the test box (Ubuntu 24.04 x86_64, 4 vCPU, load about 19 from another
+stack, fresh directory, public repo at main): build 474 s with `CARGO_BUILD_JOBS=2` (largest
+process 988 MiB RSS; build cache 778 MB, cargo registry 300 MB, binary 19 MB); a fresh data dir
+synced 3,022 blocks in 19 s (102 MB of chain data, node peak RSS 118 MiB) and followed the tip with
+3 peers. Rust: same as the miner (rustup, 1.95.0; `chain/rust-toolchain.toml` pins it).
+
+1. Build (needs build-essential, git, curl):
+
+        git clone --depth 1 https://github.com/plsdontcallmyfone/pearl-sol.git && cd pearl-sol/chain
+        cargo +1.95.0 build --release --locked -p agent-node     # low memory: CARGO_BUILD_JOBS=2
+        install -m 755 target/release/agent-node ~/.local/bin/    # or anywhere on PATH
+
+2. A p2p identity (a 32-byte ed25519 seed, hex; keep it private, it is your node's identity):
+
+        mkdir -p ~/cadre-node/data && cd ~/cadre-node
+        (umask 077; head -c 32 /dev/urandom | od -An -v -tx1 | tr -d ' \n' > p2p-key.hex)
+        agent-node pubkey "$(cat p2p-key.hex)"                    # your node's public key
+
+3. `~/cadre-node/node.json`, with the genesis from the repo (`deploy/genesis.json`, genesis hash
+   `51c86b67...4d52028a`) and the three devnet nodes as seeds, pinned by key (`getPeers` on any
+   node lists them). Pick ports that are free (`ss -ltn`); RPC on 127.0.0.1 unless you put a
+   proxy in front:
+
+        {
+          "data_dir": "/home/you/cadre-node/data",
+          "genesis": "/home/you/pearl-sol/deploy/genesis.json",
+          "p2p_key": "<contents of p2p-key.hex>",
+          "p2p_listen": "0.0.0.0:10640",
+          "rpc_listen": "127.0.0.1:10630",
+          "ws_listen": "127.0.0.1:10631",
+          "net": "open",
+          "seeds": [
+            "33DN9By34qf7dvbTGuatKq8dMjx7gkDbWtpoRnCsjQdx@64.95.12.116:10640",
+            "DGMwftkptkEDRyweCGup6TeAADuQMb5NHtEdL6YNpxX7@64.95.13.213:10640",
+            "8HiMBfdEf1NinBYsoePbCUEfxTzCr619qKZxbNvWHQFJ@64.95.12.22:10640"
+          ],
+          "verifier": "pearl"
+        }
+
+   Outbound connections are enough to sync and mine. To accept peers too, open the p2p port in
+   your firewall and add `"p2p_external": "<your public ip>:10640"`. `chmod 600 node.json`.
+
+4. Run it and check it caught up (`height` and `tip` equal to a public node's, `syncing` false):
+
+        agent-node run --config ~/cadre-node/node.json
+        curl -s -X POST -H 'content-type: application/json' \
+          -d '{"jsonrpc":"2.0","id":1,"method":"getChainInfo","params":{}}' http://127.0.0.1:10630
+
+5. As a service, `/etc/systemd/system/cadre-node.service` (the devnet boxes run the same unit,
+   deploy/systemd/cadre-node.service), then `sudo systemctl daemon-reload && sudo systemctl
+   enable --now cadre-node`; logs: `journalctl -u cadre-node -f`:
+
+        [Unit]
+        Description=Cadre devnet agent-chain node
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        User=you
+        ExecStart=/home/you/.local/bin/agent-node run --config /home/you/cadre-node/node.json
+        Environment=RUST_LOG=info
+        Restart=always
+        RestartSec=5
+        LimitNOFILE=65536
+
+        [Install]
+        WantedBy=multi-user.target
+
+6. Mine against it: `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash -s --
+   --rpc http://127.0.0.1:10630`. The installer sees the devnet genesis and adds the three public
+   nodes after yours, so the miner fails over to them while your node is down.
+
 Local devnets: `scripts/devnet.sh init|start|status|mine N|stop|reset` (3 static nodes,
 `.devnet/`) and `scripts/devnet.sh open ...` (5 open-membership nodes, `.devnet-open/`, node 0
 is the seed). Ports: node i RPC 10630+2i, WS 10631+2i, p2p 10640+i.

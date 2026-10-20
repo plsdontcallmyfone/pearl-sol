@@ -23,6 +23,24 @@ use pearl_job::pow::MinedBlock;
 
 use crate::{b58, key32, num, Account, JobInfo, NodeApi, SubmitOutcome, Template};
 
+/// The node could not be reached (connect / timeout / proxy 5xx / unreadable body), as opposed to
+/// the node answering with a JSON-RPC error. [`is_transport`] tells them apart.
+#[derive(Debug)]
+pub struct TransportError(pub String);
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TransportError {}
+
+/// True when `e` (or anything it wraps) is a [`TransportError`].
+pub fn is_transport(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<TransportError>().is_some())
+}
+
 pub struct HttpNode {
     pub url: String,
     agent: ureq::Agent,
@@ -44,9 +62,15 @@ impl HttpNode {
         let id = self.id.fetch_add(1, Ordering::Relaxed);
         let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let v: Value = match self.agent.post(&self.url).send_json(body) {
-            Ok(r) => r.into_json()?,
-            Err(ureq::Error::Status(code, r)) => r.into_json().unwrap_or_else(|_| json!({"error": {"message": format!("HTTP {code}")}})),
-            Err(e) => bail!("{method}: {e}"),
+            Ok(r) => r.into_json().map_err(|e| TransportError(format!("{method}: {e}")))?,
+            // A 5xx without a JSON-RPC body is a proxy in front of a node that is down (caddy
+            // answers 502): a transport failure, so a FailoverNode moves on.
+            Err(ureq::Error::Status(code, r)) => match r.into_json::<Value>() {
+                Ok(v) => v,
+                Err(_) if code >= 500 => return Err(TransportError(format!("{method}: HTTP {code}")).into()),
+                Err(_) => json!({"error": {"message": format!("HTTP {code}")}}),
+            },
+            Err(e) => return Err(TransportError(format!("{method}: {e}")).into()),
         };
         if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
             let msg = e.get("message").and_then(|m| m.as_str()).map(String::from).unwrap_or_else(|| e.to_string());

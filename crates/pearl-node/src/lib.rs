@@ -8,6 +8,7 @@
 //!
 //! Wire shapes follow docs/RPC.md (written by the node agent); see `rpc` below.
 
+pub mod failover;
 pub mod mock;
 pub mod rpc;
 pub mod tx;
@@ -20,7 +21,8 @@ use pearl_job::job::{Job, JobHeader, MiningConfig};
 use pearl_job::pow::{BlockHeader, FallbackParams, MinedBlock};
 use pearl_job::spec::{parse_key32, JobSpec};
 
-pub use rpc::HttpNode;
+pub use failover::FailoverNode;
+pub use rpc::{is_transport, HttpNode, TransportError};
 
 pub const DEFAULT_RPC: &str = "http://127.0.0.1:10630";
 

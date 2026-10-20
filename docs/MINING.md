@@ -17,9 +17,10 @@ reuses the build cache.
 |---|---|---|
 | `--pool URL` | `CADRE_POOL` | none (solo) |
 | `--solo` | | solo; clears a pool set earlier |
-| `--rpc URL` | `CADRE_RPC` | `https://rpc.64-95-12-116.sslip.io` (devnet node 0, docs/DEVNET.md); when it does not answer at install time and no `--rpc` was given, the first of devnet nodes 1 and 2 that answers |
+| `--rpc URL[,URL]` | `CADRE_RPC` | the 3 devnet nodes (docs/DEVNET.md). Repeat the flag or comma-separate for several nodes; pearl-miner stays on one and fails over to the next when it cannot be reached (an `rpc_failover` log line). URLs you give come first; the devnet nodes are added after them when the first one is a devnet node or reports the devnet genesis hash (your own devnet node, say), never for another chain |
 | `--threads N` | `CADRE_THREADS` | half the cores, at least 1 |
 | `--no-service` | `CADRE_NO_SERVICE=1` | service installed when `systemctl --user` works |
+| `--no-linger` | `CADRE_NO_LINGER=1` | lingering (the service survives logout) is enabled when that cannot prompt: as root or with passwordless `sudo -n`; otherwise the installer prints `sudo loginctl enable-linger $USER` |
 | `--dry-run` | `CADRE_DRY_RUN=1` | prints each step, changes nothing |
 
 Source: `CADRE_REPO` (git URL, default github.com/plsdontcallmyfone/pearl-sol, public since
