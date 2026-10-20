@@ -26,6 +26,10 @@ pub struct ApiKey {
     pub key_id: String,
     pub wallet: String,
     pub created_ms: u64,
+    /// Last request authenticated with this key (unix ms); none until first use. Kept in
+    /// the ledger, so it is as of the gateway's last ledger save.
+    #[serde(default)]
+    pub last_used_ms: Option<u64>,
 }
 
 /// API keys (stored as sha256 of the key) and the replay guard for signatures.
@@ -65,7 +69,8 @@ impl Keys {
         if let Some(a) = header(headers, "authorization") {
             let k = a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")).unwrap_or(a).trim();
             if k.starts_with(KEY_PREFIX) {
-                let rec = self.keys.get(&sha256_hex(k.as_bytes())).ok_or_else(|| anyhow!("unknown or revoked API key"))?;
+                let rec = self.keys.get_mut(&sha256_hex(k.as_bytes())).ok_or_else(|| anyhow!("unknown or revoked API key"))?;
+                rec.last_used_ms = Some(now_ms);
                 return Ok(Auth::Key { wallet: parse_wallet(&rec.wallet)?, key_id: rec.key_id.clone() });
             }
         }
@@ -97,8 +102,16 @@ impl Keys {
         let key = format!("{KEY_PREFIX}{}", hex::encode(raw));
         let h = sha256_hex(key.as_bytes());
         let key_id = format!("key_{}", &h[..12]);
-        self.keys.insert(h, ApiKey { key_id: key_id.clone(), wallet: bs58::encode(wallet).into_string(), created_ms: now_ms });
+        self.keys.insert(h, ApiKey { key_id: key_id.clone(), wallet: bs58::encode(wallet).into_string(), created_ms: now_ms, last_used_ms: None });
         (key_id, key)
+    }
+
+    /// `wallet`'s keys, oldest first (records only: the key itself is never kept).
+    pub fn list(&self, wallet: &[u8; 32]) -> Vec<ApiKey> {
+        let w = bs58::encode(wallet).into_string();
+        let mut v: Vec<ApiKey> = self.keys.values().filter(|k| k.wallet == w).cloned().collect();
+        v.sort_by(|a, b| a.created_ms.cmp(&b.created_ms).then_with(|| a.key_id.cmp(&b.key_id)));
+        v
     }
 
     /// Revoke one of `wallet`'s keys.

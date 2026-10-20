@@ -415,6 +415,11 @@ impl Gateway {
                 let (key_id, api_key) = self.with_ledger(|l| l.keys.create(&w, now_ms()));
                 Ok(resp(201, json!({"key_id": key_id, "api_key": api_key, "wallet": b58(&w), "note": "shown once; send it as Authorization: Bearer"})))
             }
+            ("GET", "/v1/keys") => {
+                let w = auth_wallet_signed(&auth)?;
+                let list: Vec<Value> = self.ledger.lock().unwrap().keys.list(&w).into_iter().map(|k| json!({"key_id": k.key_id, "created_ms": k.created_ms, "last_used_ms": k.last_used_ms})).collect();
+                Ok(resp(200, json!({"wallet": b58(&w), "keys": list})))
+            }
             ("DELETE", p) if p.starts_with("/v1/keys/") => {
                 let w = auth_wallet_signed(&auth)?;
                 self.with_ledger(|l| l.keys.revoke(&w, &p["/v1/keys/".len()..]))?;

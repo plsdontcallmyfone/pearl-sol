@@ -225,6 +225,20 @@ fn prepaid_balance_then_signed_and_keyed_chat_completions() {
     assert_eq!(r.status, 200, "{}", r.json());
     assert_eq!(r.json()["object"], "text_completion");
     assert_eq!(r.json()["cadre"]["rows"], 4);
+    // GET /v1/keys (wallet-signed): the key record with its last use, never the key
+    let kid = k.json()["key_id"].as_str().unwrap().to_string();
+    let h = signed(&buyer, "GET", "/v1/keys", b"", now_ms());
+    let kl = gw.handle("GET", "/v1/keys", &h, b"");
+    assert_eq!(kl.status, 200, "{}", kl.json());
+    let ks = kl.json()["keys"].as_array().unwrap().clone();
+    assert_eq!(ks.len(), 1);
+    assert_eq!(ks[0]["key_id"], kid.as_str());
+    assert!(ks[0]["created_ms"].as_u64().unwrap() > 0);
+    assert!(ks[0]["last_used_ms"].as_u64().unwrap() >= ks[0]["created_ms"].as_u64().unwrap(), "used by the completion above");
+    assert!(!kl.json().to_string().contains(&key), "the secret is never listed");
+    assert!(ks[0].get("api_key").is_none());
+    assert_eq!(gw.handle("GET", "/v1/keys", &bearer, b"").status, 400, "listing needs the wallet signature, not a key");
+    assert_eq!(gw.handle("GET", "/v1/keys", &[], b"").status, 400);
     // too big for what is left: 402 insufficient_balance
     let big = br#"{"prompt": "x", "max_tokens": 32}"#;
     let mut n = 0;
