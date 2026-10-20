@@ -66,8 +66,8 @@ case "${1:-}" in
     [[ $n == 0 ]] && printf 'TOKEN_RPC=%s\nBRIDGE_PROGRAM=%s\nSTOREFRONT_PROGRAM=%s\nRESERVE_PROGRAM=%s\nLIGHTCLIENT_PROGRAM=%s\nPUBLIC_URL=https://storefront.%s.sslip.io\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nREFUND_GRACE_MS=%s\nCADRE_API_PUBLIC_URL=https://api.%s.sslip.io\nEXPLORER_URL=https://explorer.%s.sslip.io\n' \
       "$SOLANA_RPC" "$BRIDGE_PROGRAM" "$STOREFRONT_PROGRAM" "$RESERVE_PROGRAM" "$LIGHTCLIENT_PROGRAM" "$dash" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$REFUND_GRACE_MS" "$dash" "$dash" > "$tmp/services.env"
     # inference (box 0): the registered model dir (pearl model register writes its manifest.json there), worker threads = half the cores
-    [[ $n == 0 ]] && printf 'CADRE_MODEL_DIR=/var/lib/lode/cadre-model\nWORKER_THREADS=%s\nEXPLORER_URL=https://explorer.%s.sslip.io\nGATEWAY_EXTRA=%s\n' \
-      "${BOX0_WORKER_THREADS:-2}" "$dash" "${GATEWAY_EXTRA:-}" > "$tmp/inference.env"
+    [[ $n == 0 ]] && printf 'CADRE_MODEL_DIR=/var/lib/lode/cadre-model\nWORKER_THREADS=%s\nEXPLORER_URL=https://explorer.%s.sslip.io\nGATEWAY_PUBLIC_API_ROOT=https://api.%s.sslip.io/v1/openai\nGATEWAY_EXTRA=%s\n' \
+      "${BOX0_WORKER_THREADS:-2}" "$dash" "$dash" "${GATEWAY_EXTRA:-}" > "$tmp/inference.env"
     is_relay_box "$n" && printf 'TOKEN_RPC=%s\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nHR_LANE=%s\n' \
       "$SOLANA_RPC" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$(relay_lane "$n")" > "$tmp/header-relay.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"

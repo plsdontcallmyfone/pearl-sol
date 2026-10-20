@@ -60,6 +60,10 @@ struct Args {
     explorer_url: String,
     #[arg(long)]
     public_url: Option<String>,
+    /// Public URL of this gateway's /v1 root behind a proxy that mounts it under another path,
+    /// e.g. https://api.example/v1/openai (cadre-api). Status links use it instead of --public-url.
+    #[arg(long)]
+    public_api_root: Option<String>,
 }
 
 /// Feeds an SSE channel to tiny_http as a Read.
@@ -108,6 +112,7 @@ fn main() -> Result<()> {
         close_margin_blocks: a.close_margin_blocks,
         explorer_url: a.explorer_url.clone(),
         public_url: a.public_url.clone().unwrap_or(format!("http://{}:{}", a.host, a.port)),
+        public_api_root: a.public_api_root.clone(),
         ..Config::default()
     };
     std::fs::create_dir_all(&cfg.work_dir)?;

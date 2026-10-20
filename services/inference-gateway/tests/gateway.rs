@@ -167,9 +167,14 @@ impl Evaluator for NoEval {
 }
 
 fn gateway(tag: &str) -> (Arc<Gateway>, Arc<Mutex<Vec<(Value, Option<String>)>>>) {
+    gateway_with(tag, None)
+}
+
+fn gateway_with(tag: &str, public_api_root: Option<&str>) -> (Arc<Gateway>, Arc<Mutex<Vec<(Value, Option<String>)>>>) {
     let md = model();
     let calls = Arc::new(Mutex::new(vec![]));
-    let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32, ..Config::default() };
+    let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32,
+        public_api_root: public_api_root.map(String::from), ..Config::default() };
     let gw = Arc::new(Gateway::new(Box::new(MockNode::new(1, 0x207fffff)), Box::new(FakeSf(calls.clone())), Box::new(FakeWorker(md.clone(), bts(&md))),
         Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})));
     (gw, calls)
@@ -302,4 +307,32 @@ fn tool_calls_from_a_bare_json_answer() {
     assert_eq!(c["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "f");
     let c = completion_json(true, false, "r", 0, "m", &gen, &json!({}));
     assert_eq!(c["choices"][0]["finish_reason"], "stop", "no tools offered: plain content");
+}
+
+/// Receipt links behind cadre-api: the gateway's /v1 is public at <api>/v1/openai, which
+/// --public-url (host only, "/v1" appended) cannot express. Devnet receipts pointed at
+/// 127.0.0.1:10664 before --public-api-root (2026-10-20).
+#[test]
+fn receipt_links_use_the_public_api_root() {
+    let root = "https://api.example.test/v1/openai/";
+    let (gw, _calls) = gateway_with("pubroot", Some(root));
+    let body = br#"{"prompt": "hi", "max_tokens": 3}"#;
+    let r = gw.handle("POST", "/v1/completions", &[("x-payment".into(), "p".into())], body);
+    assert_eq!(r.status, 200, "{}", r.json());
+    let rid = r.json()["cadre"]["request_id"].as_str().unwrap().to_string();
+    let want = format!("https://api.example.test/v1/openai/requests/{rid}");
+    assert_eq!(r.json()["cadre"]["status_url"], json!(want));
+    let hdr = r.headers.iter().find(|(k, _)| k == "x-cadre-receipt").map(|(_, v)| v.clone()).unwrap();
+    assert_eq!(hdr, want);
+    // the stored receipt says the same, and streaming carries it in its header
+    assert_eq!(gw.handle("GET", &format!("/v1/requests/{rid}"), &[], b"").json()["receipt"]["status_url"], json!(want));
+    let body = br#"{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 2, "stream": true}"#;
+    let r = gw.handle("POST", "/v1/chat/completions", &[("x-payment".into(), "p".into())], body);
+    let hdr = r.headers.iter().find(|(k, _)| k == "x-cadre-receipt").map(|(_, v)| v.clone()).unwrap();
+    assert!(hdr.starts_with("https://api.example.test/v1/openai/requests/"), "{hdr}");
+    // default (no root): <public_url>/v1/requests/<id>
+    let (gw, _calls) = gateway("pubdefault");
+    let r = gw.handle("POST", "/v1/completions", &[("x-payment".into(), "p".into())], br#"{"prompt": "hi", "max_tokens": 3}"#);
+    let rid = r.json()["cadre"]["request_id"].as_str().unwrap().to_string();
+    assert_eq!(r.json()["cadre"]["status_url"], json!(format!("http://127.0.0.1:10664/v1/requests/{rid}")));
 }

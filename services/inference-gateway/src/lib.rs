@@ -264,8 +264,11 @@ pub struct Config {
     pub poll: Duration,
     /// Explorer base URL for receipts (`<explorer>/job/<ticket>`).
     pub explorer_url: String,
-    /// This gateway's public base URL (status links).
+    /// This gateway's public base URL (status links: `<public_url>/v1/requests/<id>`).
     pub public_url: String,
+    /// The public URL of this gateway's `/v1` root when a proxy mounts it elsewhere (cadre-api
+    /// serves it at `<api>/v1/openai`). Status links are then `<public_api_root>/requests/<id>`.
+    pub public_api_root: Option<String>,
 }
 
 impl Default for Config {
@@ -285,6 +288,7 @@ impl Default for Config {
             poll: Duration::from_millis(1000),
             explorer_url: "http://127.0.0.1:10670".into(),
             public_url: "http://127.0.0.1:10664".into(),
+            public_api_root: None,
         }
     }
 }
@@ -552,6 +556,14 @@ impl Gateway {
         format!("{}/job/{ticket}", self.cfg.explorer_url.trim_end_matches('/'))
     }
 
+    /// Public status link of one served request (receipt `status_url`, `X-Cadre-Receipt`).
+    pub fn status_url(&self, request_id: &str) -> String {
+        match &self.cfg.public_api_root {
+            Some(root) => format!("{}/requests/{request_id}", root.trim_end_matches('/')),
+            None => format!("{}/v1/requests/{request_id}", self.cfg.public_url.trim_end_matches('/')),
+        }
+    }
+
     fn receipt_json(&self, l: &Ledger, r: &Served) -> Value {
         let t = l.tickets.get(&r.ticket_id);
         json!({
@@ -559,7 +571,7 @@ impl Gateway {
             "rows": r.rows, "prompt_tokens": r.prompt_tokens, "completion_tokens": r.completion_tokens,
             "charged_lamports": r.charged_lamports.map(|x| x.to_string()), "lamports_per_row": t.and_then(|t| t.lamports_per_row).map(|x| x.to_string()),
             "round": r.round, "row_offset": r.row_offset, "body_sha256": r.body_sha256, "output_sha256": r.output_sha256,
-            "ticket_status": t.map(|t| t.state.clone()), "status_url": format!("{}/v1/requests/{}", self.cfg.public_url.trim_end_matches('/'), r.request_id),
+            "ticket_status": t.map(|t| t.state.clone()), "status_url": self.status_url(&r.request_id),
             "explorer_url": self.explorer(&r.ticket_id), "decoding": "greedy", "at_ms": r.at_ms,
             "measured": {"ttft_s": r.ttft_s, "decode_tokens_per_s": r.decode_tokens_per_s},
         })
@@ -797,7 +809,7 @@ impl Gateway {
             status: 200,
             body: Payload::Stream(rx),
             headers: vec![("content-type".into(), "text/event-stream".into()), ("cache-control".into(), "no-cache".into()), ("x-cadre-request".into(), request_id.clone()),
-                ("x-cadre-receipt".into(), format!("{}/v1/requests/{request_id}", self.cfg.public_url.trim_end_matches('/')))],
+                ("x-cadre-receipt".into(), self.status_url(&request_id))],
         })
     }
 
