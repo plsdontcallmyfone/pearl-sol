@@ -1294,6 +1294,7 @@ dependencies = [
  "agent-types",
  "blobs",
  "futures",
+ "hex",
  "pearl-job",
  "state",
  "thiserror",

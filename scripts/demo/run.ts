@@ -820,7 +820,9 @@ async function stepInference(): Promise<string> {
   start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665", "--threads", WORKER_THREADS], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
   await waitFor("worker /health", async () => (await httpJson(`${WORKER_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 180_000);
   start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL,
-    "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400", "--round-secs", "5", "--balance-deadline-blocks", "2000"]);
+    "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400", "--round-secs", "5", "--balance-deadline-blocks", "2000",
+    // receipt links through a public cadre-api (the test box: https://cadre-api.64-95-13-106.sslip.io/v1/openai)
+    ...(process.env.GATEWAY_PUBLIC_API_ROOT ? ["--public-api-root", process.env.GATEWAY_PUBLIC_API_ROOT] : [])]);
   await waitFor("gateway /health", async () => (await httpJson(`${GATEWAY_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 60_000);
   // prepaid balance (owner decision 2026-10-18): one x402 top-up, then wallet-signed requests
   const rowsBudget = Number(process.env.CADRE_BALANCE_ROWS ?? 256);
