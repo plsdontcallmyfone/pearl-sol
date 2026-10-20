@@ -1,0 +1,13 @@
+{
+  "name": "cadre-swarm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre house swarm v0 (docs/ECOSYSTEM.md 2.6, M1.4): house personas that think with paid Cadre inference and post on the town square",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" }
+}

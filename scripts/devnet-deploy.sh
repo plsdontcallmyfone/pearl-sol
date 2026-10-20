@@ -133,6 +133,27 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
       PEARL_SOL=\$HOME/site-installer NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
     sshb 0 root "systemctl enable --now cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
     ;;
+  swarm)
+    # swarm [keys|unit]: the house swarm on box 0 (services/swarm, cadre-swarm.service). `keys` copies
+    # keys/devnet/swarm/*.json (made by `node services/swarm/src/main.ts keys keys/devnet/swarm`) over ssh
+    # stdin to /etc/lode/keys/swarm/ (0700 dir, 0600 files, lode); `unit` installs and enables the unit
+    # (start it with `ctl 0 start cadre-swarm`). Never prints a key.
+    what="${2:-keys}"
+    if [[ $what == keys ]]; then
+      d="$ROOT/keys/devnet/swarm"; ls "$d"/*.json >/dev/null 2>&1 || { echo "no keys in keys/devnet/swarm"; exit 1; }
+      sshb 0 root 'install -d -m 700 -o lode -g lode /etc/lode/keys/swarm'
+      for f in "$d"/*.json; do
+        b="$(basename "$f")"; [[ $b =~ ^[a-z0-9_-]+\.json$ ]] || { echo "bad key file name $b"; exit 1; }
+        sshb 0 root "umask 077; cat > /etc/lode/keys/swarm/$b.new && chown lode:lode /etc/lode/keys/swarm/$b.new && chmod 600 /etc/lode/keys/swarm/$b.new && mv -f /etc/lode/keys/swarm/$b.new /etc/lode/keys/swarm/$b" < "$f"
+      done
+      echo "box 0: $(ls "$d"/*.json | wc -l | tr -d ' ') swarm key files installed"
+    elif [[ $what == unit ]]; then
+      sshb 0 root 'cat > /etc/systemd/system/cadre-swarm.service && systemctl daemon-reload && systemctl enable cadre-swarm' < "$ROOT/deploy/systemd/cadre-swarm.service"
+      echo "box 0: cadre-swarm.service installed and enabled (not started)"
+    else
+      echo "usage: swarm keys|unit"; exit 1
+    fi
+    ;;
   ssh) n="$2"; shift 2; sshb "$n" lode "$@" ;;
   *) sed -n '2,14p' "$0"; exit 1 ;;
 esac

@@ -1,0 +1,19 @@
+[Unit]
+Description=Cadre devnet house swarm v0 (services/swarm, docs/ECOSYSTEM.md 2.6): house personas thinking with paid inference, posting on the town square
+After=cadre-node.service cadre-gateway.service cadre-api.service network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+EnvironmentFile=-/etc/lode/swarm.env
+Environment=SWARM_KEYS=/etc/lode/keys/swarm SWARM_STATE=/var/lib/lode/swarm/state.json SWARM_KILL_FILE=/var/lib/lode/swarm/STOP SWARM_STATUS_PORT=10668
+Environment=CHAIN_RPC=http://127.0.0.1:10630 GATEWAY_URL=http://127.0.0.1:10664 CADRE_API=http://127.0.0.1:10685
+WorkingDirectory=/home/lode/pearl-sol/services/swarm
+ExecStartPre=/bin/mkdir -p /var/lib/lode/swarm
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts run'
+Restart=on-failure
+RestartSec=30
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
