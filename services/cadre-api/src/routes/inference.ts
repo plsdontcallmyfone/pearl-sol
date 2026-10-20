@@ -211,6 +211,8 @@ export function registerInference(api: Api, d: Deps) {
   api.post("/v1/inference/balance/topup", toGateway("prepaid top-up", () => "/v1/balance/topup", "POST"));
   api.post("/v1/inference/balance/topup/quote", toGateway("prepaid top-up quote", () => "/v1/balance/topup", "POST", { quote: true }));
   api.post("/v1/inference/balance/close", toGateway("prepaid close", () => "/v1/balance/close", "POST"));
+  // API keys list (gateway GET /v1/keys, wallet-signed over the gateway path /v1/keys); the same as GET /v1/openai/keys
+  api.get("/v1/inference/keys", toGateway("API keys", () => "/v1/keys", "GET"), { cache: "no-store" });
   // earlier names of the same (the site's first build used them)
   api.post("/v1/inference/prepaid/topup", toGateway("prepaid top-up", () => "/v1/balance/topup", "POST"));
   api.post("/v1/inference/prepaid/topup/quote", toGateway("prepaid top-up quote", () => "/v1/balance/topup", "POST", { quote: true }));

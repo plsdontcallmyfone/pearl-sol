@@ -193,6 +193,8 @@ export class CadreApi {
   blockProof(id: number | string) { return this.get<{ height: number; hash: string; proof_hash: string; bytes: number; proof: string }>(`/v1/blocks/${id}/proof`); }
   jobs(q: { status?: string; kind?: "job" | "ticket" | "segment"; poster?: Address; offset?: number; limit?: number } = {}) { return this.get<Paged & { jobs: JobSummary[] }>("/v1/jobs", q); }
   job(id: string) { return this.get<Job>(`/v1/jobs/${id}`); }
+  /** Jobs naming `evaluator` among their evaluators (explorer evaluator index); status also takes rejected / all. */
+  evaluatorJobs(evaluator: Address, q: { status?: string; offset?: number; limit?: number } = {}) { return this.get<Paged & { evaluator: Address; status: string; counts: Record<string, number>; jobs: (JobSummary & { evaluators: Address[]; threshold: number; deliverer: Address | null; rejects_indexed: number })[] }>("/v1/jobs", { evaluator, ...q }); }
   orders(q: { status?: string; payer?: Address; offset?: number; limit?: number } = {}) { return this.get<Paged & { orders: Order[] }>("/v1/orders", q); }
   order(nonce: string | number) { return this.get<Order>(`/v1/orders/${nonce}`); }
   payers(q: { offset?: number; limit?: number } = {}) { return this.get<Paged & { total_protocol_fees: Amount; payers: { payer: Address; jobs: number; storefront_jobs: number; protocol_fees: Amount; sol_spent: Amount; share_ppm: number }[] }>("/v1/payers", q); }
@@ -274,6 +276,7 @@ export class CadreApi {
 
   // market
   pumpQuote(solIn: Amount) { return this.get<PumpQuote>("/v1/pump/quote", { sol_in: solIn }); }
+  pumpSellQuote(tokensIn: Amount) { return this.get<{ side: "sell"; venue: "curve" | "pumpswap"; tokens_in_spl: Amount; sol_out_lamports: Amount; capped_at_real_reserve: boolean; reserves: Record<string, Amount>; note: string }>("/v1/pump/quote", { side: "sell", tokens_in: tokensIn }); }
   crank() { return this.get<Record<string, any>>("/v1/crank"); }
 }
 

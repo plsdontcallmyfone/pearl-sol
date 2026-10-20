@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import { configFromEnv, Deps } from "../src/deps.ts";
 import { build } from "../src/app.ts";
-import { J1, MINER, MODEL, OWNER, POSTER, SERVER, SF_WALLET, T1, h64, makeState, startFakeStack, type FakeState } from "./fake.ts";
+import { EVALUATOR, J1, MINER, MODEL, OWNER, POSTER, SERVER, SF_WALLET, T1, h64, makeState, startFakeStack, type FakeState } from "./fake.ts";
 import { parseWireTx } from "../src/sol.ts";
 import { useCardProber } from "../src/routes/agents.ts";
 import { CardProber, cardConfig } from "../../../apps/explorer/src/agentcard.ts";
@@ -150,6 +150,19 @@ test("stats: summary, feed, blocks, jobs, orders, payers, supply, reserve, reven
   assert.equal(j.body.next_offset, 2);
   assert.equal((await get("/v1/jobs?kind=ticket")).body.jobs[0].job_id, T1);
   assert.equal((await get(`/v1/jobs/${J1.slice(0, 8)}`)).body.job_id, J1);
+  // evaluator index: jobs naming an account among their evaluators
+  const ev = await get(`/v1/jobs?evaluator=${EVALUATOR}`);
+  assert.equal(ev.status, 200, JSON.stringify(ev.body));
+  assert.equal(ev.body.evaluator, EVALUATOR);
+  assert.deepEqual(ev.body.jobs.map((x: any) => x.job_id).sort(), [J1, h64("e1")].sort());
+  assert.deepEqual(ev.body.counts, { all: 2, open: 0, delivered: 0, completed: 1, expired: 1, rejected: 0 });
+  assert.deepEqual(ev.body.jobs.find((x: any) => x.job_id === J1).evaluators, [EVALUATOR, POSTER]);
+  assert.deepEqual((await get(`/v1/jobs?evaluator=${EVALUATOR}&status=expired`)).body.jobs.map((x: any) => x.job_id), [h64("e1")]);
+  assert.equal((await get(`/v1/jobs?role=evaluator&account=${POSTER}`)).body.total, 1);
+  assert.equal((await get(`/v1/jobs?evaluator=${EVALUATOR}&status=bogus`)).status, 400);
+  assert.equal((await get("/v1/jobs?evaluator=nope")).status, 400);
+  assert.equal((await get("/v1/jobs?role=evaluator")).status, 400);
+  assert.equal((await get(`/v1/jobs?evaluator=${MINER}`)).body.total, 0);
   assert.equal((await get("/v1/orders")).body.total, 0);
   assert.equal((await get("/v1/orders/1")).status, 404);
   assert.equal((await get("/v1/payers")).body.payers[0].payer, SERVER);
@@ -341,6 +354,16 @@ test("prepaid through the gateway: balance (public + wallet-signed), top-up 402 
   const del = await fetch(base + "/v1/openai/keys/k1", { method: "DELETE", headers: auth });
   assert.equal(del.status, 200);
   assert.equal(st.gatewayCalls.at(-1)!.method, "DELETE");
+  // keys list (GET, wallet-signed): pass-through and the /v1/inference/keys alias, both to gateway /v1/keys
+  for (const path of ["/v1/openai/keys", "/v1/inference/keys"]) {
+    const kl = await fetch(base + path, { headers: auth });
+    assert.equal(kl.status, 200, path);
+    const kb = (await kl.json()) as any;
+    assert.equal(kb.keys[0].key_id, "k1");
+    assert.equal(st.gatewayCalls.at(-1)!.path, "/v1/keys");
+    assert.equal(st.gatewayCalls.at(-1)!.method, "GET");
+    assert.equal(st.gatewayCalls.at(-1)!.headers["x-cadre-wallet"], auth["x-cadre-wallet"]);
+  }
   // receipt headers copied and exposed
   const c = await post("/v1/openai/completions", { prompt: "hi" }, auth);
   assert.equal(c.headers.get("x-cadre-ticket"), T1);

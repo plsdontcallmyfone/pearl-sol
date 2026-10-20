@@ -221,7 +221,7 @@ export function decodePool(d: Uint8Array) {
     creatorFees: d.length >= 287 ? b.readBigUInt64LE(279) : 0n,
   };
 }
-/** Constant product out for `quoteIn`, before fees (the same quote storefront-x402 uses). */
+/** Constant product out for `quoteIn`, before fees (the same quote storefront-x402 uses). Also the sell side with the reserves swapped. */
 export const cpQuote = (baseReserve: bigint, quoteReserve: bigint, quoteIn: bigint) => (quoteIn <= 0n ? 0n : (baseReserve * quoteIn) / (quoteReserve + quoteIn));
 
 // ------------------------------------------------------------ legacy message compile
@@ -363,6 +363,9 @@ export const ammFeeConfig = () => findPda([utf8("fee_config"), seedKey(AMM)], FE
 
 const IX_PUMP_BUY_EXACT_QUOTE_IN_V3 = Uint8Array.from([225, 247, 80, 30, 213, 179, 132, 136]);
 const IX_AMM_BUY_EXACT_QUOTE_IN_V2 = Uint8Array.from([194, 171, 28, 70, 104, 77, 91, 47]);
+/** pump `sell_v3` (pump-sdk 4.1.0 getSellV3InstructionRaw) and PumpSwap `sell_v2` (pump-swap-sdk 2.1.0 sellV2Instructions). */
+export const IX_PUMP_SELL_V3 = Uint8Array.from([0x1c, 0x92, 0xde, 0x77, 0x26, 0xc4, 0x69, 0xd5]);
+export const IX_AMM_SELL_V2 = Uint8Array.from([0x5d, 0xf6, 0x82, 0x3c, 0xe7, 0xe9, 0x40, 0xb2]);
 
 function keyList(d: Uint8Array, at: number, n: number): string[] {
   const out: string[] = [];
@@ -387,32 +390,38 @@ export function decodePoolKeys(d: Uint8Array) {
 export const syncNative = (account: string): Ix => ({ programId: TOKEN, keys: [meta(account, true)], data: Uint8Array.of(17) });
 export const closeAccount = (account: string, dest: string, owner: string): Ix => ({ programId: TOKEN, keys: [meta(account, true), meta(dest, true), meta(owner, false, true)], data: Uint8Array.of(9) });
 
+/** The 17 accounts pump's v3 trades take on a SOL-quoted curve (buy_exact_quote_in_v3, sell_v3: same list). */
+function pumpV3Keys(user: string, mint: string, buybackFeeRecipient: string, tokenProgram: string): Meta[] {
+  const bc = bondingCurvePda(mint);
+  return [
+    meta(pumpGlobalPda()),
+    meta(mint),
+    meta(WSOL),
+    meta(tokenProgram),
+    meta(TOKEN),
+    meta(bc, true),
+    meta(ata(bc, mint, tokenProgram), true),
+    meta(ata(bc, WSOL, TOKEN), true),
+    meta(user, true, true),
+    meta(ata(user, mint, tokenProgram), true),
+    meta(ata(user, WSOL, TOKEN), true),
+    meta(pumpUserVolumeAccumulator(user), true),
+    meta(pumpFeeConfig()),
+    meta(buybackFeeRecipient, true),
+    meta(SYSTEM),
+    meta(pumpEventAuthority()),
+    meta(PUMP),
+  ];
+}
+
 /** pump `buy_exact_quote_in_v3(spendable_quote_in, min_tokens_out, partial_fill = false)` on a SOL-quoted curve. */
 export function pumpBuyExactQuoteInIx(user: string, mint: string, spendableQuoteIn: bigint, minTokensOut: bigint, buybackFeeRecipient: string, tokenProgram = TOKEN_2022): Ix {
-  const bc = bondingCurvePda(mint);
-  return {
-    programId: PUMP,
-    keys: [
-      meta(pumpGlobalPda()),
-      meta(mint),
-      meta(WSOL),
-      meta(tokenProgram),
-      meta(TOKEN),
-      meta(bc, true),
-      meta(ata(bc, mint, tokenProgram), true),
-      meta(ata(bc, WSOL, TOKEN), true),
-      meta(user, true, true),
-      meta(ata(user, mint, tokenProgram), true),
-      meta(ata(user, WSOL, TOKEN), true),
-      meta(pumpUserVolumeAccumulator(user), true),
-      meta(pumpFeeConfig()),
-      meta(buybackFeeRecipient, true),
-      meta(SYSTEM),
-      meta(pumpEventAuthority()),
-      meta(PUMP),
-    ],
-    data: cat(IX_PUMP_BUY_EXACT_QUOTE_IN_V3, u64(spendableQuoteIn), u64(minTokensOut), Uint8Array.of(0)),
-  };
+  return { programId: PUMP, keys: pumpV3Keys(user, mint, buybackFeeRecipient, tokenProgram), data: cat(IX_PUMP_BUY_EXACT_QUOTE_IN_V3, u64(spendableQuoteIn), u64(minTokensOut), Uint8Array.of(0)) };
+}
+
+/** pump `sell_v3(amount, min_sol_output)` on a SOL-quoted curve: sells exactly `amount` tokens, fails below `minSolOut` (net of fees). */
+export function pumpSellV3Ix(user: string, mint: string, amount: bigint, minSolOut: bigint, buybackFeeRecipient: string, tokenProgram = TOKEN_2022): Ix {
+  return { programId: PUMP, keys: pumpV3Keys(user, mint, buybackFeeRecipient, tokenProgram), data: cat(IX_PUMP_SELL_V3, u64(amount), u64(minSolOut)) };
 }
 
 export interface PoolKeys {
@@ -422,31 +431,37 @@ export interface PoolKeys {
   baseVault: string;
   quoteVault: string;
 }
+/** The 17 accounts PumpSwap's v2 swaps take (buy_exact_quote_in_v2, sell_v2: same list). */
+function ammV2Keys(user: string, p: PoolKeys, ammBuybackOwner: string, baseTokenProgram: string): Meta[] {
+  return [
+    meta(p.pool, true),
+    meta(user, true, true),
+    meta(ammGlobalConfigPda()),
+    meta(p.baseMint),
+    meta(p.quoteMint),
+    meta(ata(user, p.baseMint, baseTokenProgram), true),
+    meta(ata(user, p.quoteMint, TOKEN), true),
+    meta(p.baseVault, true),
+    meta(p.quoteVault, true),
+    meta(baseTokenProgram),
+    meta(TOKEN),
+    meta(SYSTEM),
+    meta(ammUserVolumeAccumulator(user), true),
+    meta(ammFeeConfig()),
+    meta(ata(ammBuybackOwner, p.quoteMint, TOKEN), true),
+    meta(ammEventAuthority()),
+    meta(AMM),
+  ];
+}
+
 /** PumpSwap `buy_exact_quote_in_v2(spendable_quote_in, min_base_amount_out)`; `ammBuybackOwner` is a GlobalConfig buyback recipient (its wSOL ATA is passed). */
 export function ammBuyExactQuoteInIx(user: string, p: PoolKeys, spendableQuoteIn: bigint, minBaseOut: bigint, ammBuybackOwner: string, baseTokenProgram = TOKEN_2022): Ix {
-  return {
-    programId: AMM,
-    keys: [
-      meta(p.pool, true),
-      meta(user, true, true),
-      meta(ammGlobalConfigPda()),
-      meta(p.baseMint),
-      meta(p.quoteMint),
-      meta(ata(user, p.baseMint, baseTokenProgram), true),
-      meta(ata(user, p.quoteMint, TOKEN), true),
-      meta(p.baseVault, true),
-      meta(p.quoteVault, true),
-      meta(baseTokenProgram),
-      meta(TOKEN),
-      meta(SYSTEM),
-      meta(ammUserVolumeAccumulator(user), true),
-      meta(ammFeeConfig()),
-      meta(ata(ammBuybackOwner, p.quoteMint, TOKEN), true),
-      meta(ammEventAuthority()),
-      meta(AMM),
-    ],
-    data: cat(IX_AMM_BUY_EXACT_QUOTE_IN_V2, u64(spendableQuoteIn), u64(minBaseOut)),
-  };
+  return { programId: AMM, keys: ammV2Keys(user, p, ammBuybackOwner, baseTokenProgram), data: cat(IX_AMM_BUY_EXACT_QUOTE_IN_V2, u64(spendableQuoteIn), u64(minBaseOut)) };
+}
+
+/** PumpSwap `sell_v2(base_amount_in, min_quote_amount_out)`: sells exactly `baseIn`, pays at least `minQuoteOut` wSOL (fees deducted) into the user's wSOL ATA. */
+export function ammSellV2Ix(user: string, p: PoolKeys, baseIn: bigint, minQuoteOut: bigint, ammBuybackOwner: string, baseTokenProgram = TOKEN_2022): Ix {
+  return { programId: AMM, keys: ammV2Keys(user, p, ammBuybackOwner, baseTokenProgram), data: cat(IX_AMM_SELL_V2, u64(baseIn), u64(minQuoteOut)) };
 }
 
 // ---- storefront buyback crank (token/programs/storefront crank_buyback / crank_buyback_amm)

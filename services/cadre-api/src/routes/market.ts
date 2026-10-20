@@ -1,6 +1,6 @@
 // Token market: pump curve / PumpSwap quote (read-only, before pump fees), the crank view
 // (buyback vault + reserve limits), and UNSIGNED txs for the user's wallet to sign: a CADRE
-// buy (pump curve, PumpSwap after graduation), the permissionless storefront buyback crank
+// buy or sell (pump curve, PumpSwap after graduation), the permissionless storefront buyback crank
 // and the permissionless rate-limited reserve fund_mining. Account lists mirror
 // services/crank (see src/sol.ts "market txs"); every precondition the program would
 // reject on is checked first and answered with 409 / 422 instead of a tx that must fail.
@@ -12,6 +12,7 @@ import {
   ammBuybackRecipients,
   ammBuyExactQuoteInIx,
   ammGlobalConfigPda,
+  ammSellV2Ix,
   ata,
   bondingCurvePda,
   canonicalPool,
@@ -32,6 +33,7 @@ import {
   pumpBuybackRecipients,
   pumpBuyExactQuoteInIx,
   pumpGlobalPda,
+  pumpSellV3Ix,
   reserveAta,
   reserveConfigPda,
   RESERVE_ID,
@@ -85,6 +87,35 @@ export async function pumpQuote(d: Deps, solIn: bigint) {
   if (q < 0n) q = 0n;
   const base = tokenAccountAmount(bv.data);
   return { venue: "pumpswap", sol_in_lamports: solIn.toString(), tokens_out_spl: cpQuote(base, q + pl.virtualQuote, solIn).toString(), reserves: { base_spl: base.toString(), quote_lamports: (q + pl.virtualQuote).toString() } };
+}
+
+/**
+ * Fee-free constant-product quote for SELLING `tokensIn` CADRE: SOL out on the curve, wSOL
+ * out of the PumpSwap pool after graduation. Capped at the real SOL the venue holds (both
+ * programs pay at most that; virtual reserves only price).
+ */
+export async function pumpSellQuote(d: Deps, tokensIn: bigint) {
+  const b = await d.bridge();
+  const [curveAcc, poolAcc] = await d.accounts([bondingCurvePda(b.mint), canonicalPool(b.mint)]);
+  if (!curveAcc) throw new ApiError(503, "curve_missing", "no pump bonding curve for the mint on this cluster");
+  const curve = decodeCurve(curveAcc.data);
+  if (!curve.complete) {
+    let out = cpQuote(curve.virtualQuote, curve.virtualToken, tokensIn);
+    const capped = out > curve.realQuote;
+    if (capped) out = curve.realQuote;
+    return { venue: "curve", tokens_in_spl: tokensIn.toString(), sol_out_lamports: out.toString(), capped_at_real_reserve: capped, reserves: { virtual_token: curve.virtualToken.toString(), virtual_sol: curve.virtualQuote.toString(), real_sol: curve.realQuote.toString() } };
+  }
+  if (!poolAcc) throw new ApiError(503, "pool_missing", "the curve is complete but the PumpSwap pool is missing");
+  const pl = decodePool(poolAcc.data);
+  const [bv, qv] = await d.accounts([pl.baseVault, pl.quoteVault]);
+  if (!bv || !qv) throw new ApiError(503, "pool_vaults_missing", "PumpSwap pool vaults missing");
+  let q = tokenAccountAmount(qv.data) - pl.protocolFees - pl.creatorFees;
+  if (q < 0n) q = 0n;
+  const base = tokenAccountAmount(bv.data);
+  let out = cpQuote(q + pl.virtualQuote, base, tokensIn);
+  const capped = out > q;
+  if (capped) out = q;
+  return { venue: "pumpswap", tokens_in_spl: tokensIn.toString(), sol_out_lamports: out.toString(), capped_at_real_reserve: capped, reserves: { base_spl: base.toString(), quote_lamports: (q + pl.virtualQuote).toString(), real_quote_lamports: q.toString() } };
 }
 
 async function blockhash(d: Deps): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
@@ -222,9 +253,16 @@ async function poolKeysFor(d: Deps, mint: string): Promise<PoolKeys & { baseRese
 
 export function registerMarket(api: Api, d: Deps) {
   api.get("/v1/pump/quote", async (c) => {
+    const side = c.query.get("side") ?? "buy";
+    if (side === "sell") {
+      const tokensIn = amount(c.query.get("tokens_in") ?? c.query.get("amount_spl"), "tokens_in");
+      const q = await pumpSellQuote(d, tokensIn);
+      return { side: "sell", ...q, note: "fee-free constant-product quote of the SOL a sell of tokens_in returns; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
+    }
+    if (side !== "buy") throw badRequest("side is buy or sell");
     const solIn = amount(c.query.get("sol_in"), "sol_in");
     const q = await pumpQuote(d, solIn);
-    return { ...q, note: "fee-free constant-product quote; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
+    return { side: "buy", ...q, note: "fee-free constant-product quote; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
   }, { cache: 3 });
 
   api.get("/v1/crank", async () => {
@@ -290,6 +328,66 @@ export function registerMarket(api: Api, d: Deps) {
         ...route,
       },
       note: "spends at most sol_in (pump's fee included) and fails without moving funds if the fill is below min_tokens_out; the quote is constant product on sol_in net of a 1.25% fee allowance",
+    });
+  });
+
+  api.post("/v1/tx/pump-sell", async (c) => {
+    const b0 = await c.json();
+    const seller = addr(b0.seller, "seller");
+    const amt = amount(b0.amount_spl ?? b0.tokens_in, "amount_spl");
+    const slip = bps(b0.slippage_bps, "slippage_bps", 100n);
+    const minOverride = b0.min_sol_out === undefined || b0.min_sol_out === null ? null : amount(b0.min_sol_out, "min_sol_out");
+    const cfg = await d.bridge();
+    const mint = cfg.mint;
+    if (cfg.tokenProgram !== TOKEN_2022) throw new ApiError(503, "unexpected_token_program", "the bridge mint is not a Token-2022 mint (pump create_v2 coins are)");
+    if (amt <= 0n) throw badRequest("amount_spl must be positive");
+    const tokenAccount = ata(seller, mint, TOKEN_2022);
+    const [ta] = await d.accounts([tokenAccount]);
+    const have = ta && ta.owner === TOKEN_2022 ? tokenAccountAmount(ta.data) : 0n;
+    if (have < amt) throw new ApiError(422, "insufficient_tokens", `the seller's CADRE account holds ${have} SPL base units, the sell needs ${amt}`, { token_account: tokenAccount, balance_spl: have.toString() });
+    const bal = await d.solana<any>("getBalance", [seller, { commitment: "confirmed" }]);
+    const lamports = BigInt(bal?.value ?? 0);
+    if (lamports < 5_000n) throw new ApiError(422, "insufficient_funds", `the seller holds ${lamports} lamports; the seller pays the tx fee (and, after graduation, a wSOL account's rent that the tx returns)`);
+    const q = await pumpSellQuote(d, amt);
+    const gross = BigInt(q.sol_out_lamports);
+    // pump takes its fee from the SOL out: allow the most it can be
+    const net = lessBps(gross, PUMP_FEE_BPS_MAX);
+    const minOut = minOverride ?? lessBps(net, slip);
+    if (minOverride === null && minOut <= 0n) throw new ApiError(422, "amount_too_small", "amount_spl returns less than one lamport after fees and slippage");
+    const ixs: Ix[] = [computeUnitLimit(400_000)];
+    let route: Record<string, unknown>;
+    if (q.venue === "curve") {
+      const [g] = await d.accounts([pumpGlobalPda()]);
+      if (!g) throw new ApiError(503, "pump_global_missing", "pump Global account missing on this cluster");
+      const recipient = pick(pumpBuybackRecipients(g.data));
+      ixs.push(pumpSellV3Ix(seller, mint, amt, minOut, recipient));
+      route = { venue: "curve", program: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", instruction: "sell_v3", bonding_curve: bondingCurvePda(mint), buyback_fee_recipient: recipient };
+    } else {
+      const p = await poolKeysFor(d, mint);
+      const [gc] = await d.accounts([ammGlobalConfigPda()]);
+      if (!gc) throw new ApiError(503, "amm_global_missing", "PumpSwap GlobalConfig missing on this cluster");
+      const owner = pick(ammBuybackRecipients(gc.data));
+      const wsol = ata(seller, WSOL, TOKEN);
+      // as pump-swap-sdk sellV2Instructions: the seller's wSOL account (idempotent), the sell, unwrap to SOL
+      ixs.push(createAtaIdempotent(seller, seller, WSOL, TOKEN), ammSellV2Ix(seller, p, amt, minOut, owner), closeAccount(wsol, seller, seller));
+      route = { venue: "pumpswap", program: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", instruction: "sell_v2", pool: p.pool, buyback_fee_recipient: ata(owner, WSOL, TOKEN), wsol_account: wsol };
+    }
+    const bh = await blockhash(d);
+    return txReply(ixs, seller, bh, {
+      summary: {
+        seller,
+        mint,
+        amount_spl: amt.toString(),
+        token_account: tokenAccount,
+        balance_spl: have.toString(),
+        quote_sol_out_lamports: gross.toString(),
+        min_sol_out_lamports: minOut.toString(),
+        slippage_bps: Number(slip),
+        fee_allowance_bps: Number(PUMP_FEE_BPS_MAX),
+        capped_at_real_reserve: q.capped_at_real_reserve,
+        ...route,
+      },
+      note: "sells exactly amount_spl and fails without moving funds if the SOL out (pump's fee deducted) is below min_sol_out; the quote is constant product, min_sol_out is that less a 1.25% fee allowance and slippage",
     });
   });
 

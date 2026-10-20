@@ -4,11 +4,12 @@
 
 import * as M from "../../../../apps/explorer/src/models.ts";
 import { readBuyback } from "../../../../apps/explorer/src/buyback.ts";
+import { EVALUATOR_STATUSES, evaluatorJobsModel, type EvaluatorStatus } from "../../../../apps/explorer/src/evaluator.ts";
 import { buybackVaultPda } from "../../../../apps/explorer/src/decode.ts";
 import { big } from "../../../../apps/explorer/src/math.ts";
 import { Api, ApiError, badRequest, notFound, reply } from "../http.ts";
 import type { Deps } from "../deps.ts";
-import { bondingCurvePda, decodeCurve, decodeReserveConfig, mintDecimals, mintSupply, reserveAta, reserveConfigPda, reserveCreatorPda, RESERVE_ID, tokenAccountAmount } from "../sol.ts";
+import { bondingCurvePda, decodeCurve, decodeReserveConfig, mintDecimals, mintSupply, reserveAta, reserveConfigPda, reserveCreatorPda, RESERVE_ID, tokenAccountAmount, isAddress } from "../sol.ts";
 import { optionalExport } from "../optional.ts";
 
 const s = (v: bigint) => v.toString();
@@ -217,6 +218,16 @@ export function registerStats(api: Api, d: Deps) {
   }, { cache: 3 });
 
   api.get("/v1/jobs", (c) => {
+    const ev = c.query.get("evaluator") ?? (c.query.get("role") === "evaluator" ? c.query.get("account") : null);
+    if (c.query.get("role") === "evaluator" && !ev) throw badRequest("role=evaluator needs account=<address>");
+    if (ev !== null) {
+      if (!isAddress(ev)) throw badRequest("evaluator must be a base58 ed25519 address");
+      const est = c.query.get("status") || "all";
+      if (!(EVALUATOR_STATUSES as readonly string[]).includes(est)) throw badRequest(`with evaluator, status is one of ${EVALUATOR_STATUSES.join(", ")}`);
+      const m = evaluatorJobsModel(d.ix, ev, est as EvaluatorStatus);
+      const p = page(m.jobs, c.query);
+      return { evaluator: m.evaluator, status: m.status, counts: m.counts, total: p.total, offset: p.offset, limit: p.limit, next_offset: p.next_offset, jobs: p.items, indexed: m.indexed };
+    }
     const st = c.query.get("status");
     const kind = c.query.get("kind");
     const poster = c.query.get("poster");

@@ -329,6 +329,109 @@ test("POST /v1/tx/pump-buy after graduation: PumpSwap buy_exact_quote_in_v2 with
   }
 });
 
+test("sell builders equal pump-sdk getSellV3InstructionRaw and pump-swap-sdk sellV2Instructions", { skip }, async () => {
+  const user = key("u2"), recip = key("bb2");
+  sameIx(S.pumpSellV3Ix(user, MINT, 123_456n, 789n, recip),
+    await pumpSdk.PUMP_SDK.getSellV3InstructionRaw({ user: pk(user), mint: pk(MINT), amount: new BN(123_456), quoteAmount: new BN(789), tokenProgram: pk(S.TOKEN_2022), buybackFeeRecipient: pk(recip) }));
+  const amm = new swapSdk.PumpAmmSdk();
+  const p = { pool: key("pool-k2"), baseMint: MINT, quoteMint: S.WSOL, baseVault: key("bv2"), quoteVault: key("qv2") };
+  const state = {
+    globalConfig: { buybackFeeRecipients: [pk(recip)] }, poolKey: pk(p.pool), pool: { baseMint: pk(MINT), quoteMint: pk(S.WSOL), poolBaseTokenAccount: pk(p.baseVault), poolQuoteTokenAccount: pk(p.quoteVault) },
+    baseTokenProgram: pk(S.TOKEN_2022), quoteTokenProgram: pk(S.TOKEN), user: pk(user), userBaseTokenAccount: pk(S.ata(user, MINT, S.TOKEN_2022)), userQuoteTokenAccount: pk(S.ata(user, S.WSOL, S.TOKEN)),
+    userBaseAccountInfo: null, userQuoteAccountInfo: null,
+  };
+  const sdkIxs = await amm.sellV2Instructions(state, new BN(1000), new BN(7));
+  const wsol = S.ata(user, S.WSOL, S.TOKEN);
+  const mine = [S.createAtaIdempotent(user, user, S.WSOL, S.TOKEN), S.ammSellV2Ix(user, p, 1000n, 7n, recip), S.closeAccount(wsol, user, user)];
+  assert.equal(mine.length, sdkIxs.length);
+  mine.forEach((ix, i) => sameIx(ix, sdkIxs[i]));
+});
+
+function setRealSol(lamports: bigint) {
+  const c = st.accounts.get(S.bondingCurvePda(MINT))!;
+  c.data.writeBigUInt64LE(lamports, 32);
+}
+
+test("POST /v1/tx/pump-sell on the curve: sell_v3 as pump-sdk builds it, min SOL out net of the fee allowance and slippage", { skip }, async () => {
+  setRealSol(5_000_000_000n);
+  try {
+    const r = await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "9000000" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const b = r.body;
+    assert.equal(b.fee_payer, OWNER);
+    assert.deepEqual(b.signers, [OWNER]);
+    assert.equal(b.summary.venue, "curve");
+    assert.equal(b.summary.instruction, "sell_v3");
+    // fake curve: virtual token 1e15, virtual sol 3e10
+    const gross = (30_000_000_000n * 9_000_000n) / (10n ** 15n + 9_000_000n);
+    assert.equal(b.summary.quote_sol_out_lamports, gross.toString());
+    const minOut = (((gross * 9_875n) / 10_000n) * 9_900n) / 10_000n;
+    assert.equal(b.summary.min_sol_out_lamports, minOut.toString());
+    const m = decodeMessage(b.transaction);
+    assert.ok(m.sigs[0].every((x) => x === 0), "unsigned");
+    assert.deepEqual(m.ixs.map((x) => x.programId), [S.COMPUTE_BUDGET, S.PUMP]);
+    const sdkIx = await pumpSdk.PUMP_SDK.getSellV3InstructionRaw({ user: pk(OWNER), mint: pk(MINT), amount: new BN("9000000"), quoteAmount: new BN(minOut.toString()), tokenProgram: pk(S.TOKEN_2022), buybackFeeRecipient: pk(b.summary.buyback_fee_recipient) });
+    assert.equal(m.hex, web3Message([W.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), sdkIx], OWNER, m.blockhash));
+    const data = m.ixs[1].data;
+    assert.equal(data.length, 24);
+    assert.equal(data.readBigUInt64LE(8), 9_000_000n);
+    assert.equal(data.readBigUInt64LE(16), minOut);
+    // the quote endpoint agrees
+    const q = await (await fetch(base + "/v1/pump/quote?side=sell&tokens_in=9000000")).json() as any;
+    assert.equal(q.side, "sell");
+    assert.equal(q.sol_out_lamports, gross.toString());
+    assert.equal((await fetch(base + "/v1/pump/quote?side=sideways&sol_in=1")).status, 400);
+    // explicit min_sol_out, refusals
+    assert.equal((await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "1000", min_sol_out: "3" })).body.summary.min_sol_out_lamports, "3");
+    const over = await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "9000001" });
+    assert.equal(over.status, 422);
+    assert.equal(over.body.error.code, "insufficient_tokens");
+    assert.equal(over.body.error.details.balance_spl, "9000000");
+    assert.equal((await post("/v1/tx/pump-sell", { seller: key("nobody"), amount_spl: "1" })).body.error.code, "insufficient_tokens");
+    assert.equal((await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "0" })).status, 400);
+    assert.equal((await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "1000", slippage_bps: 6000 })).status, 400);
+    // the real SOL on the curve caps the quote
+    setRealSol(100n);
+    const capped = await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "9000000" });
+    assert.equal(capped.body.summary.quote_sol_out_lamports, "100");
+    assert.equal(capped.body.summary.capped_at_real_reserve, true);
+  } finally {
+    setRealSol(0n);
+  }
+});
+
+test("POST /v1/tx/pump-sell after graduation: PumpSwap sell_v2 with the wSOL account and unwrap, as pump-swap-sdk builds it", { skip }, async () => {
+  await graduate();
+  try {
+    const r = await post("/v1/tx/pump-sell", { seller: OWNER, amount_spl: "9000000", slippage_bps: 200 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const b = r.body;
+    assert.equal(b.summary.venue, "pumpswap");
+    assert.equal(b.summary.instruction, "sell_v2");
+    const gross = (85_000_000_000n * 9_000_000n) / (200_000_000_000_000n + 9_000_000n);
+    assert.equal(b.summary.quote_sol_out_lamports, gross.toString());
+    const minOut = (((gross * 9_875n) / 10_000n) * 9_800n) / 10_000n;
+    assert.equal(b.summary.min_sol_out_lamports, minOut.toString());
+    const owners = S.ammBuybackRecipients(fixture("amm_global_config"));
+    const owner = owners.find((o) => S.ata(o, S.WSOL, S.TOKEN) === b.summary.buyback_fee_recipient);
+    assert.ok(owner);
+    const amm = new swapSdk.PumpAmmSdk();
+    const state = {
+      globalConfig: { buybackFeeRecipients: [pk(owner!)] }, poolKey: pk(S.canonicalPool(MINT)), pool: { baseMint: pk(MINT), quoteMint: pk(S.WSOL), poolBaseTokenAccount: pk(POOL_BASE_VAULT), poolQuoteTokenAccount: pk(POOL_QUOTE_VAULT) },
+      baseTokenProgram: pk(S.TOKEN_2022), quoteTokenProgram: pk(S.TOKEN), user: pk(OWNER), userBaseTokenAccount: pk(S.ata(OWNER, MINT, S.TOKEN_2022)), userQuoteTokenAccount: pk(S.ata(OWNER, S.WSOL, S.TOKEN)),
+      userBaseAccountInfo: null, userQuoteAccountInfo: null,
+    };
+    const sdkIxs = await amm.sellV2Instructions(state, new BN("9000000"), new BN(minOut.toString()));
+    const m = decodeMessage(b.transaction);
+    assert.equal(m.hex, web3Message([W.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...sdkIxs], OWNER, m.blockhash));
+    const q = await (await fetch(base + "/v1/pump/quote?side=sell&tokens_in=8000000")).json() as any; // a new URL: quotes are cached 3 s
+    assert.equal(q.venue, "pumpswap");
+    assert.equal(q.sol_out_lamports, ((85_000_000_000n * 8_000_000n) / (200_000_000_000_000n + 8_000_000n)).toString());
+  } finally {
+    ungraduate();
+  }
+});
+
 test("POST /v1/tx/crank-buyback: storefront crank_buyback as services/crank builds it; refusals the program would make", { skip }, async () => {
   const cranker = OWNER;
   const r = await post("/v1/tx/crank-buyback", { cranker });

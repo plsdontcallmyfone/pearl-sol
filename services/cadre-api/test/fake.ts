@@ -15,6 +15,7 @@ export const POSTER = key("poster");
 export const SERVER = key("server");
 export const MINER = key("miner");
 export const OWNER = key("owner");
+export const EVALUATOR = key("evaluator");
 export const MINT = key("mint");
 export const VAULT = key("vault");
 export const SF_WALLET = key("storefront-wallet");
@@ -138,10 +139,10 @@ export async function startFakeStack(st: FakeState) {
       };
     });
   const jobs = () => [
-    job({ job_id: J1 }),
+    job({ job_id: J1, evaluators: [EVALUATOR, POSTER], threshold: 1 }),
     job({ job_id: T1, kind: "ticket", deliverer: SERVER, standing: { model_id: MODEL, server: SERVER, rows: 16, prompt_tokens: 6, max_new_tokens: 10, segments: 1, blocks_mined: 1, subsidy_paid: "40000" }, protocol_fee: "200000", worker_pay: "800000", posted_height: 7, closed_height: 9 }),
     job({ job_id: S1, kind: "segment", poster: SERVER, worker_pay: "0", protocol_fee: "0", standing: { ticket_id: T1, model_id: MODEL, matrix: 0 }, posted_height: 7 }),
-    job({ job_id: h64("e1"), status: "expired", deliverer: SERVER, protocol_fee: "50000", posted_height: 4, closed_height: 11 }),
+    job({ job_id: h64("e1"), evaluators: [EVALUATOR], status: "expired", deliverer: SERVER, protocol_fee: "50000", posted_height: 4, closed_height: 11 }),
     job({ job_id: h64("f1"), status: "completed", poster: SERVER, deliverer: SERVER, protocol_fee: "999000", posted_height: 4, closed_height: 10 }),
   ];
   const node = rpcServer((m, p) => {
@@ -238,6 +239,7 @@ export async function startFakeStack(st: FakeState) {
     }
     if (path === "/v1/balance/close" && method === "POST") return headers["x-cadre-wallet"] ? { status: 202, body: { closing: 1 } } : { status: 400, body: { error: { message: "authenticate to close your balance" } } };
     if (path === "/v1/keys" && method === "POST") return headers["x-cadre-wallet"] ? { status: 201, body: { key_id: "k1", api_key: "cadre_sk_00" } } : { status: 401, body: { error: { message: "wallet-signed" } } };
+    if (path === "/v1/keys" && method === "GET") return headers["x-cadre-wallet"] ? { status: 200, body: { wallet: headers["x-cadre-wallet"], keys: [{ key_id: "k1", created_ms: 1_760_000_000_000, last_used_ms: null }] } } : { status: 400, body: { error: { message: "this call needs the wallet signature headers (not an API key)" } } };
     if (path.startsWith("/v1/keys/") && method === "DELETE") return { status: 200, body: { revoked: path.slice("/v1/keys/".length) } };
     if (path === "/v1/completions" && method === "POST" && headers["x-cadre-wallet"]) return { status: 200, body: { text: "ok" }, headers: { "x-cadre-request": "req_1", "x-cadre-ticket": T1, "x-cadre-order": "4", "x-cadre-rows": "9", "x-cadre-charged-lamports": "123", "x-cadre-receipt": "http://g/v1/requests/req_1", "x-cadre-explorer": "http://e/job/" + T1 } };
     if (path === "/v1/completions" && method === "POST") {

@@ -113,9 +113,13 @@ paths:
     get:
       tags: [stats]
       operationId: jobs
-      summary: Jobs and inference tickets, newest first
+      summary: Jobs and inference tickets, newest first; with `evaluator`, the jobs that name that account as an evaluator
+      description: "With `evaluator=<address>` (or `role=evaluator&account=<address>`) the list comes from the explorer's evaluator index: every job the node lists whose `evaluators` include the account, newest first. `status` then also takes `rejected` (jobs with at least one indexed RejectResult; a reject reopens the job) and `all` (default). The reply adds `evaluator`, `status`, `counts` per status and `indexed`; each job carries `evaluators`, `threshold`, `deliverer`, `result_hash`, `result_uri`, `rejects_indexed`, `last_reject`."
       parameters:
-        - { name: status, in: query, schema: { type: string, enum: [open, delivered, completed, expired] } }
+        - { name: status, in: query, schema: { type: string, enum: [open, delivered, completed, expired, rejected, all] }, description: "rejected and all only with evaluator" }
+        - { name: evaluator, in: query, schema: { $ref: "#/components/schemas/Address" }, description: jobs naming this account among their evaluators }
+        - { name: role, in: query, schema: { type: string, enum: [evaluator] }, description: "with account: the same as evaluator=account" }
+        - { name: account, in: query, schema: { $ref: "#/components/schemas/Address" } }
         - { name: kind, in: query, schema: { type: string, enum: [job, ticket, segment] } }
         - { name: poster, in: query, schema: { $ref: "#/components/schemas/Address" } }
         - { $ref: "#/components/parameters/Offset" }
@@ -333,11 +337,21 @@ paths:
         "201": { description: Balance ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
         "402": { description: Payment required (x402), content: { application/json: { schema: { $ref: "#/components/schemas/PaymentRequired" } } } }
         "501": { $ref: "#/components/responses/Pending" }
+  /v1/inference/keys:
+    get:
+      tags: [inference]
+      operationId: apiKeys
+      summary: The wallet's API keys (the gateway's GET /v1/keys, wallet-signed); the same as GET /v1/openai/keys
+      description: "Sign with cadre-auth-v1 over the GATEWAY path `/v1/keys` (method GET, empty body). Returns `{wallet, keys: [{key_id, created_ms, last_used_ms}]}`, oldest first; `last_used_ms` is null until the key authenticates a request. Never the key itself (shown once by POST /v1/openai/keys). An API key cannot list keys (400)."
+      responses:
+        "200": { description: Keys, content: { application/json: { schema: { type: object, additionalProperties: true, properties: { wallet: { $ref: "#/components/schemas/Address" }, keys: { type: array, items: { type: object, properties: { key_id: { type: string }, created_ms: { type: integer }, last_used_ms: { type: [integer, "null"] } } } } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "501": { $ref: "#/components/responses/Pending" }
   /v1/openai/{path}:
     get:
       tags: [inference]
       operationId: openaiGet
-      summary: Pass-through to the gateway (GET models, requests/{id})
+      summary: Pass-through to the gateway (GET models, keys, balance, prepaid/{wallet}, receipts, requests/{id}, stats)
       description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT`, `X-Cadre-Wallet`, `X-Cadre-Timestamp` and `X-Cadre-Signature` headers (`X-Cadre-Account` is sent as `X-Cadre-Wallet`) and the body byte for byte, so a cadre-auth-v1 signature over the gateway path (`/v1/{path}`) verifies; streams the reply as is (SSE included) and copies the receipt headers (`X-Cadre-Request`, `-Ticket`, `-Order`, `-Rows`, `-Charged-Lamports`, `-Receipt`, `-Explorer`, all exposed to browsers). Served paths - models, completions, chat/completions, embeddings, keys, balance, prepaid, receipts, requests, stats. Only the wait for the reply headers (30 min) and silence between streamed bytes (10 min) are bounded, never the whole answer.
       parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
       responses:
@@ -531,8 +545,12 @@ paths:
     get:
       tags: [market]
       operationId: pumpQuote
-      summary: Fee-free quote for buying CADRE with SOL (pump curve, or PumpSwap after graduation)
-      parameters: [{ name: sol_in, in: query, required: true, schema: { $ref: "#/components/schemas/Amount" } }]
+      summary: Fee-free quote for buying CADRE with SOL, or (side=sell) the SOL a CADRE sell returns (pump curve, or PumpSwap after graduation)
+      description: "side=buy (default) takes `sol_in` and returns `tokens_out_spl`; side=sell takes `tokens_in` (SPL base units) and returns `sol_out_lamports`, capped at the real SOL the venue holds (`capped_at_real_reserve`). Both before pump's fee and slippage."
+      parameters:
+        - { name: side, in: query, schema: { type: string, enum: [buy, sell], default: buy } }
+        - { name: sol_in, in: query, schema: { $ref: "#/components/schemas/Amount" }, description: "side=buy (required)" }
+        - { name: tokens_in, in: query, schema: { $ref: "#/components/schemas/Amount" }, description: "side=sell (required)" }
       responses:
         "200": { description: Quote, content: { application/json: { schema: { $ref: "#/components/schemas/PumpQuote" } } } }
   /v1/crank:
@@ -565,6 +583,29 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { description: "The curve is complete but the PumpSwap pool is not there yet (pool_missing)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "422": { $ref: "#/components/responses/Unprocessable" }
+  /v1/tx/pump-sell:
+    post:
+      tags: [market, tx]
+      operationId: buildPumpSell
+      summary: Unsigned CADRE sell for the seller's wallet (pump curve sell_v3; PumpSwap sell_v2 with the seller's wSOL account and an unwrap after graduation)
+      description: "Sells exactly `amount_spl` (SPL base units) of the network's CADRE mint from the seller's Token-2022 ATA. The seller is the fee payer and the only signer. `min_sol_out` defaults to the fee-free constant-product quote (capped at the venue's real SOL) less a 1.25% fee allowance, less `slippage_bps`; the program fails without moving funds below it. On the curve the tx is [compute budget, sell_v3]; on PumpSwap [compute budget, create the seller's wSOL ATA (idempotent), sell_v2, close the wSOL ATA to the seller]. `summary` carries venue, quote, min out, the token account and balance, and the buyback fee recipient used."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seller, amount_spl]
+              properties:
+                seller: { $ref: "#/components/schemas/Address" }
+                amount_spl: { $ref: "#/components/schemas/Amount" }
+                slippage_bps: { type: integer, minimum: 0, maximum: 5000, default: 100 }
+                min_sol_out: { $ref: "#/components/schemas/Amount" }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "The curve is complete but the PumpSwap pool is not there yet (pool_missing)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: "insufficient_tokens (details.balance_spl), insufficient_funds (no SOL for the fee) or amount_too_small", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /v1/tx/crank-buyback:
     post:
       tags: [market, tx]
@@ -926,4 +967,4 @@ components:
         amount_chain: { type: string }
         stage: { type: string, enum: [submitted, unlocked, final, released, unknown] }
     Transfers: { type: object, properties: { owner: { type: string }, deposits: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, withdrawals: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, stages: { type: object } } }
-    PumpQuote: { type: object, properties: { venue: { type: string, enum: [curve, pumpswap] }, sol_in_lamports: { type: string }, tokens_out_spl: { type: string }, reserves: { type: object }, note: { type: string } } }
+    PumpQuote: { type: object, properties: { side: { type: string, enum: [buy, sell] }, venue: { type: string, enum: [curve, pumpswap] }, sol_in_lamports: { type: string }, tokens_out_spl: { type: string }, tokens_in_spl: { type: string }, sol_out_lamports: { type: string }, capped_at_real_reserve: { type: boolean }, reserves: { type: object }, note: { type: string } } }
