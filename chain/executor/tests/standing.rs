@@ -31,6 +31,7 @@ struct Chain {
     st: MemState,
     height: u64,
     nonces: std::collections::HashMap<u8, u64>,
+    chain_id: u32,
 }
 
 impl Chain {
@@ -42,11 +43,11 @@ impl Chain {
         cfg.emission_ppm = 100_000; // 10% of the pool per job block, so caps bind
         let st = MemState::default();
         st.apply(&genesis_writes(&cfg).unwrap());
-        Self { st, height: 0, nonces: Default::default() }
+        Self { st, height: 0, nonces: Default::default(), chain_id: CHAIN }
     }
 
     fn block(&mut self, job: Option<Hash>, txs: &[Tx]) -> Result<executor::BlockSummary, executor::ExecError> {
-        let env = BlockEnv { chain_id: CHAIN, height: self.height + 1, miner: pk(MINER), job_id: job };
+        let env = BlockEnv { chain_id: self.chain_id, height: self.height + 1, miner: pk(MINER), job_id: job };
         let (ws, sum) = block_on(execute_block(&self.st, env, txs))?;
         self.st.apply(&ws);
         self.height += 1;
@@ -57,7 +58,7 @@ impl Chain {
     /// One tx in its own block; the sender's nonce only advances when it lands.
     fn send(&mut self, who: u8, body: TxBody) -> Result<executor::BlockSummary, String> {
         let n = *self.nonces.get(&who).unwrap_or(&0);
-        let t = Tx::signed(&seed(who), CHAIN, n, 1000, body);
+        let t = Tx::signed(&seed(who), self.chain_id, n, 1000, body);
         let r = self.block(None, &[t]).map_err(|e| e.to_string());
         if r.is_ok() {
             self.nonces.insert(who, n + 1);
@@ -72,7 +73,7 @@ impl Chain {
         };
         let sigs = ATT[..2].iter().map(|i| AttesterSig { pubkey: pk(*i), sig: sign_plain(&seed(*i), &msg) }).collect();
         let n = *self.nonces.get(&200).unwrap_or(&0);
-        let t = Tx::signed(&seed(200), CHAIN, n, 0, TxBody::BridgeUnlock { solana_nonce: nonce, recipient: to, amount_spl, job_order: job, sigs });
+        let t = Tx::signed(&seed(200), self.chain_id, n, 0, TxBody::BridgeUnlock { solana_nonce: nonce, recipient: to, amount_spl, job_order: job, sigs });
         let r = self.block(None, &[t]).map_err(|e| e.to_string());
         if r.is_ok() {
             self.nonces.insert(200, n + 1);
@@ -367,4 +368,155 @@ fn balance_ticket_rounds_and_pay_for_rows_used() {
     assert_eq!(c.bal(&pk(SERVER)), srv0 + w * 24 / 64 - 1000);
     assert_eq!(c.bal(&pk(BUYER)), buy0 + w * 40 / 64 + p * 40 / 64);
     assert_eq!(c.bal(&pool_address()) + p * 40 / 64, pool0 + s.subsidy, "P share back from the pool");
+}
+
+/// Llama-3.1-8B-Instruct as tools/cadre/quantize.py registers it (research/INT7-ACCURACY.md
+/// section 7): 32 layers x {qkv 2, o 2, gate 4, up 4, down 7} + lm_head 16 column x 2 k shards.
+fn llama8b_matrices() -> Vec<MatrixSpec> {
+    let mut v = Vec::new();
+    let mut push = |n: u32, count: usize| {
+        for _ in 0..count {
+            let i = v.len() as u32;
+            let mut hb = [0u8; 32];
+            hb[..4].copy_from_slice(&i.to_le_bytes());
+            v.push(MatrixSpec { k: 2048, n, hash_b: hb });
+        }
+    };
+    for _ in 0..32 {
+        push(6144, 2); // qkv 4096 x 6144: 2 k shards
+        push(4096, 2); // o 4096 x 4096
+        push(7168, 4); // gate 4096 x 14336: 2 columns x 2 k shards
+        push(7168, 4); // up
+        push(4096, 7); // down 14336 x 4096: 7 k shards
+    }
+    push(8016, 32); // lm_head 4096 x 128256: 16 columns of 8016 x 2 k shards
+    v
+}
+
+fn model_body(name: &[u8], matrices: Vec<MatrixSpec>) -> RegisterModel {
+    RegisterModel { matrices, ..register_body(name) }
+}
+
+/// The 8B upgrade (SPEC 4.5): a 640-matrix model registers, a full round of its 640 segments
+/// posts (10 PostSegments of 64) and its last matrix mines.
+#[test]
+fn register_8b_model_640_matrices_and_post_a_full_round() {
+    let mut c = Chain::new();
+    c.fund(pk(REGISTRANT), 1_000_000);
+    c.fund(pk(BUYER), 100_000_000);
+    c.fund(pk(SERVER), 1_000_000);
+    c.fund(pool_address(), 1_000_000_000);
+    let mx = llama8b_matrices();
+    assert_eq!(mx.len(), 640);
+    let macs: u64 = mx.iter().map(|m| m.k as u64 * m.n as u64).sum();
+    // per token row: 32 x 4096 x (6144 + 4096 + 3 x 14336) + 4096 x 128256
+    assert_eq!(macs, 32 * 4096 * (6144 + 4096 + 3 * 14336) + 4096 * 128256);
+    let body = model_body(b"llama-3.1-8b-instruct-w7a7", mx.clone());
+    let n = *c.nonces.get(&REGISTRANT).unwrap_or(&0);
+    let tx = Tx::signed(&seed(REGISTRANT), CHAIN, n, 1000, TxBody::RegisterModel(body));
+    let bytes = tx.encode();
+    assert!(bytes.len() > tx::MAX_TX_SIZE, "a 640-matrix RegisterModel is over the old 16 KiB tx cap");
+    assert_eq!(Tx::decode(&bytes).unwrap(), tx, "and decodes under the RegisterModel cap");
+    c.send(REGISTRANT, TxBody::RegisterModel(model_body(b"llama-3.1-8b-instruct-w7a7", mx.clone()))).unwrap();
+    let id = standing::model_id(&pk(REGISTRANT), b"llama-3.1-8b-instruct-w7a7");
+    let m = c.model(&id);
+    assert_eq!(m.matrices, mx);
+    assert_eq!(m.macs_per_row, macs);
+    assert_eq!(Model::decode(&m.encode()).unwrap(), m);
+
+    // one ticket, one round over every matrix: 10 PostSegments txs of 64 segments in one block
+    let (w, p) = (5_000_000_000u64, 1_000_003_000u64);
+    let nb = *c.nonces.get(&BUYER).unwrap_or(&0);
+    c.send(BUYER, TxBody::PostJob(ticket_body(&id, 5, 7, pk(SERVER), w, p, c.height + 100, 640))).unwrap();
+    let tid = schema::job_id_for_post(&pk(BUYER), nb);
+    let seg_of = |i: usize| {
+        let x = &mx[i];
+        Segment { matrix: i as u16, m: 12, k: x.k, n: x.n, max_blocks: 1, hash_a: [7; 32], hash_b: x.hash_b, c_hash: [8; 32], a_uri: blob(0x90) }
+    };
+    let ns = *c.nonces.get(&SERVER).unwrap_or(&0);
+    let txs: Vec<Tx> = (0..10)
+        .map(|t| Tx::signed(&seed(SERVER), CHAIN, ns + t as u64, 1000, post(tid, 0, &id, (t * 64..t * 64 + 64).map(seg_of).collect())))
+        .collect();
+    assert!(txs.iter().all(|t| t.encode().len() <= tx::MAX_TX_SIZE), "PostSegments stays under 16 KiB");
+    c.block(None, &txs).unwrap();
+    c.nonces.insert(SERVER, ns + 10);
+    assert_eq!(c.model(&id).segments, 640);
+    let last = standing::segment_id(&tid, 639, 0);
+    let j = c.job(&last);
+    assert_eq!((j.k, j.n, j.m, j.hash_b), (2048, 8016, 12, mx[639].hash_b));
+    assert!(c.block(Some(last), &[]).unwrap().subsidy > 0);
+    // over the new limit: refused by the executor (and by the codec, see agent-types)
+    let mut big = llama8b_matrices();
+    big.extend(llama8b_matrices().into_iter().take(tx::MAX_MODEL_MATRICES + 1 - 640));
+    assert!(c.send(REGISTRANT, TxBody::RegisterModel(model_body(b"too-big", big))).unwrap_err().contains("1..=1024"));
+}
+
+/// The public devnet has history under the old rule: up to its upgrade height a RegisterModel
+/// over 384 matrices is refused exactly as before; from that height it is taken.
+#[test]
+fn devnet_takes_640_matrices_only_from_its_upgrade_height() {
+    let mut c = Chain::new();
+    c.chain_id = tx::DEVNET_CHAIN_ID;
+    c.fund(pk(REGISTRANT), 1_000_000);
+    let h = tx::DEVNET_MODEL_MATRICES_HEIGHT;
+    c.height = h - 2; // the next block is h - 1
+    let e = c.send(REGISTRANT, TxBody::RegisterModel(model_body(b"8b", llama8b_matrices()))).unwrap_err();
+    assert!(e.contains("1..=384"), "{e}");
+    // 384 still registers before the height
+    c.send(REGISTRANT, TxBody::RegisterModel(model_body(b"384", llama8b_matrices()[..384].to_vec()))).unwrap();
+    assert_eq!(c.height, h - 1);
+    c.send(REGISTRANT, TxBody::RegisterModel(model_body(b"8b", llama8b_matrices()))).unwrap();
+    assert_eq!(c.height, h);
+    assert_eq!(c.model(&standing::model_id(&pk(REGISTRANT), b"8b")).matrices.len(), 640);
+}
+
+/// Measured executor cost of the larger registry (printed; run with --release --nocapture).
+#[test]
+fn measure_register_and_post_cost() {
+    use std::time::Instant;
+    for count in [144usize, 384, 640, 1024] {
+        let mut c = Chain::new();
+        c.fund(pk(REGISTRANT), 1_000_000);
+        let mut mx = llama8b_matrices();
+        while mx.len() < count {
+            mx.extend(llama8b_matrices());
+        }
+        mx.truncate(count);
+        let body = model_body(b"m", mx.clone());
+        let tx = Tx::signed(&seed(REGISTRANT), CHAIN, 0, 1000, TxBody::RegisterModel(body));
+        let size = tx.encode().len();
+        let t0 = Instant::now();
+        let env = BlockEnv { chain_id: CHAIN, height: c.height + 1, miner: pk(MINER), job_id: None };
+        let (ws, _) = block_on(execute_block(&c.st, env, &[tx])).unwrap();
+        let reg = t0.elapsed();
+        let mk = schema::model_key(&standing::model_id(&pk(REGISTRANT), b"m"));
+        let model_bytes: usize = ws.writes.iter().filter(|(k, _)| **k == mk).map(|(_, v)| v.as_ref().map(|v| v.len()).unwrap_or(0)).sum();
+        c.st.apply(&ws);
+        c.height += 1;
+        c.nonces.insert(REGISTRANT, 1);
+        // a ticket and one block of PostSegments txs of 64 segments each covering every matrix
+        let id = standing::model_id(&pk(REGISTRANT), b"m");
+        c.fund(pk(BUYER), 100_000_000);
+        c.fund(pk(SERVER), 1_000_000);
+        c.fund(pool_address(), 1_000_000_000);
+        c.send(BUYER, TxBody::PostJob(ticket_body(&id, 5, 7, pk(SERVER), 5_000_000_000, 1_000_003_000, c.height + 100, count as u32))).unwrap();
+        let tid = schema::job_id_for_post(&pk(BUYER), 0);
+        let txs: Vec<Tx> = mx
+            .chunks(64)
+            .enumerate()
+            .map(|(t, ch)| {
+                let segs = ch.iter().enumerate().map(|(j, x)| Segment { matrix: (t * 64 + j) as u16, m: 12, k: x.k, n: x.n, max_blocks: 1, hash_a: [7; 32], hash_b: x.hash_b, c_hash: [8; 32], a_uri: blob(0x90) }).collect();
+                Tx::signed(&seed(SERVER), CHAIN, t as u64, 1000, post(tid, 0, &id, segs))
+            })
+            .collect();
+        let t1 = Instant::now();
+        let env = BlockEnv { chain_id: CHAIN, height: c.height + 1, miner: pk(MINER), job_id: None };
+        block_on(execute_block(&c.st, env, &txs)).unwrap();
+        let posts = t1.elapsed();
+        eprintln!(
+            "measure: {count} matrices: RegisterModel tx {size} bytes, Model record {model_bytes} bytes, its block {reg:?}; one round = {} PostSegments txs, block {posts:?} ({:?} per tx)",
+            txs.len(),
+            posts / txs.len() as u32
+        );
+    }
 }

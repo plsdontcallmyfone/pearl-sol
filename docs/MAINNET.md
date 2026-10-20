@@ -260,4 +260,16 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
 10. A GPU worker for inference: measured on an A40 (section 7: 25 tok/s per 1B worker process, 85 tok/s
     summed over 8 on one card, 8.0-8.6 tok/s for an 8B); which provider, how many cards, and whether
     the worker runs next to the gateway (the shim over ssh adds the segment-file copy to every request).
-    An 8B model also needs RegisterModel's 384-matrix limit raised (it has 640).
+    The chain side for an 8B is DONE (2026-10-20, owner-approved): RegisterModel takes up to 1024
+    matrices (SPEC 4.5), from genesis on a mainnet chain (devnet from height 4200).
+11. Which model mainnet serves: keep Llama-3.2-1B-Instruct w7a7 (144 matrices, +2.51% PPL vs fp16) or
+    register Llama-3.1-8B-Instruct w7a7 (640 matrices, +3.05% PPL vs fp16, research/INT7-ACCURACY.md 7),
+    or both. Facts for the choice: the 8B runs at 8.0-8.6 tok/s per worker on an A40 against 25 tok/s
+    for the 1B (section 7), so it needs a GPU worker (the CPU worker is not usable for it); its registered
+    weights are 7,504,658,432 int8 entries (7.5 GB of B files, = its MACs per token row) that every miner
+    serving it stores; each round posts 640 segments
+    (10 PostSegments txs of 64) instead of 144, and on Solana each segment the light client registers is
+    one register_job tx and one JobCommit account (SPEC 4.5), so 640 per round; the gateway's balance
+    ticket budget is capped at 10,000 blocks (`max_blocks_balance`), which is 15 rounds of 640 segments
+    against 64 rounds of 144 (budget 9,216 there) (raise the cap or segment fewer matrices per round before serving an 8B
+    with prepaid balances). Devnet stays on the 1B and the CPU worker (owner, 2026-10-20).

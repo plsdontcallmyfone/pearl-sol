@@ -20,8 +20,40 @@ pub const MAX_EVALUATORS: usize = 32;
 pub const MAX_SIGS: usize = 32;
 pub const MAX_ADMIN_VALUE: usize = 4096;
 pub const MAX_TX_SIZE: usize = 16 * 1024;
-/// RegisterModel: most matrices (40 bytes each, so the tx stays under MAX_TX_SIZE).
-pub const MAX_MODEL_MATRICES: usize = 384;
+/// RegisterModel: most matrices the codec accepts (40 bytes each). The executor allows this
+/// many only from the chain's [`model_matrices_upgrade_height`]; before it, the original
+/// [`MAX_MODEL_MATRICES_V1`]. 1024 covers an 8B int7 model (Llama-3.1-8B-Instruct registers 640,
+/// Mistral-7B-v0.3 616) with headroom (SPEC 4.5).
+pub const MAX_MODEL_MATRICES: usize = 1024;
+/// The RegisterModel limit before the upgrade (a RegisterModel then stays under MAX_TX_SIZE).
+pub const MAX_MODEL_MATRICES_V1: usize = 384;
+/// A RegisterModel tx may exceed MAX_TX_SIZE up to this (1024 matrices + the largest name and
+/// manifest URI encode to 41,674 bytes); every other kind stays under MAX_TX_SIZE.
+pub const MAX_REGISTER_MODEL_TX_SIZE: usize = 48 * 1024;
+/// Cadre public devnet (deploy/genesis.json).
+pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
+/// Coordinated upgrade height of the 1024-matrix limit on the public devnet: blocks below it
+/// follow the original 384 rule, so nodes that have not upgraded agree with upgraded ones on
+/// every block before it.
+pub const DEVNET_MODEL_MATRICES_HEIGHT: u64 = 4200;
+
+/// First height at which RegisterModel takes up to [`MAX_MODEL_MATRICES`] on `chain_id`. A chain
+/// with no recorded history before the change (localnet, test chains, mainnet) has it from genesis.
+pub fn model_matrices_upgrade_height(chain_id: u32) -> u64 {
+    match chain_id {
+        DEVNET_CHAIN_ID => DEVNET_MODEL_MATRICES_HEIGHT,
+        _ => 0,
+    }
+}
+
+/// Most matrices a RegisterModel may carry in a block at `height` on `chain_id`.
+pub fn max_model_matrices(chain_id: u32, height: u64) -> usize {
+    if height >= model_matrices_upgrade_height(chain_id) {
+        MAX_MODEL_MATRICES
+    } else {
+        MAX_MODEL_MATRICES_V1
+    }
+}
 /// PostSegments: most segments per tx.
 pub const MAX_SEGMENTS: usize = 64;
 /// Fixed prefix: version 1 + chain_id 4 + from 32 + nonce 8 + fee 8 + kind 1.
@@ -516,7 +548,9 @@ impl Tx {
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
-        if b.len() > MAX_TX_SIZE {
+        // Only a RegisterModel (kind byte at offset PREFIX_LEN - 1) may exceed MAX_TX_SIZE.
+        let limit = if b.get(PREFIX_LEN - 1) == Some(&(TxKind::RegisterModel as u8)) { MAX_REGISTER_MODEL_TX_SIZE } else { MAX_TX_SIZE };
+        if b.len() > limit {
             return Err(DecodeError::TooLarge("tx"));
         }
         let mut r = R::new(b);
@@ -676,7 +710,7 @@ impl commonware_codec::Read for Tx {
     type Cfg = ();
     fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, commonware_codec::Error> {
         let len = u32::read(buf)? as usize;
-        if len > MAX_TX_SIZE || buf.remaining() < len {
+        if len > MAX_REGISTER_MODEL_TX_SIZE || buf.remaining() < len {
             return Err(commonware_codec::Error::Invalid("Tx", "length"));
         }
         let mut b = vec![0u8; len];
@@ -713,5 +747,55 @@ mod tests {
         let mut bad = tx.clone();
         bad.fee = 11;
         assert!(!bad.verify_sig());
+    }
+
+    fn model_tx(count: usize, chain_id: u32) -> Tx {
+        let m = RegisterModel {
+            name: vec![b'n'; MAX_NAME],
+            manifest_uri: vec![b'u'; MAX_URI],
+            recipe: 1,
+            rank: 128,
+            rows_pattern: [0; 6],
+            cols_pattern: [0; 6],
+            matrices: (0..count).map(|i| MatrixSpec { k: 2048, n: 8016, hash_b: [i as u8; 32] }).collect(),
+        };
+        Tx::signed(&[3; 32], chain_id, 0, 1000, TxBody::RegisterModel(m))
+    }
+
+    /// The 8B upgrade (SPEC 4.5): RegisterModel takes up to 1024 matrices and may exceed
+    /// MAX_TX_SIZE up to MAX_REGISTER_MODEL_TX_SIZE; every other kind keeps MAX_TX_SIZE.
+    #[test]
+    fn register_model_limit_and_size() {
+        // the original limit still fits MAX_TX_SIZE with the largest name and URI
+        assert!(model_tx(MAX_MODEL_MATRICES_V1, 7).encode().len() <= MAX_TX_SIZE);
+        // ... and the 16 KiB cap alone stops at 391 matrices (714 bytes besides them)
+        assert_eq!(model_tx(MAX_MODEL_MATRICES_V1, 7).encode().len(), 714 + 40 * MAX_MODEL_MATRICES_V1);
+        assert!(model_tx(392, 7).encode().len() > MAX_TX_SIZE);
+        for count in [640, MAX_MODEL_MATRICES] {
+            let tx = model_tx(count, 7);
+            let b = tx.encode();
+            assert!(b.len() <= MAX_REGISTER_MODEL_TX_SIZE, "{count}: {} bytes", b.len());
+            assert_eq!(Tx::decode(&b).unwrap(), tx);
+            // and through the commonware codec a block uses
+            let mut buf = bytes::BytesMut::new();
+            commonware_codec::Write::write(&tx, &mut buf);
+            let back = <Tx as commonware_codec::Read>::read_cfg(&mut buf.freeze(), &()).unwrap();
+            assert_eq!(back, tx);
+        }
+        assert_eq!(model_tx(MAX_MODEL_MATRICES, 7).encode().len(), 41_674);
+        assert!(Tx::decode(&model_tx(MAX_MODEL_MATRICES + 1, 7).encode()).is_err());
+        // any other kind over MAX_TX_SIZE is refused, even with room under the RegisterModel cap
+        let big = Tx::signed(&[3; 32], 7, 0, 1000, TxBody::AdminConfig { key: 0, value: vec![0; MAX_ADMIN_VALUE] });
+        let mut b = big.encode();
+        b.splice(PREFIX_LEN + 1..PREFIX_LEN + 1, std::iter::repeat_n(0u8, MAX_TX_SIZE));
+        assert!(b.len() > MAX_TX_SIZE && b.len() < MAX_REGISTER_MODEL_TX_SIZE);
+        assert!(matches!(Tx::decode(&b), Err(DecodeError::TooLarge("tx"))));
+    }
+
+    #[test]
+    fn model_matrices_schedule() {
+        assert_eq!(max_model_matrices(7, 0), MAX_MODEL_MATRICES);
+        assert_eq!(max_model_matrices(DEVNET_CHAIN_ID, DEVNET_MODEL_MATRICES_HEIGHT - 1), MAX_MODEL_MATRICES_V1);
+        assert_eq!(max_model_matrices(DEVNET_CHAIN_ID, DEVNET_MODEL_MATRICES_HEIGHT), MAX_MODEL_MATRICES);
     }
 }

@@ -314,8 +314,30 @@ SiLU, the embedding lookup, scales and zero points.
 ```
 name (u8 len, 1..=64) | manifest_uri (u16 len, blob:<hex>) | recipe u8 (= 1)
 | rank u16 | rows_pattern [6] | cols_pattern [6]
-| count u16 (1..=384) | (k u32 | n u32 | hash_b [32]) * count
+| count u16 (1..=1024; 1..=384 before the chain's upgrade height, below) | (k u32 | n u32 | hash_b [32]) * count
 ```
+- Matrix limit (owner-approved 2026-10-20, raised from 384 so an 8B int7 model registers):
+  `MAX_MODEL_MATRICES = 1024`. Counts from tools/cadre/quantize.py's sharding (k shards of 2048,
+  column shards of at most 8192) on each model's published config.json: Llama-3.1-8B-Instruct
+  640 (32 layers x {qkv 2, o 2, gate 4, up 4, down 7} + lm_head 32; also its real quantized
+  manifest, research/INT7-ACCURACY.md 7), Mistral-7B-v0.3 616, Llama-3.2-1B 144. Headroom: Qwen3-8B (36 layers) has 648
+  layer matrices; its 151,936-row lm_head cuts into 1187 equal shards under the current rule
+  (2374 matrices in all), but padded to 152,064 rows it is 27 shards (702 in all), so the
+  quantizer needs vocabulary padding for it (not built). Models whose hidden size is not a
+  multiple of 2048 (Qwen2.5-7B 3584, Gemma-7B 3072) do not shard into k = 2048 jobs at all. The tx is 40
+  bytes per matrix: 640 matrices with the largest name and URI encode to 26,314 bytes, 1024 to
+  41,674. Every tx kind keeps the 16 KiB `MAX_TX_SIZE` except RegisterModel, which may reach
+  `MAX_REGISTER_MODEL_TX_SIZE = 48 KiB` (blocks are bounded at 16 MiB, p2p messages at 8 MiB,
+  RPC bodies at 2 MiB, so nothing else moves).
+- Coordinated upgrade height: a chain with blocks under the old rule keeps 384 below its
+  upgrade height and takes 1024 from it (`agent_types::tx::max_model_matrices(chain_id,
+  height)`). Cadre public devnet (chain id 1128350802): height 4200. Every other chain
+  (localnet, the test chain, mainnet) has 1024 from genesis. The rule only relaxes: every block
+  valid before stays valid, and below the height an upgraded node refuses exactly what an old
+  node refuses (an old node fails the over-16 KiB tx at decode, a new node at execution), so a
+  mixed network agrees until the height. From the height, a node older than the upgrade rejects
+  a block carrying a RegisterModel over 384 matrices and forks off: every node must run the
+  upgrade before it. The node RPC refuses an over-limit RegisterModel at admission.
 - `model_id = blake3("pearl-sol:model:v1" || registrant || name)`; registering an existing
   id is refused (a new version is a new name).
 - Per matrix the chain checks `check_shape` of `(k, rank, patterns)` with m = the row

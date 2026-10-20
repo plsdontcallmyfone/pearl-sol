@@ -354,3 +354,14 @@ transformers 4.46.3), up 15:47-16:21 UTC. Raw lines in docs/measurements/gpu-a40
   wall, 0.376 tok/s, ttft 26.9 s, same text. The box was switched back to its CPU worker (same command line,
   pid file updated) before the pod was terminated; the balance ticket was closed.
 - 7-8B int7 accuracy: research/INT7-ACCURACY.md section 7 (WikiText-2 PPL +3.05% on Llama-3.1-8B-Instruct).
+
+## RegisterModel matrix limit 384 -> 1024 (2026-10-20, "RegisterModel matrix limit for 8B" row)
+
+Test box 64.95.13.106, own dir ~/regmodel, release builds (HANDOFF item 21).
+
+| suite | result |
+|---|---|
+| chain workspace (`cargo test --release --workspace`) | 102 passed, incl. new: agent-types `register_model_limit_and_size`, `model_matrices_schedule`; executor standing `register_8b_model_640_matrices_and_post_a_full_round`, `devnet_takes_640_matrices_only_from_its_upgrade_height`, `measure_register_and_post_cost`; agent-node network `register_640_matrix_model_gossips_and_mines` |
+| crates/pearl-cli (`cargo test --release --locked`, refreshed Cargo.lock) | 38 passed |
+| crates/pearl-job (`cargo test --release -p pearl-job`) | 42 passed |
+| e2e: 2 real agent-node processes + `pearl model register` / `model fetch`, synthetic manifests | 640 registered and fetched (every hash_b checked on node 1), 1024 registered (getModel 1024 on both nodes), 1025 refused, on chain 1347616811; devnet chain id: 640 refused below 4200 and registered after it, 384 registered below it |

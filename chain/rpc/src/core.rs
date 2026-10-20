@@ -395,6 +395,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if let Some(p) = job {
             executor::precheck_post_job(p, &self.chain.tip().config)?;
         }
+        if let TxBody::RegisterModel(m) = &tx.body {
+            let next = self.chain.tip_height() + 1;
+            let max = agent_types::tx::max_model_matrices(tx.chain_id, next);
+            if m.matrices.len() > max {
+                return Err(format!("a model registers 1..={max} matrices at height {next}"));
+            }
+        }
         let bytes = tx.encode();
         let h = self.mempool.insert(tx, acc.nonce, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;

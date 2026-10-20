@@ -44,6 +44,7 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 | admin (AdminConfig) | ops `Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb` |
 | attester (chain + bridge signer + storefront attester), 1 of 1 | `9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD` |
 | miner payouts | box 0 `GDcEUhU4fXRziN3YQyrwyoZJhsGhSRytJooX7kr7hC4s`, box 1 `4pDphQUNYsybNnXH4nkHdHMS6udinkjVuFrf6iRZpU8b`, box 2 `AHYHqULAUjJzvBkNsRYFpksrbjL1qqurZcgMWq9mHdAH` |
+| scheduled upgrade | height 4200: RegisterModel takes up to 1024 matrices (was 384; SPEC 4.5, HANDOFF item 21). Every node, ours or outside, must run main from 2026-10-20 or later before 4200; an older node forks off at the first block carrying a RegisterModel over 384 matrices |
 | binaries | built on box 0 from commit fe8e04a (agent-node sha256 3a80b545...91f277d0, pearl-miner 356437dc...3b52ee0); was 424c2c1 until the 2026-10-19 rolling upgrade |
 
 ## Solana devnet programs (NEW keypairs, `--features devnet` builds)
