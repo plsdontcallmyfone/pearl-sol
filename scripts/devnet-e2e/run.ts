@@ -118,6 +118,20 @@ async function nodeCall(method: string, params: Record<string, unknown> = {}): P
 const crankEnv = () => ({ RPC_URL: SOL_RPC, KEYPAIR: resolve(ROOT, "keys/devnet/ops-keypair.json"),
   RESERVE_IDL: resolve(ROOT, "deploy/devnet-idl/reserve.json"), STOREFRONT_IDL: resolve(ROOT, "deploy/devnet-idl/storefront.json") });
 const crank = (args: string[]) => run("node", ["src/main.ts", ...args], { cwd: resolve(ROOT, "services/crank"), env: crankEnv() });
+// sf-settle (lists the unsettled shares afresh each time) and sf-status (read only) are safe to run
+// again; run 7 (2026-10-20 15:14 UTC) failed step 5 when sf-settle hit Solana devnet's public RPC 429
+// after web3.js's own 4 retries
+function crankRetry(args: string[]): string {
+  for (let i = 0; ; i++) {
+    try {
+      return crank(args);
+    } catch (e) {
+      if (i >= 4 || !/\b429\b/.test(String((e as Error).message ?? e))) throw e;
+      console.log(`    [${new Date().toISOString().slice(11, 19)}] crank ${args[0]}: Solana RPC 429; retry ${i + 1}/4 in ${15 * (i + 1)} s`);
+      execFileSync("sleep", [String(15 * (i + 1))]);
+    }
+  }
+}
 const trade = (args: string[]) => lastJson(run("node", ["src/trade.ts", ...args], { cwd: resolve(ROOT, "services/crank"), env: { RPC_URL: SOL_RPC } }));
 const relayerCli = (args: string[]) => run("node", ["src/cli.ts", ...args], { cwd: resolve(ROOT, "services/relayer"),
   env: { TOKEN_RPC: SOL_RPC, NODE_RPC, TOKEN_PAYER: resolve(ROOT, "keys/devnet/ops-keypair.json"), AGENT_KEY: resolve(ROOT, "keys/devnet/ops-keypair.json"),
@@ -362,8 +376,8 @@ async function bridgeOutAndJob(): Promise<string> {
 
 async function buyback(): Promise<string> {
   if (!order) throw new Error("no order");
-  const settled = JSON.parse(crank(["sf-settle"]).trim().split("\n").pop()!);
-  const s0 = JSON.parse(crank(["sf-status"]));
+  const settled = JSON.parse(crankRetry(["sf-settle"]).trim().split("\n").pop()!);
+  const s0 = JSON.parse(crankRetry(["sf-status"]));
   const reserveCreator = PublicKey.findProgramAddressSync([Buffer.from("creator")], RESERVE_ID)[0];
   const r0 = await splBalance(reserveCreator);
   // the box's crank service may already have bought (it runs every 600 s); then check its event
@@ -373,7 +387,7 @@ async function buyback(): Promise<string> {
     const out = crank(["sf-buyback"]).trim().split("\n").pop()!;
     b = JSON.parse(out);
   }
-  const s1 = JSON.parse(crank(["sf-status"]));
+  const s1 = JSON.parse(crankRetry(["sf-status"]));
   const r1 = await splBalance(reserveCreator);
   if (!(BigInt(s1.buys) > 0n)) throw new Error(`no buyback yet: ${JSON.stringify(s1)}`);
   return `settle ${JSON.stringify(settled.released ?? settled)}; vault available ${s0.availableLamports} (bps ${s0.buybackBps}, dest ${s0.destination}); ` +
