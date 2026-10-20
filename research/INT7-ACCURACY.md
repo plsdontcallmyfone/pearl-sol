@@ -267,3 +267,32 @@ be a standing job (no registered B); the embedding lookup is not a GEMM.
   works on small models; larger models have larger activation outliers, which is exactly what
   SmoothQuant and the zero point address, but it has not been measured here.
 - **FP8 (G5) stays a hardware hedge, not an accuracy fix.**
+
+## 7. Llama-3.1-8B-Instruct and Llama-3.2-1B-Instruct on a GPU (2026-10-20, measured)
+
+Recipe 1 (`cadre-w7a7-sq-asym-v1`, tools/cadre/quantize.py, k shards <= 2048) applied to
+unsloth/Llama-3.1-8B-Instruct (an ungated copy of meta-llama/Llama-3.1-8B-Instruct) and
+unsloth/Llama-3.2-1B-Instruct, run through the real worker (tools/cadre/worker.py --device cuda,
+every job-shaped GEMM as an exact int32 product) and compared with the fp16 Hugging Face model on
+the same token ids (tools/cadre/eval_accuracy.py). One NVIDIA A40 on RunPod, torch 2.5.1+cu124,
+transformers 4.46.3. Calibration as the recipe (16 x 512 WikiText-2 train tokens, fp32 forward; on
+the GPU for the 8B, TF32 off). Eval: WikiText-2 raw test, first 40 windows of 1024 tokens (40,920
+predicted tokens); ARC-Easy and ARC-Challenge test, HellaSwag validation, first 200 items each,
+zero-shot, acc = highest summed log-prob, acc_norm = per byte. 200 items gives a standard error of
+about 3 points, so the multiple-choice gaps below are within noise. Raw lines:
+docs/measurements/gpu-a40-2026-10-20/acc-*.jsonl.
+
+| model | WikiText-2 PPL fp16 | int7 | change | ARC-E acc fp16 / int7 | ARC-C acc | HellaSwag acc_norm |
+|---|---|---|---|---|---|---|
+| Llama-3.1-8B-Instruct (640 matrices) | 8.3131 | 8.5664 | +3.05% | 0.795 / 0.775 | 0.535 / 0.540 | 0.695 / 0.690 |
+| Llama-3.2-1B-Instruct (144 matrices) | 15.7729 | 16.1694 | +2.51% | 0.625 / 0.640 | 0.330 / 0.330 | 0.610 / 0.585 |
+
+Reading: the recipe holds at 8B (+3.05% PPL, against +2.6-2.9% on the 1B base models in section 4),
+and the multiple-choice scores move by at most 2.5 points either way. Not done: a bigger
+multiple-choice set, other 7-8B families (Qwen2.5-7B was not needed: the ungated Llama copy loaded).
+
+Constraint found on the way: the 8B has 640 registered matrices (32 layers x {qkv 2, o 2, gate 4,
+up 4, down 7 shards} + lm_head 16 column x 2 k shards), and `RegisterModel` takes at most 384
+(SPEC 4.5), so an 8B model cannot be registered as is. Wider column shards do not get under the
+limit (at k = 2048, k x n <= 2^26 allows n up to 32768, which still gives 488 matrices), so serving
+an 8B needs a higher matrix count limit in RegisterModel (a chain change).

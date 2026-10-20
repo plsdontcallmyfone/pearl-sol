@@ -304,3 +304,32 @@ on box 0; with-rpc falls back to the env value without the file and exports the 
 - scripts/devnet-e2e.sh runs 3-9 (table in docs/DEVNET.md "End to end results"): 3 and 6 PASS 7/7
   (162.0 and 169.1 min, invariant OK after every step); 4, 5, 7, 8, 9 FAIL, each on a Solana devnet
   public RPC 429 or dropped connection from the Mac. Not reached: two passes in a row.
+
+## GPU worker on RunPod (2026-10-20, "RunPod GPU inference + 8B int7 check" row)
+
+One RunPod pod, NVIDIA A40 48 GB, secure cloud on demand at $0.59/hr (96 vCPU, torch 2.5.1+cu124,
+transformers 4.46.3), up 15:47-16:21 UTC. Raw lines in docs/measurements/gpu-a40-2026-10-20/.
+- CPU path unchanged by the CUDA change (test box, before the pod): tools/cadre/test_cadre.py 5/5; old vs new
+  worker on Llama-3.2-1B-Instruct w7a7, same prompt, every A and C file of all 144 matrices identical.
+- Integer part CPU vs GPU (tools/cadre/gpu_check.py, 4 chat prompts, 32 new tokens): for every matrix the
+  GPU's C equals the CPU's torch._int_mm of the GPU's own A, 0 mismatches in 151,451,392 C elements (576
+  matrix segments), and equals a numpy int64 A B on the first 4 rows of each, 0 mismatches. So a segment
+  the GPU serves verifies on any machine.
+- End to end CPU vs GPU (same prompt): the fp32 glue differs, so A does not: layer 0 A identical, layer 1
+  o_proj differs in 0.002% of elements (max 1), and the difference grows through the layers (lm_head A
+  differs in 79%). Tokens: 3 of 4 prompts identical, the 4th diverged partway through ("in which" on the GPU,
+  "where" on the CPU). Two GPU runs of the same prompt are identical (A and C).
+- Speed, 1B Instruct w7a7 (bench.py --device cuda, 128 new tokens): decode 24.5-25.1 tok/s at 8 to 1024
+  prompt tokens (one process, one request at a time), ttft 0.05-0.12 s, prefill 9,942 rows/s at 1024;
+  writing the 144 A/C segment files 1.9 s (135 rows) to 9.9 s (1,151 rows). Several worker processes on
+  the one GPU: 82.6 tok/s summed over 4, 84.9 over 8, 78.1 over 16.
+- Speed, Llama-3.1-8B-Instruct w7a7 (640 matrices, 64 new tokens): decode 8.0-8.6 tok/s, ttft 0.14-0.53 s,
+  prefill 1,932 rows/s at 1024; segment files 6.2 s (71 rows) to 35.8 s (1,087 rows).
+- Paid chat through the test box gateway with the GPU worker (tools/cadre/remote_worker.py on the box in
+  the CPU worker's place, ssh tunnel to the pod, same registered model files): x402 top-up 256 rows
+  (95,411,375 lamports, order 9) with a throwaway cadre-proxy wallet; "Write two sentences about why the
+  sky is blue." 32 tokens: GPU 8.7 s wall, gateway-measured decode 21.13 tok/s, ttft 1.53 s, of which 5.4 s
+  was copying the segment files back over the tunnel; the CPU worker on the same box just before: 110.6 s
+  wall, 0.376 tok/s, ttft 26.9 s, same text. The box was switched back to its CPU worker (same command line,
+  pid file updated) before the pod was terminated; the balance ticket was closed.
+- 7-8B int7 accuracy: research/INT7-ACCURACY.md section 7 (WikiText-2 PPL +3.05% on Llama-3.1-8B-Instruct).

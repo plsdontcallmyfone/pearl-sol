@@ -170,6 +170,22 @@ signature); priority fees are not (mainnet needs them under load; not measured h
 | boxes | $156/month | DEVNET.md "Boxes" (BitLaunch, 3 boxes) |
 | keyed Solana RPC | not measured | owner picks a provider |
 
+GPU inference (measured 2026-10-20 on one NVIDIA A40 48 GB, RunPod secure cloud on demand at
+$0.59/hr; docs/measurements/gpu-a40-2026-10-20/, TEST-REPORT "GPU worker on RunPod"). Cost per 1M
+output tokens = $0.59 / (measured tok/s x 3600) x 1e6; it counts the GPU only (no box, no chain fees,
+no idle time), and the worker serves one request at a time per process.
+
+| worker on the A40 | measured decode | $ per 1M output tokens |
+|---|---|---|
+| Llama-3.2-1B-Instruct w7a7, one worker process | 24.5-25.1 tok/s (8-1024 prompt tokens) | 6.52-6.68 |
+| same, 8 worker processes on the one GPU (summed) | 84.9 tok/s (82.6 at 4, 78.1 at 16) | 1.93 |
+| Llama-3.1-8B-Instruct w7a7, one worker process | 8.0-8.6 tok/s | 19.16-20.45 |
+| 1B through the test box gateway (paid chat, 32 tokens, GPU worker over an ssh tunnel) | 21.13 tok/s decode; 8.7 s wall incl. ttft 1.53 s and 5.4 s copying segment files | 7.76 on decode alone |
+| for comparison: the CPU worker on the 4-core test box, same chat | 0.376 tok/s; 110.6 s wall | (CPU box, not priced here) |
+
+The whole RunPod session (one pod, 34 min up, bootstrap, 1B and 8B quantization, benches, checks,
+accuracy evals, the paid chat) cost $0.33 by the account balance (50.00 -> 49.67).
+
 Startup SOL on the deployer, from the rows above: 11.54 (programs) + 10.48 (buffers, returned) + the
 dev buy + about 0.2 for init and gas + 2.13 per relay pair of lanes (returned on close) + a relay fee
 float. Without the dev buy and before any refunds that is about 24.3 SOL, of which about 12.6 comes
@@ -241,4 +257,7 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
 7. Whether to publish the miner source (or binaries) so the public installer works.
 8. Relay reward pool funding, and whether third parties relay.
 9. Mainnet genesis target and whether the same three boxes (or more operators) run the chain.
-10. A GPU worker for inference (CPU decode measured 0.4-1.3 tokens/s; section 7).
+10. A GPU worker for inference: measured on an A40 (section 7: 25 tok/s per 1B worker process, 85 tok/s
+    summed over 8 on one card, 8.0-8.6 tok/s for an 8B); which provider, how many cards, and whether
+    the worker runs next to the gateway (the shim over ssh adds the segment-file copy to every request).
+    An 8B model also needs RegisterModel's 384-matrix limit raised (it has 640).

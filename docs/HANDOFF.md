@@ -617,7 +617,7 @@ CLAUDE.md "Who is working on what".
      receipt headers, the ledger booked 23068759 lamports / 49 rows, a request over the day cap got
      429 cadre_spend_cap. Fixed on the way: the proxy refused the real storefront's requirements
      (fee payer = payTo).
-   - Open: a GPU worker (CPU decode is 0.4-1.6 tok/s).
+   - Open: a GPU worker (CPU decode is 0.4-1.6 tok/s). Measured 2026-10-20 on an A40: item 20.
 
 18. PUBLIC DEVNET (owner decisions 2026-10-18; finished 2026-10-19 by the "devnet finish" agent):
    LIVE, details and ids in docs/DEVNET.md. Agent chain on 3 BitLaunch boxes (rolling upgrade to
@@ -674,6 +674,27 @@ CLAUDE.md "Who is working on what".
    - docs/MAINNET.md: runbook, keys, config values, pump curve (mainnet 30 SOL virtual vs devnet 0.3;
      scripts/mainnet-prep/curve.cjs reads both Globals), measured costs, checklist, owner decisions.
      No mainnet transaction was sent.
+
+20. GPU INFERENCE ON RUNPOD + 8B INT7 CHECK (2026-10-20, "RunPod GPU inference + 8B int7 check" row):
+   - tools/cadre/worker.py --device cuda (also CADRE_DEVICE): weights, scales and glue on the GPU, the int32
+     products through torch._int_mm on CUDA, TF32 off; CPU path byte-identical to before (A/C files of all
+     144 matrices identical old vs new on the test box; test_cadre 5/5). tools/cadre/gpu_check.py: GPU C vs
+     CPU int_mm of the same A and numpy int64, 0 mismatches in 151,451,392 elements, so GPU segments verify
+     everywhere; A itself differs between devices (fp32 glue), GPU runs repeat exactly.
+   - Measured on one A40 ($0.59/hr): 1B Instruct 24.5-25.1 tok/s per worker process (ttft 0.05-0.12 s),
+     84.9 tok/s summed over 8 processes; 8B Instruct 8.0-8.6 tok/s. Paid chat through the test box gateway
+     with the GPU worker: 21.13 tok/s, 8.7 s wall for 32 tokens (CPU worker same chat: 0.376 tok/s, 110.6 s).
+     $/1M tokens and details: MAINNET.md section 7, TEST-REPORT "GPU worker on RunPod".
+   - 8B accuracy (research/INT7-ACCURACY.md section 7): Llama-3.1-8B-Instruct WikiText-2 PPL 8.3131 fp16 ->
+     8.5664 int7 (+3.05%); ARC-E/ARC-C/HellaSwag within 2 points of fp16 on 200 items each. 1B Instruct +2.51%.
+     The 8B has 640 matrices, over RegisterModel's 384: registering it needs a chain change.
+   - scripts/gpu/runpod-{create,bootstrap,stop}.sh (one pod, refuses a second; throwaway ssh key in .gpu/,
+     gitignored; the pod clones the public repo and quantizes from public HF weights). tools/cadre/remote_worker.py
+     puts a remote worker behind a gateway (forwards HTTP, copies each request's segment files back).
+   - Left: nothing running (pod terminated, test box back on its CPU worker, pid in .demo/pids). Open: a
+     standing GPU worker (provider, card count, worker next to the gateway so segments are not copied), the
+     384-matrix limit for 8B, the worker's per-token Python overhead (decode does not depend on context here,
+     so it is launch-bound, not GPU-bound).
 
 ## M1 components (SPEC v2, all DONE)
 

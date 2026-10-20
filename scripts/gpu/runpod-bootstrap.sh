@@ -14,7 +14,7 @@ cd /root
 [ -d pearl-sol ] || git clone -q --depth 1 -b "$BRANCH" https://github.com/plsdontcallmyfone/pearl-sol
 cd pearl-sol && git fetch -q --depth 1 origin "$BRANCH" && git reset -q --hard FETCH_HEAD && git log --oneline -1
 pip install -q --no-input "torch==2.5.1" --index-url https://download.pytorch.org/whl/cu124 2>&1 | tail -2
-pip install -q --no-input "transformers==4.46.3" "datasets<4" "numpy<2.1" safetensors huggingface_hub accelerate 2>&1 | tail -2
+pip install -q --no-input "transformers==4.46.3" "datasets==3.1.0" "numpy>=2" safetensors huggingface_hub accelerate 2>&1 | tail -2
 python -c "import torch;print('torch', torch.__version__, torch.cuda.get_device_name(0))"
 mkdir -p /root/hf /root/cadre-models
 for m in $MODELS; do
