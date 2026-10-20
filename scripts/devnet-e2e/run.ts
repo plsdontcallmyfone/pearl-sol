@@ -93,13 +93,25 @@ async function waitFor<T>(desc: string, f: () => Promise<T | null | undefined | 
     await sleep(everyMs);
   }
 }
-async function httpJson(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
-  const r = await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
+// Reads retry a dropped connection (run 4, 2026-10-20: one "fetch failed" from the Mac failed the
+// preflight while every endpoint answered); writes never retry (a lost reply may have landed).
+async function httpJson(url: string, init?: RequestInit, retry = !init?.method || init.method === "GET"): Promise<{ status: number; body: any }> {
+  let r: Response;
+  for (let i = 0; ; i++) {
+    try {
+      r = await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
+      break;
+    } catch (e) {
+      if (!retry || i >= 4) throw e;
+      console.log(`    [${new Date().toISOString().slice(11, 19)}] ${new URL(url).host}: ${String((e as Error).message ?? e).slice(0, 120)}; retry ${i + 1}/4`);
+      await sleep(2000 * 2 ** i);
+    }
+  }
   const t = await r.text();
   try { return { status: r.status, body: JSON.parse(t) }; } catch { return { status: r.status, body: t }; }
 }
 async function nodeCall(method: string, params: Record<string, unknown> = {}): Promise<any> {
-  const r = await httpJson(NODE_RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+  const r = await httpJson(NODE_RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }, method.startsWith("get"));
   if (r.body?.error) throw new Error(`node ${method}: ${r.body.error.message}`);
   return r.body.result;
 }
