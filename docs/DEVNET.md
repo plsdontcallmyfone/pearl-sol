@@ -147,7 +147,7 @@ Solana devnet RPC budget. The public endpoint allows about 100 calls per 10 s pe
 method). Past that every call from the IP gets 429, which stalled the header relay for hours on
 2026-10-19 (light client 150+ blocks behind, e2e run 1 step 4 timed out). Measures in place: the
 header relay runs on boxes 1 and 2, nothing else there calls Solana (`cadre-header-relay --lane`,
-payer `relay.json`, 10 slots each, confirm poll 800 ms, sends paced 400 ms apart, a blockhash at most
+payer `relay.json`, 3 slots each since 2026-10-20 (was 10), confirm poll 800 ms, sends paced 400 ms apart, a blockhash at most
 15 s old per tx); box 0 settles by proof only
 (`cadre-settle` = `header-relay run --settle --no-relay`, payer ops, since finalize_order_proof needs
 the admin or an attester); the explorer and cadre-api poll Solana every 30 s (`SOL_POLL_MS`), the

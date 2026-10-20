@@ -132,8 +132,10 @@ dependencies = [
  "hex",
  "pearl-job",
  "pearl-node",
+ "rand",
  "serde",
  "serde_json",
+ "sha2",
  "tiny_http",
  "ureq",
 ]
@@ -585,6 +587,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
+ "ureq",
 ]
 
 [[package]]

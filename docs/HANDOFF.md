@@ -1,5 +1,7 @@
 # pearl-sol handoff
 
+> 2026-10-20: session handoff (account switch) in docs/SESSION-HANDOFF.md; read it first.
+
 READ THIS FIRST in a new session. Update it after every step (decision, commit,
 agent result). Keep it current, not historical: rewrite stale lines instead of
 appending.
