@@ -1,0 +1,14 @@
+[Unit]
+Description=Cadre devnet website (~/cadre-web, Next.js production server; built by scripts/devnet-deploy.sh site)
+After=network-online.target
+
+[Service]
+User=lode
+WorkingDirectory=/home/lode/cadre-web
+Environment=NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+ExecStart=/home/lode/.local/node/bin/node node_modules/next/dist/bin/next start --port 10710 --hostname 127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

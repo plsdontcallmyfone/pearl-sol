@@ -10,6 +10,7 @@
 #   scripts/devnet-deploy.sh ssh N [CMD]       shell as lode on box N
 #   scripts/devnet-deploy.sh rpc-url [N]       copy keys/devnet/solana-rpc-url (dedicated Solana RPC) to box N (default all), then ctl restart
 #   scripts/devnet-deploy.sh relay-key [N]     create the header relay's fee payer on box N (default HEADER_RELAY_BOX), print its pubkey
+#   scripts/devnet-deploy.sh site              ~/cadre-web main -> box 0 (git bundle), npm ci + build for devnet, restart cadre-web
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,7 +19,7 @@ source "$ROOT/deploy/devnet.env"
 ip_of() { local v="BOX${1}_IP"; echo "${!v}"; }
 sshb() { local n=$1 u=$2; shift 2; ssh -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$u@$(ip_of "$n")" "$@"; }
 scpb() { local n=$1; shift; scp -q -i "$HOME/.ssh/lode_devnet$n" -o IdentitiesOnly=yes "$@"; }
-UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-settle cadre-storefront cadre-crank cadre-explorer cadre-api"
+UNITS0="cadre-node cadre-miner cadre-attester cadre-relayer cadre-settle cadre-storefront cadre-crank cadre-explorer cadre-api cadre-web"
 UNITSN="cadre-node cadre-miner"
 # the header relay runs on HEADER_RELAY_BOX (default 1): Solana devnet's public RPC allows about
 # 100 calls per 10 s per IP, and box 0's services already use most of box 0's
@@ -108,6 +109,19 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
       sshb "$n" lode "curl -s -m 3 -X POST http://127.0.0.1:10630 -H 'content-type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getChainInfo\",\"params\":{}}' | python3 -c 'import json,sys; r=json.load(sys.stdin)[\"result\"]; print(\"height\", r[\"height\"], \"final\", r[\"finalized_height\"], \"peers\", r[\"peers\"])' 2>/dev/null || echo 'node not answering'; systemctl --no-pager --plain list-units 'cadre-*' | grep cadre | awk '{print \$1, \$3, \$4}'; uptime"
     done
     ;;
+  site)
+    # the website (~/cadre-web, committed main only) built on box 0 against the devnet cadre-api;
+    # prebuild copies box 0's ~/pearl-sol/scripts/install-miner.sh to public/ (devnet defaults)
+    web="${CADRE_WEB:-$HOME/cadre-web}"; dash="${BOX0_IP//./-}"
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    git -C "$web" bundle create "$tmp/web.bundle" main 2>/dev/null
+    scpb 0 "$tmp/web.bundle" "lode@$BOX0_IP:web.bundle"
+    sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
+      cd ~/cadre-web && git log --oneline -1 && export PATH=\$HOME/.local/node/bin:\$PATH NEXT_TELEMETRY_DISABLED=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+      npm ci --no-audit --no-fund >/dev/null
+      NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
+    sshb 0 root "systemctl enable --now cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
+    ;;
   ssh) n="$2"; shift 2; sshb "$n" lode "$@" ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,13p' "$0"; exit 1 ;;
 esac
