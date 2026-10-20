@@ -27,6 +27,7 @@ set -euo pipefail
 
 main() {
   DEFAULT_RPC="https://rpc.64-95-12-116.sslip.io"
+  DEFAULT_API="https://api.64-95-12-116.sslip.io"   # cadre-api of the same devnet (miner lookups)
   DEFAULT_REPO="https://github.com/plsdontcallmyfone/pearl-sol.git"
   TOOLCHAIN="1.95.0"
   CADRE_HOME="${CADRE_HOME:-$HOME/.cadre}"
@@ -86,6 +87,7 @@ main() {
   step "Service"
   install_service
 
+  print_check
   echo
   ok "Done in $(( $(date +%s) - T0 )) s."
 }
@@ -308,7 +310,9 @@ write_config() {
     old_stats="$(sed -n 's/^CADRE_STATS_SECS=//p' "$ENV_FILE" | tail -1)"
   fi
   rpc="${rpc:-${old_rpc:-$DEFAULT_RPC}}"
+  RPC_USED="$rpc"
   local stats="${old_stats:-60}"
+  STATS_USED="$stats"
   if [[ $solo == 1 ]]; then pool=""; else pool="${pool:-$old_pool}"; fi
   local cores; cores="$(cpu_count)"
   threads="${threads:-${old_threads:-$(( cores / 2 > 0 ? cores / 2 : 1 ))}}"
@@ -320,6 +324,7 @@ write_config() {
   if [[ "$probe" == *'"result"'* ]]; then
     local h; h="$(printf '%s' "$probe" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | head -1)"
     ok "node $rpc answers${h:+ (height $h)}"
+    FINALITY_K="$(printf '%s' "$probe" | sed -n 's/.*"finality_k":\([0-9]*\).*/\1/p' | head -1)"
   else
     warn "node $rpc did not answer getChainInfo; the miner retries, but check the URL (--rpc)"
   fi
@@ -421,6 +426,22 @@ EOF
   echo "  Logs:    journalctl --user -u cadre-miner -f"
   echo "  Stop:    systemctl --user stop cadre-miner     (disable: systemctl --user disable --now cadre-miner)"
   echo "  Start:   systemctl --user start cadre-miner"
+}
+
+# ---------- after: how to see it work ----------
+print_check() {
+  [[ $DRY == 1 || -z "${PAYOUT:-}" ]] && return 0
+  echo
+  echo "  Is it mining?  The log shows a stats line every ${STATS_USED:-60} s (nonces_per_s) and"
+  echo "  a block_accepted line for each block this miner wins. How soon the first one comes depends on"
+  echo "  your share of the network's hashrate."
+  if [[ "$RPC_USED" == "$DEFAULT_RPC" ]]; then
+    echo "  Blocks credited to your address:  curl -s $DEFAULT_API/v1/miners/$PAYOUT"
+  fi
+  echo "  Balance:  curl -s -X POST -H 'content-type: application/json' \\"
+  echo "              -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccount\",\"params\":{\"account\":\"$PAYOUT\"}}' $RPC_USED"
+  echo "  Earnings: a block on a paid AI job earns a subsidy (plus fees); with no job open the miner"
+  echo "  mines fallback blocks, which earn the block's fees only (often 0). Both pay out ${FINALITY_K:-K} blocks later."
 }
 
 main "$@"

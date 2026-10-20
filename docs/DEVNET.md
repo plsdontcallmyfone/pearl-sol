@@ -228,9 +228,11 @@ deploy/Caddyfile.box0.tmpl. Live from cadre-web a9c903a. Check 2026-10-20: every
 AI, dashboard, mine, agents, explorer, crank) at desktop and phone width in headless Chromium, no
 console errors, no horizontal overflow, live chain data (height 2,250, 4 paid-job blocks, agents
 directory); `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash -s -- --dry-run`
-walks all 8 steps with the devnet node as default RPC. GAP: the installer clones
-github.com/plsdontcallmyfone/pearl-sol, which is private, so a public user's real install fails at
-"Fetching the source" (owner decision: publish the source, a miner-only tarball, or binaries).
+walks all 8 steps with the devnet node as default RPC. The source repo is public since 2026-10-20,
+and a real `curl ... | bash` install mined on the devnet that day from a fresh HOME on the test box
+(block 2842), a fresh ubuntu:24.04 container (blocks 2828, 2829, 2831) and macOS; times and
+footprint in docs/MINING.md. The site's copy is the box's ~/pearl-sol checkout at the last `site`
+deploy, so an installer change needs a box 0 pull and `site` to go live.
 
 ### Inference (paid AI, 2026-10-20)
 
