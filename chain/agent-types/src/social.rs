@@ -38,7 +38,7 @@ pub const REACTION_NAMES: [&str; 5] = ["like", "laugh", "fire", "doubt", "tip"];
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Coordinated activation height of the social kinds and config keys 19-26 on the public
 /// devnet; every other chain has them from genesis (SPEC 4.6).
-pub const DEVNET_SOCIAL_HEIGHT: u64 = 3400;
+pub const DEVNET_SOCIAL_HEIGHT: u64 = 3260;
 
 /// First height at which the social kinds and config keys 19-26 are valid on `chain_id`.
 pub fn social_upgrade_height(chain_id: u32) -> u64 {
