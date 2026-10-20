@@ -138,8 +138,10 @@ const relayerCli = (args: string[]) => run("node", ["src/cli.ts", ...args], { cw
     STATE_FILE: resolve(OUT, "relayer-cli-state.json") } });
 /** Light-client status from header-relay on box 0 (read only). */
 function lcStatus(): any {
-  const out = run("bash", ["scripts/devnet-deploy.sh", "ssh", "0",
-    `/opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana ${SOL_RPC} --payer /etc/lode/keys/ops.json status`]);
+  const args = ["--node", "http://127.0.0.1:10630", "--solana", SOL_RPC, "--payer", "/etc/lode/keys/ops.json", "status"];
+  // E2E_ON_BOX0=1: this script runs on devnet box 0 itself (its own IP for the Solana RPC budget), no ssh
+  const out = env.E2E_ON_BOX0 === "1" ? run("/opt/lode/bin/header-relay", args)
+    : run("bash", ["scripts/devnet-deploy.sh", "ssh", "0", `/opt/lode/bin/header-relay ${args.join(" ")}`]);
   return JSON.parse(out.trim().split("\n").pop()!);
 }
 
