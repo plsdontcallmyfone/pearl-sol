@@ -12,6 +12,7 @@ use commonware_codec::{Encode, ReadExt};
 use commonware_cryptography::{ed25519, Signer, Verifier};
 
 use crate::codec::{R, W};
+use crate::social::{read_follows, read_reactions, write_follows, write_reactions, FollowEdge, Post, Reaction, SetProfile};
 use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_REJECT, DOMAIN_RESULT, NS_TX, TX_VERSION};
 
 pub const MAX_NAME: usize = 64;
@@ -44,6 +45,11 @@ pub enum TxKind {
     RegisterModel = 11,
     PostSegments = 12,
     RejectResult = 13,
+    SetProfile = 14,
+    OperatorLink = 15,
+    Post = 22,
+    React = 23,
+    Follow = 24,
 }
 
 impl TxKind {
@@ -63,9 +69,19 @@ impl TxKind {
             11 => Self::RegisterModel,
             12 => Self::PostSegments,
             13 => Self::RejectResult,
+            14 => Self::SetProfile,
+            15 => Self::OperatorLink,
+            22 => Self::Post,
+            23 => Self::React,
+            24 => Self::Follow,
             k => return Err(DecodeError::Kind(k)),
         })
     }
+    /// The social kinds (SPEC 4.6): valid from `social_upgrade_height`, under the social fee rule.
+    pub fn is_social(&self) -> bool {
+        matches!(self, Self::SetProfile | Self::OperatorLink | Self::Post | Self::React | Self::Follow)
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Self::Transfer => "Transfer",
@@ -82,6 +98,11 @@ impl TxKind {
             Self::RegisterModel => "RegisterModel",
             Self::PostSegments => "PostSegments",
             Self::RejectResult => "RejectResult",
+            Self::SetProfile => "SetProfile",
+            Self::OperatorLink => "OperatorLink",
+            Self::Post => "Post",
+            Self::React => "React",
+            Self::Follow => "Follow",
         }
     }
 }
@@ -301,6 +322,16 @@ pub enum TxBody {
     /// the job's current ones (so the tx names whom it rejects without reading state).
     /// The job reopens; the failed delivery is recorded against the deliverer.
     RejectResult { job_id: Hash, deliverer: Pubkey, result_hash: Hash, sigs: Vec<AttesterSig> },
+    /// Profile of the sender (SPEC 4.6).
+    SetProfile(SetProfile),
+    /// The operator's half of a fleet link: `agent [32] | add u8` (SPEC 4.6).
+    OperatorLink { agent: Pubkey, add: bool },
+    /// Town square post, reply, repost or quote (SPEC 4.6).
+    Post(Post),
+    /// `count u8 (1..=64) | (post_id [32] | reaction u8 | tip u64)*` (SPEC 4.6).
+    React { items: Vec<Reaction> },
+    /// `count u8 (1..=64) | (target [32] | on u8)*` (SPEC 4.6).
+    Follow { items: Vec<FollowEdge> },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -339,6 +370,11 @@ impl TxBody {
             Self::RegisterModel(_) => TxKind::RegisterModel,
             Self::PostSegments { .. } => TxKind::PostSegments,
             Self::RejectResult { .. } => TxKind::RejectResult,
+            Self::SetProfile(_) => TxKind::SetProfile,
+            Self::OperatorLink { .. } => TxKind::OperatorLink,
+            Self::Post(_) => TxKind::Post,
+            Self::React { .. } => TxKind::React,
+            Self::Follow { .. } => TxKind::Follow,
         }
     }
 
@@ -397,6 +433,13 @@ impl TxBody {
                 w.bytes(job_id).bytes(deliverer).bytes(result_hash);
                 write_sigs(w, sigs);
             }
+            Self::SetProfile(p) => p.write(w),
+            Self::OperatorLink { agent, add } => {
+                w.bytes(agent).u8(*add as u8);
+            }
+            Self::Post(p) => p.write(w),
+            Self::React { items } => write_reactions(w, items),
+            Self::Follow { items } => write_follows(w, items),
         }
     }
 
@@ -476,6 +519,19 @@ impl TxBody {
                 result_hash: r.arr()?,
                 sigs: read_sigs(r)?,
             },
+            TxKind::SetProfile => Self::SetProfile(SetProfile::read(r)?),
+            TxKind::OperatorLink => {
+                let agent = r.arr()?;
+                let add = match r.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(DecodeError::Invalid("operator link add flag")),
+                };
+                Self::OperatorLink { agent, add }
+            }
+            TxKind::Post => Self::Post(Post::read(r)?),
+            TxKind::React => Self::React { items: read_reactions(r)? },
+            TxKind::Follow => Self::Follow { items: read_follows(r)? },
         })
     }
 }

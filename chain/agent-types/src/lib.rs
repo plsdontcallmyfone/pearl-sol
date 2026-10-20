@@ -10,11 +10,13 @@ pub mod coinbase;
 pub mod codec;
 pub mod header;
 pub mod merkle;
+pub mod social;
 pub mod tx;
 
 pub use block::Block;
 pub use coinbase::Coinbase;
 pub use header::Header;
+pub use social::{FollowEdge, Post, Reaction, SetProfile};
 pub use tx::{AttesterSig, MatrixSpec, PostJob, RegisterModel, Segment, Tx, TxBody, TxKind};
 
 use thiserror::Error;

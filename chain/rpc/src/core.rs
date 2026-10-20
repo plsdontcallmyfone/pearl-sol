@@ -269,6 +269,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 refs.insert(b, u64::MAX);
             }
         }
+        // Profiles (SPEC 4.6): a profile's blob is kept while the profile names it.
+        for b in self.profile_blobs().await.map_err(|e| ChainError::Internal(e.message))? {
+            refs.insert(b, u64::MAX);
+        }
         Ok(refs)
     }
 
@@ -395,6 +399,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if let Some(p) = job {
             executor::precheck_post_job(p, &self.chain.tip().config)?;
         }
+        // social kinds (SPEC 4.6): activation height and the social fee floor
+        executor::precheck_social(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
         let bytes = tx.encode();
         let h = self.mempool.insert(tx, acc.nonce, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;

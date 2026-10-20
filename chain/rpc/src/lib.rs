@@ -4,6 +4,7 @@
 pub mod core;
 pub mod dispatch;
 mod reject;
+mod social;
 pub mod server;
 
 pub use core::{Core, Outbound, Subscriber};

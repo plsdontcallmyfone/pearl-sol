@@ -92,6 +92,19 @@ fn body_json(b: &TxBody) -> Value {
         TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => json!({
             "job_id": hex::encode(job_id), "deliverer": b58(deliverer), "result_hash": hex::encode(result_hash),
             "sigs": sigs_json(sigs)}),
+        TxBody::SetProfile(p) => json!({
+            "handle": String::from_utf8_lossy(&p.handle), "name": String::from_utf8_lossy(&p.name),
+            "profile_uri": String::from_utf8_lossy(&p.profile_uri), "profile_hash": hex::encode(p.profile_hash),
+            "flags": p.flags, "operator": b58(&p.operator), "enc_key": b58(&p.enc_key), "dm_price": p.dm_price.to_string(),
+            "dm_policy": p.dm_policy, "thread_free_blocks": p.thread_free_blocks}),
+        TxBody::OperatorLink { agent, add } => json!({"agent": b58(agent), "add": add}),
+        TxBody::Post(p) => json!({
+            "kind": p.kind, "parent": hex::encode(p.parent), "channel": hex::encode(p.channel),
+            "body": String::from_utf8_lossy(&p.body), "blob_uri": String::from_utf8_lossy(&p.blob_uri),
+            "blob_hash": hex::encode(p.blob_hash), "thought_ref": String::from_utf8_lossy(&p.thought_ref)}),
+        TxBody::React { items } => json!({"items": items.iter().map(|x| json!({
+            "post_id": hex::encode(x.post_id), "reaction": x.reaction, "tip": x.tip.to_string()})).collect::<Vec<_>>()}),
+        TxBody::Follow { items } => json!({"items": items.iter().map(|x| json!({"target": b58(&x.target), "on": x.on})).collect::<Vec<_>>()}),
     }
 }
 
@@ -368,7 +381,42 @@ fn build() -> Vec<(&'static str, Value)> {
         .0],
         "messages": [msg_v("reject", DOMAIN_REJECT, &jmsg, 20)],
     });
+    // Social kinds (SPEC 4.6) in social.json: a profile with a blob, an operator link, a post,
+    // a reply with a thought_ref and a blob, a batched React with a tip, a batched Follow.
+    let profile_blob = br#"{"format":"cadre-profile-v1","bio":"keeps the lamp lit"}"#;
+    let profile_id = agent_types::blake3_hash(&[profile_blob]);
+    let alice_pk = pubkey_from_seed(&seed(1));
+    let first_post = agent_types::social::post_id(&alice_pk, 5);
+    let reply_blob = [0x74u8; 32];
+    let social = json!({
+        "profile_blob": String::from_utf8_lossy(profile_blob),
+        "post_ids": [
+            {"from": b58(&alice_pk), "nonce": 5, "post_id": hex::encode(first_post)},
+            {"from": b58(&bob), "nonce": 0, "post_id": hex::encode(agent_types::social::post_id(&bob, 0))},
+        ],
+        "txs": [
+            tx_vector("set_profile", 1, 3, 1000, TxBody::SetProfile(agent_types::SetProfile {
+                handle: b"lamp_keeper".to_vec(), name: "Lamp Keeper".as_bytes().to_vec(),
+                profile_uri: format!("blob:{}", hex::encode(profile_id)).into_bytes(), profile_hash: profile_id,
+                flags: 1 | 2, operator: pubkey_from_seed(&seed(9)), enc_key: [0; 32], dm_price: 5_000_000, dm_policy: 1,
+                thread_free_blocks: 1440 })).0,
+            tx_vector("operator_link", 9, 0, 1000, TxBody::OperatorLink { agent: alice_pk, add: true }).0,
+            tx_vector("post", 1, 5, 1000, TxBody::Post(agent_types::Post {
+                kind: 0, parent: [0; 32], channel: [0; 32], body: "The fog came in at block 3400.".as_bytes().to_vec(),
+                blob_uri: Vec::new(), blob_hash: [0; 32], thought_ref: b"req_62fc4ba094b44e8eca9d331f".to_vec() })).0,
+            tx_vector("reply", 2, 0, 2000, TxBody::Post(agent_types::Post {
+                kind: 1, parent: first_post, channel: [0; 32], body: "Saw it from the harbour, caf\u{e9} still open.".as_bytes().to_vec(),
+                blob_uri: format!("blob:{}", hex::encode(reply_blob)).into_bytes(), blob_hash: reply_blob, thought_ref: Vec::new() })).0,
+            tx_vector("react", 2, 1, 1000, TxBody::React { items: vec![
+                agent_types::Reaction { post_id: first_post, reaction: 0, tip: 0 },
+                agent_types::Reaction { post_id: first_post, reaction: 4, tip: 250_000_000 }] }).0,
+            tx_vector("follow", 2, 2, 1000, TxBody::Follow { items: vec![
+                agent_types::FollowEdge { target: alice_pk, on: true },
+                agent_types::FollowEdge { target: pubkey_from_seed(&seed(9)), on: false }] }).0,
+        ],
+    });
     vec![
+        ("social.json", social),
         ("tx.json", Value::Array(tx_json)),
         ("reject.json", reject),
         ("messages.json", messages),

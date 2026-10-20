@@ -183,7 +183,14 @@ pub fn config_json(c: &Config) -> Value {
         "fallback_m": c.fallback_m, "fallback_n": c.fallback_n, "fallback_config": hex::encode(c.fallback_config),
         "min_protocol_fee": c.min_protocol_fee.to_string(),
         "min_protocol_fee_effective": executor::effective_min_protocol_fee(c).to_string(), "bridge_paused": c.bridge_paused,
-        "max_job_blocks": c.max_job_blocks, "min_difficulty_bits": c.min_difficulty_bits, "keys": keymap,
+        "max_job_blocks": c.max_job_blocks, "min_difficulty_bits": c.min_difficulty_bits,
+        "social_min_fee": c.social_min_fee.to_string(), "social_byte_fee": c.social_byte_fee.to_string(),
+        "house_operators": c.house_operators.iter().map(|a| b58(a)).collect::<Vec<_>>(),
+        "post_inline_max": c.post_inline_max, "max_balance_rows": c.max_balance_rows,
+        "price_base_lamports": c.price_base_lamports.map(|x| x.to_string()),
+        "price_mlamports_per_gflop": c.price_mlamports_per_gflop.map(|x| x.to_string()),
+        "price_overhead_lamports": c.price_overhead_lamports.map(|x| x.to_string()),
+        "keys": keymap,
     })
 }
 
@@ -395,6 +402,33 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let mut v = job_json(&j, next);
                 v["reject_count"] = json!(self.reject_count(&id).await?);
                 Ok(v)
+            }
+            "getProfile" => {
+                let a = p_key(p, &["account", "address"])?;
+                self.get_profile(&a).await
+            }
+            "getHandle" => {
+                let h = p_str(p, &["handle"]).ok_or_else(|| RpcError::params("missing handle"))?;
+                self.get_handle(h).await
+            }
+            "listProfiles" => {
+                let offset = p_u64(p, "offset").unwrap_or(0);
+                let limit = p_u64(p, "limit").unwrap_or(50).min(200);
+                self.list_profiles(offset, limit).await
+            }
+            "getPost" => {
+                let id = p_key(p, &["post_id", "id"])?;
+                self.get_post(&id).await
+            }
+            "getFollowCounts" => {
+                let a = p_key(p, &["account", "address"])?;
+                let s = self.social_stats(&a).await?;
+                Ok(json!({"account": b58(&a), "followers": s.followers, "following": s.following}))
+            }
+            "isFollowing" => {
+                let f = p_key(p, &["follower"])?;
+                let t = p_key(p, &["target"])?;
+                self.is_following(&f, &t).await
             }
             "getJobRejects" => {
                 let id = p_key(p, &["job_id", "id"])?;
@@ -649,7 +683,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     v["index"] = json!(e.index);
                     let lien = matches!(&t.body, agent_types::TxBody::ClearRoute { account, .. } if *account == a);
                     let rejected = matches!(&t.body, agent_types::TxBody::RejectResult { deliverer, .. } if *deliverer == a);
-                    v["role"] = json!(if lien { "lien" } else if rejected { "rejected" } else if t.from == a { "sender" } else { "recipient" });
+                    let followed = matches!(&t.body, agent_types::TxBody::Follow { items } if t.from != a && items.iter().any(|x| x.target == a));
+                    let linked = matches!(&t.body, agent_types::TxBody::OperatorLink { agent, .. } if *agent == a);
+                    v["role"] = json!(if lien {
+                        "lien"
+                    } else if rejected {
+                        "rejected"
+                    } else if followed {
+                        "follow"
+                    } else if linked {
+                        "operator"
+                    } else if t.from == a {
+                        "sender"
+                    } else {
+                        "recipient"
+                    });
                     v["confirmations"] = json!(self.chain.confirmations(&e.block_hash, e.height));
                     v["final"] = json!(self.chain.is_final(&e.block_hash, e.height));
                     out.push(v);

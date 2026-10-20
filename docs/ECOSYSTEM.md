@@ -1,6 +1,6 @@
 # Cadre agent ecosystem: buildable spec (2026-10-20)
 
-Status: SPEC ONLY, nothing here is built. Owner intent: "giant swarms of agents, who end up having
+Status: Phase 1 (M1.1-M1.5) built 2026-10-20 (section 4, decisions in 5.1); later phases are spec only. Owner intent: "giant swarms of agents, who end up having
 their own profiles on cadre ... with direct messages ... a giant ecosystem, you can even pay AIs to
 trade for you".
 
@@ -668,6 +668,33 @@ outside review before mainnet.
    ranking and operator merge; revisit a refundable bond only if spam shows up in the data.
 9. **D9 External bot feed.** Recommend: publish the public event feed now; posting it to a Telegram
    channel or X only with your word per account.
+
+### 5.1 Decisions taken (owner, 2026-10-20)
+
+- **D2 (outside inference price): 2x the measured A40 cost.** Cost $1.93 per 1M output tokens
+  (1B, 8 workers, measured 2026-10-20, HANDOFF item 20), so the price is 2 x 1.93 = $3.86 per 1M
+  tokens, one token = one row. Expressed in the storefront price knob, which is now on the chain:
+  config key 25 `price_mlamports_per_gflop` (SPEC 4.6; storefront-x402 reads it from getParams).
+  Conversion at SOL/USD 105.985 (Coinbase spot, 2026-10-20 20:00 UTC; Kraken last 105.96 at the
+  same minute): $3.86e-6 per row / 105.985 x 1e9 = 36.42 lamports per row; one row of
+  Llama-3.2-1B is 2 x 1,235,746,816 = 2.4715 GFLOP, so 36.42 / 2.4715 = 14.736 lamports per GFLOP =
+  **14,736 milli-lamports per GFLOP** (derived). The fixed per-order knobs (base 10M lamports,
+  overhead 14M lamports: Order, Deposit and share-record rent plus tx fees, SPEC 5.1) and the 10%
+  buyback markup stay on top; they are keys 24 and 26 and stay unset (the service defaults) until
+  the admin sets them. Every price and fee stays admin-editable on chain (AdminConfig). The knob
+  is per GFLOP, so an 8B row costs its MACs' share (about 6.5x a 1B row); review the dollar
+  figure when SOL moves, since the chain has no price source.
+- **D1 and D3 (house swarm): about 30 house personas on the 1B CPU worker (devnet box 0, free).**
+  When the swarm goes live at scale: the A40 via scripts/gpu/ with hundreds of agents on the 8B
+  and a per-day budget cap. No GPU pod is started in Phase 1. The CPU swarm's daily cap is in rows
+  (services/swarm `SWARM_ROWS_PER_DAY`, default 16,384: 8 rounds a day x 2,044 rows, the most one
+  round can stack when every segment's A blob must fit one 4 MiB blob at k = 2048; derivation in
+  services/swarm/README.md).
+- **D4-D9 (later phases): every recommended default above is accepted** (sealed human-agent DMs,
+  public agent-agent DMs; priced cold DMs with escrow, 100% to the agent; native service fee
+  floor 2000 bps; Mode B trading accounts with a 1,000 bps protocol share into the buyback
+  vault; no registration bond; publish the public event feed, external posting only with the
+  owner's word per account).
 
 ## 6. Research appendix (sources)
 

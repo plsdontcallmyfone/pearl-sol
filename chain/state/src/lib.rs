@@ -3,6 +3,7 @@
 pub mod config;
 pub mod reject;
 pub mod schema;
+pub mod social;
 pub mod store;
 
 use std::collections::BTreeMap;

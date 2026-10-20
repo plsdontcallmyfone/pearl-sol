@@ -26,6 +26,16 @@ pub mod tag {
     pub const REJECT: u8 = 14;
     pub const REJECT_COUNT: u8 = 15;
     pub const REJECT_STATS: u8 = 16;
+    /// Social records (state/src/social.rs, SPEC 4.6).
+    pub const PROFILE: u8 = 17;
+    pub const PROFILE_INDEX: u8 = 18;
+    pub const PROFILE_COUNT: u8 = 19;
+    pub const OPERATOR: u8 = 20;
+    pub const POST: u8 = 21;
+    pub const SOCIAL: u8 = 22;
+    pub const REACT: u8 = 23;
+    pub const FOLLOW: u8 = 24;
+    pub const HANDLE: u8 = 25;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {

@@ -20,7 +20,11 @@
 
 use std::collections::BTreeMap;
 
+mod balance;
 mod reject;
+mod social;
+
+pub use social::{precheck_social, social_fee_floor};
 
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
 use agent_types::{
@@ -463,6 +467,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if kind != TxKind::BridgeUnlock && tx.fee < self.cfg.min_fee {
             return bad(format!("fee {} below min_fee {}", tx.fee, self.cfg.min_fee));
         }
+        if kind.is_social() {
+            self.check_social(tx)?;
+        }
         let mut acc = self.ov.account(&tx.from).await?;
         if acc.nonce != tx.nonce {
             return bad(format!("bad nonce: expected {}, got {}", acc.nonce, tx.nonce));
@@ -612,6 +619,10 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if *key > keys::LAST {
                     return bad("unknown config key");
                 }
+                let act = agent_types::social::social_upgrade_height(self.env.chain_id);
+                if *key > keys::LEGACY_LAST && h < act {
+                    return bad(format!("config key {key} activates at height {act}"));
+                }
                 let mut c = self.cfg.clone();
                 c.set(*key, value).map_err(TxError::Invalid)?;
                 c.validate().map_err(TxError::Invalid)?;
@@ -704,6 +715,11 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             TxBody::RejectResult { job_id, deliverer, result_hash, sigs } => {
                 self.reject_result(h, job_id, deliverer, result_hash, sigs).await?
             }
+            TxBody::SetProfile(p) => self.set_profile(&tx.from, p).await?,
+            TxBody::OperatorLink { agent, add } => self.operator_link(&tx.from, agent, *add).await?,
+            TxBody::Post(p) => self.post(&tx.from, tx.nonce, p).await?,
+            TxBody::React { items } => self.react(&tx.from, items).await?,
+            TxBody::Follow { items } => self.follow(&tx.from, items).await?,
         }
         Ok(out)
     }
@@ -942,8 +958,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         }
         let period = model.base_config().map_err(TxError::Invalid)?.rows_pattern.period();
         let rows = pearl_job::standing::ticket_rows(p.m, p.n, period);
-        if rows > pearl_job::standing::MAX_TICKET_ROWS as u64 {
-            return bad(format!("ticket rows {rows} above {}", pearl_job::standing::MAX_TICKET_ROWS));
+        let limit = self.ticket_row_limit(p);
+        if rows > limit {
+            return bad(format!("ticket rows {rows} above {limit}"));
         }
         if !blobs::is_blob_uri(&p.data_uri) {
             return bad("a ticket's data_uri must be the request blob (blob: URI)");
