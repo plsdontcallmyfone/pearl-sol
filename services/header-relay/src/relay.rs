@@ -114,6 +114,10 @@ struct Flight {
     txs: Vec<Tx>,
     plan: Vec<(Vec<Step>, u64)>,
     job: Option<[u8; 32]>,
+    /// The header record's relayer (its submitter): the jackpot pays the relay reward
+    /// to it, and the program refuses any other recipient (WrongRelayer 6021). With lanes
+    /// the submitter may be another lane's relay.
+    relayer: Pubkey,
     started: Instant,
     sent: u32,
     fails: u32,
@@ -484,7 +488,8 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             if hd.height % self.lane.1 != self.lane.0 {
                 continue;
             }
-            if !matches!(recs[i], Some((lightclient::STATUS_PENDING, ..))) || self.skip.contains_key(&hd.hash) || self.flights.iter().any(|f| f.hd.hash == hd.hash) {
+            let Some((lightclient::STATUS_PENDING, _, relayer, _)) = recs[i] else { continue };
+            if self.skip.contains_key(&hd.hash) || self.flights.iter().any(|f| f.hd.hash == hd.hash) {
                 continue;
             }
             let (job, config) = if hd.is_fallback() {
@@ -506,6 +511,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                 txs: vec![],
                 plan: client::plan_costed(&shape, client::TX_CU_BUDGET),
                 job,
+                relayer,
                 started: Instant::now(),
                 sent: 0,
                 fails: 0,
@@ -596,7 +602,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         let pk = self.ledger.pk();
         let w = self.works[f.slot].pubkey();
         let (steps, est) = &f.plan[s];
-        let ixs: Vec<Instruction> = steps.iter().map(|st| st.instruction_with_parent(pk, w, &f.hd.hash, &f.hd.prev(), pk)).collect();
+        let ixs: Vec<Instruction> = steps.iter().map(|st| st.instruction_with_parent(pk, w, &f.hd.hash, &f.hd.prev(), f.relayer)).collect();
         Tx::new(ixs, self.cu((*est as u32).saturating_mul(5) / 4 + 20_000))
     }
 
