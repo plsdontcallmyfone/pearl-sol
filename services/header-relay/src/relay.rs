@@ -319,7 +319,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             }
         }
         if stale {
-            eprintln!("relay: node chain changed under the cache (reorg); refetching");
+            crate::rlog!("relay: node chain changed under the cache (reorg); refetching");
             self.cache.clear();
         }
         let keep = base.saturating_sub(CANON_LEN as u64 + 64);
@@ -373,7 +373,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let done = match st {
                 None => {
                     // left the node's canonical chain (or the window)
-                    eprintln!("relay: header {} left the window or the canonical chain at stage {:?} after {} txs; flight dropped", f.hd.height, f.stage, f.sent);
+                    crate::rlog!("relay: header {} left the window or the canonical chain at stage {:?} after {} txs; flight dropped", f.hd.height, f.stage, f.sent);
                     self.abandoned.push((f.hd.height, f.hd.hash));
                     true
                 }
@@ -394,7 +394,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                 _ => {
                     if let Some(e) = f.failed.take() {
                         f.fails += 1;
-                        eprintln!("relay: header {} attempt {} failed: {e}", f.hd.height, f.fails);
+                        crate::rlog!("relay: header {} attempt {} failed: {e}", f.hd.height, f.fails);
                         if f.fails >= 3 {
                             self.skip.insert(f.hd.hash, Instant::now());
                             true
@@ -404,7 +404,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                             false
                         }
                     } else if f.stage == Stage::Finished {
-                        eprintln!("relay: header {} still pending after all {} steps ({} txs): redoing it", f.hd.height, f.plan.len(), f.sent);
+                        crate::rlog!("relay: header {} still pending after all {} steps ({} txs): redoing it", f.hd.height, f.plan.len(), f.sent);
                         f.stage = Stage::Begin; // the jackpot did not land: redo
                         f.txs.clear();
                         false
@@ -545,7 +545,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         let max_future = self.config()?.params.max_future_ms / 1000;
         let (h, ts) = self.submit_hd;
         let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        eprintln!(
+        crate::rlog!(
             "relay: header {h} is {} s ahead of the Solana clock (limit max_future_ms = {max_future} s): waiting for the clock; Solana clock is {} s behind this machine's",
             ts as i64 / 1000 - clock_s,
             wall - clock_s
@@ -630,7 +630,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                         if timestamp {
                             self.clock_note()?;
                         } else {
-                            eprintln!("relay: submit failed: {e}");
+                            crate::rlog!("relay: submit failed: {e}");
                         }
                     }
                     None => self.submit_single = false,
@@ -640,12 +640,12 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         for t in self.global.iter_mut().filter(|t| !t.done) {
             if let Some(e) = check(t, self.ledger, &mut self.stats)? {
-                eprintln!("relay: {} failed: {e}", describe(&t.ixs));
+                crate::rlog!("relay: {} failed: {e}", describe(&t.ixs));
                 t.done = true;
             }
         }
         if cu_fail && !self.full_cu {
-            eprintln!("relay: a tx ran out of compute units; asking for {MAX_CU} from now on");
+            crate::rlog!("relay: a tx ran out of compute units; asking for {MAX_CU} from now on");
             self.full_cu = true;
         }
         Ok(())
@@ -808,7 +808,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let pk = self.ledger.pk();
             match ledger::send_wait(self.ledger, &[client::register_job(pk, hash, job_id, txs[i].clone(), paths[i].clone())], &[], MAX_CU) {
                 Ok(_) => println!("registered job {} (posted at {height})", hex::encode(job_id)),
-                Err(e) => eprintln!("register job {}: {e:#}", hex::encode(job_id)),
+                Err(e) => crate::rlog!("register job {}: {e:#}", hex::encode(job_id)),
             }
         }
         Ok(())

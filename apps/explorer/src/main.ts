@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Indexer } from "./indexer.ts";
 import { serve } from "./server.ts";
 import { BRAND } from "./brand.ts";
+import { redactUrl } from "./rpc.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -25,7 +26,7 @@ const ix = new Indexer({
 });
 ix.start();
 serve(ix, port, host);
-console.log(`${BRAND.name} explorer on http://${host}:${port} (node ${ix.o.nodeUrl}, solana ${ix.o.solUrl})`);
+console.log(`${BRAND.name} explorer on http://${host}:${port} (node ${ix.o.nodeUrl}, solana ${redactUrl(ix.o.solUrl)})`);
 const stop = () => {
   ix.stop();
   process.exit(0);

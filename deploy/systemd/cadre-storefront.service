@@ -7,7 +7,7 @@ User=lode
 EnvironmentFile=/etc/lode/services.env
 Environment=STOREFRONT_PORT=10662 STOREFRONT_WALLET=/etc/lode/keys/storefront-wallet.json STATE_FILE=/var/lib/lode/storefront-state.json X402_NETWORK=solana-devnet
 WorkingDirectory=/home/lode/pearl-sol/services/storefront-x402
-ExecStart=/home/lode/.local/node/bin/node src/main.ts
+ExecStart=/opt/lode/bin/with-rpc /home/lode/.local/node/bin/node src/main.ts
 Restart=always
 RestartSec=10
 

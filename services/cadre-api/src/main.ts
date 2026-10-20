@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFromEnv, Deps } from "./deps.ts";
 import { build, VERSION } from "./app.ts";
+import { redactUrl } from "../../../apps/explorer/src/rpc.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cfg = configFromEnv(process.env, { stateDir: join(here, "..", ".state") });
@@ -23,7 +24,7 @@ srv.on("error", (e) => {
   process.exit(1);
 });
 srv.on("listening", () =>
-  console.log(JSON.stringify({ msg: "cadre-api started", version: VERSION, url: `http://${cfg.host}:${cfg.port}/v1`, node: cfg.nodeRpc, solana: cfg.solanaRpc, gateway: cfg.gatewayUrl, storefront: cfg.storefrontUrl, pool: cfg.poolUrl, prepaid: cfg.prepaid, origins: cfg.allowedOrigins, pid: process.pid })),
+  console.log(JSON.stringify({ msg: "cadre-api started", version: VERSION, url: `http://${cfg.host}:${cfg.port}/v1`, node: cfg.nodeRpc, solana: redactUrl(cfg.solanaRpc), gateway: cfg.gatewayUrl, storefront: cfg.storefrontUrl, pool: cfg.poolUrl, prepaid: cfg.prepaid, origins: cfg.allowedOrigins, pid: process.pid })),
 );
 const stop = () => {
   d.ix.stop();

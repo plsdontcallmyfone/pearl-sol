@@ -145,7 +145,14 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        header_relay::rlog!("Error: {e:?}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let node = Node::new(&cli.node);
     match cli.cmd {
@@ -162,7 +169,7 @@ fn main() -> Result<()> {
                 println!("settle only (no header relay), every {poll_ms} ms");
                 loop {
                     if let Err(e) = st.tick(&settle_node, &mut s) {
-                        eprintln!("settle: {e:#}");
+                        header_relay::rlog!("settle: {e:#}");
                     }
                     if once {
                         return Ok(());
@@ -182,14 +189,14 @@ fn main() -> Result<()> {
                 let busy = match r.pass() {
                     Ok(b) => b,
                     Err(e) => {
-                        eprintln!("relay: {e:#}");
+                        header_relay::rlog!("relay: {e:#}");
                         true
                     }
                 };
                 if settle && last_settle.elapsed() > Duration::from_secs(2) {
                     last_settle = std::time::Instant::now();
                     if let Err(e) = st.tick(&settle_node, r.ledger) {
-                        eprintln!("settle: {e:#}");
+                        header_relay::rlog!("settle: {e:#}");
                     }
                 }
                 if last_lag.elapsed() > Duration::from_secs(lag_secs) {

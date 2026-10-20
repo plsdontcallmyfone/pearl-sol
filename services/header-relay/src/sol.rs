@@ -34,8 +34,24 @@ pub struct Sol {
     bh_cache: Option<(solana_sdk::hash::Hash, std::time::Instant)>,
 }
 
+static RPC_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// `s` with the Solana RPC URL this process uses (set by `Sol::new`) replaced by scheme://host:
+/// RPC client errors embed the full URL, and a dedicated RPC's URL carries its key.
+pub fn redact(s: &str) -> String {
+    match RPC_URL.get() {
+        Some(u) if !u.is_empty() && s.contains(u.as_str()) => {
+            let host = u.split("://").nth(1).and_then(|r| r.split(['/', '?']).next()).unwrap_or("");
+            let scheme = u.split("://").next().unwrap_or("https");
+            s.replace(u.as_str(), &format!("{scheme}://{}", host.rsplit('@').next().unwrap_or(host)))
+        }
+        _ => s.to_string(),
+    }
+}
+
 impl Sol {
     pub fn new(url: &str, payer: Keypair, cu_price: u64) -> Self {
+        let _ = RPC_URL.set(url.to_string());
         Self { rpc: RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed()), payer, txs: 0, cu: 0, cu_price,
                poll: std::time::Duration::from_millis(50), send_gap: std::time::Duration::ZERO, last_send: std::sync::Mutex::new(None), bh_cache: None }
     }

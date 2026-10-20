@@ -8,6 +8,7 @@
 #   scripts/devnet-deploy.sh ctl N ACTION [UNITS]  systemctl ACTION on box N (default: every cadre-* unit there)
 #   scripts/devnet-deploy.sh status            heights, peers, units on every box
 #   scripts/devnet-deploy.sh ssh N [CMD]       shell as lode on box N
+#   scripts/devnet-deploy.sh rpc-url [N]       copy keys/devnet/solana-rpc-url (dedicated Solana RPC) to box N (default all), then ctl restart
 #   scripts/devnet-deploy.sh relay-key [N]     create the header relay's fee payer on box N (default HEADER_RELAY_BOX), print its pubkey
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
@@ -56,6 +57,7 @@ case "${1:-}" in
     sed "s/@IP@/$dash/g" "$ROOT/deploy/Caddyfile.tmpl" > "$tmp/Caddyfile"
     [[ $n == 0 ]] && sed "s/@IP@/$dash/g" "$ROOT/deploy/Caddyfile.box0.tmpl" >> "$tmp/Caddyfile"
     cp "$ROOT/deploy/genesis.json" "$tmp/genesis.json"
+    cp "$ROOT/deploy/with-rpc.sh" "$tmp/with-rpc"
     python3 "$ROOT/deploy/node-config.py" "$n" > "$tmp/node.json"
     for u in $(units_of "$n"); do cp "$ROOT/deploy/systemd/$u.service" "$tmp/"; done
     printf 'MINER_THREADS=%s\nMINER_EXTRA=%s\n' "$(eval echo "\${BOX${n}_MINER_THREADS}")" "$( [[ $n == 0 ]] && echo '--deliver --attester http://127.0.0.1:10661' )" > "$tmp/miner.env"
@@ -65,8 +67,19 @@ case "${1:-}" in
       "$SOLANA_RPC" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$(relay_lane "$n")" > "$tmp/header-relay.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"
     sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 644 header-relay.env /etc/lode/ || true
-      install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api
+      install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 755 with-rpc /opt/lode/bin/with-rpc; rm -f /tmp/with-rpc; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api
       systemctl daemon-reload; systemctl reload caddy || systemctl restart caddy; rm -f /tmp/cadre-*.service /tmp/genesis.json /tmp/node.json /tmp/*.env /tmp/Caddyfile; echo installed on box $n"
+    ;;
+  rpc-url)
+    # the dedicated Solana devnet RPC URL (keys/devnet/solana-rpc-url, carries a provider key): copied
+    # over ssh stdin to /etc/lode/solana-rpc-url (0600, lode), read by /opt/lode/bin/with-rpc at service
+    # start; never printed. Without the file the services stay on the public RPC.
+    f="$ROOT/keys/devnet/solana-rpc-url"
+    if [[ ! -s $f ]]; then echo "no keys/devnet/solana-rpc-url: services stay on the public devnet RPC"; exit 0; fi
+    for n in ${2:-0 1 2}; do
+      sshb "$n" root 'umask 077; cat > /etc/lode/solana-rpc-url.new && chown lode:lode /etc/lode/solana-rpc-url.new && chmod 600 /etc/lode/solana-rpc-url.new && mv -f /etc/lode/solana-rpc-url.new /etc/lode/solana-rpc-url' < "$f"
+      echo "box $n: dedicated RPC file installed"
+    done
     ;;
   keys)
     n="$2"; ip="$(ip_of "$n")"

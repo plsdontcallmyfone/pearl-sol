@@ -245,7 +245,7 @@ impl Settle {
                         h == lc_final && pv::blake3::hash(hdr) == bh && pv::header::Header(hdr).withdraw_root() == root
                     })?;
                     let Some((lc_header, at)) = found else {
-                        eprintln!("withdrawal {n}: light-client final header {lc_final} is not the node's (fork?)");
+                        crate::rlog!("withdrawal {n}: light-client final header {lc_final} is not the node's (fork?)");
                         continue;
                     };
                     (p, lc_header, at)
@@ -253,7 +253,7 @@ impl Settle {
                 Ok(_) => continue,
                 Err(e) => {
                     // Older node without at_height: current-root proof, any final header with that root.
-                    eprintln!("withdrawal {n}: historical proof at {lc_final} refused ({e:#}); trying the current root");
+                    crate::rlog!("withdrawal {n}: historical proof at {lc_final} refused ({e:#}); trying the current root");
                     let p = node.withdrawal_proof(n)?;
                     if p["final"] != true {
                         continue;
@@ -276,7 +276,7 @@ impl Settle {
             ];
             match sol.send(&ixs, &[]) {
                 Ok(sig) => println!("released withdrawal {n} by proof against final header {at} ({sig})"),
-                Err(e) => eprintln!("release_proof {n}: {e:#}"),
+                Err(e) => crate::rlog!("release_proof {n}: {e:#}"),
             }
         }
         Ok(())
@@ -339,13 +339,13 @@ impl Settle {
                 };
                 match sol.send(&ixs, &[]) {
                     Ok(sig) => println!("{} order {nonce} by proof against final header {closed} ({sig})", if status == "completed" { "finalized" } else { "expired" }),
-                    Err(e) => eprintln!("order {nonce} proof: {e:#}"),
+                    Err(e) => crate::rlog!("order {nonce} proof: {e:#}"),
                 }
                 done = true;
                 break;
             }
             if !done {
-                eprintln!("order {nonce}: no {status} tx for its job in block {closed}");
+                crate::rlog!("order {nonce}: no {status} tx for its job in block {closed}");
             }
         }
         Ok(())

@@ -27,7 +27,7 @@ server.on("error", (e) => {
 });
 console.log(JSON.stringify({
   msg: "relayer started",
-  tokenRpc: cfg.tokenRpc,
+  tokenRpc: (() => { try { const u = new URL(cfg.tokenRpc); return `${u.protocol}//${u.host}`; } catch { return "(rpc url)"; } })(), // scheme://host only (keyed RPC)
   nodeRpc: cfg.nodeRpc,
   signers: relayer.o.signers.map((k) => k.publicKey.toBase58()),
   agentKey: relayer.o.agentKey.publicKey.toBase58(),

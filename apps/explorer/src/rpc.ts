@@ -5,6 +5,16 @@ export class RpcError extends Error {}
 
 let ids = 1;
 
+/** scheme://host of an RPC URL: a keyed RPC (key in the path or query) never reaches logs or replies. */
+export function redactUrl(u: string): string {
+  try {
+    const x = new URL(u);
+    return `${x.protocol}//${x.host}`;
+  } catch {
+    return "(rpc url)";
+  }
+}
+
 async function post(url: string, body: unknown, timeoutMs: number): Promise<any> {
   const res = await fetch(url, {
     method: "POST",
@@ -12,7 +22,7 @@ async function post(url: string, body: unknown, timeoutMs: number): Promise<any>
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new RpcError(`${url}: HTTP ${res.status}`);
+  if (!res.ok) throw new RpcError(`${redactUrl(url)}: HTTP ${res.status}`);
   return res.json();
 }
 
