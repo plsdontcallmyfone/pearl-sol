@@ -27,6 +27,29 @@ export interface Pricing {
   overheadLamports: bigint;
 }
 
+/** The price knobs in effect: the chain's config keys 24-26 (SPEC 4.6) where set, else the service's. */
+export interface LivePricing {
+  baseLamports: bigint;
+  /** milli-lamports per GFLOP (the chain key's unit; the env knob x 1000). */
+  mlamportsPerGflop: bigint;
+  overheadLamports: bigint;
+  source: { base: "chain" | "service"; work: "chain" | "service"; overhead: "chain" | "service" };
+}
+
+/** Merge the chain's getParams price keys over the service defaults. */
+export function livePricing(service: Pricing, params: any): LivePricing {
+  const pick = (v: unknown) => (typeof v === "string" && /^[0-9]+$/.test(v) ? BigInt(v) : null);
+  const base = pick(params?.price_base_lamports);
+  const work = pick(params?.price_mlamports_per_gflop);
+  const over = pick(params?.price_overhead_lamports);
+  return {
+    baseLamports: base ?? service.baseLamports,
+    mlamportsPerGflop: work ?? service.lamportsPerGflop * 1000n,
+    overheadLamports: over ?? service.overheadLamports,
+    source: { base: base === null ? "service" : "chain", work: work === null ? "service" : "chain", overhead: over === null ? "service" : "chain" },
+  };
+}
+
 export interface ServiceOptions {
   chain: ChainIO;
   wallet: Keypair;
@@ -40,6 +63,8 @@ export interface ServiceOptions {
   agentRpc?: string;
   /** getModel override (tests). */
   getModel?: (modelIdHex: string) => Promise<any>;
+  /** getParams override (tests). */
+  getParams?: () => Promise<any>;
 }
 
 /** Ticket config magic (SPEC 4.5): a PostJob body whose config starts with it is an inference ticket. */
@@ -190,16 +215,42 @@ export class Service {
    * sol_in - share covers the job: the buyback is a markup on top of the job, not a cut
    * of it. price = sol_in + overhead (rents and fees the service pays).
    */
-  price(cfg: sf.StoreConfig, m: number, n: number, k: number, maxBlocks: number, flopsOverride?: bigint) {
+  private live: { at: number; p: LivePricing } | null = null;
+
+  /** The price knobs in effect, the chain's read at most every 30 s (getParams keys 24-26). */
+  async pricing(): Promise<LivePricing> {
+    const now = Date.now();
+    if (this.live && now - this.live.at < 30_000) return this.live.p;
+    let params: any = null;
+    try {
+      params = this.o.getParams ? await this.o.getParams() : await this.rpc("getParams", {});
+    } catch {
+      params = null; // a node without the keys (or unreachable): the service's own knobs
+    }
+    const p = livePricing(this.o.pricing, params);
+    this.live = { at: now, p };
+    return p;
+  }
+
+  private async rpc(method: string, params: unknown): Promise<any> {
+    if (!this.o.agentRpc) return null;
+    const r = await fetch(this.o.agentRpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    const j = (await r.json()) as any;
+    if (j.error) throw new Error(`${method}: ${j.error.message}`);
+    return j.result;
+  }
+
+  price(cfg: sf.StoreConfig, m: number, n: number, k: number, maxBlocks: number, flopsOverride?: bigint, live?: LivePricing) {
+    const lp = live ?? livePricing(this.o.pricing, null);
     const flops = flopsOverride ?? 2n * BigInt(m) * BigInt(n) * BigInt(k) * BigInt(maxBlocks);
-    const work = (flops * this.o.pricing.lamportsPerGflop + 999_999_999n) / 1_000_000_000n;
-    const job = this.o.pricing.baseLamports + work;
+    const work = (flops * lp.mlamportsPerGflop + 999_999_999_999n) / 1_000_000_000_000n;
+    const job = lp.baseLamports + work;
     const bps = BigInt(cfg.buyback.bps);
     let solIn = (job * 10_000n + (10_000n - bps) - 1n) / (10_000n - bps);
     if (solIn < cfg.minSolIn) solIn = cfg.minSolIn;
     if (solIn > cfg.maxSolIn) throw new BadRequest(`job needs ${solIn} lamports, above the per-order cap ${cfg.maxSolIn}`);
     const buyback = sf.buybackShare(solIn, cfg.buyback.bps);
-    return { flops, solIn, jobLamports: solIn - buyback, buybackLamports: buyback, price: solIn + this.o.pricing.overheadLamports };
+    return { flops, solIn, jobLamports: solIn - buyback, buybackLamports: buyback, price: solIn + lp.overheadLamports, pricing: lp };
   }
 
   private checkDims(cfg: sf.StoreConfig, q: Record<string, unknown>) {
@@ -216,7 +267,7 @@ export class Service {
     const dims = ticket ? { ...this.checkDims(cfg, { m: q.prompt_tokens, n: q.max_tokens, k: 1 }), maxBlocks: 1 } : this.checkDims(cfg, q);
     const { m, n, k, maxBlocks } = dims;
     const flops = ticket ? await this.ticketFlopsFor(String(q.model_id).toLowerCase(), m, n) : undefined;
-    const pr = this.price(cfg, m, n, k, maxBlocks, flops);
+    const pr = this.price(cfg, m, n, k, maxBlocks, flops, await this.pricing());
     const mk = await this.market(cfg, pr.jobLamports);
     const p = (mk.quote * BigInt(cfg.protocolFeeBps)) / 10_000n;
     return {
@@ -228,8 +279,9 @@ export class Service {
       buyback_lamports: pr.buybackLamports,
       buyback_bps: cfg.buyback.bps,
       buyback_destination: sf.DEST[cfg.buyback.dest] ?? `unknown(${cfg.buyback.dest})`,
-      overhead_lamports: this.o.pricing.overheadLamports,
+      overhead_lamports: pr.pricing.overheadLamports,
       price_lamports: pr.price,
+      pricing: { base_lamports: pr.pricing.baseLamports, mlamports_per_gflop: pr.pricing.mlamportsPerGflop, overhead_lamports: pr.pricing.overheadLamports, source: pr.pricing.source },
       venue: mk.venue,
       estimate: {
         note: "fee-free constant-product quote for job_lamports before pump fees; the fill is lower by pump's fee (1.25% on the curve) and bounded by max_slippage_bps",
@@ -335,7 +387,7 @@ export class Service {
     const cfg = await this.storeConfig();
     if (cfg.paused) return json(503, { error: "storefront paused" });
     const spec = this.parseSpec(cfg, body);
-    const { solIn, price } = this.price(cfg, spec.m, spec.n, spec.k, spec.maxBlocks, await this.ticketFlops(spec));
+    const { solIn, price } = this.price(cfg, spec.m, spec.n, spec.k, spec.maxBlocks, await this.ticketFlops(spec), await this.pricing());
     const reqs = this.requirements(price);
     const header = req.headers["x-payment"];
     const need = (error: string) => json(402, { x402Version: X402_VERSION, error, accepts: [reqs] });

@@ -336,3 +336,108 @@ fn receipt_links_use_the_public_api_root() {
     let rid = r.json()["cadre"]["request_id"].as_str().unwrap().to_string();
     assert_eq!(r.json()["cadre"]["status_url"], json!(format!("http://127.0.0.1:10664/v1/requests/{rid}")));
 }
+
+/// MockNode plus `getParams` (the chain's max_balance_rows) for the large-ticket tests.
+struct ParamsNode(MockNode, u64);
+impl pearl_node::NodeApi for ParamsNode {
+    fn block_template(&self, payout: &[u8; 32]) -> Result<pearl_node::Template> {
+        self.0.block_template(payout)
+    }
+    fn submit_block(&self, t: &pearl_node::Template, b: &pearl_job::pow::MinedBlock) -> Result<pearl_node::SubmitOutcome> {
+        self.0.submit_block(t, b)
+    }
+    fn get_job(&self, id: &[u8; 32]) -> Result<Option<pearl_node::JobInfo>> {
+        self.0.get_job(id)
+    }
+    fn get_account(&self, a: &[u8; 32]) -> Result<pearl_node::Account> {
+        self.0.get_account(a)
+    }
+    fn send_tx(&self, wire: &[u8]) -> Result<String> {
+        self.0.send_tx(wire)
+    }
+    fn get_blob(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        self.0.get_blob(id)
+    }
+    fn put_blob(&self, d: &[u8]) -> Result<String> {
+        self.0.put_blob(d)
+    }
+    fn call(&self, method: &str, p: Value) -> Result<Value> {
+        if method == "getParams" {
+            return Ok(json!({"max_balance_rows": self.1}));
+        }
+        self.0.call(method, p)
+    }
+}
+
+fn gateway_params(tag: &str, chain_max: u64, cfg_max: u64) -> (Arc<Gateway>, Arc<Mutex<Vec<(Value, Option<String>)>>>) {
+    let md = model();
+    let calls = Arc::new(Mutex::new(vec![]));
+    let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32,
+        max_balance_rows: cfg_max, ..Config::default() };
+    let gw = Arc::new(Gateway::new(Box::new(ParamsNode(MockNode::new(1, 0x207fffff), chain_max)), Box::new(FakeSf(calls.clone())),
+        Box::new(FakeWorker(md.clone(), bts(&md))), Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})));
+    (gw, calls)
+}
+
+/// ECOSYSTEM M1.5: a balance above 4096 rows needs both the gateway's and the chain's
+/// max_balance_rows; it gets the slow round period unless the top-up names its own; one
+/// round never stacks more rows than one A blob holds.
+#[test]
+fn large_balances_round_period_and_round_cap() {
+    let pay = vec![("X-PAYMENT".to_string(), "pay".to_string())];
+    // chain without the key (MockNode answers no getParams): 4096 is the most
+    let (gw, _c) = gateway("big-old");
+    let r = gw.handle("POST", "/v1/balance/topup", &pay, br#"{"rows": 8192}"#);
+    assert_eq!(r.status, 400, "{}", r.json());
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("4096"));
+    // chain allows 65536, gateway 32768: the smaller wins
+    let (gw, calls) = gateway_params("big", 65_536, 32_768);
+    assert_eq!(gw.max_balance_rows(), 32_768);
+    let r = gw.handle("POST", "/v1/balance/topup", &pay, br#"{"rows": 65536}"#);
+    assert_eq!(r.status, 400);
+    let r = gw.handle("POST", "/v1/balance/topup", &pay, br#"{"rows": 32768}"#);
+    assert_eq!(r.status, 201, "{}", r.json());
+    assert_eq!(r.json()["round_secs"], 10_800, "a large balance rounds every 3 h by default");
+    let spec = &calls.lock().unwrap().last().unwrap().0["spec"].clone();
+    assert_eq!((spec["m"].as_u64(), spec["n"].as_u64()), (Some(32_767), Some(1)), "balance form: m = R - 1, n = 1");
+    // a top-up's own period wins; bounds checked
+    let r = gw.handle("POST", "/v1/balance/topup", &pay, br#"{"rows": 8192, "round_secs": 3600}"#);
+    assert_eq!(r.status, 201, "{}", r.json());
+    assert_eq!(r.json()["round_secs"], 3600);
+    assert_eq!(gw.handle("POST", "/v1/balance/topup", &pay, br#"{"rows": 8192, "round_secs": 5}"#).status, 400);
+    // small balances keep the gateway's round period
+    assert_eq!(gw.round_period(4096, None), Duration::from_secs(60));
+    assert_eq!(gw.round_period(4100, None), Duration::from_secs(10_800));
+    assert_eq!(gw.round_period(4100, Some(600)), Duration::from_secs(600));
+    // round cap: (4 MiB - 12) / k 2048 = 2047 rows, down to the row period
+    let p = model().period();
+    assert_eq!(gw.round_rows_cap(), 2047 / p * p);
+    let served = |id: &str, rows: u32| Served {
+        request_id: id.into(), wallet: String::new(), ticket_id: String::new(), dir: PathBuf::new(), rows, prompt_tokens: 0, completion_tokens: 0,
+        body_sha256: String::new(), output_sha256: String::new(), text_sha256: String::new(), charged_lamports: None, at_ms: 0, round: None,
+        row_offset: None, ttft_s: 0.0, decode_tokens_per_s: None,
+    };
+    let ids = |v: Vec<Served>| v.iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+    let take = round_take(vec![served("a", 1000), served("b", 1100), served("c", 10)], 2044, p);
+    assert_eq!(ids(take), vec!["a"], "a + b = 2100 rows is over the cap; c waits behind b (oldest first)");
+    let take = round_take(vec![served("a", 1000), served("b", 1000), served("c", 44)], 2044, p);
+    assert_eq!(ids(take), vec!["a", "b", "c"], "2044 rows fit exactly");
+    assert!(round_take(vec![served("x", 3000)], 2044, p).is_empty(), "one request larger than a round never fits (post_round refuses it)");
+}
+
+/// SPEC 4.6 thought_ref: every receipt carries sha256 of the completion text exactly as the
+/// response returns it, so a post quoting the completion verbatim can be matched to it.
+#[test]
+fn receipts_carry_the_completion_text_hash() {
+    use sha2::Digest;
+    let (gw, _c) = gateway("textsha");
+    let body = br#"{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 3}"#;
+    let r = gw.handle("POST", "/v1/chat/completions", &[("x-payment".into(), "p".into())], body);
+    assert_eq!(r.status, 200, "{}", r.json());
+    let content = r.json()["choices"][0]["message"]["content"].as_str().unwrap().to_string();
+    let want = hex::encode(sha2::Sha256::digest(content.as_bytes()));
+    let rid = r.json()["cadre"]["request_id"].as_str().unwrap().to_string();
+    let rec = gw.handle("GET", &format!("/v1/requests/{rid}"), &[], b"").json()["receipt"].clone();
+    assert_eq!(rec["text_sha256"], json!(want));
+    assert_ne!(rec["text_sha256"], rec["output_sha256"], "output_sha256 hashes the token ids, not the text");
+}

@@ -163,6 +163,21 @@ pub fn prepare_round(model: &ModelInfo, dirs: &[(PathBuf, u32)], m: u32, blocks_
     Ok(out)
 }
 
+/// The oldest pending requests (in order) whose rows, padded to the row period, fit `cap`;
+/// the rest wait for the next round.
+pub fn round_take(pending: Vec<Served>, cap: u32, period: u32) -> Vec<Served> {
+    let mut out = Vec::new();
+    let mut sum: u64 = 0;
+    for r in pending {
+        if round_up(sum + r.rows as u64, period as u64) > cap as u64 {
+            break;
+        }
+        sum += r.rows as u64;
+        out.push(r);
+    }
+    out
+}
+
 fn round_up(x: u64, p: u64) -> u64 {
     x.div_ceil(p.max(1)) * p.max(1)
 }
@@ -182,6 +197,11 @@ pub struct Served {
     pub completion_tokens: u32,
     pub body_sha256: String,
     pub output_sha256: String,
+    /// sha256 (hex) of the completion text exactly as the response carries it (message content /
+    /// text), so a post quoting the completion verbatim can be matched to its paid request
+    /// (SPEC 4.6 thought_ref). Empty for requests served before this field existed.
+    #[serde(default)]
+    pub text_sha256: String,
     pub charged_lamports: Option<u64>,
     pub at_ms: u64,
     pub round: Option<u16>,
@@ -221,6 +241,10 @@ pub struct TicketState {
     pub error: Option<String>,
     #[serde(default)]
     pub deadline_height: Option<u64>,
+    /// Round period of this ticket (seconds); None = the gateway's `round_every`, or
+    /// `big_round_every` for a ticket above 4096 rows (SPEC 5.4, ECOSYSTEM M1.5).
+    #[serde(default)]
+    pub round_secs: Option<u64>,
 }
 
 impl TicketState {
@@ -247,6 +271,13 @@ impl Ledger {
 
 // ------------------------------------------------------------------ gateway
 
+/// A node's default blob size limit (chain/blobs `max_blob_bytes`, 4 MiB): one round's A blob
+/// per matrix must fit it.
+pub const BLOB_LIMIT: u64 = 4 << 20;
+/// Bounds of a ticket's own round period (`round_secs` in a top-up).
+pub const MIN_ROUND_SECS: u64 = 60;
+pub const MAX_ROUND_SECS: u64 = 86_400;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub work_dir: PathBuf,
@@ -257,7 +288,13 @@ pub struct Config {
     pub max_new_tokens: u32,
     pub max_prompt_tokens: u32,
     pub balance_rows: u64,
+    /// Largest balance a top-up may ask for (the chain's `max_balance_rows` bounds it too).
+    pub max_balance_rows: u64,
     pub round_every: Duration,
+    /// Round period of tickets above 4096 rows (large house balances, M1.5).
+    pub big_round_every: Duration,
+    /// Most rows one round stacks: A (m x k int8) of every segment must fit one blob.
+    pub max_round_rows: u32,
     pub min_free_rows: u64,
     pub close_margin_blocks: u64,
     pub ticket_wait: Duration,
@@ -281,7 +318,10 @@ impl Default for Config {
             max_new_tokens: 256,
             max_prompt_tokens: 2048,
             balance_rows: standing::MAX_TICKET_ROWS as u64,
+            max_balance_rows: standing::MAX_TICKET_ROWS as u64,
             round_every: Duration::from_secs(60),
+            big_round_every: Duration::from_secs(10_800),
+            max_round_rows: 0,
             min_free_rows: 64,
             close_margin_blocks: 50,
             ticket_wait: Duration::from_secs(900),
@@ -492,6 +532,32 @@ impl Gateway {
         Some(per)
     }
 
+    /// Largest balance a top-up may ask for: the gateway's own cap and the chain's
+    /// `max_balance_rows` (getParams; 4096 on a chain without the key), never below 4096.
+    pub fn max_balance_rows(&self) -> u64 {
+        let chain = self.node.call("getParams", json!({})).ok().and_then(|v| v["max_balance_rows"].as_u64()).unwrap_or(standing::MAX_TICKET_ROWS as u64);
+        self.cfg.max_balance_rows.min(chain).max(standing::MAX_TICKET_ROWS as u64)
+    }
+
+    /// Most rows one round may stack: every segment's A blob (`"PSA1" || m || k || m x k
+    /// int8`, 12 bytes of header) must fit one blob of `BLOB_LIMIT` bytes at the model's
+    /// widest k, rounded down to the row period. `max_round_rows` (if set) lowers it.
+    pub fn round_rows_cap(&self) -> u32 {
+        let p = self.model.period().max(1);
+        let kmax = self.model.matrices.iter().map(|(k, _)| *k).max().unwrap_or(1).max(1) as u64;
+        let by_blob = ((BLOB_LIMIT - 12) / kmax) as u32 / p * p;
+        if self.cfg.max_round_rows > 0 { by_blob.min(self.cfg.max_round_rows / p * p) } else { by_blob }
+    }
+
+    /// Round period of a ticket of `rows` rows with an optional own period.
+    pub fn round_period(&self, rows: u64, own: Option<u64>) -> Duration {
+        match own {
+            Some(s) => Duration::from_secs(s),
+            None if rows > standing::MAX_TICKET_ROWS as u64 => self.cfg.big_round_every,
+            None => self.cfg.round_every,
+        }
+    }
+
     fn max_blocks_balance(&self) -> u32 {
         // enough for one segment per matrix in every round of a balance
         (self.model.matrices.len() as u32 * self.cfg.blocks_per_segment.max(1) * 64).min(10_000)
@@ -570,7 +636,7 @@ impl Gateway {
             "request_id": r.request_id, "ticket_id": r.ticket_id, "order": t.and_then(|t| t.order.clone()), "wallet": r.wallet,
             "rows": r.rows, "prompt_tokens": r.prompt_tokens, "completion_tokens": r.completion_tokens,
             "charged_lamports": r.charged_lamports.map(|x| x.to_string()), "lamports_per_row": t.and_then(|t| t.lamports_per_row).map(|x| x.to_string()),
-            "round": r.round, "row_offset": r.row_offset, "body_sha256": r.body_sha256, "output_sha256": r.output_sha256,
+            "round": r.round, "row_offset": r.row_offset, "body_sha256": r.body_sha256, "output_sha256": r.output_sha256, "text_sha256": r.text_sha256,
             "ticket_status": t.map(|t| t.state.clone()), "status_url": self.status_url(&r.request_id),
             "explorer_url": self.explorer(&r.ticket_id), "decoding": "greedy", "at_ms": r.at_ms,
             "measured": {"ttft_s": r.ttft_s, "decode_tokens_per_s": r.decode_tokens_per_s},
@@ -613,7 +679,7 @@ impl Gateway {
             self.with_ledger(|l| {
                 l.tickets.entry(id.clone()).or_insert(TicketState {
                     ticket_id: id.clone(), order: None, wallet: b58(w), rows, lamports_per_row: None, reserved: 0, pending: vec![], rounds: vec![],
-                    state: "open".into(), single: false, created_ms: now_ms(), error: None, deadline_height: j["deadline_height"].as_u64(),
+                    state: "open".into(), single: false, created_ms: now_ms(), error: None, deadline_height: j["deadline_height"].as_u64(), round_secs: None,
                 });
             });
         }
@@ -623,7 +689,16 @@ impl Gateway {
         let b: Value = if body.is_empty() { json!({}) } else { serde_json::from_slice(body).context("body is not JSON")? };
         let rows = b["rows"].as_u64().unwrap_or(self.cfg.balance_rows);
         let p = self.model.period() as u64;
-        ensure!(rows >= p && rows % p == 0 && rows <= standing::MAX_TICKET_ROWS as u64, "rows must be a multiple of {p} in [{p}, {}]", standing::MAX_TICKET_ROWS);
+        let max = self.max_balance_rows();
+        ensure!(rows >= p && rows % p == 0 && rows <= max, "rows must be a multiple of {p} in [{p}, {max}]");
+        let round_secs = match b.get("round_secs").filter(|v| !v.is_null()) {
+            None => None,
+            Some(v) => {
+                let r = v.as_u64().ok_or_else(|| anyhow!("round_secs must be an integer"))?;
+                ensure!((MIN_ROUND_SECS..=MAX_ROUND_SECS).contains(&r), "round_secs must be in [{MIN_ROUND_SECS}, {MAX_ROUND_SECS}]");
+                Some(r)
+            }
+        };
         let blob = balance_blob(&self.model.model_id, &self.server(), rows);
         let uri = self.node.put_blob(&blob).context("put the balance descriptor")?;
         let spec = ticket_spec(&self.model, &self.server(), rows as u32 - 1, 1, &uri, &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, self.max_blocks_balance());
@@ -646,11 +721,13 @@ impl Gateway {
         let t = TicketState {
             ticket_id: ticket.clone(), order: v["id"].as_str().map(String::from), wallet: wallet.clone(), rows,
             lamports_per_row: paid.map(|p| p.div_ceil(rows)), reserved: 0, pending: vec![], rounds: vec![], state: "open".into(),
-            single: false, created_ms: now_ms(), error: None, deadline_height: None,
+            single: false, created_ms: now_ms(), error: None, deadline_height: None, round_secs,
         };
         self.with_ledger(|l| l.tickets.insert(ticket.clone(), t));
         (self.log)(json!({"event": "topup", "ticket": ticket, "wallet": wallet, "rows": rows, "order": v["id"]}));
-        let mut r = resp(201, json!({"ticket_id": ticket, "order": v["id"], "rows": rows, "wallet": wallet, "lamports_paid": paid.map(|p| p.to_string()), "explorer_url": self.explorer(&ticket)}));
+        let period_s = self.round_period(rows, round_secs).as_secs();
+        let mut r = resp(201, json!({"ticket_id": ticket, "order": v["id"], "rows": rows, "wallet": wallet, "lamports_paid": paid.map(|p| p.to_string()), "explorer_url": self.explorer(&ticket),
+            "round_secs": period_s, "max_round_rows": self.round_rows_cap()}));
         if let Some(x) = xpr {
             r.headers.push(("x-payment-response".into(), x));
         }
@@ -687,6 +764,8 @@ impl Gateway {
         let r = self.parse_infer(chat, &b)?;
         let need = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1);
         let p = self.model.period() as u64;
+        // a request is posted whole in one round, whose A blobs must fit one blob each
+        ensure!(round_up(need, p) <= self.round_rows_cap() as u64, "prompt + max_tokens is {need} rows, above one settlement round ({} rows)", self.round_rows_cap());
         let ticket = match auth.wallet() {
             Some(w) => {
                 // draw on the wallet's balance: reserve the rows now
@@ -735,6 +814,7 @@ impl Gateway {
                 let t = TicketState {
                     ticket_id: id.clone(), order: v["id"].as_str().map(String::from), wallet, rows, lamports_per_row: paid.map(|x| x.div_ceil(rows)),
                     reserved: need, pending: vec![], rounds: vec![], state: "open".into(), single: true, created_ms: now_ms(), error: None, deadline_height: None,
+                    round_secs: None,
                 };
                 self.with_ledger(|l| l.tickets.insert(id.clone(), t));
                 id
@@ -820,11 +900,12 @@ impl Gateway {
         let completion = gen["completion_tokens"].as_u64().unwrap_or_else(|| gen["output_ids"].as_array().map(|a| a.len() as u64).unwrap_or(0)) as u32;
         let decode = gen["timing"]["decode_tokens_per_s"].as_f64();
         let out_sha = auth::sha256_hex(serde_json::to_string(&gen["output_ids"]).unwrap_or_default().as_bytes());
+        let text_sha = auth::sha256_hex(gen["text"].as_str().unwrap_or("").as_bytes());
         let (rec, receipt) = self.with_ledger(|l| {
             let lpr = l.tickets.get(ticket).and_then(|t| t.lamports_per_row);
             let s = Served {
                 request_id: id.into(), wallet: wallet.into(), ticket_id: ticket.into(), dir: dir.to_path_buf(), rows, prompt_tokens: r.ids.len() as u32,
-                completion_tokens: completion, body_sha256: body_sha.into(), output_sha256: out_sha, charged_lamports: lpr.map(|x| x * rows as u64),
+                completion_tokens: completion, body_sha256: body_sha.into(), output_sha256: out_sha, text_sha256: text_sha, charged_lamports: lpr.map(|x| x * rows as u64),
                 at_ms: now_ms(), round: None, row_offset: None, ttft_s: ttft, decode_tokens_per_s: decode,
             };
             if let Some(t) = l.tickets.get_mut(ticket) {
@@ -949,8 +1030,16 @@ impl Gateway {
             // delivered but not completed yet (e.g. the attester was down): retry the completion
             return self.close_ticket(&tid, id, &t, &chain);
         }
+        let pending_rows: u64 = {
+            let l = self.ledger.lock().unwrap();
+            t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum()
+        };
         let due = !t.pending.is_empty()
-            && (t.single || t.state == "closing" || self.oldest_pending_age(&t) >= self.cfg.round_every || self.ledger.lock().unwrap().free(&t, p) < self.cfg.min_free_rows);
+            && (t.single
+                || t.state == "closing"
+                || self.oldest_pending_age(&t) >= self.round_period(t.rows, t.round_secs)
+                || pending_rows >= self.round_rows_cap() as u64
+                || self.ledger.lock().unwrap().free(&t, p) < self.cfg.min_free_rows);
         if due {
             // a round the chain has started but this ledger has not recorded (an earlier attempt
             // stopped half way) is resumed: same round, only the matrices still missing
@@ -979,8 +1068,10 @@ impl Gateway {
     fn post_round(&self, tid: &[u8; 32], id: &str, t: &TicketState, round: u16) -> Result<()> {
         let reqs: Vec<Served> = {
             let l = self.ledger.lock().unwrap();
-            t.pending.iter().filter_map(|r| l.requests.get(r).cloned()).collect()
+            let all: Vec<Served> = t.pending.iter().filter_map(|r| l.requests.get(r).cloned()).collect();
+            round_take(all, self.round_rows_cap(), self.model.period())
         };
+        ensure!(!reqs.is_empty(), "a pending request is larger than one round ({} rows)", self.round_rows_cap());
         let rows: u32 = reqs.iter().map(|r| r.rows).sum();
         let m = round_up(rows as u64, self.model.period() as u64) as u32;
         let dirs: Vec<(PathBuf, u32)> = reqs.iter().map(|r| (r.dir.clone(), r.rows)).collect();
@@ -1027,7 +1118,7 @@ impl Gateway {
                 .iter()
                 .map(|r| {
                     let reqs: Vec<Value> = r.requests.iter().filter_map(|q| l.requests.get(q)).map(|q| json!({"request_id": q.request_id, "body_sha256": q.body_sha256,
-                        "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256})).collect();
+                        "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256, "text_sha256": q.text_sha256})).collect();
                     json!({"round": r.round, "m": r.m, "requests": reqs})
                 })
                 .collect();

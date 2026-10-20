@@ -52,6 +52,16 @@ struct Args {
     /// Post a round when the oldest served request is this old.
     #[arg(long, default_value_t = 60)]
     round_secs: u64,
+    /// Round period of balances above 4096 rows (large house tickets, M1.5); a top-up's own
+    /// `round_secs` overrides both.
+    #[arg(long, default_value_t = 10_800)]
+    big_round_secs: u64,
+    /// Largest balance a top-up may ask for (also bounded by the chain's max_balance_rows).
+    #[arg(long, default_value_t = 4096)]
+    max_balance_rows: u64,
+    /// Most rows one round stacks (0 = what one 4 MiB A blob holds at the model's widest k).
+    #[arg(long, default_value_t = 0)]
+    max_round_rows: u32,
     #[arg(long, default_value_t = 64)]
     min_free_rows: u64,
     #[arg(long, default_value_t = 50)]
@@ -108,6 +118,9 @@ fn main() -> Result<()> {
         blocks_per_segment: a.blocks_per_segment,
         max_new_tokens: a.max_new_tokens,
         round_every: Duration::from_secs(a.round_secs),
+        big_round_every: Duration::from_secs(a.big_round_secs),
+        max_balance_rows: a.max_balance_rows,
+        max_round_rows: a.max_round_rows,
         min_free_rows: a.min_free_rows,
         close_margin_blocks: a.close_margin_blocks,
         explorer_url: a.explorer_url.clone(),
