@@ -661,11 +661,13 @@ CLAUDE.md "Who is working on what".
      of 256 rows (95,411,375 lamports), wallet-signed chat "What is the capital of France? Answer in one
      word." -> "Paris." with receipt, Order 12 finalized by finalize_order_proof 27.3 min after payment
      (tx 2ap8tsmZ...), all 144 segments mined in 138 min. Details: DEVNET.md "Inference".
-   - OPEN: nodes 1-2 never fetch the model manifest blob (p2p fetch of a push=false pinned blob), so
-     only box 0's miner mines segments; BOX1/2_BLOBS (8 GB) are in devnet.env but not installed
-     (needs a node restart on boxes 1-2). Gateway receipts' status_url points at 127.0.0.1:10664 (the
-     gateway's --public-url cannot express cadre-api's /v1/openai prefix; gateway/cadre-api change).
-     cadre-web AI page: the models table's Context column is clipped on desktop (inner overflow).
+   - FIXED 2026-10-20 ("Cadre leftovers" agent): nodes 1-2 never fetched the model manifest because no node
+     had it (the CLI registered, hit its 60 s inclusion wait and stopped before uploading). CLI uploads first
+     now (e9e28a8), the blobs were uploaded to node 0, nodes 1-2 got the manifest with no restart and run 8 GB
+     blob quotas; pearl-node asks for all of a file's chunks at once (68a43c8); all three miners mine
+     segments. Receipt links: cadre-gateway --public-api-root (5488d42), devnet and test box receipts point
+     at <api>/v1/openai/requests/<id>. cadre-web AI page models table fits its card (cadre-web 651e702,
+     redeployed). Boxes rebooted into kernel 6.8.0-147. Details: DEVNET.md "Inference", TEST-REPORT.
    - Wallet: Cadre Devnet preset siteUrl set (pearl-wallet dev + danishseal cadre-chain 6e41f7ee2); not in
      the released zip cadre-devnet-6.73.4.
    - pearl CLI waits 600 s for inclusion (was 60 s, too short at 60 s blocks).

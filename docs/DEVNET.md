@@ -125,6 +125,11 @@ smallest with a core for each. Box 0 is 8 GB because it builds (chain build peak
 build) and runs all the services. Each box has a 4 GB swapfile. Watch node memory: the node keeps
 blocks in memory on restart (docs/HANDOFF.md M1 node notes), about 25 KB per fallback block.
 
+Kernel: all three boxes rebooted into 6.8.0-147-generic (with libc6) on 2026-10-20 ~15:25-15:30 UTC,
+one at a time (box 2, box 1, box 0); after each, every cadre-* unit and caddy came back by itself
+(all enabled), the three nodes agreed on the finalized hash, and the header relay lag stayed at 0-2
+blocks. After box 0: site 200, /v1/openai/models lists the model, a paid chat answered.
+
 SSH: one key per box, `~/.ssh/lode_devnet{0,1,2}` (BitLaunch keys lode-devnet-0..2):
 `scripts/devnet-deploy.sh ssh N` (user lode), root with the same key. Firewall (ufw): 22, 80, 443,
 10640 (p2p) only; RPC/WS (10630/10631) and services (10660-10670) bind 127.0.0.1 behind caddy.
@@ -243,17 +248,17 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
   registered from the gateway key with `pearl model register` at height 2293 (model_id
   df34fa5fda00041fcd82874b1736b9fd567330f3dd5631fee2e10e58087c1a6b, 144 matrices, k shards <= 2048,
-  1,235,746,816 MACs per row, RegisterModel fee 1000; the blob upload and the tx submit took under 65 s, the CLI then hit its old 60 s inclusion wait, now 600 s). Model store for the
+  1,235,746,816 MACs per row, RegisterModel fee 1000; the tx submit took under 65 s, then the CLI hit its old 60 s inclusion wait, now 600 s, and stopped before the blob upload, which ran only on 2026-10-20 ~15:30 UTC, see FIXED below). Model store for the
   miner and attester: /var/lib/lode/models/<model_id> (symlink; their default `models` dir).
 - Blob quota: node 0's node.json `blobs` from `BOX0_BLOBS` in deploy/devnet.env (8 GB total, 200 MB/s
-  puts); the default 1 GB store refuses a 1.8 GB model. Boxes 1-2 get `BOX1_BLOBS`/`BOX2_BLOBS`
-  (8 GB) on their next `install` + node restart (NOT applied yet: their miners fetch model matrices on
-  demand and would fill the default 1 GB with pinned blobs).
+  puts); the default 1 GB store refuses a 1.8 GB model. Boxes 1-2 run with `BOX1_BLOBS`/`BOX2_BLOBS`
+  (8 GB) since 2026-10-20 ~15:22 / ~15:24 UTC (node.json from deploy/node-config.py, nodes restarted one at a
+  time with the agent-node from b5a55b6; node 0 keeps its 2026-10-19 binary): their miners fetch model chunks from node 0 on demand.
 - Keys: gateway key generated on box 0 (`devnet-deploy.sh svc-key 0 gateway`, /etc/lode/keys/gateway.json,
   5wHXuYu14pCSUSTdbQoZaKAw4H2FocaRBqecRqpP4c27), funded with 1000 CADRE on the chain from miner0.
 - Units: `cadre-worker` (tools/cadre/worker.py in ~/cadre-venv: torch 2.5.1+cpu, transformers 4.46.3;
   `--threads 2` = half the cores, MemoryMax 4G) and `cadre-gateway` (/opt/lode/bin/cadre-gateway built on
-  box 0 from 34c51e9, prepaid balances, storefront-x402 prices the tickets); settings in
+  box 0 from 5488d42 (was 34c51e9), prepaid balances, storefront-x402 prices the tickets); settings in
   /etc/lode/inference.env (written by `install 0`). cadre-api: `GATEWAY_URL=http://127.0.0.1:10664`,
   `CADRE_PREPAID=gateway`.
 - Receipt links (2026-10-20, 5488d42): the gateway runs with `--public-api-root
@@ -291,11 +296,22 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   The script's last check first looked only at the newest tx on the Order (the settle_share) and
   exited 1; fixed to scan the Order's recent txs for the finalize instruction (the decode of both txs
   is above).
-- OPEN: boxes 1-2 never fetch the model manifest blob from node 0 (`hasBlob` on node 1 says
-  `fetching: true, present: false` for blob:4c085405... for over 2 hours; p2p fetch of a pinned model
-  blob stored with push=false). Their miners log "load matrix N ... is not on this node yet" and mine
-  fallback blocks instead, so segments are mined by box 0 only (about 1 per minute here). Chain code
-  (chain/rpc model pins + blob_fetch resolver); not changed in this session.
+- FIXED 2026-10-20 (e9e28a8): boxes 1-2 never fetched the model manifest blob because no node had it.
+  `pearl model register` registered first and uploaded only after its inclusion wait, which ran out
+  (60 s then), so RegisterModel landed with the manifest and chunks on no node; node 0's miner mined
+  from its local model store, and every node (node 0 too) kept fetching blob:4c085405... from peers that
+  had nothing to serve. The p2p fetch path works (network test
+  model_manifest_uploaded_long_after_registration_reaches_peers). The CLI now uploads first and checks
+  the node holds the manifest; getModel / listModels show `manifest_present` / `manifest_fetching` on a
+  node with the new binary. On devnet: a rerun of `pearl model register` on box 0 (registered: already)
+  uploaded 836 blobs (1,784,498,048 bytes of chunks + the 187,227-byte manifest) to node 0 in 32 s;
+  nodes 1 and 2 had the manifest seconds later (`manifest_present: true`, no restart), then fetched
+  chunks as their miners asked for matrices. The miner then fetched one 3 MB chunk per attempt (it stopped
+  at the first missing chunk), so pearl-node asks for every chunk of a file at once and waits up to 20 s
+  (68a43c8; pearl-miner shipped to boxes 1-2 ~15:50 UTC, cadre-miner restarted). Paid run
+  devnet-ai-leftovers (box 0, 15:33 UTC, "Paris" with receipt): within minutes of the new miner, the
+  canonical chain from height 2890 had segment blocks by all three miners (box 1 4pDphQ... 11, box 2
+  AHYHqU... 5, box 0 GDcEUh... 4 at height ~2910; for example height 2909, segment of matrix 142).
 
 ### Reset the chain (new genesis)
 
