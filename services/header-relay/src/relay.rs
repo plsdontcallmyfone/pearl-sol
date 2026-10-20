@@ -63,11 +63,17 @@ pub struct Opts {
     /// An unconfirmed tx this old whose blockhash has expired is checked against the
     /// ledger history and, only if it never landed, sent again (20 s; tests use 0).
     pub resend_after: Duration,
+    /// Lanes (`with_lane`): a shared step (submit, connect, mark_final, accumulate) on
+    /// height h is sent at once by the lane that owns h (h % n == k); another lane sends it
+    /// only after seeing it still needed for this long (the owner may be down). Without
+    /// this every lane sent the same step and all but one failed (submit AccountAlreadyInUse,
+    /// accumulate AccOrder 6023). 45 s; tests 0.
+    pub shared_grace: Duration,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { parallel: 8, exact_cu: true, resend_after: Duration::from_secs(20) }
+        Self { parallel: 8, exact_cu: true, resend_after: Duration::from_secs(20), shared_grace: Duration::from_secs(45) }
     }
 }
 
@@ -177,6 +183,8 @@ pub struct Relay<'a, L: Ledger, S: Src> {
     /// IPs share the work; each needs its own RPC budget). Default (0, 1): every height.
     lane: (u64, u64),
     skip: HashMap<[u8; 32], Instant>,
+    /// Shared steps another lane owns, by (kind, height): when first seen needed.
+    shared_seen: HashMap<(u8, u64), Instant>,
     closed_upto: Option<u64>,
     jobs_upto: Option<u64>,
     opts: Opts,
@@ -211,6 +219,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             abandoned: vec![],
             lane: (0, 1),
             skip: HashMap::new(),
+            shared_seen: HashMap::new(),
             closed_upto: None,
             jobs_upto: None,
             opts,
@@ -247,6 +256,18 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             ledger::send_wait(self.ledger, &[create, client::init_work(pk, w.pubkey(), proof_cap as u32)], &[&w], 200_000)?;
         }
         Ok(())
+    }
+
+    /// Whether this relay sends the shared step `kind` on height `h` now (see
+    /// `Opts::shared_grace`). Only asked while the step is needed; entries for steps
+    /// no longer asked about expire.
+    fn owns_shared(&mut self, kind: u8, h: u64) -> bool {
+        if self.lane.1 <= 1 || h % self.lane.1 == self.lane.0 {
+            return true;
+        }
+        let grace = self.opts.shared_grace;
+        let t = *self.shared_seen.entry((kind, h)).or_insert_with(Instant::now);
+        t.elapsed() >= grace
     }
 
     fn cu(&self, est: u32) -> u32 {
@@ -362,6 +383,8 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         let mut recs: Vec<Option<Rec>> = self.ledger.accounts(&addrs)?.into_iter().map(|d| d.and_then(|d| rec_of(&d))).collect();
         let base_rec = recs.pop().flatten();
         self.skip.retain(|_, t| t.elapsed() < Duration::from_secs(30));
+        let keep = self.opts.shared_grace + Duration::from_secs(120);
+        self.shared_seen.retain(|_, t| t.elapsed() < keep);
 
         // finished / failed / abandoned flights
         // flights outside the window (finished and now at or below the tip, or on a branch
@@ -438,7 +461,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
 
         // submit frontier: the first unsubmitted headers, two per tx
         if self.submit.is_none() && base_rec.is_some() && self.submit_retry.map_or(true, |t| Instant::now() >= t) {
-            if let Some(i) = recs.iter().position(|r| r.is_none()) {
+            if let Some(i) = recs.iter().position(|r| r.is_none()).filter(|&i| self.owns_shared(0, want[i].height)) {
                 let pk = self.ledger.pk();
                 let mut ixs = vec![client::submit_header(pk, want[i].bytes)];
                 if i + 1 < want.len() && recs[i + 1].is_none() && !self.submit_single {
@@ -702,6 +725,9 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             match recs[i] {
                 Some((lightclient::STATUS_VERIFIED, ..)) => parent_ok = true,
                 Some((lightclient::STATUS_WORK_DONE, _, relayer, _)) if parent_ok => {
+                    if ixs.is_empty() && !self.owns_shared(1, hd.height) {
+                        break;
+                    }
                     ixs.push(client::connect(&hd.prev(), &hd.hash, relayer));
                     self.stats.connected += 1;
                     if ixs.len() == CONNECTS_PER_TX {
@@ -745,7 +771,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         // 3. mark_final up to the final floor
         let lo = cfg.final_height.max(cfg.tip_height.saturating_sub(CANON_LEN as u64 - 1)) + 1;
-        if lo <= cfg.final_floor {
+        if lo <= cfg.final_floor && self.owns_shared(2, lo) {
             let hashes: Vec<[u8; 32]> = (lo..=cfg.final_floor).map(|h| canon[(h as usize) % CANON_LEN]).collect();
             let addrs: Vec<Pubkey> = hashes.iter().map(client::header_addr).collect();
             let st = self.ledger.accounts(&addrs)?;
@@ -779,7 +805,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                     hashes.push(hash);
                     h += 1;
                 }
-                if !hashes.is_empty() {
+                if !hashes.is_empty() && self.owns_shared(3, next) {
                     txs.push(Tx::new(vec![client::accumulate(&hashes)], self.cu(CU_ACC)));
                 }
                 next

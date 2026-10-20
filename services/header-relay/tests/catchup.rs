@@ -207,7 +207,7 @@ fn run_with(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, 
     let chain = Chain { blocks: Rc::new(RefCell::new(blocks.to_vec())), visible: Rc::new(Cell::new(backlog + 1)), fetches: Rc::new(RefCell::new(0)) };
     let visible = chain.visible.clone();
     let works = (0..parallel).map(|_| Keypair::new()).collect();
-    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel, exact_cu: true, resend_after: Duration::ZERO });
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel, exact_cu: true, resend_after: Duration::ZERO, shared_grace: Duration::ZERO });
     r.ensure_works().unwrap();
     let mut lag = vec![];
     let mut slot = 0u64;
@@ -307,7 +307,7 @@ fn follows_a_node_reorg() {
     let chain = Chain { blocks: blocks.clone(), visible: Rc::new(Cell::new(a.len())), fetches: Rc::new(RefCell::new(0)) };
     let visible = chain.visible.clone();
     let works = (0..6).map(|_| Keypair::new()).collect();
-    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 6, exact_cu: true, resend_after: Duration::ZERO });
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 6, exact_cu: true, resend_after: Duration::ZERO, shared_grace: Duration::ZERO });
     r.ensure_works().unwrap();
     for _ in 0..200 {
         r.pass().unwrap();
@@ -388,4 +388,102 @@ fn expired_but_landed_txs_are_not_sent_again() {
     assert_eq!(r.failed, 0, "errors {:?}", r.errors);
     assert!(r.errors.is_empty(), "errors {:?}", r.errors);
     assert_eq!(r.resends, 0, "every lost tx had landed");
+}
+
+/// Two relays on one ledger (`Rc<RefCell<Sim>>`), as boxes 1 and 2 run on devnet.
+struct Shared {
+    sim: Rc<RefCell<Sim>>,
+    payer: Keypair,
+}
+
+impl Ledger for Shared {
+    fn payer(&self) -> &Keypair {
+        &self.payer
+    }
+    fn cu_price(&self) -> u64 {
+        0
+    }
+    fn accounts(&self, keys: &[Pubkey]) -> Result<Vec<Option<Vec<u8>>>> {
+        self.sim.borrow().accounts(keys)
+    }
+    fn blockhash(&self) -> Result<Hash> {
+        self.sim.borrow().blockhash()
+    }
+    fn blockhash_valid(&self, h: &Hash) -> Result<bool> {
+        self.sim.borrow().blockhash_valid(h)
+    }
+    fn submit(&mut self, tx: Transaction) -> Result<Signature> {
+        self.sim.borrow_mut().submit(tx)
+    }
+    fn states(&self, sigs: &[Signature]) -> Result<Vec<TxState>> {
+        self.sim.borrow().states(sigs)
+    }
+    fn history(&self, sigs: &[Signature]) -> Result<Vec<TxState>> {
+        self.sim.borrow().history(sigs)
+    }
+    fn rent(&self, size: usize) -> Result<u64> {
+        self.sim.borrow().rent(size)
+    }
+    fn pause(&mut self, ms: u64) {
+        self.sim.borrow_mut().pause(ms)
+    }
+}
+
+/// Lanes 0/2 and 1/2 on one ledger; returns (lc tip, failed txs, distinct errors).
+fn two_lanes(grace: Duration) -> (u64, u64, Vec<String>) {
+    let p = small_params();
+    let blocks = Rc::new(mine(&p, 24));
+    let env = Env::new(p, &blocks[0]);
+    let payer = env.payer.insecure_clone();
+    let sim = Rc::new(RefCell::new(Sim::new(env.svm, env.payer, 0x2545f4914f6cdd1d)));
+    let total = blocks.len();
+    let mk = || Chain { blocks: Rc::new(RefCell::new(blocks.to_vec())), visible: Rc::new(Cell::new(13)), fetches: Rc::new(RefCell::new(0)) };
+    let (c0, c1) = (mk(), mk());
+    let (v0, v1) = (c0.visible.clone(), c1.visible.clone());
+    let mut l0 = Shared { sim: sim.clone(), payer: payer.insecure_clone() };
+    let mut l1 = Shared { sim: sim.clone(), payer };
+    let opts = || Opts { parallel: 3, exact_cu: true, resend_after: Duration::ZERO, shared_grace: grace };
+    let mut r0 = Relay::new(c0, &mut l0, (0..3).map(|_| Keypair::new()).collect(), opts()).with_lane(0, 2);
+    let mut r1 = Relay::new(c1, &mut l1, (0..3).map(|_| Keypair::new()).collect(), opts()).with_lane(1, 2);
+    r0.ensure_works().unwrap();
+    r1.ensure_works().unwrap();
+    for slot in 0..800u64 {
+        if slot > 0 && slot % 4 == 0 && v0.get() < total {
+            v0.set(v0.get() + 1);
+            v1.set(v0.get());
+        }
+        r0.pass().unwrap();
+        r1.pass().unwrap();
+        sim.borrow_mut().pause(0);
+        let c = r0.config().unwrap();
+        if v0.get() == total && c.tip_height as usize == total - 1 && c.final_height + 6 >= c.tip_height {
+            break;
+        }
+    }
+    for _ in 0..12 {
+        r0.pass().unwrap();
+        r1.pass().unwrap();
+        sim.borrow_mut().pause(0);
+    }
+    let tip = r0.config().unwrap().tip_height;
+    let failed = r0.stats.failed_txs + r1.stats.failed_txs;
+    let s = sim.borrow();
+    let mut errors: Vec<String> = s.results.values().filter_map(|x| if let TxState::Failed(e) = x { Some(e.clone()) } else { None }).collect();
+    errors.sort();
+    errors.dedup();
+    (tip, failed, errors)
+}
+
+/// Devnet 2026-10-20: both lanes sent every shared step (submit, accumulate) and all
+/// but one copy failed (submit AccountAlreadyInUse Custom(0), accumulate AccOrder 6023).
+/// Reproduction with no grace (every lane sends at once), regression with the owner rule.
+#[test]
+fn two_lanes_send_each_shared_step_once() {
+    let (tip, failed, errors) = two_lanes(Duration::ZERO);
+    println!("no grace: tip {tip}, failed {failed}; errors {errors:?}");
+    assert!(failed > 0, "both lanes sending the same step should fail one copy");
+    let (tip, failed, errors) = two_lanes(Duration::from_secs(3600));
+    println!("owner rule: tip {tip}, failed {failed}; errors {errors:?}");
+    assert_eq!(tip, 24);
+    assert_eq!(failed, 0, "errors {errors:?}");
 }
