@@ -20,3 +20,6 @@ keys/devnet/
 scripts/devnet-e2e/node_modules
 .devnet-e2e/
 scripts/devnet-init/node_modules
+
+# RunPod pod state (pod id, throwaway ssh key): scripts/gpu/
+.gpu/

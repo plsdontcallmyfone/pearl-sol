@@ -20,6 +20,14 @@ CLI checks:
   python worker.py --model DIR --ppl N      WikiText-2 test PPL over N windows of 1024 tokens
 
 Greedy decoding only (deterministic on one platform).
+
+Devices: --device cpu (default) or cuda. The int32 product C = A B is exact integer
+arithmetic on both (torch._int_mm: int8 x int8 with int32 accumulation, |C| <= 64 * 64 * 2048),
+so for a given A every C is bit-identical on CPU and GPU, and a segment verifies the same
+everywhere (tools/cadre/gpu_check.py checks it). The fp32 glue (norms, attention, softmax,
+scales) is not bit-identical across devices, so A itself can differ in a few elements
+between a CPU and a GPU run of the same prompt; a segment is (A, C) as served, and the proof
+only needs C = A B.
 """
 import argparse, json, math, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,33 +44,34 @@ def load_f32(path, shape=None):
 
 
 class Matrix:
-    def __init__(self, d, m):
+    def __init__(self, d, m, dev):
         self.index, self.name, self.k, self.n = m["index"], m["name"], m["k"], m["n"]
         self.cols = tuple(m.get("cols", [0, m["n"]]))
         self.klo, self.khi = m.get("k_range", [0, m["k"]])
         raw = np.fromfile(os.path.join(d, m["weights"]), dtype=np.int8)
         assert raw.size == self.n * self.k, f"{m['weights']}: {raw.size} bytes, expected n x k"
-        self.qw = torch.from_numpy(raw).reshape(self.n, self.k)
+        self.qw = torch.from_numpy(raw).reshape(self.n, self.k).to(dev)
         with open(os.path.join(d, m["aux"]), "rb") as f:
             aux = f.read()
         assert aux[:4] == b"LQA1"
         n, k, flags = np.frombuffer(aux[4:16], dtype="<u4")
         assert (n, k) == (self.n, self.k)
         o = 16
-        self.sw = torch.from_numpy(np.frombuffer(aux[o:o + 4 * n], dtype="<f4").copy())
+        self.sw = torch.from_numpy(np.frombuffer(aux[o:o + 4 * n], dtype="<f4").copy()).to(dev)
         o += 4 * n
-        self.colsum = torch.from_numpy(np.frombuffer(aux[o:o + 4 * n], dtype="<i4").astype(np.float32))
+        self.colsum = torch.from_numpy(np.frombuffer(aux[o:o + 4 * n], dtype="<i4").astype(np.float32)).to(dev)
         o += 4 * n
-        self.smooth = torch.from_numpy(np.frombuffer(aux[o:o + 4 * k], dtype="<f4").copy()) if flags & 1 else None
+        self.smooth = torch.from_numpy(np.frombuffer(aux[o:o + 4 * k], dtype="<f4").copy()).to(dev) if flags & 1 else None
 
 
 def int_mm(v, qw):
-    """Exact int32 C = v @ qw^T (v: r x k int8, qw: n x k int8). _int_mm wants > 16 rows."""
+    """Exact int32 C = v @ qw^T (v: r x k int8, qw: n x k int8, same device). _int_mm wants
+    > 16 rows (and on CUDA k, n multiples of 8, which every registered matrix is)."""
     r = v.shape[0]
     pad = max(32, -(-r // 8) * 8)
     if pad == r:
         return torch._int_mm(v, qw.t())
-    v = torch.cat([v, torch.zeros(pad - r, v.shape[1], dtype=torch.int8)])
+    v = torch.cat([v, torch.zeros(pad - r, v.shape[1], dtype=torch.int8, device=v.device)])
     # clone: a [:r] view keeps the whole padded product alive, and generate() keeps every
     # step's C for the receipt (32x the memory per decoded token: the test-box worker grew
     # about 50 MB per token and was OOM-killed at 7 GB)
@@ -80,15 +89,20 @@ def quant_act(x):
 
 
 class Model:
-    def __init__(self, d):
+    def __init__(self, d, device="cpu"):
         self.dir = d
+        self.dev = torch.device(device)
+        if self.dev.type == "cuda":
+            # full fp32 glue (no TF32), so the GPU's fp32 is as close to the CPU's as it gets
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         self.man = json.load(open(os.path.join(d, "manifest.json")))
         a = self.man["arch"]
         assert a["type"] == "llama"
         self.a = a
         self.L, self.H, self.KV, self.hd = a["layers"], a["heads"], a["kv_heads"], a["head_dim"]
         self.eps = a["rms_norm_eps"]
-        self.mats = [Matrix(d, m) for m in self.man["matrices"]]
+        self.mats = [Matrix(d, m, self.dev) for m in self.man["matrices"]]
         # base name -> column shards (concatenated) -> k shards (int32 partial products summed)
         self.by_name = {}
         for mm, m in zip(self.mats, self.man["matrices"]):
@@ -100,9 +114,9 @@ class Model:
         assert not self.man.get("unmined"), "unmined fp layers are not supported by this worker yet"
         t = {x["name"]: x for x in self.man["tensors"]}
         e = t["embed"]
-        self.embed = torch.from_numpy(np.fromfile(os.path.join(d, e["file"]), dtype=np.int16)).view(torch.bfloat16).reshape(e["shape"])
-        self.norms = {k: load_f32(os.path.join(d, v["file"])) for k, v in t.items() if k.startswith("norm.")}
-        self.inv_freq = load_f32(os.path.join(d, t["rope_inv_freq"]["file"]))
+        self.embed = torch.from_numpy(np.fromfile(os.path.join(d, e["file"]), dtype=np.int16)).view(torch.bfloat16).reshape(e["shape"]).to(self.dev)
+        self.norms = {k: load_f32(os.path.join(d, v["file"])).to(self.dev) for k, v in t.items() if k.startswith("norm.")}
+        self.inv_freq = load_f32(os.path.join(d, t["rope_inv_freq"]["file"])).to(self.dev)
         self.attn_scale = t["rope_inv_freq"].get("attention_scaling", 1.0)
         self.tok = None
         self.lock = threading.Lock()
@@ -152,8 +166,8 @@ class Model:
         Returns logits (r x vocab) for every new row (all rows go through lm_head)."""
         r = len(ids)
         start = cache[0][0].shape[0] if cache[0][0] is not None else 0
-        pos = torch.arange(start, start + r)
-        h = self.embed[torch.tensor(ids)].float()
+        pos = torch.arange(start, start + r, device=self.dev)
+        h = self.embed[torch.tensor(ids, device=self.dev)].float()
         H, KV, hd = self.H, self.KV, self.hd
         for li in range(self.L):
             x = self.rms(h, self.norms[f"norm.{li}.attn"])
@@ -170,7 +184,7 @@ class Model:
             Kr = K.repeat_interleave(g, dim=1).transpose(0, 1)  # H x T x hd
             Vr = V.repeat_interleave(g, dim=1).transpose(0, 1)
             att = torch.matmul(q.transpose(0, 1), Kr.transpose(1, 2)) / math.sqrt(hd)  # H x r x T
-            mask = torch.arange(T)[None, :] > pos[:, None]
+            mask = torch.arange(T, device=self.dev)[None, :] > pos[:, None]
             att = att.masked_fill(mask[None], float("-inf")).softmax(-1)
             o = torch.matmul(att, Vr).transpose(0, 1).reshape(r, H * hd)
             h = h + self.lin(f"layers.{li}.o", o, cap)
@@ -255,9 +269,10 @@ class Model:
             if out_dir:
                 os.makedirs(os.path.join(out_dir, "a"), exist_ok=True)
                 os.makedirs(os.path.join(out_dir, "c"), exist_ok=True)
+            t2 = time.time()
             for m in self.mats:
-                A = torch.cat(cap[m.index][0])
-                C = torch.cat(cap[m.index][1])
+                A = torch.cat(cap[m.index][0]).cpu()
+                C = torch.cat(cap[m.index][1]).cpu()
                 assert A.shape[0] == rows, (m.name, A.shape, rows)
                 if padded > rows:
                     A = torch.cat([A, torch.zeros(padded - rows, m.k, dtype=torch.int8)])
@@ -269,6 +284,7 @@ class Model:
                     A.numpy().tofile(rec["a"])
                     C.numpy().astype("<i4").tofile(rec["c"])
                 mats.append(rec)
+            t_segments = time.time() - t2
             text = tok.decode(out, skip_special_tokens=True)
             for x in stop:
                 if x in text:
@@ -280,7 +296,8 @@ class Model:
                 "matrices": mats,
                 "timing": {"prefill_s": round(t_prefill, 3), "decode_s": round(t_decode, 3), "first_token_s": round(t_prefill, 3),
                            "decode_tokens_per_s": round((len(out) - 1) / t_decode, 3) if len(out) > 1 and t_decode > 0 else None,
-                           "mined_macs": macs * rows, "threads": torch.get_num_threads()},
+                           "segments_s": round(t_segments, 3), "mined_macs": macs * rows, "threads": torch.get_num_threads(),
+                           "device": str(self.dev)},
             }
 
     @torch.no_grad()
@@ -288,8 +305,8 @@ class Model:
         """Sum of -log p over ids[1:] (one prefill, no capture)."""
         logits = self.forward(list(ids), self.new_cache(), None)
         lp = torch.log_softmax(logits[:-1].float(), -1)
-        t = torch.tensor(ids[1:])
-        return float(-lp[torch.arange(len(t)), t].sum()), len(t)
+        t = torch.tensor(ids[1:], device=self.dev)
+        return float(-lp[torch.arange(len(t), device=self.dev), t].sum()), len(t)
 
 
 def serve(model, host, port):
@@ -307,7 +324,8 @@ def serve(model, host, port):
 
         def do_GET(self):
             if self.path == "/health":
-                return self.reply(200, {"ok": True, "name": model.man["name"], "model_id": model.man.get("model_id"), "matrices": len(model.mats), "pid": os.getpid()})
+                return self.reply(200, {"ok": True, "name": model.man["name"], "model_id": model.man.get("model_id"), "matrices": len(model.mats), "pid": os.getpid(),
+                                        "device": str(model.dev)})
             self.reply(404, {"error": "not found"})
 
         def do_POST(self):
@@ -351,14 +369,15 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=10665)
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument("--device", default=os.environ.get("CADRE_DEVICE", "cpu"), help="cpu (default) or cuda")
     ap.add_argument("--ppl", type=int, default=0, help="WikiText-2 test PPL over N windows of 1024 tokens, then exit")
     ap.add_argument("--seqlen", type=int, default=1024)
     a = ap.parse_args()
     if a.threads:
         torch.set_num_threads(a.threads)
     t0 = time.time()
-    model = Model(a.model)
-    print(json.dumps({"msg": "loaded", "s": round(time.time() - t0, 1), "matrices": len(model.mats)}), file=sys.stderr, flush=True)
+    model = Model(a.model, a.device)
+    print(json.dumps({"msg": "loaded", "device": a.device, "s": round(time.time() - t0, 1), "matrices": len(model.mats)}), file=sys.stderr, flush=True)
     if a.ppl:
         from datasets import load_dataset
         text = "\n\n".join(load_dataset("wikitext", "wikitext-2-raw-v1", split="test")["text"])

@@ -92,25 +92,29 @@ def write_aux(path, q, s_w, smooth):
             f.write(smooth.float().numpy().astype("<f4").tobytes())
 
 
-def calibrate(model_dir, n_seq=16, seqlen=512):
-    """Input absmax per linear (16 x 512 WikiText-2 train tokens), as research/int7-exp/run.py."""
+def calibrate(model_dir, n_seq=16, seqlen=512, device="cpu"):
+    """Input absmax per linear (16 x 512 WikiText-2 train tokens), as research/int7-exp/run.py.
+    device cuda runs the same fp32 forward on the GPU (an 8B model in fp32 is 32 GB; TF32 off)."""
     from datasets import load_dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForCausalLM.from_pretrained(model_dir, torch_dtype=torch.float32)
     model.eval()
+    if device != "cpu":
+        torch.backends.cuda.matmul.allow_tf32 = False
+        model.to(device)
     text = "\n\n".join(load_dataset("wikitext", "wikitext-2-raw-v1", split="train")["text"][:6000])
     ids = tok(text, return_tensors="pt").input_ids[0]
     stats, hooks = {}, []
     for name, mod in model.named_modules():
         if isinstance(mod, torch.nn.Linear) and name != "lm_head":
             def hook(m, inp, out, name=name):
-                a = inp[0].detach().float().reshape(-1, inp[0].shape[-1]).abs().amax(0)
+                a = inp[0].detach().float().reshape(-1, inp[0].shape[-1]).abs().amax(0).cpu()
                 stats[name] = torch.maximum(stats[name], a) if name in stats else a
             hooks.append(mod.register_forward_hook(hook))
     with torch.no_grad():
         for i in range(n_seq):
-            model.model(ids[i * seqlen:(i + 1) * seqlen][None])
+            model.model(ids[i * seqlen:(i + 1) * seqlen][None].to(device))
     for h in hooks:
         h.remove()
     del model
@@ -135,6 +139,7 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.5)
     ap.add_argument("--max-n", type=int, default=8192)
     ap.add_argument("--max-k", type=int, default=2048, help="k shards: the Solana light client verifies job blocks up to k = 2048")
+    ap.add_argument("--calib-device", default="cpu", help="cpu (default) or cuda for the calibration forward")
     ap.add_argument("--layers", type=int, default=None, help="quantize only the first N layers (tests)")
     a = ap.parse_args()
 
@@ -151,7 +156,7 @@ def main():
         stats = torch.load(a.calib, weights_only=False)
     else:
         print("calibrating (16 x 512 WikiText-2 train tokens)...", file=sys.stderr)
-        stats = calibrate(a.model)
+        stats = calibrate(a.model, device=a.calib_device)
         if a.calib:
             torch.save(stats, a.calib)
 
