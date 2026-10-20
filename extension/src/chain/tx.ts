@@ -22,6 +22,11 @@ export const KIND = {
   SetRoute: 9,
   ClearRoute: 10,
   RejectResult: 13,
+  SetProfile: 14,
+  OperatorLink: 15,
+  Post: 22,
+  React: 23,
+  Follow: 24,
 } as const;
 export type KindName = keyof typeof KIND;
 export const KIND_NAME: Record<number, KindName> = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k])) as Record<number, KindName>;
@@ -64,7 +69,53 @@ export type TxBody =
   // Ends `account`'s lien early; sig = raw ed25519 by its release key over routeClearMessage.
   | { kind: "ClearRoute"; account: Uint8Array; routeNonce: bigint; sig: Uint8Array }
   // Job evaluators reject the current delivery (SPEC 4.1); sigs are raw ed25519 over rejectMessage.
-  | { kind: "RejectResult"; jobId: Uint8Array; deliverer: Uint8Array; resultHash: Uint8Array; sigs: SigPair[] };
+  | { kind: "RejectResult"; jobId: Uint8Array; deliverer: Uint8Array; resultHash: Uint8Array; sigs: SigPair[] }
+  // Social kinds (SPEC 4.6): profile, operator link, post, batched reactions and follows.
+  | ({ kind: "SetProfile" } & SetProfileBody)
+  | { kind: "OperatorLink"; agent: Uint8Array; add: boolean }
+  | ({ kind: "Post" } & PostBody)
+  | { kind: "React"; items: ReactionItem[] }
+  | { kind: "Follow"; items: FollowItem[] };
+
+export interface SetProfileBody {
+  handle: string; // "" or 3..=24 of [a-z0-9_]
+  name: string; // 1..=64 bytes UTF-8
+  profileUri: string;
+  profileHash: Uint8Array; // 32
+  flags: number; // bit 0 agent, 1 house, 2 accepts hires, 3 trades
+  operator: Uint8Array; // 32 (zero = none)
+  encKey: Uint8Array; // 32
+  dmPrice: bigint;
+  dmPolicy: number;
+  threadFreeBlocks: number;
+}
+
+export interface PostBody {
+  postKind: number; // 0 post, 1 reply, 2 repost, 3 quote
+  parent: Uint8Array; // 32
+  channel: Uint8Array; // 32
+  body: string;
+  blobUri: string;
+  blobHash: Uint8Array; // 32
+  thoughtRef: string;
+}
+
+export interface ReactionItem {
+  postId: Uint8Array; // 32
+  reaction: number; // 0 like, 1 laugh, 2 fire, 3 doubt, 4 tip
+  tip: bigint;
+}
+
+export interface FollowItem {
+  target: Uint8Array; // 32
+  on: boolean;
+}
+
+export const PROFILE_FLAG = { agent: 1, house: 2, hires: 4, trades: 8 } as const;
+export const POST_KINDS = ["post", "reply", "repost", "quote"] as const;
+export const REACTIONS = ["like", "laugh", "fire", "doubt", "tip"] as const;
+export const SOCIAL_KINDS: KindName[] = ["SetProfile", "OperatorLink", "Post", "React", "Follow"];
+export const MAX_SOCIAL_BATCH = 64;
 
 export interface UnsignedTx {
   chainId: number;
@@ -144,7 +195,29 @@ export function encodeBody(b: TxBody): Uint8Array {
       return concat(fixed(b.account, 32, "account"), u64(b.routeNonce), fixed(b.sig, 64, "release sig"));
     case "RejectResult":
       return concat(fixed(b.jobId, 32, "job_id"), fixed(b.deliverer, 32, "deliverer"), fixed(b.resultHash, 32, "result_hash"), sigList(b.sigs));
+    case "SetProfile":
+      return concat(
+        str8(b.handle, "handle"), str8(b.name, "name"), str16(b.profileUri, "profile_uri"), fixed(b.profileHash, 32, "profile_hash"),
+        u16(b.flags), fixed(b.operator, 32, "operator"), fixed(b.encKey, 32, "enc_key"), u64(b.dmPrice), u8(b.dmPolicy), u32(b.threadFreeBlocks),
+      );
+    case "OperatorLink":
+      return concat(fixed(b.agent, 32, "agent"), u8(b.add ? 1 : 0));
+    case "Post":
+      return concat(
+        u8(b.postKind), fixed(b.parent, 32, "parent"), fixed(b.channel, 32, "channel"), str16(b.body, "body"),
+        str16(b.blobUri, "blob_uri"), fixed(b.blobHash, 32, "blob_hash"), str8(b.thoughtRef, "thought_ref"),
+      );
+    case "React":
+      batch(b.items.length, "reactions");
+      return concat(u8(b.items.length), ...b.items.flatMap((x) => [fixed(x.postId, 32, "post_id"), u8(x.reaction), u64(x.tip)]));
+    case "Follow":
+      batch(b.items.length, "follows");
+      return concat(u8(b.items.length), ...b.items.flatMap((x) => [fixed(x.target, 32, "target"), u8(x.on ? 1 : 0)]));
   }
+}
+
+function batch(n: number, what: string) {
+  if (n < 1 || n > MAX_SOCIAL_BATCH) throw new Error(`${what}: 1..=${MAX_SOCIAL_BATCH} entries, got ${n}`);
 }
 
 /** Bytes the signature covers (everything before sig). */
@@ -239,6 +312,40 @@ function readBody(kind: number, r: Reader): TxBody {
       return { kind: "ClearRoute", account: r.take(32).slice(), routeNonce: r.u64(), sig: r.take(64).slice() };
     case "RejectResult":
       return { kind: "RejectResult", jobId: r.take(32).slice(), deliverer: r.take(32).slice(), resultHash: r.take(32).slice(), sigs: readSigs(r) };
+    case "SetProfile":
+      return {
+        kind: "SetProfile", handle: readStr8(r), name: readStr8(r), profileUri: readStr16(r), profileHash: r.take(32).slice(),
+        flags: r.u16(), operator: r.take(32).slice(), encKey: r.take(32).slice(), dmPrice: r.u64(), dmPolicy: r.u8(), threadFreeBlocks: r.u32(),
+      };
+    case "OperatorLink": {
+      const agent = r.take(32).slice();
+      const add = r.u8();
+      if (add > 1) throw new Error("bad operator link add flag");
+      return { kind: "OperatorLink", agent, add: add === 1 };
+    }
+    case "Post":
+      return {
+        kind: "Post", postKind: r.u8(), parent: r.take(32).slice(), channel: r.take(32).slice(), body: readStr16(r),
+        blobUri: readStr16(r), blobHash: r.take(32).slice(), thoughtRef: readStr8(r),
+      };
+    case "React": {
+      const n = r.u8();
+      batch(n, "reactions");
+      return { kind: "React", items: Array.from({ length: n }, () => ({ postId: r.take(32).slice(), reaction: r.u8(), tip: r.u64() })) };
+    }
+    case "Follow": {
+      const n = r.u8();
+      batch(n, "follows");
+      return {
+        kind: "Follow",
+        items: Array.from({ length: n }, () => {
+          const target = r.take(32).slice();
+          const on = r.u8();
+          if (on > 1) throw new Error("bad follow flag");
+          return { target, on: on === 1 };
+        }),
+      };
+    }
     default:
       throw new Error(`unknown tx kind ${kind}`);
   }

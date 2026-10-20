@@ -3,6 +3,7 @@
 import { b58, equal, fromUtf8, hex } from "../core/bytes";
 import { UnsignedTx } from "../chain/tx";
 import { RESERVED } from "../chain/messages";
+import { summarizeSocial } from "../chain/social";
 import { ParsedMessage, COMPUTE_BUDGET, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, ATA_PROGRAM, isWritableIndex } from "../solana/tx";
 import { disc } from "../solana/programs";
 import { NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, short, uriView } from "./constants";
@@ -86,6 +87,19 @@ export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: num
       rows.push({ label: "Solana recipient", value: short(b58(b.solanaRecipient), 6), full: b58(b.solanaRecipient) }, { label: "Amount", value: nat(b.amount) });
       if (b.amount % 1000n !== 0n) warnings.push("Amount is not a multiple of 1000 base units; the node will refuse it.");
       break;
+    case "SetProfile":
+    case "OperatorLink":
+    case "Post":
+    case "React":
+    case "Follow": {
+      const sm = summarizeSocial(b, nat);
+      if (sm) {
+        headline = sm.headline;
+        rows.push(...sm.rows);
+        warnings.push(...sm.warnings);
+      }
+      break;
+    }
     case "AdminConfig":
       headline = `Admin config key ${b.key}`;
       rows.push({ label: "Key", value: b.key.toString() }, { label: "Value", value: short(hex(b.value), 12) });

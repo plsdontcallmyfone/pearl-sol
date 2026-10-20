@@ -5,12 +5,15 @@ import { describe, expect, it } from "vitest";
 import { b58, fromHex, hex, key32 } from "../src/core/bytes";
 import { pubkeyOf, sha256, signRaw, blake3 } from "../src/core/crypto";
 import { KIND, PostJobBody, TxBody, decodeTx, encodePostJob, framedMessage, signTx, signingBytes, txHash, verifyTx } from "../src/chain/tx";
-import { RESERVED, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, rejectMessage, resultMessage, routeClearMessage } from "../src/chain/messages";
+import { socialBodyFromJson, summarizeSocial } from "../src/chain/social";
+import { RESERVED, postId, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, rejectMessage, resultMessage, routeClearMessage } from "../src/chain/messages";
 
 const dir = resolve(__dirname, "../../chain/agent-types/vectors");
 // tx.json plus RejectResult (kind 13), published in its own file like standing.json
 const rejv = JSON.parse(readFileSync(resolve(dir, "reject.json"), "utf8"));
-const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs];
+// social kinds (SPEC 4.6) in social.json
+const socv = JSON.parse(readFileSync(resolve(dir, "social.json"), "utf8"));
+const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs, ...socv.txs];
 const msgv = JSON.parse(readFileSync(resolve(dir, "messages.json"), "utf8"));
 
 function postJob(j: any): PostJobBody {
@@ -37,6 +40,11 @@ function body(v: any): TxBody {
     case "SetRoute": return { kind: "SetRoute", solanaRecipient: key32(b.solana_recipient), routeBps: b.route_bps, untilHeight: BigInt(b.until_height), cap: BigInt(b.cap), releaseKey: key32(b.release_key) };
     case "ClearRoute": return { kind: "ClearRoute", account: key32(b.account), routeNonce: BigInt(b.route_nonce), sig: fromHex(b.sig) };
     case "RejectResult": return { kind: "RejectResult", jobId: fromHex(b.job_id), deliverer: key32(b.deliverer), resultHash: fromHex(b.result_hash), sigs: sigs(b.sigs) };
+    case "SetProfile": return { kind: "SetProfile", handle: b.handle, name: b.name, profileUri: b.profile_uri, profileHash: fromHex(b.profile_hash), flags: b.flags, operator: key32(b.operator), encKey: key32(b.enc_key), dmPrice: BigInt(b.dm_price), dmPolicy: b.dm_policy, threadFreeBlocks: b.thread_free_blocks };
+    case "OperatorLink": return { kind: "OperatorLink", agent: key32(b.agent), add: b.add };
+    case "Post": return { kind: "Post", postKind: b.kind, parent: fromHex(b.parent), channel: fromHex(b.channel), body: b.body, blobUri: b.blob_uri, blobHash: fromHex(b.blob_hash), thoughtRef: b.thought_ref };
+    case "React": return { kind: "React", items: b.items.map((x: any) => ({ postId: fromHex(x.post_id), reaction: x.reaction, tip: BigInt(x.tip) })) };
+    case "Follow": return { kind: "Follow", items: b.items.map((x: any) => ({ target: key32(x.target), on: x.on })) };
   }
   throw new Error(`unhandled ${v.kind_name}`);
 }
@@ -134,5 +142,44 @@ describe("domain messages", () => {
     expect(c.matureHeight).toBe(BigInt(h.coinbase.fields.mature_height));
     expect(hex(blake3(rec))).toBe(h.coinbase.receipt_hash);
     expect(() => decodeCoinbase(fromHex(txv[0].tx))).toThrow();
+  });
+});
+
+describe("social kinds (SPEC 4.6)", () => {
+  it("post ids", () => {
+    for (const p of socv.post_ids) expect(hex(postId(key32(p.from), BigInt(p.nonce)))).toBe(p.post_id);
+  });
+
+  // window.pearl JSON form (docs/TOWN-API-CONTRACT.md) builds the same bodies as the vectors
+  const camel = (v: any) => {
+    const b = v.body;
+    switch (v.kind_name) {
+      case "SetProfile": return { kind: "SetProfile", handle: b.handle, name: b.name, profileUri: b.profile_uri, profileHash: b.profile_hash, flags: b.flags, operator: b.operator, encKey: b.enc_key, dmPrice: b.dm_price, dmPolicy: b.dm_policy, threadFreeBlocks: b.thread_free_blocks };
+      case "OperatorLink": return { kind: "OperatorLink", agent: b.agent, add: b.add };
+      case "Post": return { kind: "Post", postKind: b.kind, parent: b.parent, channel: b.channel, body: b.body, blobUri: b.blob_uri, blobHash: b.blob_hash, thoughtRef: b.thought_ref };
+      case "React": return { kind: "React", items: b.items.map((x: any) => ({ postId: x.post_id, reaction: x.reaction, tip: x.tip })) };
+      case "Follow": return { kind: "Follow", items: b.items.map((x: any) => ({ target: x.target, on: x.on })) };
+    }
+  };
+  for (const v of socv.txs) {
+    it(`${v.name}: JSON form encodes to the vector`, () => {
+      const t = { chainId: v.chain_id, from: key32(v.from), nonce: BigInt(v.nonce), fee: BigInt(v.fee), body: socialBodyFromJson(camel(v)) };
+      expect(hex(signingBytes(t))).toBe(v.signing_bytes);
+      const sm = summarizeSocial(t.body, (x) => `${x} units`);
+      expect(sm?.headline.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("refuses bad JSON", () => {
+    expect(() => socialBodyFromJson({ kind: "React", items: [] })).toThrow(/1\.\.64/);
+    expect(() => socialBodyFromJson({ kind: "Post", postKind: 9, body: "x" })).toThrow(/postKind/);
+    expect(() => socialBodyFromJson({ kind: "Follow", items: [{ target: "nope" }] })).toThrow(/base58/);
+    expect(() => socialBodyFromJson({ kind: "React", items: [{ postId: "00", reaction: 0 }] })).toThrow(/64 hex/);
+  });
+
+  it("tip wording states the amount", () => {
+    const sm = summarizeSocial({ kind: "React", items: [{ postId: new Uint8Array(32), reaction: 4, tip: 250n }] }, (x) => `${x} CADRE`)!;
+    expect(sm.headline).toContain("250 CADRE");
+    expect(sm.warnings.join(" ")).toContain("not refundable");
   });
 });

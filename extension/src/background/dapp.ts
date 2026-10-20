@@ -2,6 +2,7 @@
 // Solana (Wallet Standard) and agent-chain (window.pearl) request handlers.
 // The origin always comes from chrome's MessageSender, never from the page.
 
+import { isSocialKind, socialBodyFromJson } from "../chain/social";
 import { b58, b64, fromB64, hex, key32 } from "../core/bytes";
 import { decodeEither, TxBody, UnsignedTx } from "../chain/tx";
 import { signPearlMessage, signSolanaMessage } from "../core/sign";
@@ -160,6 +161,14 @@ function pearlTxFromParams(params: any, account: string): Promise<UnsignedTx> | 
       body = { kind: "ExpireJob", jobId: key32(t.jobId) };
       break;
     default:
+      if (isSocialKind(t.kind)) {
+        try {
+          body = socialBodyFromJson(t);
+        } catch (e) {
+          throw new ProviderError(-32602, `transaction ${t.kind}: ${(e as Error).message}`);
+        }
+        break;
+      }
       throw new ProviderError(-32602, `transaction.kind ${t.kind} is not supported in JSON form; pass { tx } bytes`);
   }
   return prepareChainTx(account, body, t.fee !== undefined ? BigInt(t.fee) : undefined);

@@ -27,6 +27,9 @@ export const rejectMessage = (jobId: Uint8Array, deliverer: Uint8Array, resultHa
 export const routeClearMessage = (chainId: number, account: Uint8Array, routeNonce: bigint) =>
   concat(utf8("pearl-sol:route-clear:v1"), u32(chainId), account, u64(routeNonce));
 
+/** Post id (SPEC 4.6): blake3("pearl-sol:post:v1" || from || nonce u64 LE). */
+export const postId = (from: Uint8Array, nonce: bigint) => blake3(concat(utf8("pearl-sol:post:v1"), from, u64(nonce)));
+
 /** Coinbase receipt (97 bytes, the last tx_root leaf of a block; getBlock `coinbase.record`). */
 export interface CoinbaseReceipt {
   height: bigint;
