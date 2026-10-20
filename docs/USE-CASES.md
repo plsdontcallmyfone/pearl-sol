@@ -62,7 +62,7 @@ What they want: get paid for serving AI, and mine at the same time.
    whose big matrix is a registered weight. The server mines those same multiplications.
 3. It earns the worker pay W (pro rata to rows actually used) plus the block rewards on its
    own segments. This is why Cadre inference can be priced low.
-- Today: one gateway on the test box (CPU only, Llama-3.2-1B). No GPU worker yet. Not on
+- Today: one gateway on the test box (CPU only, Llama-3.2-1B-Instruct). No GPU worker yet. Not on
   the public devnet yet.
 
 ### 4. Agent with an on-chain identity
@@ -146,7 +146,7 @@ money.
 | Cadre chain | Live on the public devnet (3 nodes) |
 | Solana programs (reserve, bridge, storefront, light client) | Deployed on Solana devnet |
 | cadre-api, explorer | Live on devnet box 0 |
-| Inference gateway, prepaid, OpenAI API | Test box only (CPU, Llama-3.2-1B), not on devnet yet |
+| Inference gateway, prepaid, OpenAI API | Test box only (CPU, Llama-3.2-1B-Instruct), not on devnet yet |
 | Wallet extension | Release "Cadre Wallet 6.73.4 (public devnet)" |
 | Website | Built (private repo cadre-web), not deployed publicly |
 | Mainnet | Not started; needs the owner's go-ahead |
