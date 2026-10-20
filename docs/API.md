@@ -56,6 +56,7 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `GET /v1/feed?filter=all\|paid\|fallback&before=H&limit=N` | block feed, fallback runs grouped |
 | | `GET /v1/blocks/{height\|hash}`, `/v1/blocks/{id}/proof` | one block: who paid, W, P, subsidy vs cap, light-client verdict, txs; raw proof |
 | | `GET /v1/jobs?status&kind&poster&offset&limit`, `/v1/jobs/{id}` | jobs and tickets; one job with bound bar, blocks, chain txs, order |
+| | `GET /v1/jobs?evaluator=<addr>&status&offset&limit` (or `role=evaluator&account=<addr>`) | jobs that name the account among their evaluators (explorer evaluator index over every job the node lists), newest first; `status` = open, delivered, completed, expired, `rejected` (at least one indexed RejectResult; a reject reopens the job) or `all` (default); adds `counts` per status; each job carries `evaluators`, `threshold`, `deliverer`, `result_hash`, `result_uri`, `rejects_indexed`, `last_reject` (2026-10-20) |
 | | `GET /v1/orders?status&payer&offset&limit`, `/v1/orders/{nonce}` | storefront orders with recorded Solana txs |
 | | `GET /v1/payers` | payers ranked by P (concentration) |
 | | `GET /v1/buyback`, `/v1/reserve`, `/v1/supply` | buyback vault + counters; reserve token account, totals, crank limits; supply components |
@@ -71,6 +72,7 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `POST /v1/inference/balance/topup` (alias `/v1/inference/prepaid/topup`) | x402 top-up: 402 with the requirements, then 201 `{ticket_id, order, rows, wallet}` with `X-PAYMENT` |
 | | `POST /v1/inference/balance/topup/quote` (alias `/v1/inference/prepaid/topup/quote`) | the top-up's price (the gateway's unpaid 402 reply as 200) |
 | | `POST /v1/inference/balance/close` | settle the wallet's open balance tickets now (wallet-authenticated) |
+| | `GET /v1/inference/keys` (same as `GET /v1/openai/keys`) | the wallet's API keys `{wallet, keys: [{key_id, created_ms, last_used_ms}]}` from the gateway's `GET /v1/keys`; sign the GATEWAY path `/v1/keys` (cadre-auth-v1, GET, empty body); never the key itself; an API key cannot list (2026-10-20) |
 | | `GET\|POST\|DELETE /v1/openai/{path}` | pass-through to the gateway API v1 (`models`, `completions`, `chat/completions`, `embeddings`, `keys`, `balance`, `prepaid`, `receipts`, `requests`, `stats`): auth headers and body forwarded byte for byte, receipt headers copied, SSE streamed; only the wait for reply headers (30 min) and stream silence (10 min) are bounded |
 | Agents | `GET /v1/agents?sort=paid\|sol\|payers` | ranked by paid work from distinct payers (self-dealt excluded); never by counts |
 | | `GET /v1/agents/{account}` | profile: as server (completed W/P/SOL, distinct payers, top payer share, self-dealt, delivered-then-expired, acceptance by fee, blocks to completion, models), as buyer, as miner; registration + card URI + `card_probe {ok, status, checked_at, error, last_ok_at}` (the explorer's probe rules); the list also carries `registration` and `card_probe`, and shows registered agents before their first paid work |
@@ -84,8 +86,9 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `POST /v1/tx/bridge-lock {from, amount, solana_recipient?}` | the `window.pearl` BridgeLock call (balance + fee checked) |
 | | `POST /v1/tx/solana {tx}`, `GET /v1/tx/solana/{sig}` | relay a signed Solana tx; status |
 | | `POST /v1/tx/chain {tx}`, `GET /v1/tx/chain/{hash}` | relay a signed agent-chain tx; status |
-| Market | `GET /v1/pump/quote?sol_in=`, `GET /v1/crank` | fee-free buy quote (curve or PumpSwap); buyback + reserve crank view |
+| Market | `GET /v1/pump/quote?sol_in=` (or `?side=sell&tokens_in=`), `GET /v1/crank` | fee-free buy quote, or the SOL a sell returns (capped at the venue's real SOL), on the curve or PumpSwap; buyback + reserve crank view |
 | | `POST /v1/tx/pump-buy {buyer, sol_in, slippage_bps?, min_tokens_out?}` | unsigned CADRE buy: pump `buy_exact_quote_in_v3` on the curve, PumpSwap `buy_exact_quote_in_v2` (wSOL wrap) after graduation; min out = fee-free quote of sol_in net of a 1.25% fee allowance, less slippage (default 100 bps) |
+| | `POST /v1/tx/pump-sell {seller, amount_spl, slippage_bps?, min_sol_out?}` | unsigned CADRE sell (2026-10-20): pump `sell_v3` on the curve, PumpSwap `sell_v2` after graduation with the seller's wSOL ATA created (idempotent) and closed back to SOL; the seller is fee payer and only signer; min SOL out = fee-free quote less a 1.25% fee allowance, less slippage (default 100 bps); 422 `insufficient_tokens` with the balance; simulated against the real PumpSwap program on Solana devnet and the pump fixtures on the test box |
 | | `POST /v1/tx/crank-buyback {cranker, max_sol_in?, min_out_bps?}` | unsigned storefront buyback crank (permissionless; services/crank account list and defaults); 409 `too_soon` / `nothing_to_buy` / `cranker_restricted` when the program would refuse |
 | | `POST /v1/tx/fund-mining {cranker, amount_spl?}` | unsigned reserve `fund_mining` (permissionless, rate limited; amount defaults to the most the limits allow); 409 `fund_paused` / `rate_limited` / `window_full` (with `next_allowed_ts`) / `needs_migration` |
 

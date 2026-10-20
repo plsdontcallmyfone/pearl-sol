@@ -828,7 +828,8 @@ Authentication (requests that draw on a balance), either:
   `"cadre-auth-v1\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`.
   The timestamp must be within 120 s; a signature is accepted once.
 - `Authorization: Bearer cadre_sk_<hex>`: an API key bound to a wallet, made by
-  `POST /v1/keys` (wallet-signed), revoked by `DELETE /v1/keys/<key_id>` (wallet-signed).
+  `POST /v1/keys` (wallet-signed), listed by `GET /v1/keys` (wallet-signed), revoked by
+  `DELETE /v1/keys/<key_id>` (wallet-signed).
   This is what plain OpenAI clients send.
 
 Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
@@ -844,6 +845,7 @@ Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/
 | `POST /v1/balance/close` | wallet or key | settle and complete the wallet's open tickets now (refund of the unused rows on the chain) |
 | `POST /v1/keys` | wallet | `{key_id, api_key}` (the key is shown once) |
 | `DELETE /v1/keys/<key_id>` | wallet | revoke |
+| `GET /v1/keys` | wallet | `{wallet, keys: [{key_id, created_ms, last_used_ms}]}`, oldest first: the wallet's keys, never the key itself; `last_used_ms` is null until the key authenticates a request (kept in the ledger) (added 2026-10-20) |
 | `POST /v1/chat/completions` | wallet or key; or x402 per request | OpenAI chat completions: `model`, `messages`, `max_tokens` / `max_completion_tokens`, `stream`, `stop`, `tools` / `tool_choice` (rendered by the model's chat template; tool calls are parsed from the output when the model emits them, best effort), `temperature` / `top_p` accepted but decoding is greedy (deterministic, documented in each response); returns `chat.completion` (or SSE `chat.completion.chunk` events ending in `data: [DONE]`, usage and receipt in the last chunk) |
 | `POST /v1/completions` | same | OpenAI text completions (`prompt`) |
 | `GET /v1/requests/<request_id>` | none | the receipt plus its settlement: round, segment ids, blocks mined on them, ticket status, Solana order status |
@@ -858,7 +860,7 @@ proxy must forward the body byte for byte and map its own path prefix back to `/
 services/cadre-api does so: `/v1/openai/<path>` -> gateway `/v1/<path>` (every path above
 under `/v1/`), `/v1/inference/balance` -> `/v1/balance`, `/v1/inference/balance/topup` and
 `/close` -> the same under `/v1/balance/`, `/v1/inference/prepaid/<wallet>` ->
-`/v1/prepaid/<wallet>` (docs/API.md). A client signs the GATEWAY path in each case.
+`/v1/prepaid/<wallet>`, `/v1/inference/keys` -> `/v1/keys` (docs/API.md). A client signs the GATEWAY path in each case.
 
 Receipt (every inference response): headers `X-Cadre-Request` (request id), `X-Cadre-Ticket`,
 `X-Cadre-Order` (storefront order nonce, or empty for a chain-native ticket),
