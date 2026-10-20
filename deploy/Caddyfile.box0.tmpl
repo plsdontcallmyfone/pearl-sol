@@ -44,8 +44,5 @@ api.@IP@.sslip.io {
 # Cadre website (~/cadre-web, cadre-web.service on :10710); serves /install-miner.sh (devnet defaults)
 cadre.@IP@.sslip.io {
 	encode gzip
-	@installer path /install-miner.sh
-	header @installer Content-Type "text/x-shellscript; charset=utf-8"
-	header @installer Cache-Control "no-cache"
 	reverse_proxy 127.0.0.1:10710
 }
