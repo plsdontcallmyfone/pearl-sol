@@ -13,7 +13,7 @@ use consensus_pow::{Accept, Chain, ChainError, ChainEvent, JobChoice, PowVerifie
 use mempool::Mempool;
 use serde_json::{json, Value};
 use state::schema::{self, Account};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Something the actor must send to peers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +162,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             return Err(PutError::RateLimited);
         }
         let r = store.put(data, height).await?;
-        self.blob_wanted.remove(&id);
+        // a blob this node was fetching itself (a registered model's manifest that nobody had yet):
+        // stop the resolver asking peers for it
+        if self.blob_wanted.remove(&id).is_some() {
+            self.outbox.push(Outbound::CancelBlob(id));
+        }
         if push {
             self.outbox.push(Outbound::Blob(data.to_vec()));
         }
@@ -205,7 +209,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         self.blob_wanted.remove(&id);
         if let Err(e) = store.put(data, height).await {
-            debug!("fetched blob not stored: {e}");
+            // usually the store is full (max_total_bytes): an operator needs to see this, the
+            // fetch is dropped and only a later want retries it
+            warn!(blob = %hex::encode(id), "fetched blob not stored: {e}");
         }
         true
     }
@@ -264,6 +270,19 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
         }
         Ok(refs)
+    }
+
+    /// getModel / listModels: does this node hold the model's manifest, and is it fetching it?
+    /// A registered model whose manifest no node holds (its upload never ran) shows
+    /// `manifest_present: false, manifest_fetching: true` on every node.
+    pub fn add_manifest_state(&self, v: &mut Value, m: &schema::Model) {
+        let id = blobs::parse_uri(&m.manifest_uri);
+        let present = id.is_some_and(|id| self.blobs.as_ref().is_some_and(|b| b.has(&id).is_some()));
+        let fetching = id.is_some_and(|id| self.blob_wanted.contains_key(&id));
+        if let Some(o) = v.as_object_mut() {
+            o.insert("manifest_present".into(), json!(present));
+            o.insert("manifest_fetching".into(), json!(fetching));
+        }
     }
 
     /// Every registered model (tip state), in registration order.

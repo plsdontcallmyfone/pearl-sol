@@ -877,3 +877,77 @@ fn standing_jobs_over_rpc_and_model_blobs_pinned() {
         assert!(wait_blob(&ctx, &net.apis[1], &chunk_id, 30).await, "chunk fetched on demand");
     });
 }
+
+/// Devnet 2026-10-20 regression: a model registered while its blobs were never uploaded
+/// (`pearl model register` bailed at its inclusion wait, before the upload). Every node,
+/// including the one the registrant talks to, wants the manifest and nobody serves it; the
+/// fetch stays open through many prunes. Once the registrant uploads it (push false, a
+/// devnet-sized 190 KB manifest) the peers get it over the blob resolver with no restart,
+/// the uploading node cancels its own fetch, and a pinned chunk follows on demand.
+#[test]
+fn model_manifest_uploaded_long_after_registration_reaches_peers() {
+    use agent_types::{MatrixSpec, RegisterModel};
+    use pearl_job::standing;
+    runner(32).start(|ctx| async move {
+        let net = setup(&ctx, 3, 3, true).await;
+        let api = &net.apis[0];
+        api.send(&unlock_tx(0, 1, pk(2), 100_000)).await.unwrap();
+        api.mine(9).await;
+        let chunk = vec![5u8; 3 << 20];
+        let chunk_id = hex::encode(blake3::hash(&chunk).as_bytes());
+        // 144 files of 18 chunk ids each (only the first chunk exists): about 190 KB of JSON
+        let mut files = serde_json::Map::new();
+        for f in 0..144 {
+            let blobs: Vec<String> = (0..18u32)
+                .map(|c| if f == 0 && c == 0 { format!("blob:{chunk_id}") } else { format!("blob:{}", hex::encode(blake3::hash(&[f as u8, c as u8]).as_bytes())) })
+                .collect();
+            files.insert(format!("w/{f}.i8"), json!({"size": 1000, "blake3": chunk_id, "blobs": blobs}));
+        }
+        let manifest = serde_json::to_vec(&json!({"format": "cadre-model-v1", "files": files})).unwrap();
+        assert!(manifest.len() > 180_000 && manifest.len() < (4 << 20), "{}", manifest.len());
+        let manifest_id = hex::encode(blake3::hash(&manifest).as_bytes());
+        let c = pearl_job::MiningConfig::localnet_default();
+        let reg = RegisterModel {
+            name: b"late".to_vec(),
+            manifest_uri: format!("blob:{manifest_id}").into_bytes(),
+            recipe: 1,
+            rank: c.rank,
+            rows_pattern: c.rows_pattern.to_bytes(),
+            cols_pattern: c.cols_pattern.to_bytes(),
+            matrices: vec![MatrixSpec { k: 2048, n: 8, hash_b: [0x62; 32] }],
+        };
+        api.send(&Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::RegisterModel(reg))).await.unwrap();
+        api.mine(9).await;
+        let mhex = hex::encode(standing::model_id(&pk(2), b"late"));
+        // no upload: many prune rounds and a long wait, every node fetching, nobody holding it
+        for _ in 0..3 * BLOB_GRACE {
+            api.mine(9).await;
+        }
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        ctx.sleep(Duration::from_secs(600)).await;
+        for a in &net.apis {
+            let h = a.call("hasBlob", json!({"blob_id": manifest_id})).await;
+            assert_eq!(h["present"], json!(false));
+            assert_eq!(h["fetching"], json!(true), "a registered model's manifest is wanted");
+            let m = a.call("getModel", json!({"model_id": mhex})).await;
+            assert_eq!((m["manifest_present"].clone(), m["manifest_fetching"].clone()), (json!(false), json!(true)));
+        }
+        // the late upload on node 0 (what a rerun of `pearl model register` does)
+        api.call("putBlob", json!({"data": b64e(&manifest), "push": false})).await;
+        api.call("putBlob", json!({"data": b64e(&chunk), "push": false})).await;
+        let h = api.call("hasBlob", json!({"blob_id": manifest_id})).await;
+        assert_eq!((h["present"].clone(), h["fetching"].clone()), (json!(true), json!(false)));
+        for (i, a) in net.apis.iter().enumerate().skip(1) {
+            assert!(wait_blob(&ctx, a, &manifest_id, 30).await, "node {i} fetched the manifest after the late upload");
+            let m = a.call("getModel", json!({"model_id": mhex})).await;
+            assert_eq!((m["manifest_present"].clone(), m["manifest_fetching"].clone()), (json!(true), json!(false)));
+        }
+        // chunk pins come from the manifest at the next prune; then getBlob fetches on demand
+        for _ in 0..12 {
+            api.mine(9).await;
+        }
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        let _ = net.apis[2].call("getBlob", json!({"blob_id": chunk_id})).await;
+        assert!(wait_blob(&ctx, &net.apis[2], &chunk_id, 30).await, "pinned 3 MB chunk fetched on demand");
+    });
+}

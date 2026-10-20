@@ -432,7 +432,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getModel" => {
                 let id = p_key(p, &["model_id", "id"])?;
                 Ok(match self.tip_record(&schema::model_key(&id)).await? {
-                    Some(b) => model_json(&srv(schema::Model::decode(&b))?),
+                    Some(b) => {
+                        let m = srv(schema::Model::decode(&b))?;
+                        let mut v = model_json(&m);
+                        self.add_manifest_state(&mut v, &m);
+                        v
+                    }
                     None => Value::Null,
                 })
             }
@@ -443,6 +448,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     .map(|m| {
                         let mut v = model_json(m);
                         v.as_object_mut().unwrap().remove("matrices");
+                        self.add_manifest_state(&mut v, m);
                         v
                     })
                     .collect();

@@ -218,6 +218,28 @@ fn register(ctx: &Ctx, dir: &Path, name: Option<&str>, dry_run: bool, store: Opt
     let mut j = json!({"model_id": man.model_id, "name": name, "matrices": man.matrices.len(), "macs_per_row": man.macs_per_row().to_string(),
         "manifest_uri": String::from_utf8_lossy(&body.manifest_uri), "files": man.files.len(), "chunks": chunks, "bytes": total});
     if !dry_run {
+        // Upload first, then register. An unreferenced blob is kept for the node's grace period
+        // (by age) and the RegisterModel pins the manifest and its chunks once it lands. The old
+        // order (register, wait for inclusion, then upload) left devnet's first model registered
+        // with its blobs on no node when the inclusion wait ran out (2026-10-20): every node then
+        // fetched the manifest forever. A rerun uploads whatever the node lacks.
+        let st = ctx.ui.step(format!("Uploading {chunks} chunks ({:.0} MB)", total as f64 / 1e6));
+        let t1 = std::time::Instant::now();
+        let r = (|| -> Result<u64> {
+            let mut new = put(ctx, &bytes)? as u64;
+            for fname in man.files.keys() {
+                let data = std::fs::read(dir.join(fname))?;
+                for c in standing::chunks(&data) {
+                    new += put(ctx, c)? as u64;
+                }
+            }
+            let held = ctx.call("hasBlob", json!({"blob_id": hex::encode(pearl_job::data::blob_id(&bytes))}))?;
+            ensure!(held["present"] == json!(true), "the node does not hold the manifest after the upload");
+            Ok(new)
+        })();
+        let new = st.wrap(r, |n| format!("{n} blobs stored ({:.1} s), manifest held by the node", t1.elapsed().as_secs_f64()))?;
+        j["uploaded"] = json!(new);
+        j["upload_s"] = json!(t1.elapsed().as_secs_f64());
         let exists = !ctx.call("getModel", json!({"model_id": man.model_id}))?.is_null();
         if exists {
             j["registered"] = json!("already");
@@ -225,21 +247,7 @@ fn register(ctx: &Ctx, dir: &Path, name: Option<&str>, dry_run: bool, store: Opt
             let sent = crate::commands::send_body(ctx, "RegisterModel", TxBody::RegisterModel(body.clone()), None, None, true)?;
             j["tx_hash"] = json!(sent.tx_hash);
             j["included_height"] = json!(sent.height);
-            ensure!(sent.height.is_some(), "RegisterModel not included yet; rerun to upload once it is");
         }
-        // manifest first (pins the chunks as they arrive), then every chunk
-        let st = ctx.ui.step(format!("Uploading {chunks} chunks ({:.0} MB)", total as f64 / 1e6));
-        let t1 = std::time::Instant::now();
-        let mut new = put(ctx, &bytes)? as u64;
-        for fname in man.files.keys() {
-            let data = std::fs::read(dir.join(fname))?;
-            for c in standing::chunks(&data) {
-                new += put(ctx, c)? as u64;
-            }
-        }
-        st.ok(format!("{new} blobs stored ({:.1} s)", t1.elapsed().as_secs_f64()));
-        j["uploaded"] = json!(new);
-        j["upload_s"] = json!(t1.elapsed().as_secs_f64());
     }
     if let Some(store) = store {
         std::fs::create_dir_all(store)?;
