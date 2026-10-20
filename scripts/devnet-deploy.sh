@@ -117,15 +117,20 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     ;;
   site)
     # the website (~/cadre-web, committed main only) built on box 0 against the devnet cadre-api;
-    # prebuild copies box 0's ~/pearl-sol/scripts/install-miner.sh to public/ (devnet defaults)
+    # prebuild copies the miner installer to public/ (devnet defaults): the one committed on this
+    # checkout's main (sent as ~/site-installer/scripts/install-miner.sh, PEARL_SOL for the
+    # prebuild), so the site does not depend on what box 0's ~/pearl-sol build tree is at
     web="${CADRE_WEB:-$HOME/cadre-web}"; dash="${BOX0_IP//./-}"
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     git -C "$web" bundle create "$tmp/web.bundle" main 2>/dev/null
+    git -C "$ROOT" show main:scripts/install-miner.sh > "$tmp/install-miner.sh"
     scpb 0 "$tmp/web.bundle" "lode@$BOX0_IP:web.bundle"
+    sshb 0 lode "mkdir -p ~/site-installer/scripts"
+    scpb 0 "$tmp/install-miner.sh" "lode@$BOX0_IP:site-installer/scripts/install-miner.sh"
     sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
       cd ~/cadre-web && git log --oneline -1 && export PATH=\$HOME/.local/node/bin:\$PATH NEXT_TELEMETRY_DISABLED=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
       npm ci --no-audit --no-fund >/dev/null
-      NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
+      PEARL_SOL=\$HOME/site-installer NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
     sshb 0 root "systemctl enable --now cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
     ;;
   ssh) n="$2"; shift 2; sshb "$n" lode "$@" ;;

@@ -227,7 +227,7 @@ for reference (an upgrade from an older build would need them):
 `scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0, `npm ci` and
 `npm run build` there with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
 `NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.64-95-12-116.sslip.io`
-(prebuild copies box 0's ~/pearl-sol/scripts/install-miner.sh to public/), then restarts
+(prebuild copies the installer committed on this checkout's main to public/), then restarts
 `cadre-web.service` (enabled, starts on boot). Caddy block `cadre.@IP@.sslip.io` in
 deploy/Caddyfile.box0.tmpl. Live from cadre-web a9c903a. Check 2026-10-20: every page (overview, buy,
 AI, dashboard, mine, agents, explorer, crank) at desktop and phone width in headless Chromium, no
@@ -236,8 +236,9 @@ directory); `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | b
 walks all 8 steps with the devnet node as default RPC. The source repo is public since 2026-10-20,
 and a real `curl ... | bash` install mined on the devnet that day from a fresh HOME on the test box
 (block 2842), a fresh ubuntu:24.04 container (blocks 2828, 2829, 2831) and macOS; times and
-footprint in docs/MINING.md. The site's copy is the box's ~/pearl-sol checkout at the last `site`
-deploy, so an installer change needs a box 0 pull and `site` to go live.
+footprint in docs/MINING.md. `site` ships the installer committed on the deploying checkout's
+`main` (to box 0 ~/site-installer, PEARL_SOL for the prebuild), not box 0's ~/pearl-sol build tree,
+so an installer change goes live with a commit and `site`.
 
 ### Inference (paid AI, 2026-10-20)
 
