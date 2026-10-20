@@ -434,14 +434,18 @@ fn two_lanes(grace: Duration) -> (u64, u64, Vec<String>) {
     let p = small_params();
     let blocks = Rc::new(mine(&p, 24));
     let env = Env::new(p, &blocks[0]);
-    let payer = env.payer.insecure_clone();
-    let sim = Rc::new(RefCell::new(Sim::new(env.svm, env.payer, 0x2545f4914f6cdd1d)));
+    let payer0 = env.payer.insecure_clone();
+    // each lane pays with its own key, as on devnet (box 1 and box 2 relay.json)
+    let payer1 = Keypair::new();
+    let mut svm = env.svm;
+    svm.airdrop(&solana_sdk::signer::Signer::pubkey(&payer1), 1_000_000_000_000).unwrap();
+    let sim = Rc::new(RefCell::new(Sim::new(svm, env.payer, 0x2545f4914f6cdd1d)));
     let total = blocks.len();
     let mk = || Chain { blocks: Rc::new(RefCell::new(blocks.to_vec())), visible: Rc::new(Cell::new(13)), fetches: Rc::new(RefCell::new(0)) };
     let (c0, c1) = (mk(), mk());
     let (v0, v1) = (c0.visible.clone(), c1.visible.clone());
-    let mut l0 = Shared { sim: sim.clone(), payer: payer.insecure_clone() };
-    let mut l1 = Shared { sim: sim.clone(), payer };
+    let mut l0 = Shared { sim: sim.clone(), payer: payer0 };
+    let mut l1 = Shared { sim: sim.clone(), payer: payer1 };
     let opts = || Opts { parallel: 3, exact_cu: true, resend_after: Duration::ZERO, shared_grace: grace };
     let mut r0 = Relay::new(c0, &mut l0, (0..3).map(|_| Keypair::new()).collect(), opts()).with_lane(0, 2);
     let mut r1 = Relay::new(c1, &mut l1, (0..3).map(|_| Keypair::new()).collect(), opts()).with_lane(1, 2);
