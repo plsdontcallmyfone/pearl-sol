@@ -291,3 +291,16 @@ on box 0; with-rpc falls back to the env value without the file and exports the 
   src/shared/pearl unit 104/104 after the preset change.
 - e2e run 3 by the header-relay agent ran in parallel and passed (exit 0, 162.0 min) across the box 0
   node restart (05:56 UTC) and cadre-api restart (06:17 UTC).
+
+## Light client on devnet (2026-10-20, "light-client VerifyFailed" row, resumed)
+
+- header-relay on box 0 (no devnet feature, against token/target/deploy/lightclient.so from fe8e04a):
+  `cargo test --release` 6/6 PASS, incl. the new two_lanes_send_each_shared_step_once (two relays on one
+  LiteSVM ledger, own payers: no grace 23 failed txs, errors Custom(0), 6023, 6027, the devnet set;
+  owner rule 0 failed, tip 24) and expired_but_landed_txs_are_not_sent_again. Devnet build
+  (`--features devnet`) clean, sha256 098fbb52...5c4b5931 at 1a1f4f8.
+- Devnet logs (boxes 1-2), 06:38-08:40 UTC on 1a1f4f8: verified 65 + 65, work-verified 28 + 26, failed
+  txs 1 + 1 (connect NotWorkDone 6027), zero 6015/6008/6016/6023/Custom(0), zero resends.
+- scripts/devnet-e2e.sh runs 3-9 (table in docs/DEVNET.md "End to end results"): 3 and 6 PASS 7/7
+  (162.0 and 169.1 min, invariant OK after every step); 4, 5, 7, 8, 9 FAIL, each on a Solana devnet
+  public RPC 429 or dropped connection from the Mac. Not reached: two passes in a row.

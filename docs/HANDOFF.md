@@ -636,6 +636,19 @@ CLAUDE.md "Who is working on what".
    yet, services on the public RPC. NEXT: when the file exists, `scripts/devnet-deploy.sh rpc-url`, ctl
    restart the Solana units on boxes 0-2, then scripts/devnet-e2e.sh twice. Header relay above 10 slots
    stops confirming from one IP (public RPC; recheck on the dedicated one).
+   Light client (2026-10-20, "light-client VerifyFailed" row, resumed): relay re-send fix de8edd5 was
+   already on boxes 1-2, but cadre-settle on box 0 ran an older build; all three now run header-relay
+   098fbb52... from main 1a1f4f8. Two more relay fixes found in the logs: the lanes raced on shared
+   steps (submit Custom(0), accumulate 6023: 42 failed txs in 55 min) and both registered every job;
+   now the lane that owns the height sends a shared step at once and the other only after 45 s
+   (295a4cb, 1a1f4f8), and the jackpot names the header's submitter as reward recipient (4665990,
+   WrongRelayer 6021 with lanes). Test two_lanes_send_each_shared_step_once (6/6 catchup PASS on box 0).
+   Watch 06:38-08:40 UTC: zero 6015/6008/6016/6023/Custom(0), one 6027 per lane, lag 0 at the end.
+   Rent: 14 of 20 relay work accounts closed (5.1070 SOL back to the relay payers), 6 in use (2.1887 SOL).
+   e2e runs 3-9: 3 and 6 PASS 7/7, 4/5/7/8/9 FAIL on Solana public RPC 429s from the Mac's IP (shared
+   with a ~/levpad keeper on the Mac); retries added (64834ca, deb4db9, deb99e3). Two consecutive passes
+   NOT reached; needs the dedicated RPC (also for the Mac scripts) or an e2e host with its own IP.
+   Boxes: kernel 6.8.0-147 + libc6 installed, reboot pending on all three (not done here).
 19. DEVNET SITE + PAID AI + MAINNET PREP (owner decisions 2026-10-20 a-d; "devnet site + AI" agent):
    - Website LIVE https://cadre.64-95-12-116.sslip.io (cadre-web.service on box 0 from cadre-web a9c903a,
      `scripts/devnet-deploy.sh site`), installer at /install-miner.sh with devnet defaults (dry run walks

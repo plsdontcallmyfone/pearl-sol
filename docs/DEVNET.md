@@ -143,8 +143,23 @@ the Mac (keys/devnet/, gitignored; backup ~/.config/pearl-sol/keys-devnet-backup
 
 Units: cadre-node, cadre-miner (every box); cadre-attester, cadre-relayer, cadre-settle,
 cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-worker, cadre-gateway (box 0); cadre-header-relay (boxes 1 and 2,
-`HEADER_RELAY_BOX="1 2"`, lanes 0/2 and 1/2: each verifies the heights of its lane, submits and
-connects are shared).
+`HEADER_RELAY_BOX="1 2"`, lanes 0/2 and 1/2: each verifies the heights of its lane; the shared steps
+(submit, connect, mark_final, accumulate, job registration) are sent at once by the lane that owns the
+step's height and by the other lane only after 45 s (`shared_grace`), so one lane covers a dead one;
+since 1a1f4f8, 2026-10-20).
+
+Header relay build (2026-10-20): boxes 1 and 2 (cadre-header-relay) and box 0 (cadre-settle) run
+header-relay sha256 098fbb52...5c4b5931, built on box 0 from main 1a1f4f8 (contains de8edd5, the
+"never send a landed tx again" fix). Before this session boxes 1-2 already ran a de8edd5 build
+(7b38c9b6..., 04:20 UTC) but cadre-settle on box 0 ran a 03:43 UTC build from before de8edd5.
+Watch from the logs: 04:21-05:16 UTC (de8edd5 build): zero 6015 / 6008 / 6016 (VerifyFailed), but
+the two lanes raced on shared steps: box 1 13 submit Custom(0) + 10 accumulate 6023, box 2 7 + 12.
+05:29-06:33 UTC (owner rule 295a4cb..4665990, 30 samples per box every 2 min): zero failed txs,
+zero resends, lag 0-3 for 50 min, then up to 16 while both relays sat in blocking registration of
+about 70 jobs posted at 2300-2304 (fixed in 1a1f4f8). 06:38-08:40 UTC (1a1f4f8): zero 6015 / 6008 /
+6016 / 6023 / Custom(0); one connect NotWorkDone (6027) per box; lag up to 29 at 06:41 (the chain
+made about 2.2 blocks/min 06:19-06:42 under paid inference blocks) and 0 at 08:40 (lc tip 2500 =
+node tip). Lag samples recorded by the e2e runs after that: max 3.
 
 Solana devnet RPC budget. The public endpoint allows about 100 calls per 10 s per IP (about 40 per
 method). Past that every call from the IP gets 429, which stalled the header relay for hours on
@@ -322,8 +337,26 @@ Details: user bought 5,277,628.605793 CADRE on PumpSwap, deposit nonce 7 and x40
 2016; bridge out released by release_proof after 33.6 min; job 6131729... mined in 2 blocks, completed
 at 2020 by box 0's miner, Order finalized by finalize_order_proof; buyback totals 2 buys, 0 to the
 reserve (it is above the cap: burns); order 9 held back (protocol_fee_below_min) and refunded by
-refund_deposit after 63.8 min; invariant OK after all 7 steps. Run 3 (the second passing run) waits
-for the dedicated RPC below.
+refund_deposit after 63.8 min; invariant OK after all 7 steps.
+
+Runs 3-9 (2026-10-20, public Solana RPC, header relay as above). The Mac's IP shares the public
+RPC's per-IP limit with whatever else runs on the Mac (a ~/levpad keeper polled
+api.devnet.solana.com the whole day), and every failure below is a Solana devnet 429 or a dropped
+connection from the Mac, never the chain, the relay or a program:
+
+| run | UTC | result | note |
+|---|---|---|---|
+| 3 | 05:29-08:11 | 7/7 PASS, 162.0 min | lag samples max 27 (the 06:19-06:42 fast-block stretch) |
+| 4 | 08:28 | FAIL step 1 | one "fetch failed" on the explorer; reads now retry (64834ca) |
+| 5 | 08:53-11:06 | FAIL step 6 (1-5 PASS) | storefront 402 quote POST timed out under 429; it retries now (deb4db9) |
+| 6 | 11:10-14:00 | 7/7 PASS, 169.1 min | step 4 release_proof after 55.3 min, refund after 66.0 min, lag max 3 |
+| 7 | 14:11-15:14 | FAIL step 5 (1-4 PASS) | crank sf-settle 429; sf-settle / sf-status retry now (deb99e3) |
+| 8 | 15:16 | FAIL step 3 | pump buy: "Connection rate limits exceeded" for the Mac's IP |
+| 9 | 15:18 | FAIL step 2 | ops getBalance: "Connection rate limits exceeded" for the Mac's IP; stopped here |
+
+Two consecutive passes were not reached on the public RPC. The fix is the dedicated RPC (next
+section) for the boxes AND the Mac-side scripts, or running the e2e from a host whose IP nothing
+else uses.
 
 ### Dedicated Solana RPC (owner decision 2026-10-20)
 
@@ -335,12 +368,22 @@ cadre-api, cadre-settle, cadre-header-relay) starts through /opt/lode/bin/with-r
 which reads the file at start; without it the public RPC in the env files stays. Logs show only
 scheme://host of the Solana RPC. The Mac-side scripts (devnet-solana.sh, devnet-init, devnet-e2e) keep
 the public RPC. Status 2026-10-20 03:50 UTC: plumbing deployed, file not provided yet, so every
-service runs on the public RPC.
+service runs on the public RPC. Still not provided at 15:20 UTC (`rpc-url` says so and changes
+nothing).
 
 SOL totals (devnet, 2026-10-20 03:50 UTC): deployer 89.9999 -> 45.9612 (11.54 program rent, 20 to ops,
 0.5 to the storefront wallet, 12 to the two relay keys); ops 17.8916, storefront wallet 0.5190, relay
 box 1 2.0896, relay box 2 2.2225; 20 relay work accounts hold about 7.3 SOL rent (refundable with
 `header-relay close-works`).
+
+Relay work-account rent (chain reads 2026-10-20): each work account holds 0.364785 SOL. Of the 20
+on boxes 1-2, slots 3-9 (14 accounts, 5.1070 SOL) were closed with `close-works --keep 3` and the
+rent went to the relay payers (box 1 2.0896 -> 4.6836, box 2 2.2225 -> 4.7131 SOL at 05:25 UTC). The 12
+old box 0 work accounts (from before the relay moved off box 0) no longer exist on chain. Open: slots
+0-2 on each relay box, 6 accounts, 2.1887 SOL, in use by the running relays (the program lets only
+an idle work account close; they come back with `close-works` when a relay is retired). At 15:20 UTC:
+relay box 1 4.4469, relay box 2 4.5020 (about 0.02 SOL/h each in fees), ops 17.2289, deployer 45.9612
+SOL (unchanged).
 
 ## Files
 

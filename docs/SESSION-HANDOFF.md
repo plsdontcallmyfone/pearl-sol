@@ -47,7 +47,9 @@ still say pearl; never rename the namespaces without new vectors.
    - NOT DONE: keys page listing from the gateway, "Jobs I evaluate" reading the index, the
      unlock double-click root cause (first Continue after lock does nothing about half the time
      in headless runs; the UI check retries once), full wallet test run, push to cadre-chain.
-2. **Light-client VerifyFailed on devnet.**
+2. **Light-client VerifyFailed on devnet.** DONE 2026-10-20 (resumed session): all three boxes run
+   header-relay from main 1a1f4f8 (de8edd5 + lane fixes); watch, rent and e2e in docs/HANDOFF.md
+   item 18 and docs/DEVNET.md. The notes below are the state at the stop.
    - Root cause found and fixed in services/header-relay (de8edd5): the relay re-sent txs that
      had already landed; the "VerifyFailed" retries were BadStep 6015 / NotPending 6008. Relay
      parallelism cut to 3 slots per lane (32543c5); slots 3-9 closed and their rent returned to the
@@ -65,7 +67,9 @@ still say pearl; never rename the namespaces without new vectors.
 1. Dedicated Solana devnet RPC URL saved as one line in `~/pearl-sol/keys/devnet/solana-rpc-url`
    (0600, gitignored). Plumbing is deployed (`/opt/lode/bin/with-rpc`, falls back to the public
    RPC). Then: `scripts/devnet-deploy.sh rpc-url`, restart the Solana units on boxes 0-2, run
-   `scripts/devnet-e2e.sh` twice (only one pass so far).
+   `scripts/devnet-e2e.sh` twice (only one pass so far). Update 2026-10-20 15:20 UTC: still no file;
+   e2e passed runs 2, 3 and 6, never twice in a row: the Mac-side runs hit public RPC 429s (the Mac's
+   IP also carries a ~/levpad keeper). The Mac-side scripts should use the dedicated RPC too.
 2. GPU for inference (a GPU provider key): the CPU box decodes about 0.4-0.6 tokens/s through
    the paid flow; devnet has no gateway. Also needed for the 7-8B int7 accuracy check.
 3. Provisional values: reserve cap 100M (every buyback burns while the reserve holds more; devnet
