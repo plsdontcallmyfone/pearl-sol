@@ -80,6 +80,12 @@ still say pearl; never rename the namespaces without new vectors.
 6. Mainnet: prepared only (docs/MAINNET.md, section 11 lists the decisions); needs the owner's go-ahead.
 
 ## Other open items
+- DONE 2026-10-20 ("Cadre leftovers" agent): model blobs on every devnet node (the CLI had never uploaded
+  them; CLI fixed, blobs uploaded, boxes 1-2 on 8 GB quotas, all three miners mine segments), receipt links
+  public (cadre-gateway --public-api-root), cadre-web AI table, wallet devnet check against the devnet
+  gateway (pearl-wallet 0a3cf15c3), devnet boxes rebooted into kernel 6.8.0-147. Open: the public Solana
+  devnet RPC limit on box 0's IP (storefront-x402 crashes on an unhandled 429 and restarts; e2e runs fail
+  while box 0 is throttled) until the dedicated RPC URL arrives. TEST-REPORT "Cadre leftovers".
 - Wallet: no CADRE sell before fe55e9118 tested end to end; unlock double-click; keys list;
   evaluator index wiring (above).
 - cadre-proxy not published to a registry.

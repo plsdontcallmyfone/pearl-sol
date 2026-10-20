@@ -305,6 +305,27 @@ on box 0; with-rpc falls back to the env value without the file and exports the 
   (162.0 and 169.1 min, invariant OK after every step); 4, 5, 7, 8, 9 FAIL, each on a Solana devnet
   public RPC 429 or dropped connection from the Mac. Not reached: two passes in a row.
 
+## Cadre leftovers (2026-10-20: blob fetch, receipt links, AI page, wallet devnet check)
+
+- chain (test box, `cargo test` in a copy of the repo): 96 passed, including the new network test
+  model_manifest_uploaded_long_after_registration_reaches_peers (registered model, no upload, every node
+  fetching through 3 x grace blocks and 10 simulated minutes; a late 190 KB manifest putBlob on node 0
+  reaches nodes 1 and 2 with no restart; a pinned 3 MB chunk follows on demand). chain/Cargo.lock lacked
+  executor's hex dependency, so `--locked` builds failed; fixed in b5a55b6.
+- crates (test box): pearl-cli 38, cadre-gateway 7 (new receipt_links_use_the_public_api_root),
+  pearl-node + pearl-miner + pearl-attester all pass (new model_file_asks_for_every_chunk_at_once).
+- Devnet: boxes 1-2 nodes on the new agent-node with 8 GB blob quotas; model blobs uploaded to node 0
+  (836 blobs, 32 s); nodes 1-2 `manifest_present: true` within seconds; all three miners mine segment
+  blocks (DEVNET.md "Inference"). Receipt link https://api.64-95-12-116.sslip.io/v1/openai/requests/<id>
+  resolves publicly; same on the test box (https://cadre-api.64-95-13-106.sslip.io/v1/openai/requests/<id>).
+- Reboots into 6.8.0-147 one box at a time with finalized-hash agreement and relay lag 0-2 after each.
+- cadre-web 651e702: headless Chromium at 1440, 1280 and 390 px, local and on the hosted devnet site:
+  models table scrollWidth equals its clientWidth (was 1295 vs 1190 on desktop, 423 vs 356 on phone);
+  `npm run screens` for the AI page clean; lint, typecheck, unit 13 clean.
+- pearl-wallet 0a3cf15c3: devnet check 14/14 (the two "no gateway" assertions now check the devnet
+  gateway: model list through /v1/openai, prepaid balance, wallet-signed GET /v1/keys), TESTBOX=1 18/18,
+  unit 169 (+1 skipped), UI 93/93.
+
 ## GPU worker on RunPod (2026-10-20, "RunPod GPU inference + 8B int7 check" row)
 
 One RunPod pod, NVIDIA A40 48 GB, secure cloud on demand at $0.59/hr (96 vCPU, torch 2.5.1+cu124,
