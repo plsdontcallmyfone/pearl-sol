@@ -146,14 +146,16 @@ money.
 | Cadre chain | Live on the public devnet (3 nodes) |
 | Solana programs (reserve, bridge, storefront, light client) | Deployed on Solana devnet |
 | cadre-api, explorer | Live on devnet box 0 |
-| Inference gateway, prepaid, OpenAI API | Test box only (CPU, Llama-3.2-1B-Instruct), not on devnet yet |
+| Inference gateway, prepaid, OpenAI API | Live on devnet box 0 since 2026-10-20 (CPU, Llama-3.2-1B-Instruct, 2 worker threads) through https://api.64-95-12-116.sslip.io/v1/openai; also on the test box |
 | Wallet extension | Release "Cadre Wallet 6.73.4 (public devnet)" |
-| Website | Built (private repo cadre-web), not deployed publicly |
-| Mainnet | Not started; needs the owner's go-ahead |
+| Website | Live on devnet box 0: https://cadre.64-95-12-116.sslip.io (installer at /install-miner.sh; the installer's source repo is still private) |
+| Mainnet | Prepared, not launched (docs/MAINNET.md); needs the owner's go-ahead |
 
 Measured speed on the 4-core CPU test box: about 1.5 tokens/s when the worker runs on its
-own, and 0.4 to 0.6 tokens/s through the full paid flow (docs/measurements). A GPU worker
-would be needed for a real product.
+own, and 0.4 to 0.6 tokens/s through the full paid flow (docs/measurements). On devnet box 0
+(4 vCPU, worker on 2 threads, the box's miner on the other 2): 2.0-2.1 tokens/s decode, and the
+paid devnet chat answered at 2.1 tokens/s (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl,
+docs/DEVNET.md "Inference"). A GPU worker would be needed for a real product.
 
 ## What Cadre deliberately does not do
 
