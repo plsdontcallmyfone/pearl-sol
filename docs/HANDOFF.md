@@ -636,6 +636,30 @@ CLAUDE.md "Who is working on what".
    yet, services on the public RPC. NEXT: when the file exists, `scripts/devnet-deploy.sh rpc-url`, ctl
    restart the Solana units on boxes 0-2, then scripts/devnet-e2e.sh twice. Header relay above 10 slots
    stops confirming from one IP (public RPC; recheck on the dedicated one).
+19. DEVNET SITE + PAID AI + MAINNET PREP (owner decisions 2026-10-20 a-d; "devnet site + AI" agent):
+   - Website LIVE https://cadre.64-95-12-116.sslip.io (cadre-web.service on box 0 from cadre-web a9c903a,
+     `scripts/devnet-deploy.sh site`), installer at /install-miner.sh with devnet defaults (dry run walks
+     all 8 steps). Headless Chromium: 8 pages + job/block/agent detail, desktop and phone, no console
+     errors, live data. GAP: the installer clones the private pearl-sol repo, so a public install fails
+     at the source fetch (owner: publish source, a miner tarball or binaries).
+   - Paid AI LIVE on box 0: Llama-3.2-1B-Instruct int7 registered at height 2293 (model_id df34fa5f...),
+     cadre-worker (2 threads, 2.0-2.1 tok/s measured under the miner) + cadre-gateway units, cadre-api
+     gateway + prepaid on. Real paid flow (scripts/devnet-inference.sh, run devnet-ai-1): x402 top-up
+     of 256 rows (95,411,375 lamports), wallet-signed chat "What is the capital of France? Answer in one
+     word." -> "Paris." with receipt, Order 12 finalized by finalize_order_proof 27.3 min after payment
+     (tx 2ap8tsmZ...), all 144 segments mined in 138 min. Details: DEVNET.md "Inference".
+   - OPEN: nodes 1-2 never fetch the model manifest blob (p2p fetch of a push=false pinned blob), so
+     only box 0's miner mines segments; BOX1/2_BLOBS (8 GB) are in devnet.env but not installed
+     (needs a node restart on boxes 1-2). Gateway receipts' status_url points at 127.0.0.1:10664 (the
+     gateway's --public-url cannot express cadre-api's /v1/openai prefix; gateway/cadre-api change).
+     cadre-web AI page: the models table's Context column is clipped on desktop (inner overflow).
+   - Wallet: Cadre Devnet preset siteUrl set (pearl-wallet dev + danishseal cadre-chain 6e41f7ee2); not in
+     the released zip cadre-devnet-6.73.4.
+   - pearl CLI waits 600 s for inclusion (was 60 s, too short at 60 s blocks).
+   - docs/MAINNET.md: runbook, keys, config values, pump curve (mainnet 30 SOL virtual vs devnet 0.3;
+     scripts/mainnet-prep/curve.cjs reads both Globals), measured costs, checklist, owner decisions.
+     No mainnet transaction was sent.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

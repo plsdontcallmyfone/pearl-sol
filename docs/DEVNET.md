@@ -5,7 +5,8 @@ side on Solana devnet. Everything here is devnet only: no mainnet, no pump.fun m
 Owner decisions (2026-10-18): public devnet first; 3 new BitLaunch boxes, one node each; the
 docs/SPEC.md chain parameters and buyback defaults unchanged; no domain, sslip.io names with https.
 
-Status (2026-10-20): LIVE end to end, e2e run 2 7/7 PASS. Agent chain on 3 nodes (open p2p, miners on every
+Status (2026-10-20): LIVE end to end, e2e run 2 7/7 PASS; website and paid AI (Llama-3.2-1B-Instruct,
+CPU) live on box 0 since 2026-10-20, one real paid flow settled by proof ("Inference" below). Agent chain on 3 nodes (open p2p, miners on every
 box), upgraded in place (rolling, chain kept finalizing) to commit fe8e04a, which has RejectResult
 (tx kind 13), RegisterModel / PostSegments and the token-side changes. Solana devnet programs deployed
 from the same commit, initialized, light client following, proof modes on, relayer, header-relay,
@@ -242,7 +243,35 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   the box's miner on its 2 threads, load 2.3-2.5): decode 2.09 tok/s (8-token prompt), 2.00 tok/s (64),
   ttft 0.74 / 0.98 s. Price from the devnet storefront knobs: 280,742 lamports per row for a full
   4096-row balance; a 256-row top-up costs 95,411,375 lamports.
-- Paid flow: `scripts/devnet-inference.sh` (results in .devnet-e2e/inference-<run>.json). Result below.
+- Paid flow: `scripts/devnet-inference.sh` (results in .devnet-e2e/inference-<run>.json). Run
+  devnet-ai-1, 2026-10-20, our own devnet keys only (ops funded a throwaway buyer
+  GiPdGUzmzUotKqjCvtzXutYTm5bbGrPC9LgEZyNUNCkr with 0.2 SOL), everything through
+  https://api.64-95-12-116.sslip.io:
+  1. 06:18:14 top-up without payment: 402, 256 rows for 95,411,375 lamports, payTo the storefront wallet.
+     cadre-api built the payment tx, the buyer signed it; 06:18:17 201: ticket
+     8a73d024a32546825192b3b1a3f8043a9c239c40b4ac098bfa0e4775f3ae8ca0, storefront Order 12 (2.9 s).
+  2. 06:18:21 wallet-signed chat completion (cadre-auth-v1) "What is the capital of France? Answer in one
+     word." -> "Paris." (47 prompt + 3 completion tokens, ttft 2.62 s, decode 2.13 tok/s, about 4 s
+     wall), receipt headers X-Cadre-Request/Ticket/Order/Rows/Charged-Lamports (18,262,349 lamports for
+     49 rows at 372,701 per row)/Receipt/Explorer.
+  3. 06:18:22 balance closed (202); the relayer had unlocked the order at 06:18:25 (height 2298); the
+     gateway posted round 0 at 06:19:48 (m 52, 144 segments); the ticket completed at height 2306
+     (rows_used 52 of 256, the rest refunded on the chain).
+  4. 06:45:31 cadre-settle: "finalized order 12 by proof against final header 2306", Solana tx
+     2ap8tsmZe5cVB6r7xsu4Dyt8UevtSZbs1EvPm52CknKnCWuJs6Y9YQwqtQCAuEwQoj7sVpLGwKNDEZF4YfXYEC4W
+     (finalize_order_proof), 27.3 min after payment; Order result_hash
+     95c90ad2b836d2145071ea141de5a3ff43ea1c12cdafd50daaab42413e2105f1 = the ticket's. settle_share
+     followed at 06:47:10.
+  5. All 144 segments mined by 08:36 (138 min after the close; only box 0's miner mined them, see below);
+     light client lag 0 at 08:53. Buyer SOL spent 0.0954 (the x402 fee payer is the storefront wallet).
+  The script's last check first looked only at the newest tx on the Order (the settle_share) and
+  exited 1; fixed to scan the Order's recent txs for the finalize instruction (the decode of both txs
+  is above).
+- OPEN: boxes 1-2 never fetch the model manifest blob from node 0 (`hasBlob` on node 1 says
+  `fetching: true, present: false` for blob:4c085405... for over 2 hours; p2p fetch of a pinned model
+  blob stored with push=false). Their miners log "load matrix N ... is not on this node yet" and mine
+  fallback blocks instead, so segments are mined by box 0 only (about 1 per minute here). Chain code
+  (chain/rpc model pins + blob_fetch resolver); not changed in this session.
 
 ### Reset the chain (new genesis)
 

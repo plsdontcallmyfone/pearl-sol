@@ -273,3 +273,21 @@ from step 4 on. A second passing run (run 3) was not done: the owner chose a ded
 (2026-10-20) and asked to rerun twice on it; its URL file was not provided by the end of this session.
 Redaction and wrapper checks: explorer 32, cadre-api 31, relayer 33 PASS on the Mac; header-relay 3 PASS
 on box 0; with-rpc falls back to the env value without the file and exports the file's URL with it.
+
+## Devnet site + paid AI (2026-10-20, "devnet site + AI" agent)
+
+- Website on box 0 (https://cadre.64-95-12-116.sslip.io, cadre-web a9c903a): headless Chromium over the
+  hosted URL, 8 pages + 3 detail pages x desktop/phone, 0 console errors, no horizontal overflow, live data
+  (twice: before and after the gateway came on). `curl -fsSL <site>/install-miner.sh | bash -s -- --dry-run`
+  8/8 steps, devnet node as default RPC.
+- Model copy test box -> box 0: 329 files, sha256 list identical on both boxes.
+- Worker bench on box 0 (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl): 2.09 / 2.00 tok/s
+  decode at 8 / 64 prompt tokens, 2 threads, load 2.3-2.5.
+- Paid flow scripts/devnet-inference.sh run devnet-ai-1: top-up 201, chat 200 with receipt, close 202,
+  Order 12 finalized by finalize_order_proof (result_hash = the ticket's), 144/144 segments mined. The
+  script exited 1 at its last check (it read only the newest tx on the Order, a settle_share); the check
+  is fixed and the finalize tx was decoded by hand (DEVNET.md "Inference").
+- pearl-cli: release build on box 0 after the inclusion-wait change. pearl-wallet: tsc clean,
+  src/shared/pearl unit 104/104 after the preset change.
+- e2e run 3 by the header-relay agent ran in parallel and passed (exit 0, 162.0 min) across the box 0
+  node restart (05:56 UTC) and cadre-api restart (06:17 UTC).

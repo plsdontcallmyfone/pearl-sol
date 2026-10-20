@@ -23,7 +23,8 @@ still say pearl; never rename the namespaces without new vectors.
   64-95-12-22), explorer https://explorer.64-95-12-116.sslip.io, cadre-api
   https://api.64-95-12-116.sslip.io/v1. Solana devnet programs + CADRE mint
   BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e (on PumpSwap). e2e run 2 passed 7/7 (run 1 failed
-  step 4 on light-client lag). No inference gateway on devnet.
+  step 4 on light-client lag). Since 2026-10-20: website https://cadre.64-95-12-116.sslip.io and paid AI
+  (Llama-3.2-1B-Instruct on box 0, gateway through cadre-api /v1/openai); HANDOFF item 19.
 - Test box 64.95.13.106 (key ~/.ssh/pearl_vps, user pearl): full demo stack LEFT UP (demo 11/11,
   Llama-3.2-1B-Instruct serving chat, prepaid, OpenAI API, receipts). cadre-api public at
   https://cadre-api.64-95-13-106.sslip.io. Stop with `scripts/demo.sh down` on the box.
@@ -69,9 +70,10 @@ still say pearl; never rename the namespaces without new vectors.
    the paid flow; devnet has no gateway. Also needed for the 7-8B int7 accuracy check.
 3. Provisional values: reserve cap 100M (every buyback burns while the reserve holds more; devnet
    reserve holds 812M), fund_mining limits 10M/call, 3600 s, 20M/24h.
-4. Website hosting (public URL) and a site URL for the wallet's miner installer command.
+4. DONE 2026-10-20: website hosted on devnet box 0, wallet DEVNET preset has the site URL. New: the
+   installer needs the miner source public (repo is private) for public users.
 5. Whether cadre-chain becomes main on danishseal/cadre-extension.
-6. Mainnet: not started; needs the owner's go-ahead.
+6. Mainnet: prepared only (docs/MAINNET.md, section 11 lists the decisions); needs the owner's go-ahead.
 
 ## Other open items
 - Wallet: no CADRE sell before fe55e9118 tested end to end; unlock double-click; keys list;

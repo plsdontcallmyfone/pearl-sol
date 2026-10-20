@@ -143,14 +143,18 @@ const a = await waitFor("Order finalized on Solana", async () => {
   const x = await conn.getAccountInfo(pda);
   return x && x.data[ORDER_LAYOUT.STATUS] === ORDER_STATUS_FINALIZED ? x : null;
 }, 4 * 60 * MIN, 30_000);
-const [sig] = await conn.getSignaturesForAddress(pda, { limit: 1 });
 const rh = Buffer.from(a.data.subarray(ORDER_LAYOUT.RESULT_HASH, ORDER_LAYOUT.RESULT_HASH + 32)).toString("hex");
-let how = "unknown";
-const tx = await conn.getTransaction(sig.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+// the finalizing tx is not always the newest one touching the Order (later share settlements touch it too)
 const disc = (n: string) => createHash("sha256").update(`global:${n}`).digest().subarray(0, 8);
-for (const ci of tx?.transaction.message.compiledInstructions ?? []) {
-  if (!tx!.transaction.message.staticAccountKeys[ci.programIdIndex].equals(STOREFRONT_PROGRAM_ID)) continue;
-  for (const n of ["finalize_order_proof", "finalize_order"]) if (Buffer.from(ci.data).subarray(0, 8).equals(disc(n))) how = n;
+let how = "unknown";
+let sig = { signature: "" };
+for (const s of await conn.getSignaturesForAddress(pda, { limit: 20 })) {
+  const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  for (const ci of tx?.transaction.message.compiledInstructions ?? []) {
+    if (!tx!.transaction.message.staticAccountKeys[ci.programIdIndex].equals(STOREFRONT_PROGRAM_ID)) continue;
+    for (const n of ["finalize_order_proof", "finalize_order"]) if (Buffer.from(ci.data).subarray(0, 8).equals(disc(n))) { how = n; sig = s; }
+  }
+  if (how !== "unknown") break;
 }
 result.order = { pda: pda.toBase58(), finalized_by: how, tx: sig.signature, result_hash: rh, matches_ticket: rh === done.result_hash, settled_after_payment_min: (Date.now() - tPay) / MIN };
 result.buyer_sol_spent = (solBefore - (await conn.getBalance(buyer.publicKey))) / 1e9;
