@@ -161,6 +161,9 @@ pub struct Relay<'a, L: Ledger, S: Src> {
     global: Vec<Tx>,
     /// Headers we submitted that left the node's canonical chain: closed below the floor.
     abandoned: Vec<(u64, [u8; 32])>,
+    /// (k, n): start flights only on heights with height % n == k (several relays on different
+    /// IPs share the work; each needs its own RPC budget). Default (0, 1): every height.
+    lane: (u64, u64),
     skip: HashMap<[u8; 32], Instant>,
     closed_upto: Option<u64>,
     jobs_upto: Option<u64>,
@@ -172,6 +175,12 @@ pub struct Relay<'a, L: Ledger, S: Src> {
 
 impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
     /// `works`: one keypair per parallel slot (accounts created by `ensure_works`).
+    /// Relay only heights with height % n == k (see `lane`); submits and connects stay shared.
+    pub fn with_lane(mut self, k: u64, n: u64) -> Self {
+        self.lane = (k % n.max(1), n.max(1));
+        self
+    }
+
     pub fn new(src: S, ledger: &'a mut L, works: Vec<Keypair>, opts: Opts) -> Self {
         let free = (0..works.len()).rev().collect();
         Self {
@@ -188,6 +197,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             last_clock_note: None,
             global: vec![],
             abandoned: vec![],
+            lane: (0, 1),
             skip: HashMap::new(),
             closed_upto: None,
             jobs_upto: None,
@@ -432,6 +442,9 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         for (i, hd) in want.iter().enumerate() {
             if self.free.is_empty() {
                 break;
+            }
+            if hd.height % self.lane.1 != self.lane.0 {
+                continue;
             }
             if !matches!(recs[i], Some((lightclient::STATUS_PENDING, ..))) || self.skip.contains_key(&hd.hash) || self.flights.iter().any(|f| f.hd.hash == hd.hash) {
                 continue;

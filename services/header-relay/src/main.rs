@@ -88,6 +88,10 @@ enum Cmd {
         /// mode on (src/settle.rs).
         #[arg(long)]
         settle: bool,
+        /// Share the relaying with other relays: verify only heights with height % N == K
+        /// (`K/N`, default 0/1 = all). Run one relay per IP with its own Solana RPC budget.
+        #[arg(long, default_value = "0/1")]
+        lane: String,
         /// With --settle: settle only, relay no headers (another relay, for example on a box
         /// with its own RPC budget, keeps the light client up; settlement needs the
         /// storefront admin or an attester as payer, the header relay does not).
@@ -149,7 +153,7 @@ fn main() -> Result<()> {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             init(&node, &mut s, height, relay_reward, retain_final)
         }
-        Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs, no_relay } => {
+        Cmd::Run { work, poll_ms, once, settle, parallel, full_cu, lag_secs, no_relay, lane } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             if no_relay {
                 anyhow::ensure!(settle, "--no-relay only makes sense with --settle");
@@ -168,7 +172,8 @@ fn main() -> Result<()> {
             }
             let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
             let settle_node = Node::new(&cli.node);
-            let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu });
+            let (lk, ln) = lane.split_once('/').and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()?))).ok_or_else(|| anyhow!("--lane K/N, e.g. 0/2"))?;
+            let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu }).with_lane(lk, ln);
             r.ensure_works()?;
             let mut st = settle::Settle::new();
             let (mut last_settle, mut last_lag) = (std::time::Instant::now() - Duration::from_secs(60), std::time::Instant::now());

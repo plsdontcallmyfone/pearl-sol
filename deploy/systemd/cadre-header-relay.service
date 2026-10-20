@@ -5,7 +5,7 @@ After=cadre-node.service
 [Service]
 User=lode
 EnvironmentFile=/etc/lode/header-relay.env
-ExecStart=/bin/sh -c 'exec /opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana $TOKEN_RPC --payer /etc/lode/keys/relay.json --confirm-poll-ms $${HR_CONFIRM_POLL_MS:-50} --send-gap-ms $${HR_SEND_GAP_MS:-0} run --poll-ms 3000 --parallel $HR_PARALLEL --work /var/lib/lode/header-relay-work.json'
+ExecStart=/bin/sh -c 'exec /opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana $TOKEN_RPC --payer /etc/lode/keys/relay.json --confirm-poll-ms $${HR_CONFIRM_POLL_MS:-50} --send-gap-ms $${HR_SEND_GAP_MS:-0} run --poll-ms 3000 --parallel $HR_PARALLEL --lane $${HR_LANE:-0/1} --work /var/lib/lode/header-relay-work.json'
 Restart=always
 RestartSec=10
 
