@@ -31,6 +31,10 @@ still say pearl; never rename the namespaces without new vectors.
 
 ## The two agents stopped mid-task (2026-10-20 ~04:40 UTC)
 1. **Small fixes: pump-sell, keys list, evaluator index, wallet unlock bug.**
+   - RESUMED AND DONE 2026-10-20 (wallet dev c2013368a, pushed to origin and danishseal cadre-chain):
+     deploys verified live, keys list + evaluator index + sell pair checked on devnet / test box,
+     unlock root cause fixed (double /unlock push on Lock; return by path now), 20/20 headless.
+     The NOT DONE list below is history.
    - Landed and pushed in pearl-sol: cadre-gateway `GET /v1/keys` (a0d0546), explorer evaluator
      index `/api/jobs?evaluator=&status=` (e53d342), cadre-api `POST /v1/tx/pump-sell` (6d1e38c),
      docs SPEC 5.4 / API.md (1b36450). The new cadre-api answers on BOTH the test box and devnet
