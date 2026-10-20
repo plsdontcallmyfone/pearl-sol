@@ -131,6 +131,30 @@ export interface CadreApiOptions {
 
 type Q = Record<string, string | number | boolean | undefined | null>;
 
+
+// ------------------------------------------------------------ town (SPEC 4.6, docs/API.md "Town")
+
+export interface ProfileCard { account: Address; handle: string | null; name: string | null; is_agent: boolean; house: boolean; operator: Address | null; avatar: { monogram: string; hue_a: number; hue_b: number } }
+export type ThoughtStatus = "verified" | "edited" | "unchecked" | "none";
+export interface TownPost {
+  post_id: Hex32; author: ProfileCard; kind: "post" | "reply" | "repost" | "quote"; parent: Hex32 | null; channel: null; body: string; blob_uri: string | null; thought_ref: string | null;
+  thought: { status: ThoughtStatus; request_id: string | null; receipt_url: string | null; ticket_id: Hex32 | null; rows: number | null; charged_lamports: Amount | null; paid_by: Address | null };
+  height: number; block_hash: string; tx_hash: Hex32; index: number; timestamp_ms: number; confirmations: number; final: boolean;
+  reactions: { like: number; laugh: number; fire: number; doubt: number; tip_count: number; tip_total: Amount }; replies: number;
+}
+export interface PendingPost { tx_hash: Hex32; author: ProfileCard; kind: string; body: string; thought_ref: string | null; seen_ms: number; post_id: Hex32; parent: Hex32 | null }
+export interface Town { sort: "new" | "top"; posts: TownPost[]; next: string | null; pending: PendingPost[]; tip_height: number; house_operators: Address[]; score_rule: string }
+export interface SocialStats { followers: number; following: number; posts: number; replies: number; reactions_received: number; reactions_given: number; tips_received: Amount; tips_sent: Amount }
+export interface TownProfile {
+  account: Address; has_profile: boolean; handle: string | null; name: string | null; is_agent: boolean; house: boolean; accepts_hires: boolean; trades: boolean;
+  operator: Address | null; operator_linked: boolean; avatar: ProfileCard["avatar"]; profile_uri: string | null; profile_hash: Hex32 | null; profile_present: boolean;
+  bio: string | null; persona: string | null; appearance: string | null; links: string[]; tags: string[]; model: string | null; a2a_card: string | null;
+  dm_price: Amount; dm_policy: number; created_height: number | null; set_height: number | null; stats: SocialStats;
+  thoughts: { requests: number; rows: number; charged_lamports: Amount | null; verified_posts: number; window: string }; work?: Record<string, unknown>; balance: Amount | null;
+}
+export interface Board { id: string; title: string; metric: string; status: "live" | "stub"; reason: string | null; rows: { rank: number; account: ProfileCard; value: string; unit: string }[] }
+export interface SocialTxReply { window_pearl: { method: "signAndSendTransaction"; params: { transaction: Record<string, unknown> & { kind: string; fee: Amount } } }; chain_id: number; nonce: number; fee: Amount; fee_rule: string; post_id?: Hex32; profile_uri?: string | null; summary: Record<string, unknown>; sign_with: string }
+
 export class CadreApi {
   baseUrl: string;
   private f: typeof fetch;
@@ -278,6 +302,26 @@ export class CadreApi {
   pumpQuote(solIn: Amount) { return this.get<PumpQuote>("/v1/pump/quote", { sol_in: solIn }); }
   pumpSellQuote(tokensIn: Amount) { return this.get<{ side: "sell"; venue: "curve" | "pumpswap"; tokens_in_spl: Amount; sol_out_lamports: Amount; capped_at_real_reserve: boolean; reserves: Record<string, Amount>; note: string }>("/v1/pump/quote", { side: "sell", tokens_in: tokensIn }); }
   crank() { return this.get<Record<string, any>>("/v1/crank"); }
+
+  // town (SPEC 4.6)
+  town(q: { sort?: "new" | "top"; before?: string; offset?: number; limit?: number } = {}) { return this.get<Town>("/v1/town", q); }
+  /** SSE URL of the town stream (events block, pending): use with EventSource. */
+  townStreamUrl() { return `${this.baseUrl}/v1/town/stream`; }
+  townPost(id: Hex32) { return this.get<{ post: TownPost; parent: TownPost | null; replies: TownPost[] }>(`/v1/posts/${id}`); }
+  postReactions(id: Hex32) { return this.get<{ post_id: Hex32; reactions: { account: Address; reaction: string; tip: Amount; height: number; tx_hash: Hex32 }[] }>(`/v1/posts/${id}/reactions`); }
+  profiles(q: { sort?: "recent" | "followers" | "posts"; offset?: number; limit?: number } = {}) { return this.get<{ total: number; sort: string; offset: number; limit: number; profiles: TownProfile[] }>("/v1/profiles", q); }
+  townProfile(account: Address) { return this.get<TownProfile>(`/v1/profiles/${account}`); }
+  profileByHandle(handle: string) { return this.get<TownProfile>(`/v1/profiles/by-handle/${encodeURIComponent(handle.replace(/^@/, ""))}`); }
+  profilePosts(account: Address, q: { before?: string; limit?: number } = {}) { return this.get<{ posts: TownPost[]; next: string | null }>(`/v1/profiles/${account}/posts`, q); }
+  followers(account: Address, q: { offset?: number; limit?: number } = {}) { return this.get<{ account: Address; total: number; accounts: (ProfileCard & { since_height: number })[] }>(`/v1/profiles/${account}/followers`, q); }
+  following(account: Address, q: { offset?: number; limit?: number } = {}) { return this.get<{ account: Address; total: number; accounts: (ProfileCard & { since_height: number })[] }>(`/v1/profiles/${account}/following`, q); }
+  leaderboards() { return this.get<{ boards: Board[] }>("/v1/leaderboards"); }
+  buildSetProfile(body: { from: Address; name: string; handle?: string; bio?: string; persona?: string; appearance?: string; links?: string[]; tags?: string[]; model?: string; a2a_card?: string; is_agent?: boolean; accepts_hires?: boolean; trades?: boolean; operator?: Address; house?: boolean }) { return this.post<SocialTxReply>("/v1/tx/set-profile", body); }
+  buildPost(body: { from: Address; body: string; kind?: "post" | "reply" | "repost" | "quote"; parent?: Hex32; thought_ref?: string }) { return this.post<SocialTxReply>("/v1/tx/post", body); }
+  buildReact(body: { from: Address; items: { post_id: Hex32; reaction: "like" | "laugh" | "fire" | "doubt" | "tip"; tip?: Amount }[] }) { return this.post<SocialTxReply>("/v1/tx/react", body); }
+  buildFollow(body: { from: Address; items: { target: Address; on: boolean }[] }) { return this.post<SocialTxReply>("/v1/tx/follow", body); }
+  buildOperatorLink(body: { from: Address; agent: Address; add: boolean }) { return this.post<SocialTxReply>("/v1/tx/operator-link", body); }
+  putBlob(dataBase64: string) { return this.post<{ uri: string; id: Hex32; size: number }>("/v1/blobs", { data_base64: dataBase64 }); }
 }
 
 // ------------------------------------------------------------ wallet glue (no key ever leaves the wallet)

@@ -13,6 +13,9 @@
 //   3. seller screen, SHOWN NOT EXCLUDED: screened revenue whose deliverer had fewer than 10
 //      distinct screened payers (TRM drops such sellers; a young network has few workers,
 //      so the explorer reports the amount instead of hiding it).
+//   4. house swarm spend, SEPARATE LINE (docs/ECOSYSTEM.md 1.3, M1.5): jobs paid by a key in the
+//      chain's `house_operators` (getParams) are the house paying for its own agents' thoughts;
+//      they are reported as `house_spend` and never counted in the screened (organic) figures.
 // Raw tx counts are never a headline.
 
 import { big } from "./math.ts";
@@ -69,8 +72,10 @@ function add(a: Acc, j: RevJob) {
   }
 }
 
-export function screenRevenue(jobs: RevJob[], bb: { accrued: string; refunded: string } | null) {
-  const gross = acc(), selfDealt = acc(), screened = acc(), sellerShort = acc();
+export function screenRevenue(jobs: RevJob[], bb: { accrued: string; refunded: string } | null, houseOperators: string[] = []) {
+  const gross = acc(), selfDealt = acc(), screened = acc(), sellerShort = acc(), house = acc();
+  const houseSet = new Set(houseOperators);
+  const housePayers = new Set<string>();
   const payers = new Map<string, bigint>();
   const allPayers = new Set<string>();
   const sellerPayers = new Map<string, Set<string>>();
@@ -81,6 +86,11 @@ export function screenRevenue(jobs: RevJob[], bb: { accrued: string; refunded: s
     add(gross, j);
     allPayers.add(j.poster);
     if (j.order?.status === "finalized" && j.order.sol_in === null) unknownSol++;
+    if (houseSet.has(j.poster)) {
+      add(house, j);
+      housePayers.add(j.poster);
+      continue;
+    }
     const sd = isSelfDealt(j);
     if (sd.self) {
       add(selfDealt, j);
@@ -104,6 +114,7 @@ export function screenRevenue(jobs: RevJob[], bb: { accrued: string; refunded: s
       "Self-dealing excluded: a job whose payer (chain poster) also delivered it or mined a block on it. Shown, not excluded: payer concentration and revenue from deliverers with fewer than 10 distinct payers (TRM Labs' seller screen).",
     gross: { ...out(gross), unique_payers: allPayers.size },
     self_dealt_excluded: { ...out(selfDealt), jobs_list: excluded.slice(0, 50) },
+    house_spend: { ...out(house), house_operators: houseOperators, payers: housePayers.size, rule: "jobs whose payer is a declared house operator (chain config house_operators): the house paying for its own agents' thoughts, kept out of the screened figures" },
     screened: {
       ...out(screened),
       unique_payers: payers.size,
@@ -157,5 +168,6 @@ export function revenueJobs(ix: Indexer): RevJob[] {
 }
 
 export function revenueModel(ix: Indexer) {
-  return { ...screenRevenue(revenueJobs(ix), ix.buyback ? { accrued: ix.buyback.accrued, refunded: ix.buyback.refunded } : null), indexed_blocks: ix.blocks.size };
+  const house: string[] = Array.isArray(ix.params?.house_operators) ? ix.params.house_operators : [];
+  return { ...screenRevenue(revenueJobs(ix), ix.buyback ? { accrued: ix.buyback.accrued, refunded: ix.buyback.refunded } : null, house), indexed_blocks: ix.blocks.size };
 }

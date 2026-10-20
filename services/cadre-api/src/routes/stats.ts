@@ -130,7 +130,8 @@ export function revenueModel(d: Deps, days: number) {
   const ix = d.ix;
   const ord = M.orderByJob(ix);
   const jobs = [...ix.jobs.values()].filter((j) => j.kind !== "segment");
-  let pAll = 0n, pSelf = 0n, pSelfMined = 0n, wAll = 0n, solFinal = 0n;
+  let pAll = 0n, pSelf = 0n, pSelfMined = 0n, wAll = 0n, solFinal = 0n, pHouse = 0n, solHouse = 0n, jobsHouse = 0;
+  const house = new Set<string>(Array.isArray(ix.params?.house_operators) ? ix.params.house_operators : []);
   const payers = new Map<string, bigint>();
   const day = new Map<string, { p: bigint; sol: bigint; payers: Set<string> }>();
   const minerOf = new Map<string, Set<string>>();
@@ -139,13 +140,18 @@ export function revenueModel(d: Deps, days: number) {
     const p = big(j.protocol_fee);
     pAll += p;
     wAll += big(j.worker_pay);
-    const self = j.deliverer && j.deliverer === j.poster;
+    const isHouse = house.has(j.poster);
+    const self = !isHouse && j.deliverer && j.deliverer === j.poster;
     if (self) pSelf += p;
     const miners = minerOf.get(j.job_id);
     if (miners && miners.size === 1 && miners.has(j.poster)) pSelfMined += p;
-    if (!self) payers.set(j.poster, (payers.get(j.poster) ?? 0n) + p);
     const o = ord.get(j.job_id);
     const sol = o && o.status === "finalized" ? big(o.solSpent) : 0n;
+    if (isHouse) {
+      pHouse += p;
+      solHouse += sol;
+      jobsHouse++;
+    } else if (!self) payers.set(j.poster, (payers.get(j.poster) ?? 0n) + p);
     solFinal += sol;
     const blk = ix.blocks.get(j.posted_height);
     const t = o?.createdTs ? o.createdTs * (o.createdTs < 1e12 ? 1000 : 1) : blk?.time ?? null;
@@ -158,7 +164,7 @@ export function revenueModel(d: Deps, days: number) {
       day.set(k, e);
     }
   }
-  const pScreened = pAll - pSelf;
+  const pScreened = pAll - pSelf - pHouse;
   const ranked = [...payers.values()].sort((a, b) => (b > a ? 1 : b < a ? -1 : 0));
   const top = ranked[0] ?? 0n;
   const keys = [...day.keys()].sort().slice(-days);
@@ -172,6 +178,10 @@ export function revenueModel(d: Deps, days: number) {
       self_dealt_rule: "jobs whose deliverer is also the poster; excluded from protocol_fees_screened and from payer counts",
       self_mined_protocol_fees: s(pSelfMined),
       self_mined_rule: "jobs whose every mined block came from the poster's own key; shown, not excluded (mining your own job still pays (1 - alpha) x P to the pool)",
+    },
+    house_spend: {
+      house_operators: [...house], jobs: jobsHouse, protocol_fees: s(pHouse), sol_settled: s(solHouse),
+      rule: "jobs whose payer is a declared house operator (chain config house_operators): the house paying for its own agents' thoughts; kept out of protocol_fees_screened and the payer counts",
     },
     protocol_fees_screened: s(pScreened),
     unique_payers_screened: payers.size,

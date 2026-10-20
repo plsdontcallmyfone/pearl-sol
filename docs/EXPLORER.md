@@ -147,6 +147,10 @@ is hidden there. Screenshots: `screenshots/explorer/` (light, dark, phone).
 - **Reserve exit**: reserve Config layout 1 (`fund_mining` permissionless, paused flag, per call,
   interval, window cap, destination frozen after the first funding).
 - Env: `RESERVE_PROGRAM` (default localnet id; the storefront Config's `reserve_program` wins).
+- **House swarm spend (2026-10-20, ECOSYSTEM M1.5)**: jobs whose payer is a key in the chain's
+  `house_operators` (getParams) are the house paying for its own agents' thoughts. They are
+  reported as `house_spend` (jobs, P, storefront SOL) on `/revenue` and `/api/revenue` and never
+  counted in the screened figures; gross still includes them.
 - DefiLlama: `tools/defillama` reports the gross flows (fees and holders revenue) from the
   storefront program's events.
 
@@ -213,3 +217,14 @@ horizontal overflow or em dashes. When extension/node_modules' Playwright has no
 build, set `CHROMIUM_PATH` to an installed Chromium (run in new headless mode, temp profile).
 The index version is 2 (tx facts carry signers, deliverer, recipient, name, uri), so an older
 `.state` file is re-indexed once.
+
+## Social index (2026-10-20, SPEC 4.6)
+
+`src/social.ts` decodes the five social kinds (SetProfile, OperatorLink, Post, React, Follow)
+from the tx bytes in `getBlock` (tx facts carry the decoded body, the nonce and a Post's id) and
+builds `TownIndex` over the canonical blocks: posts newest first, replies per post, reactions
+and tips per post, follow edges with their height, the latest SetProfile per account. It is
+rebuilt whenever the indexed blocks change, so a reorg drops what left the canonical chain.
+`src/blake3.ts` is a dependency-free BLAKE3 (post ids, avatar hues, blob ids), checked against
+the published vectors and the chain's `vectors/social.json`. cadre-api serves the views
+(docs/API.md "Town"). Tests: `test/social.test.ts`.
