@@ -51,6 +51,14 @@ pub trait Ledger {
     /// Send without waiting (no preflight); the signature is tracked with `states`.
     fn submit(&mut self, tx: Transaction) -> Result<Signature>;
     fn states(&self, sigs: &[Signature]) -> Result<Vec<TxState>>;
+    /// Like `states`, but also searching the ledger history. An RPC node answers `states`
+    /// from its recent status cache only, which drops a transaction's status once its
+    /// blockhash ages out; a tx that landed then reads as unknown. Asked before a tx whose
+    /// blockhash expired is sent again (a second copy of a landed step runs it twice:
+    /// BadStep, NotPending, or AccountAlreadyInUse for a submit). Default: `states`.
+    fn history(&self, sigs: &[Signature]) -> Result<Vec<TxState>> {
+        self.states(sigs)
+    }
     fn rent(&self, size: usize) -> Result<u64>;
     /// Wait a little (RPC: sleep; simulation: one slot passes).
     fn pause(&mut self, ms: u64);
@@ -83,6 +91,12 @@ pub fn send_wait<L: Ledger + ?Sized>(l: &mut L, ixs: &[Instruction], extra: &[&K
                 TxState::Pending => {}
             }
             if t0.elapsed() > Duration::from_secs(20) && !l.blockhash_valid(&bh)? {
+                // expired: it may still have landed (status cache dropped it); ask history
+                match l.history(&[sig])?.pop().unwrap_or(TxState::Pending) {
+                    TxState::Ok => return Ok(sig),
+                    TxState::Failed(e) => bail!("transaction {sig} failed: {e}"),
+                    TxState::Pending => {}
+                }
                 last = format!("transaction {sig} expired unconfirmed");
                 break;
             }

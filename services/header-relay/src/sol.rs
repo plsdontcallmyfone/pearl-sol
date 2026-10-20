@@ -177,7 +177,13 @@ impl Sol {
                     return Ok(sig.to_string());
                 }
             } else if t0.elapsed() > std::time::Duration::from_secs(5) && !self.rpc.is_blockhash_valid(bh, CommitmentConfig::processed())? {
-                bail!("transaction {sig} expired unconfirmed");
+                // the recent status cache may have dropped a tx that landed: ask history
+                // before reporting it expired (the caller would send it again)
+                match self.rpc.get_signature_statuses_with_history(&[sig])?.value.into_iter().next().flatten() {
+                    Some(st) if st.err.is_some() => bail!("transaction {sig} failed: Error processing Instruction: {}", st.err.unwrap()),
+                    Some(_) => return Ok(sig.to_string()),
+                    None => bail!("transaction {sig} expired unconfirmed"),
+                }
             }
             std::thread::sleep(self.poll);
         }
@@ -248,10 +254,27 @@ impl crate::ledger::Ledger for Sol {
         Ok(sig)
     }
     fn states(&self, sigs: &[solana_sdk::signature::Signature]) -> Result<Vec<crate::ledger::TxState>> {
+        self.statuses(sigs, false)
+    }
+    fn history(&self, sigs: &[solana_sdk::signature::Signature]) -> Result<Vec<crate::ledger::TxState>> {
+        self.statuses(sigs, true)
+    }
+    fn rent(&self, size: usize) -> Result<u64> {
+        Ok(self.rpc.get_minimum_balance_for_rent_exemption(size)?)
+    }
+    fn pause(&mut self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
+impl Sol {
+    /// getSignatureStatuses, from the recent status cache or (`history`) the ledger history.
+    fn statuses(&self, sigs: &[solana_sdk::signature::Signature], history: bool) -> Result<Vec<crate::ledger::TxState>> {
         use crate::ledger::TxState;
         let mut out = Vec::with_capacity(sigs.len());
         for c in sigs.chunks(256) {
-            for s in self.rpc.get_signature_statuses(c)?.value {
+            let v = if history { self.rpc.get_signature_statuses_with_history(c)?.value } else { self.rpc.get_signature_statuses(c)?.value };
+            for s in v {
                 out.push(match s {
                     Some(s) if s.err.is_some() => TxState::Failed(format!("{:?}", s.err.unwrap())),
                     Some(s) if s.satisfies_commitment(CommitmentConfig::confirmed()) => TxState::Ok,
@@ -260,11 +283,5 @@ impl crate::ledger::Ledger for Sol {
             }
         }
         Ok(out)
-    }
-    fn rent(&self, size: usize) -> Result<u64> {
-        Ok(self.rpc.get_minimum_balance_for_rent_exemption(size)?)
-    }
-    fn pause(&mut self, ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 }

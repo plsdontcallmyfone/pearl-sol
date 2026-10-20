@@ -60,19 +60,27 @@ pub struct Opts {
     /// Ask for the planned CU (+25%) instead of 1.4M per tx (priority fees are charged
     /// on the limit). Falls back to 1.4M after a compute-budget failure.
     pub exact_cu: bool,
+    /// An unconfirmed tx this old whose blockhash has expired is checked against the
+    /// ledger history and, only if it never landed, sent again (20 s; tests use 0).
+    pub resend_after: Duration,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { parallel: 8, exact_cu: true }
+        Self { parallel: 8, exact_cu: true, resend_after: Duration::from_secs(20) }
     }
 }
 
-/// One outstanding transaction (re-sent with a fresh blockhash if it expires).
+/// One outstanding transaction (re-sent with a fresh blockhash if it expires without
+/// having landed).
 struct Tx {
     ixs: Vec<Instruction>,
     cu: u32,
     sig: Option<Signature>,
+    /// Signatures of earlier sends of the same instructions (their blockhashes expired).
+    /// If one of them did land after all, the tx is done and a later copy's failure is
+    /// that copy running the step a second time, not a failure of the step.
+    prev: Vec<Signature>,
     bh: Hash,
     sent: Instant,
     done: bool,
@@ -80,7 +88,7 @@ struct Tx {
 
 impl Tx {
     fn new(ixs: Vec<Instruction>, cu: u32) -> Self {
-        Self { ixs, cu, sig: None, bh: Hash::default(), sent: Instant::now(), done: false }
+        Self { ixs, cu, sig: None, prev: vec![], bh: Hash::default(), sent: Instant::now(), done: false }
     }
 }
 
@@ -120,6 +128,10 @@ pub struct Stats {
     pub failed_txs: u64,
     /// Submits refused because the header is too far ahead of the Solana clock.
     pub clock_waits: u64,
+    /// Expired txs sent again after the history showed they never landed.
+    pub resends: u64,
+    /// Failed copies of a tx whose earlier send had landed (counted done, not failed).
+    pub dup_sends: u64,
 }
 
 impl Stats {
@@ -248,6 +260,9 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
     fn fire(ledger: &mut L, t: &mut Tx, bh: Hash, stats: &mut Stats) -> Result<()> {
         let bh = ledger.fresh_blockhash(bh)?;
         let tx = ledger::build(ledger, &t.ixs, &[], t.cu, bh);
+        if let Some(old) = t.sig.take() {
+            t.prev.push(old);
+        }
         t.sig = Some(ledger.submit(tx)?);
         t.bh = bh;
         t.sent = Instant::now();
@@ -579,11 +594,19 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         // theirs): asking once per pending tx overran a public RPC's per-method limit, and the
         // 429 backoff made passes outlive blockhashes, so txs expired and were re-fired forever
         let mut bh_valid: HashMap<Hash, bool> = HashMap::new();
+        let resend_after = self.opts.resend_after;
         let mut check = |t: &mut Tx, ledger: &mut L, stats: &mut Stats| -> Result<Option<String>> {
             let Some(sig) = t.sig else { return Ok(None) };
             match states.get(&sig) {
                 Some(TxState::Ok) => t.done = true,
                 Some(TxState::Failed(e)) => {
+                    // a copy sent after an earlier send's blockhash expired: if that earlier
+                    // send landed after all, this failure is the step running twice
+                    if !t.prev.is_empty() && ledger.history(&t.prev)?.contains(&TxState::Ok) {
+                        stats.dup_sends += 1;
+                        t.done = true;
+                        return Ok(None);
+                    }
                     stats.failed_txs += 1;
                     if e.contains("ComputationalBudgetExceeded") || e.contains("exceeded CUs") {
                         cu_fail = true;
@@ -591,7 +614,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                     return Ok(Some(e.clone()));
                 }
                 _ => {
-                    if t.sent.elapsed() > Duration::from_secs(20) {
+                    if t.sent.elapsed() >= resend_after {
                         let ok = match bh_valid.get(&t.bh) {
                             Some(v) => *v,
                             None => {
@@ -601,7 +624,25 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                             }
                         };
                         if !ok {
-                            Self::fire(ledger, t, bh, stats)?; // expired unconfirmed: send again
+                            // Expired and not in the recent status cache. The cache drops a
+                            // status once its blockhash ages out, so a tx that landed while
+                            // a slow pass (429 backoff, paced sends) kept us from polling
+                            // reads as unknown here. Sending it again then ran the step a
+                            // second time on Solana devnet (BadStep / NotPending, and the
+                            // header restarted from begin_verify). Ask the history first.
+                            let mut all = t.prev.clone();
+                            all.push(sig);
+                            let hist = ledger.history(&all)?;
+                            if hist.contains(&TxState::Ok) {
+                                t.done = true;
+                                return Ok(None);
+                            }
+                            if let Some(TxState::Failed(e)) = hist.iter().find(|h| matches!(h, TxState::Failed(_))) {
+                                stats.failed_txs += 1;
+                                return Ok(Some(e.clone()));
+                            }
+                            stats.resends += 1;
+                            Self::fire(ledger, t, bh, stats)?; // never landed: send again
                         }
                     }
                 }
@@ -821,6 +862,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             "node_tip": s.node_tip, "lc_tip": s.lc_tip, "lc_final": s.lc_final, "lag_blocks": s.lag(),
             "inflight": s.inflight, "parallel": self.works.len(), "headers_per_min": (headers_per_min * 10.0).round() / 10.0,
             "verified": s.verified, "connected": s.connected, "txs": s.txs, "failed_txs": s.failed_txs, "clock_waits": s.clock_waits,
+            "resends": s.resends, "dup_sends": s.dup_sends,
         })
         .to_string()
     }

@@ -9,8 +9,9 @@
 //! (`cd token && anchor build -p lightclient`). Run: `cargo test --release --test catchup -- --nocapture`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Result;
 use header_relay::chain::{ChainHeader, Src};
@@ -33,6 +34,24 @@ struct Sim {
     slot: u64,
     rng: u64,
     max_tx: usize,
+    /// Status-cache loss (0 = off): every Nth tx that lands OK drops out of the recent
+    /// status cache at once, so `states` reports it unknown forever (on an RPC node that
+    /// happens once its blockhash ages out, while a slow pass has not polled yet).
+    lose_every: u64,
+    landed_ok: u64,
+    lost: HashSet<Signature>,
+    /// `history` finds lost txs (an RPC node's searchTransactionHistory). Off: it answers
+    /// like `states`, which is what the relay effectively had before it asked history.
+    history_finds: bool,
+    /// Blockhashes are valid this many slots after first use (0 = forever).
+    expiry: u64,
+    bh_slot: HashMap<Hash, u64>,
+}
+
+impl Sim {
+    fn new(svm: LiteSVM, payer: Keypair, rng: u64) -> Self {
+        Self { svm, payer, queue: vec![], results: HashMap::new(), slot: 0, rng, max_tx: 0, lose_every: 0, landed_ok: 0, lost: HashSet::new(), history_finds: true, expiry: 0, bh_slot: HashMap::new() }
+    }
 }
 
 impl Sim {
@@ -57,10 +76,11 @@ impl Ledger for Sim {
     fn blockhash(&self) -> Result<Hash> {
         Ok(self.svm.latest_blockhash())
     }
-    fn blockhash_valid(&self, _: &Hash) -> Result<bool> {
-        Ok(true)
+    fn blockhash_valid(&self, h: &Hash) -> Result<bool> {
+        Ok(self.expiry == 0 || self.bh_slot.get(h).is_some_and(|s| self.slot <= s + self.expiry))
     }
     fn submit(&mut self, tx: Transaction) -> Result<Signature> {
+        self.bh_slot.entry(tx.message.recent_blockhash).or_insert(self.slot);
         let size = bincode_size(&tx);
         assert!(size <= 1232, "tx too large: {size}");
         self.max_tx = self.max_tx.max(size);
@@ -69,6 +89,12 @@ impl Ledger for Sim {
         Ok(sig)
     }
     fn states(&self, sigs: &[Signature]) -> Result<Vec<TxState>> {
+        Ok(sigs.iter().map(|s| if self.lost.contains(s) { TxState::Pending } else { self.results.get(s).cloned().unwrap_or(TxState::Pending) }).collect())
+    }
+    fn history(&self, sigs: &[Signature]) -> Result<Vec<TxState>> {
+        if !self.history_finds {
+            return self.states(sigs);
+        }
         Ok(sigs.iter().map(|s| self.results.get(s).cloned().unwrap_or(TxState::Pending)).collect())
     }
     fn rent(&self, size: usize) -> Result<u64> {
@@ -88,6 +114,12 @@ impl Ledger for Sim {
                 Ok(_) => TxState::Ok,
                 Err(f) => TxState::Failed(format!("{:?}", f.err)),
             };
+            if r == TxState::Ok && self.lose_every > 0 {
+                self.landed_ok += 1;
+                if self.landed_ok % self.lose_every == 0 {
+                    self.lost.insert(sig);
+                }
+            }
             self.results.insert(sig, r);
         }
         self.svm.expire_blockhash();
@@ -154,19 +186,28 @@ struct Run {
     failed: u64,
     verified: u64,
     max_tx: usize,
+    resends: u64,
+    dup_sends: u64,
+    /// distinct (error) strings of the txs that landed with an error
+    errors: Vec<String>,
 }
 
 /// `backlog` blocks visible at the start, then one more every `every` slots up to
 /// `total`, then `tail` slots to finish.
 fn run(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_slots: u64) -> Run {
+    run_with(blocks, parallel, backlog, every, max_slots, |_| {})
+}
+
+fn run_with(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_slots: u64, cfg: impl Fn(&mut Sim)) -> Run {
     let p = small_params();
     let env = Env::new(p, &blocks[0]);
-    let mut sim = Sim { svm: env.svm, payer: env.payer, queue: vec![], results: HashMap::new(), slot: 0, rng: 0x9e3779b97f4a7c15, max_tx: 0 };
+    let mut sim = Sim::new(env.svm, env.payer, 0x9e3779b97f4a7c15);
+    cfg(&mut sim);
     let total = blocks.len();
     let chain = Chain { blocks: Rc::new(RefCell::new(blocks.to_vec())), visible: Rc::new(Cell::new(backlog + 1)), fetches: Rc::new(RefCell::new(0)) };
     let visible = chain.visible.clone();
     let works = (0..parallel).map(|_| Keypair::new()).collect();
-    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel, exact_cu: true });
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel, exact_cu: true, resend_after: Duration::ZERO });
     r.ensure_works().unwrap();
     let mut lag = vec![];
     let mut slot = 0u64;
@@ -191,7 +232,23 @@ fn run(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_s
     }
     let c = r.config().unwrap();
     let acc = r.ledger.account(&lightclient::client::acc_addr()).unwrap().and_then(|d| lightclient::client::acc_state(&d)).unwrap();
-    Run { lag, slots: slot, lc_tip: c.tip_height, lc_final: c.final_height, acc_next: acc.0 + acc.1, txs: r.stats.txs, failed: r.stats.failed_txs, verified: r.stats.verified, max_tx: r.ledger.max_tx }
+    let mut errors: Vec<String> = r.ledger.results.values().filter_map(|s| if let TxState::Failed(e) = s { Some(e.clone()) } else { None }).collect();
+    errors.sort();
+    errors.dedup();
+    Run {
+        lag,
+        slots: slot,
+        lc_tip: c.tip_height,
+        lc_final: c.final_height,
+        acc_next: acc.0 + acc.1,
+        txs: r.stats.txs,
+        failed: r.stats.failed_txs,
+        verified: r.stats.verified,
+        max_tx: r.ledger.max_tx,
+        resends: r.stats.resends,
+        dup_sends: r.stats.dup_sends,
+        errors,
+    }
 }
 
 #[test]
@@ -245,12 +302,12 @@ fn follows_a_node_reorg() {
         b.push(child(&p, &parent, &Work::Fallback, ChildOpts { miner: 0x77, ..Default::default() }));
     }
     let env = Env::new(p, &a[0]);
-    let mut sim = Sim { svm: env.svm, payer: env.payer, queue: vec![], results: HashMap::new(), slot: 0, rng: 7, max_tx: 0 };
+    let mut sim = Sim::new(env.svm, env.payer, 7);
     let blocks = Rc::new(RefCell::new(a.clone()));
     let chain = Chain { blocks: blocks.clone(), visible: Rc::new(Cell::new(a.len())), fetches: Rc::new(RefCell::new(0)) };
     let visible = chain.visible.clone();
     let works = (0..6).map(|_| Keypair::new()).collect();
-    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 6, exact_cu: true });
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 6, exact_cu: true, resend_after: Duration::ZERO });
     r.ensure_works().unwrap();
     for _ in 0..200 {
         r.pass().unwrap();
@@ -283,4 +340,52 @@ fn follows_a_node_reorg() {
     let canon = r.ledger.account(&lightclient::client::canon_pda()).unwrap().unwrap();
     let at = |h: usize| -> [u8; 32] { canon[8 + 32 * h..8 + 32 * h + 32].try_into().unwrap() };
     assert_eq!(at(17), b[17].hash);
+}
+
+/// Devnet 2026-10-19/20 (docs/HANDOFF.md item 19): headers failed once with BadStep (6015) or
+/// NotPending (6008) and passed on retry. A step tx landed, but the relay's next poll came
+/// after its blockhash aged out (passes of about 2 min under 429 backoff), so the RPC
+/// node's recent status cache no longer had it and getSignatureStatuses said unknown; the
+/// blockhash read expired, so the relay sent the same step again with a new blockhash, and
+/// the copy ran a finished step a second time. Here every 9th tx that lands drops out of
+/// the status cache and blockhashes expire after 2 slots.
+fn lossy(history_finds: bool) -> Run {
+    let p = small_params();
+    let blocks = Rc::new(mine(&p, 24));
+    run_with(&blocks, 6, 12, 4, 600, |s| {
+        s.lose_every = 9;
+        s.expiry = 2;
+        s.history_finds = history_finds;
+    })
+}
+
+/// Reproduction: without a history lookup the expired-and-unknown tx is sent again and
+/// its copy fails with BadStep / NotPending (or AccountAlreadyInUse for a submit), and
+/// that header starts over.
+#[test]
+fn resending_a_landed_tx_runs_the_step_twice() {
+    let r = lossy(false);
+    println!("no history: {} txs, {} failed, {} resends; errors {:?}", r.txs, r.failed, r.resends, r.errors);
+    assert!(r.resends > 0);
+    assert!(r.failed > 0, "the copies of landed txs should fail");
+    let custom = |c: u32| format!("Custom({c})");
+    assert!(
+        r.errors.iter().any(|e| e.contains(&custom(lightclient::LcError::BadStep.into())) || e.contains(&custom(lightclient::LcError::NotPending.into())) || e.contains("Custom(0)")),
+        "errors {:?}",
+        r.errors
+    );
+}
+
+/// Regression: the relay asks the ledger history before sending an expired tx again, so
+/// a landed tx counts as done and nothing runs twice: no failed tx, every header
+/// verified once, the light client reaches the tip.
+#[test]
+fn expired_but_landed_txs_are_not_sent_again() {
+    let r = lossy(true);
+    println!("history: {} txs, {} failed, {} resends, {} dup sends, tip {}; errors {:?}", r.txs, r.failed, r.resends, r.dup_sends, r.lc_tip, r.errors);
+    assert_eq!(r.lc_tip, 24);
+    assert_eq!(r.verified, 24, "every header verified once (no restart)");
+    assert_eq!(r.failed, 0, "errors {:?}", r.errors);
+    assert!(r.errors.is_empty(), "errors {:?}", r.errors);
+    assert_eq!(r.resends, 0, "every lost tx had landed");
 }

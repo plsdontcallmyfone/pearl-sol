@@ -126,6 +126,9 @@ enum Cmd {
         work: PathBuf,
         #[arg(long, default_value_t = 8)]
         parallel: usize,
+        /// Keep slots 0..KEEP (a running `run --parallel KEEP` uses them) and close the rest.
+        #[arg(long, default_value_t = 0)]
+        keep: usize,
     },
     /// Devnet: mine N fallback blocks via getBlockTemplate / submitBlock.
     Mine { n: u64 },
@@ -180,7 +183,7 @@ fn run() -> Result<()> {
             let works = (0..parallel.max(1)).map(|i| load_or_create_key(&work_path(&work, i))).collect::<Result<Vec<_>>>()?;
             let settle_node = Node::new(&cli.node);
             let (lk, ln) = lane.split_once('/').and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()?))).ok_or_else(|| anyhow!("--lane K/N, e.g. 0/2"))?;
-            let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu }).with_lane(lk, ln);
+            let mut r = Relay::new(node, &mut s, works, Opts { parallel, exact_cu: !full_cu, ..Default::default() }).with_lane(lk, ln);
             r.ensure_works()?;
             let mut st = settle::Settle::new();
             let (mut last_settle, mut last_lag) = (std::time::Instant::now() - Duration::from_secs(60), std::time::Instant::now());
@@ -222,9 +225,9 @@ fn run() -> Result<()> {
             println!("{}", json!({"max_future_ms": p.max_future_ms, "relay_reward": p.relay_reward, "retain_final": p.retain_final}));
             Ok(())
         }
-        Cmd::CloseWorks { work, parallel } => {
+        Cmd::CloseWorks { work, parallel, keep } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
-            for i in 0..parallel.max(1) {
+            for i in keep..parallel.max(1) {
                 let p = work_path(&work, i);
                 if !p.exists() {
                     continue;
@@ -233,8 +236,10 @@ fn run() -> Result<()> {
                 if s.account(&solana_sdk::signer::Signer::pubkey(&w))?.is_none() {
                     continue;
                 }
-                s.send(&[client::close_work(s.pk(), solana_sdk::signer::Signer::pubkey(&w))], &[])?;
-                println!("closed work account {}", p.display());
+                let wk = solana_sdk::signer::Signer::pubkey(&w);
+                let lamports = s.rpc.get_balance(&wk)?;
+                s.send(&[client::close_work(s.pk(), wk)], &[])?;
+                println!("closed work account {} ({wk}): {} SOL back to {}", p.display(), lamports as f64 / 1e9, s.pk());
             }
             Ok(())
         }
