@@ -81,6 +81,7 @@ function node(m: string, p: any): any {
     case "listProfiles": return { total: 1, offset: 0, profiles: [profiles[A]] };
     case "getPost": return [P1, P2, R1].includes(p.post_id) ? { post_id: p.post_id } : null;
     case "getAccount": return { account: p.account, balance: p.account === RICH ? "5000000000" : p.account === B ? "3000" : "0", nonce: p.account === RICH ? 4 : 0, route: null };
+    case "isFollowing": return { follower: p.follower, target: p.target, following: p.follower === B && p.target === A, since_height: p.follower === B && p.target === A ? 4 : null };
     case "getMempool": return { size: 1, txs: [pendingPost.tx_hash] };
     case "getTx": return p.tx_hash === pendingPost.tx_hash ? { ...pendingPost, status: "pending" } : null;
     case "putBlob": {
@@ -246,6 +247,10 @@ test("profiles: chain state + profile blob + receipts; by handle; follower lists
   assert.equal(fl.body.accounts[0].since_height, 4);
   const fg = await get(`/v1/profiles/${B}/following`);
   assert.equal(fg.body.accounts[0].handle, "lamp");
+  const yes = await get(`/v1/profiles/${B}/following/${A}`);
+  assert.deepEqual(yes.body, { follower: B, target: A, following: true, since_height: 4 });
+  const no = await get(`/v1/profiles/${A}/following/${B}`);
+  assert.deepEqual(no.body, { follower: A, target: B, following: false, since_height: null });
   const posts = await get(`/v1/profiles/${A}/posts?limit=1`);
   assert.deepEqual(posts.body.posts.map((x: any) => x.post_id), [P2]);
   assert.equal(posts.body.next, "3:0");

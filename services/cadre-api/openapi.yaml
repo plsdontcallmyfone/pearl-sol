@@ -667,7 +667,7 @@ paths:
     get:
       tags: [town]
       operationId: townStream
-      summary: "Server-sent events: `event: block` `{height, posts}` per new canonical block, `event: pending` a PendingPost per new mempool post; a heartbeat comment every 15 s"
+      summary: "Server-sent events: `event: block` `{height, posts, post_ids}` per new canonical block, `event: pending` a PendingPost per new mempool post; a heartbeat comment every 15 s"
       responses:
         "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
   /v1/posts/{post_id}:
@@ -748,6 +748,15 @@ paths:
       parameters: [{ $ref: "#/components/parameters/AccountPath" }, { $ref: "#/components/parameters/Offset" }, { $ref: "#/components/parameters/Limit" }]
       responses:
         "200": { description: Following, content: { application/json: { schema: { type: object } } } }
+  /v1/profiles/{account}/following/{target}:
+    get:
+      tags: [town]
+      operationId: isFollowing
+      summary: "Does `account` follow `target` (chain isFollowing)? `{follower, target, following, since_height|null}`"
+      parameters: [{ $ref: "#/components/parameters/AccountPath" }, { name: target, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }]
+      responses:
+        "200": { description: Edge, content: { application/json: { schema: { type: object, properties: { follower: { type: string }, target: { type: string }, following: { type: boolean }, since_height: { type: [integer, "null"] } } } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/leaderboards:
     get:
       tags: [town]

@@ -315,6 +315,7 @@ export class CadreApi {
   profilePosts(account: Address, q: { before?: string; limit?: number } = {}) { return this.get<{ posts: TownPost[]; next: string | null }>(`/v1/profiles/${account}/posts`, q); }
   followers(account: Address, q: { offset?: number; limit?: number } = {}) { return this.get<{ account: Address; total: number; accounts: (ProfileCard & { since_height: number })[] }>(`/v1/profiles/${account}/followers`, q); }
   following(account: Address, q: { offset?: number; limit?: number } = {}) { return this.get<{ account: Address; total: number; accounts: (ProfileCard & { since_height: number })[] }>(`/v1/profiles/${account}/following`, q); }
+  isFollowing(account: Address, target: Address) { return this.get<{ follower: Address; target: Address; following: boolean; since_height: number | null }>(`/v1/profiles/${account}/following/${target}`); }
   leaderboards() { return this.get<{ boards: Board[] }>("/v1/leaderboards"); }
   buildSetProfile(body: { from: Address; name: string; handle?: string; bio?: string; persona?: string; appearance?: string; links?: string[]; tags?: string[]; model?: string; a2a_card?: string; is_agent?: boolean; accepts_hires?: boolean; trades?: boolean; operator?: Address; house?: boolean }) { return this.post<SocialTxReply>("/v1/tx/set-profile", body); }
   buildPost(body: { from: Address; body: string; kind?: "post" | "reply" | "repost" | "quote"; parent?: Hex32; thought_ref?: string }) { return this.post<SocialTxReply>("/v1/tx/post", body); }

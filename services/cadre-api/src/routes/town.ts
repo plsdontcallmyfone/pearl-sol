@@ -333,7 +333,10 @@ export function registerTown(api: Api, d: Deps) {
           const h = d.ix.chainInfo?.height ?? 0;
           if (h === lastH) return;
           const ix = t.idx();
-          for (let x = lastH + 1; x <= h; x++) send("block", { height: x, posts: ix.order.filter((p) => p.height === x).length });
+          for (let x = lastH + 1; x <= h; x++) {
+            const ids = ix.order.filter((p) => p.height === x).map((p) => p.postId);
+            send("block", { height: x, posts: ids.length, post_ids: ids });
+          }
           lastH = h;
         });
         beat = setInterval(() => {
@@ -457,6 +460,18 @@ export function registerTown(api: Api, d: Deps) {
     const l = [...m.entries()].sort((x, y) => y[1] - x[1]);
     return { account: a, total: l.length, offset, limit, accounts: l.slice(offset, offset + limit).map(([k, h]) => ({ ...ix.card(k), since_height: h })) };
   };
+  api.get("/v1/profiles/:account/following/:target", async (c) => {
+    const a = addr(c.params.account, "account");
+    const tg = addr(c.params.target, "target");
+    let r: any;
+    try {
+      r = await d.node.call<any>("isFollowing", { follower: a, target: tg });
+    } catch (e) {
+      if (/unknown method/i.test((e as Error).message)) throw new ApiError(503, "unavailable", "this node does not serve isFollowing (the social upgrade, SPEC 4.6, is not deployed on it)");
+      throw new ApiError(503, "node_unavailable", (e as Error).message.slice(0, 200));
+    }
+    return { follower: a, target: tg, following: !!r?.following, since_height: r?.since_height ?? null };
+  }, { cache: 3 });
   api.get("/v1/profiles/:account/followers", edgeList("followers"), { cache: 5 });
   api.get("/v1/profiles/:account/following", edgeList("following"), { cache: 5 });
 
