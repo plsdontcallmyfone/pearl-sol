@@ -254,6 +254,13 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   box 0 from 34c51e9, prepaid balances, storefront-x402 prices the tickets); settings in
   /etc/lode/inference.env (written by `install 0`). cadre-api: `GATEWAY_URL=http://127.0.0.1:10664`,
   `CADRE_PREPAID=gateway`.
+- Receipt links (2026-10-20, 5488d42): the gateway runs with `--public-api-root
+  https://api.64-95-12-116.sslip.io/v1/openai` (`GATEWAY_PUBLIC_API_ROOT` in inference.env), so a
+  receipt's `status_url` and `X-Cadre-Receipt` are `<api>/v1/openai/requests/<id>`, which cadre-api
+  passes through (before: http://127.0.0.1:10664/v1/requests/<id>, since `--public-url` only takes a
+  host). Checked: GET https://api.64-95-12-116.sslip.io/v1/openai/requests/req_62fc4ba094b44e8eca9d331f
+  (the devnet-ai-1 request) answers with that same URL as its status_url. The test box gateway runs
+  with the same flag (`GATEWAY_PUBLIC_API_ROOT` for scripts/demo.sh).
 - Measured on box 0 (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl, bench.py, 2 threads,
   the box's miner on its 2 threads, load 2.3-2.5): decode 2.09 tok/s (8-token prompt), 2.00 tok/s (64),
   ttft 0.74 / 0.98 s. Price from the devnet storefront knobs: 280,742 lamports per row for a full
