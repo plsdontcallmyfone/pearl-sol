@@ -65,6 +65,21 @@ shows "Unavailable" with the API's reason in the UI; nothing is stubbed with dat
   lien as the credit line); `card_probe` on agents and the list; registered agents listed before
   paid work. Details in docs/API.md. ~/cadre-web sends X-Cadre-Wallet since 2ddf965.
 
+## Cadre Wallet asks (from ~/pearl-wallet, page set rework row, 2026-10-19; OPEN)
+
+The wallet reads only cadre-api for these and says "unavailable" with the API's reason otherwise.
+
+- `GET /v1/keys` (wallet-signed, through `/v1/openai/keys`): list the wallet's API keys (id, created,
+  last used). Today the gateway has POST and DELETE only, so the wallet lists just the keys it made.
+- `/v1/jobs?evaluator=<addr>` (or `&role=evaluator`): jobs naming an account as evaluator. The wallet's
+  "Jobs I evaluate" page scans `listJobs` (newest 1000) on the node because there is no such index.
+- `POST /v1/tx/pump-sell {seller, amount_spl, slippage_bps?}`: unsigned CADRE sell (curve / PumpSwap),
+  so the wallet can offer CADRE -> SOL next to its buy (it uses `/v1/tx/pump-buy` today).
+- A hosted Cadre site URL per network (serving `/install-miner.sh` and `/mine`): the wallet's Mining
+  page shows the installer command only when the network has one; both presets are empty now.
+- Cadre devnet's cadre-api runs with no gateway (`CADRE_PREPAID=off`), so prepaid balance and API keys
+  show unavailable on the default network; the test box has them.
+
 ## Who is working on what
 
 | Who | Started | Scope |
