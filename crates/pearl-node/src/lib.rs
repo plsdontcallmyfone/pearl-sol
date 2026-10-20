@@ -384,6 +384,9 @@ pub fn load_segment_bt(node: &dyn NodeApi, store: &pearl_job::standing::ModelSto
     store.load_bt(&s.model_id, s.matrix, k, n)
 }
 
+/// How long [`fetch_model_file`] waits for chunks its node is fetching from peers.
+pub const MODEL_FETCH_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Rebuild one file of a model from its chunks (blake3 of the whole file checked).
 pub fn fetch_model_file(node: &dyn NodeApi, manifest: &pearl_job::standing::Manifest, name: &str, dir: &std::path::Path) -> Result<std::path::PathBuf> {
     let f = manifest.files.get(name).ok_or_else(|| anyhow!("manifest lists no file {name}"))?;
@@ -393,9 +396,32 @@ pub fn fetch_model_file(node: &dyn NodeApi, manifest: &pearl_job::standing::Mani
             return Ok(path);
         }
     }
+    // Ask for every chunk before failing on a missing one: each getBlob of a pinned chunk the node
+    // lacks starts its p2p fetch, so all of a file's chunks are fetched at once instead of one per
+    // attempt (devnet 2026-10-20: one chunk per template made a fresh node take hours per model).
+    // Then wait a little for the missing ones.
+    let mut parts: Vec<Option<Vec<u8>>> = vec![None; f.blobs.len()];
+    let t0 = std::time::Instant::now();
+    loop {
+        for (i, c) in f.blobs.iter().enumerate() {
+            if parts[i].is_none() {
+                let id = pearl_job::data::parse_blob_uri(c).ok_or_else(|| anyhow!("malformed blob URI {c:?}"))?;
+                if let Some(b) = node.get_blob(&id)? {
+                    ensure!(pearl_job::data::blob_id(&b) == id, "blob {c}: content does not match its id");
+                    parts[i] = Some(b);
+                }
+            }
+        }
+        let missing = parts.iter().filter(|p| p.is_none()).count();
+        if missing == 0 {
+            break;
+        }
+        ensure!(t0.elapsed() < MODEL_FETCH_WAIT, "{name}: {missing} of {} chunks are not on this node yet (fetch started)", f.blobs.len());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
     let mut data = Vec::with_capacity(f.size as usize);
-    for c in &f.blobs {
-        data.extend_from_slice(&fetch_blob(node, c)?);
+    for p in parts.into_iter().flatten() {
+        data.extend_from_slice(&p);
     }
     ensure!(data.len() as u64 == f.size, "{name}: chunks give {} bytes, manifest says {}", data.len(), f.size);
     ensure!(hex::encode(blake3::hash(&data).as_bytes()) == f.blake3, "{name}: content does not match the manifest's blake3");
@@ -483,5 +509,62 @@ mod tests {
         let t2 = Template::from_json(&header_fields_json(&h)).unwrap();
         assert_eq!(t2.header, h);
         assert!(t.job.is_none());
+    }
+
+    /// A node that holds a chunk only from the second getBlob of it on (the first one starts its
+    /// p2p fetch), like a devnet node that pins a model it has not fetched yet.
+    struct FetchingNode {
+        blobs: std::collections::HashMap<[u8; 32], Vec<u8>>,
+        asked: std::sync::Mutex<std::collections::HashMap<[u8; 32], u32>>,
+    }
+
+    impl NodeApi for FetchingNode {
+        fn block_template(&self, _: &[u8; 32]) -> Result<Template> {
+            unimplemented!()
+        }
+        fn submit_block(&self, _: &Template, _: &MinedBlock) -> Result<SubmitOutcome> {
+            unimplemented!()
+        }
+        fn get_job(&self, _: &[u8; 32]) -> Result<Option<JobInfo>> {
+            unimplemented!()
+        }
+        fn get_account(&self, _: &[u8; 32]) -> Result<Account> {
+            unimplemented!()
+        }
+        fn send_tx(&self, _: &[u8]) -> Result<String> {
+            unimplemented!()
+        }
+        fn get_blob(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+            let mut a = self.asked.lock().unwrap();
+            let n = a.entry(*id).or_insert(0);
+            *n += 1;
+            Ok(if *n >= 2 { self.blobs.get(id).cloned() } else { None })
+        }
+    }
+
+    #[test]
+    fn model_file_asks_for_every_chunk_at_once() {
+        let data: Vec<u8> = (0..(pearl_job::standing::MODEL_CHUNK_BYTES * 3 + 77) as u32).map(|i| (i * 7 % 251) as u8).collect();
+        let chunks: Vec<Vec<u8>> = pearl_job::standing::chunks(&data).map(|c| c.to_vec()).collect();
+        assert_eq!(chunks.len(), 4);
+        let uris: Vec<String> = chunks.iter().map(|c| pearl_job::data::blob_uri(&pearl_job::data::blob_id(c))).collect();
+        let manifest: pearl_job::standing::Manifest = serde_json::from_value(json!({
+            "format": "cadre-model-v1", "name": "t", "recipe": {}, "arch": {}, "rank": 128, "rows_pattern": [], "cols_pattern": [], "matrices": [],
+            "files": {"w/0.i8": {"size": data.len(), "blake3": hex::encode(blake3::hash(&data).as_bytes()), "blobs": uris}},
+        }))
+        .unwrap();
+        let node = FetchingNode {
+            blobs: chunks.iter().map(|c| (pearl_job::data::blob_id(c), c.clone())).collect(),
+            asked: Default::default(),
+        };
+        let dir = std::env::temp_dir().join(format!("pearl-node-fetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = fetch_model_file(&node, &manifest, "w/0.i8", &dir).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+        // every chunk was asked for in the first pass (each fetch started at once), then once more
+        let asked = node.asked.lock().unwrap();
+        assert_eq!(asked.len(), 4);
+        assert!(asked.values().all(|n| *n == 2), "{asked:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
