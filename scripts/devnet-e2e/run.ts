@@ -267,7 +267,9 @@ let orderBody: unknown = null;
 let bridgedIn = 0n;
 
 async function payOrder(body: unknown): Promise<any> {
-  const r402 = await httpJson(`${STOREFRONT}/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // without a payment the storefront only quotes (402, no state), so this POST may retry: run 5
+  // (2026-10-20 11:06 UTC) timed out here while Solana devnet's public RPC answered 429 to box 0 and the Mac
+  const r402 = await httpJson(`${STOREFRONT}/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, true);
   if (r402.status !== 402) throw new Error(`expected 402, got ${r402.status} ${JSON.stringify(r402.body)}`);
   const req = r402.body.accepts[0];
   const { blockhash } = await conn.getLatestBlockhash();
