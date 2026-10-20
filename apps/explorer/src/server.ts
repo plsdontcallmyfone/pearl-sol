@@ -6,6 +6,7 @@ import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Indexer } from "./indexer.ts";
 import * as M from "./models.ts";
+import { EVALUATOR_STATUSES, evaluatorJobsModel, type EvaluatorStatus } from "./evaluator.ts";
 import * as V from "./views.ts";
 import { readBuyback } from "./buyback.ts";
 import { solTxPage } from "./soltx.ts";
@@ -50,7 +51,7 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
   if (api) {
     switch (rest[0]) {
       case undefined:
-        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback", "/api/revenue", "/api/supply", "/api/supply/circulating", "/api/supply/total", "/api/agents", "/api/agent/{address}"] });
+        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/jobs?evaluator={address}&status=", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback", "/api/revenue", "/api/supply", "/api/supply/circulating", "/api/supply/total", "/api/agents", "/api/agent/{address}"] });
       case "summary":
         return json(sm);
       case "feed":
@@ -61,8 +62,15 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
         const b = await M.blockModel(ix, rest[1]);
         return b ? json(b) : json({ error: "block not found" }, 404);
       }
-      case "jobs":
+      case "jobs": {
+        const ev = q.get("evaluator");
+        if (ev) {
+          const st = q.get("status") ?? "all";
+          if (!(EVALUATOR_STATUSES as readonly string[]).includes(st)) return json({ error: `status is one of ${EVALUATOR_STATUSES.join(", ")}` }, 400);
+          return json(evaluatorJobsModel(ix, ev, st as EvaluatorStatus));
+        }
         return json(M.jobsModel(ix));
+      }
       case "job": {
         const j = rest[1] ? await M.jobModel(ix, rest[1]) : null;
         return j ? json(j) : json({ error: "job not found" }, 404);
