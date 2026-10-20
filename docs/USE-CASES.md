@@ -168,3 +168,65 @@ matrix multiplication sold on data the buyer uploads.
 Stake CADRE for daily inference credit (Venice DIEM model, capped by real paid spend),
 evaluator fees and bonds, the int7 replay check, x402 Bazaar and OpenRouter listings, USDC
 on Base, and 7-8B models on GPUs.
+
+## Why CADRE: utility and incentives
+
+Sources: SPEC 3.4, 4.1, 5.1 (Buyback, Reserve exit), research/agents/TOKENOMICS.md,
+research/narratives/SYNTHESIS.md. No price claims; every mechanism below is a program rule.
+
+### Where demand for the token comes from
+1. **Every AI payment buys CADRE on the market.** A buyer pays SOL, and the storefront spends
+   all of the job's SOL buying CADRE on pump.fun or PumpSwap inside the same transaction.
+   Those tokens become the worker pay W (80%) and the protocol fee P (20%). Buyers never
+   have to touch the token; their usage is the buy.
+2. **On top of that, a 10% buyback.** It is a markup on each order, paid only when the work
+   is delivered (refunded orders get it back). It buys CADRE into the mining reserve up to
+   the cap (provisional 100M) and burns everything above it. On devnet the reserve already
+   holds more than the cap, so every buyback there is burned.
+3. **Creator fees come back too.** pump.fun's creator fee is cranked into CADRE buys for the
+   mining reserve.
+
+### Where tokens get locked or removed
+- **Burn:** buybacks above the reserve cap lower the mint supply for good.
+- **Mining pool:** P goes to the pool at once and is not refundable. Tokens leave the pool
+  only as subsidy on paid jobs, at most 80% of each job's P, so at least 20% of every P stays
+  locked. The pool works as a soft burn.
+- **Mining reserve:** it can only flow into the mining pool, through `fund_mining`, rate
+  limited. There is no admin withdrawal, no team treasury, and no new supply: 1B fixed, the
+  chain mints nothing.
+
+### Why each participant shows up
+| Who | What they get | Why it ties to the token |
+|---|---|---|
+| AI buyer or agent | OpenAI-compatible inference, prepaid, receipts, refunds of unused balance | Their SOL becomes CADRE buys |
+| Inference server | Worker pay W plus block rewards on the same work, so it can charge less | Paid in CADRE |
+| Miner | Fees plus subsidy, only on paid work | Paid in CADRE; more paid usage means more subsidy, so miners want real demand |
+| Agent | A public record built from paid work from distinct payers | Paid in CADRE, profile worth more as volume grows |
+| Evaluator | Named by buyers to sign or reject work (fees later) | Track record on chain |
+| Lender (Agent Credit) | Repaid automatically from a borrower's on-chain income | Income is in CADRE |
+| Holder | Buy pressure and burns that only exist when people pay for real work | All of the above |
+
+### Why it is hard to fake
+A block earns subsidy only if it was mined on a paid job, and the subsidy per job is capped
+below what the payer put in. Paying yourself to mine your own job loses at least about 15.7%
+per round trip (the 20% of P that stays in the pool plus the buyback markup;
+research/agents/TOKENOMICS.md). So fake volume costs money, and the public numbers count
+distinct payers, never raw transaction counts.
+
+### Why it stands out
+- Pearl (PRL), the leading "useful proof of work" token, is criticised for rewarding work
+  nobody bought and for very low chain fees (research/narratives/CRYPTO-COMPUTE.md). Cadre's
+  rule is the direct answer: only paid work earns subsidy, and anyone can check it on the
+  explorer ("every block was paid for").
+- The models that held value in 2026 tied the token to real, growing, visible revenue
+  (Venice, Hyperliquid). Activity rewards and subsidised usage faded
+  (research/narratives/FLOWS-AND-PUMPS.md). Cadre's demand comes only from paid usage.
+
+### Honest limits (say these too)
+- Buyers pay in SOL and do not need to hold CADRE; servers and miners receive CADRE and may
+  sell it. Net buy pressure depends on real paid volume growing.
+- Today's volume is tiny (devnet: 2 storefront orders), and the only inference server is a
+  CPU box at about 0.5 tokens/s. A GPU worker is needed before this is a product.
+- The holder perk that ties holding to usage, staking CADRE for daily inference credit
+  (the Venice DIEM model), is planned, not built.
+- Program upgrade authority is still trusted, and the cap and rate limits are provisional.
