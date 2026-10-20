@@ -584,9 +584,14 @@ CLAUDE.md "Who is working on what".
      1.04 at 1. Through the gateway in the passing demo (2 threads, miner mining the round's
      segments): 0.37 tok/s (chat, ttft 10.8 s) and 0.63 tok/s (stream, ttft 3.5 s). A GPU worker
      is the obvious next step; nothing here is a GPU figure.
-   - Known limit: the registered model is the BASE unsloth/Llama-3.2-1B (not Instruct), so chat
-     answers are base-model text (the demo's chat reply repeats the question; the text completion
-     answers "Paris"). Registering an Instruct quantization is a model choice (SPEC 9).
+   - MODEL: Llama-3.2-1B-Instruct (owner choice 2026-10-19), same recipe, k shards <= 2048, 144
+     matrices, ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 on the box (quantize.py --model
+     <unsloth/Llama-3.2-1B-Instruct snapshot> --name llama-3.2-1b-instruct-w7a7); the demo
+     registers it by default (/v1/models id llama-3.2-1b-instruct-w7a7, the only served model; the
+     base quantization stays on disk). Chat uses the tokenizer's chat template and stops on
+     generation_config's eos (<|eot_id|>). Demo 2026-10-19 23:40 UTC run 11/11 (740.6 s): signed
+     chat "What is the capital of France? Answer in one word." -> "Paris" (2 tokens, receipt order 4).
+     Through cadre-proxy: "Name three primary colors, comma separated." -> "Red, Blue, Yellow."
    - Cadre web asks (CLAUDE.md) all served in cadre-api (8b31544, 0f912c2): CORS allows
      X-Cadre-Wallet + DELETE and exposes the receipt headers; prepaid proxied by default
      (/v1/inference/balance, balance/topup(+quote), balance/close, prepaid/{account}); pass-through
@@ -599,11 +604,18 @@ CLAUDE.md "Who is working on what".
    - Worker memory: a decode step's [:r] view kept the 32-row padded int32 product alive (generate
      keeps every step's C), about 50 MB per token; the box worker was OOM-killed at 7 GB during the
      e2e. Fixed bdf5a80 (64 tokens: peak RSS 6.4 GB -> 2.3 GB, measured).
-   - cadre-web e2e against the box: 18/18 once; 16/18 in the last run with a stricter x402 check
-     (all AI checks pass incl. x402 with its own receipt; one wallet tx step timed out at 60 s, a
-     flake that moves between bridge in / bridge out / register across runs). TEST-REPORT last section.
-   - Open: an Instruct model registration; a GPU worker; cadre-proxy live check against this gateway;
-     the e2e wallet-tx flake (site result not shown within 60 s although the tx lands).
+   - cadre-web e2e against the box: 18/18 clean (2026-10-20 01:21 UTC, strict x402 check, Instruct).
+     The earlier wallet-tx "60 s timeouts" were the e2e itself: pump() answered approvals until 3 s
+     passed without one, counted from the click, but the site first builds the tx through cadre-api
+     (seconds over the tunnel), so a later approval stayed unanswered, the step's 60 s result wait ran
+     out and the next step answered the stale window. pump now waits for the approval an action must
+     raise (~/cadre-web a9c903a).
+   - cadre-proxy live check (2026-10-20): wallet funded on the box localnet, `topup --rows 128 --pay`
+     (201, order 5, 60261244 lamports), a chat request through :10695 answered with the gateway's
+     receipt headers, the ledger booked 23068759 lamports / 49 rows, a request over the day cap got
+     429 cadre_spend_cap. Fixed on the way: the proxy refused the real storefront's requirements
+     (fee payer = payTo).
+   - Open: a GPU worker (CPU decode is 0.4-1.6 tok/s).
 
 18. PUBLIC DEVNET (owner decisions 2026-10-18; finished 2026-10-19 by the "devnet finish" agent):
    LIVE, details and ids in docs/DEVNET.md. Agent chain on 3 BitLaunch boxes (rolling upgrade to

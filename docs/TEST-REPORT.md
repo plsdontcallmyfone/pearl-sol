@@ -241,3 +241,10 @@ bridge-out and register steps failed the same way in the 21:13 run and passed in
 Two other runs broke on the environment (local index backfill at the first run, a network
 drop of the tunnel). The cadre-worker was OOM-killed once during the e2e (fixed in bdf5a80,
 measured: 64-token generation peak RSS 6.4 GB before, 2.3 GB after).
+
+Round 2 (2026-10-19/20, Llama-3.2-1B-Instruct): demo 11/11 PASS in 740.6 s (~/demo-instruct.log on
+the box; step 11 554.6 s, chat answer "Paris"); tools/cadre unittest 5 pass on the box; cadre-proxy
+`node --test` 9 pass (the x402 test now also covers the storefront as fee payer and payTo, checked with storefront-x402
+verifyExact) and a live paid request through the proxy; cadre-web e2e 18/18 at 01:21 UTC with the
+strict x402 check, after fixing the e2e's approval pump (the earlier intermittent wallet-tx
+failures).

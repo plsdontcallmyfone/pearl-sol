@@ -953,5 +953,5 @@ randomized rank test. Self-dealing still loses (1 - alpha) x P per job.
 - Block time (60 s default), K (30), alpha (0.8), emission (7 ppm per block).
 - Name and ticker: Cadre / CADRE (owner, 2026-10-18; was Lode).
 - Inference (4.5, 5.4): price per request (default = the matmul knobs over 2 x macs_per_row x R),
-  which models to register (default: Llama-3.2-1B for the demo), a model registration
+  which models to register (DECIDED 2026-10-19: Llama-3.2-1B-Instruct), a model registration
   deposit (default none, tx fee only), blocks per segment (default 1).
