@@ -379,8 +379,9 @@ pub fn wait_included(ctx: &Ctx, tx_hash: &str) -> Result<u64> {
         if s(&v, "status") == "included" {
             return Ok(u(&v, "height"));
         }
-        ensure!(t0.elapsed() < Duration::from_secs(60), "tx {tx_hash} not included after 60 s");
-        std::thread::sleep(Duration::from_millis(300));
+        // 60 s blocks on the devnet (SPEC target): a tx can wait a few blocks behind a busy mempool
+        ensure!(t0.elapsed() < Duration::from_secs(600), "tx {tx_hash} not included after 600 s");
+        std::thread::sleep(Duration::from_millis(1000));
     })();
     st.wrap(r, |h| format!("Included in block {h}"))
 }

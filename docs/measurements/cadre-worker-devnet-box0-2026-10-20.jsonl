@@ -1,0 +1,2 @@
+{"model": "llama-3.2-1b-instruct-w7a7", "prompt_tokens": 8, "completion_tokens": 16, "ttft_s": 0.739, "decode_s": 7.188, "decode_tokens_per_s": 2.087, "rows": 23, "mined_macs": 28422176768, "threads": 2, "cpus": 4, "loadavg_1m": 2.25, "load_s": 3.6, "torch": "2.5.1+cpu"}
+{"model": "llama-3.2-1b-instruct-w7a7", "prompt_tokens": 64, "completion_tokens": 16, "ttft_s": 0.979, "decode_s": 7.493, "decode_tokens_per_s": 2.002, "rows": 79, "mined_macs": 97623998464, "threads": 2, "cpus": 4, "loadavg_1m": 2.51953125, "load_s": 3.6, "torch": "2.5.1+cpu"}
