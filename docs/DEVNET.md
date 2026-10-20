@@ -24,7 +24,9 @@ storefront-x402, crank, explorer and cadre-api running on box 0. e2e results: "E
 | relayer health (GET only) | https://relayer.64-95-12-116.sslip.io/health |
 | mint metadata (pump.fun uri) | https://explorer.64-95-12-116.sslip.io/cadre-token.json |
 | Solana RPC | https://api.devnet.solana.com (public; rate limited) |
-| cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway, pool and prepaid off (no inference gateway on the devnet) |
+| cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway and prepaid ON since 2026-10-20 06:17 UTC (`/v1/openai/*`, `/v1/inference/*`), pool off |
+| Cadre website (~/cadre-web) | https://cadre.64-95-12-116.sslip.io (`cadre-web.service` on box 0, :10710 behind caddy); miner installer at https://cadre.64-95-12-116.sslip.io/install-miner.sh (devnet defaults) |
+| paid AI (inference gateway, SPEC 5.4) | through cadre-api: base URL https://api.64-95-12-116.sslip.io/v1/openai (OpenAI-compatible), model `llama-3.2-1b-instruct-w7a7`; gateway :10664 and worker :10665 on box 0 (127.0.0.1 only) |
 
 CLI: `pearl` now defaults to the devnet (`--network devnet`); `--network localnet` (or
 `PEARL_NETWORK=localnet`) gives the old 127.0.0.1 endpoints and localnet program ids.
@@ -106,7 +108,7 @@ To redo from scratch (new keypairs would mean new ids everywhere; normally only 
 
 | box | name | id | IPv4 | size | runs | $/hr | $/month (cap) |
 |---|---|---|---|---|---|---|---|
-| 0 | lode-devnet-0 | 6ad580a0b64e983f5dbc913c | 64.95.12.116 | nibble-8192: 4 vCPU, 8 GB, 150 GB | build box; node 0, miner (2 threads, delivers), attester, relayer, header-relay, storefront-x402, crank, explorer, caddy | 0.156 | 104 |
+| 0 | lode-devnet-0 | 6ad580a0b64e983f5dbc913c | 64.95.12.116 | nibble-8192: 4 vCPU, 8 GB, 150 GB | build box; node 0, miner (2 threads, delivers), attester, relayer, cadre-settle, storefront-x402, crank, explorer, cadre-api, cadre-web, inference worker (2 threads) + gateway, caddy | 0.156 | 104 |
 | 1 | lode-devnet-1 | 6ad585c5b64e983f5dbc916a | 64.95.13.213 | nibble-2048: 2 vCPU, 2 GB, 50 GB | node 1, miner (2 threads), caddy | 0.039 | 26 |
 | 2 | lode-devnet-2 | 6ad585e3b64e983f5dbc916d | 64.95.12.22 | nibble-2048: 2 vCPU, 2 GB, 50 GB | node 2, miner (2 threads), caddy | 0.039 | 26 |
 
@@ -139,7 +141,7 @@ the Mac (keys/devnet/, gitignored; backup ~/.config/pearl-sol/keys-devnet-backup
     scripts/devnet-deploy.sh ssh 1 'journalctl -u cadre-header-relay -n 50'
 
 Units: cadre-node, cadre-miner (every box); cadre-attester, cadre-relayer, cadre-settle,
-cadre-storefront, cadre-crank, cadre-explorer, cadre-api (box 0); cadre-header-relay (boxes 1 and 2,
+cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-worker, cadre-gateway (box 0); cadre-header-relay (boxes 1 and 2,
 `HEADER_RELAY_BOX="1 2"`, lanes 0/2 and 1/2: each verifies the heights of its lane, submits and
 connects are shared).
 
@@ -198,6 +200,49 @@ for reference (an upgrade from an older build would need them):
 5. Refresh deploy/devnet-idl/ (new: set_fund_limits, migrate_config, set_buyback_cap and the
    events FundLimitsUpdated, BuybackCapUpdated, BuybackToReserve, BuybackBurned), redeploy the
    explorer (new /revenue and /api/supply; `RESERVE_PROGRAM` env is read) and the crank.
+
+### Website (2026-10-20)
+
+`scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0, `npm ci` and
+`npm run build` there with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
+`NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.64-95-12-116.sslip.io`
+(prebuild copies box 0's ~/pearl-sol/scripts/install-miner.sh to public/), then restarts
+`cadre-web.service` (enabled, starts on boot). Caddy block `cadre.@IP@.sslip.io` in
+deploy/Caddyfile.box0.tmpl. Live from cadre-web a9c903a. Check 2026-10-20: every page (overview, buy,
+AI, dashboard, mine, agents, explorer, crank) at desktop and phone width in headless Chromium, no
+console errors, no horizontal overflow, live chain data (height 2,250, 4 paid-job blocks, agents
+directory); `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash -s -- --dry-run`
+walks all 8 steps with the devnet node as default RPC. GAP: the installer clones
+github.com/plsdontcallmyfone/pearl-sol, which is private, so a public user's real install fails at
+"Fetching the source" (owner decision: publish the source, a miner-only tarball, or binaries).
+
+### Inference (paid AI, 2026-10-20)
+
+Owner decision 2026-10-20 (b): Llama-3.2-1B-Instruct on a CPU devnet box now, GPU later. Box 0 is the
+only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3 GB).
+
+- Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
+  the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
+  registered from the gateway key with `pearl model register` at height 2293 (model_id
+  df34fa5fda00041fcd82874b1736b9fd567330f3dd5631fee2e10e58087c1a6b, 144 matrices, k shards <= 2048,
+  1,235,746,816 MACs per row, RegisterModel fee 1000; the blob upload and the tx submit took under 65 s, the CLI then hit its old 60 s inclusion wait, now 600 s). Model store for the
+  miner and attester: /var/lib/lode/models/<model_id> (symlink; their default `models` dir).
+- Blob quota: node 0's node.json `blobs` from `BOX0_BLOBS` in deploy/devnet.env (8 GB total, 200 MB/s
+  puts); the default 1 GB store refuses a 1.8 GB model. Boxes 1-2 get `BOX1_BLOBS`/`BOX2_BLOBS`
+  (8 GB) on their next `install` + node restart (NOT applied yet: their miners fetch model matrices on
+  demand and would fill the default 1 GB with pinned blobs).
+- Keys: gateway key generated on box 0 (`devnet-deploy.sh svc-key 0 gateway`, /etc/lode/keys/gateway.json,
+  5wHXuYu14pCSUSTdbQoZaKAw4H2FocaRBqecRqpP4c27), funded with 1000 CADRE on the chain from miner0.
+- Units: `cadre-worker` (tools/cadre/worker.py in ~/cadre-venv: torch 2.5.1+cpu, transformers 4.46.3;
+  `--threads 2` = half the cores, MemoryMax 4G) and `cadre-gateway` (/opt/lode/bin/cadre-gateway built on
+  box 0 from 34c51e9, prepaid balances, storefront-x402 prices the tickets); settings in
+  /etc/lode/inference.env (written by `install 0`). cadre-api: `GATEWAY_URL=http://127.0.0.1:10664`,
+  `CADRE_PREPAID=gateway`.
+- Measured on box 0 (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl, bench.py, 2 threads,
+  the box's miner on its 2 threads, load 2.3-2.5): decode 2.09 tok/s (8-token prompt), 2.00 tok/s (64),
+  ttft 0.74 / 0.98 s. Price from the devnet storefront knobs: 280,742 lamports per row for a full
+  4096-row balance; a 256-row top-up costs 95,411,375 lamports.
+- Paid flow: `scripts/devnet-inference.sh` (results in .devnet-e2e/inference-<run>.json). Result below.
 
 ### Reset the chain (new genesis)
 
