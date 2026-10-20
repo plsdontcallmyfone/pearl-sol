@@ -63,7 +63,8 @@ pub struct Opts {
     /// An unconfirmed tx this old whose blockhash has expired is checked against the
     /// ledger history and, only if it never landed, sent again (20 s; tests use 0).
     pub resend_after: Duration,
-    /// Lanes (`with_lane`): a shared step (submit, connect, mark_final, accumulate) on
+    /// Lanes (`with_lane`): a shared step (submit, connect, mark_final, accumulate, job
+    /// registration) on
     /// height h is sent at once by the lane that owns h (h % n == k); another lane sends it
     /// only after seeing it still needed for this long (the owner may be down). Without
     /// this every lane sent the same step and all but one failed (submit AccountAlreadyInUse,
@@ -189,6 +190,9 @@ pub struct Relay<'a, L: Ledger, S: Src> {
     skip: HashMap<[u8; 32], Instant>,
     /// Shared steps another lane owns, by (kind, height): when first seen needed.
     shared_seen: HashMap<(u8, u64), Instant>,
+    /// Blocks whose jobs another lane registers: (height, hash, seen); registered here
+    /// (only the jobs still missing) once `shared_grace` has passed.
+    jobs_pending: Vec<(u64, [u8; 32], Instant)>,
     closed_upto: Option<u64>,
     jobs_upto: Option<u64>,
     opts: Opts,
@@ -224,6 +228,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             lane: (0, 1),
             skip: HashMap::new(),
             shared_seen: HashMap::new(),
+            jobs_pending: vec![],
             closed_upto: None,
             jobs_upto: None,
             opts,
@@ -854,10 +859,23 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         for h in from + 1..=end {
             let hash = if cfg.tip_height - h < CANON_LEN as u64 { Some(canon[(h as usize) % CANON_LEN]) } else { self.node_hash(h)? };
             if let Some(hash) = hash {
-                self.register_jobs(h, &hash)?;
+                // shared: the lane that owns the posting height registers at once (both
+                // lanes registering every job doubled the blocking sends and one copy of
+                // each failed with AccountAlreadyInUse, Custom(0))
+                if self.lane.1 <= 1 || h % self.lane.1 == self.lane.0 {
+                    self.register_jobs(h, &hash)?;
+                } else {
+                    self.jobs_pending.push((h, hash, Instant::now()));
+                }
             }
         }
         self.jobs_upto = Some(end.max(from));
+        let grace = self.opts.shared_grace;
+        let due: Vec<(u64, [u8; 32])> = self.jobs_pending.iter().filter(|(.., t)| t.elapsed() >= grace).map(|(h, x, _)| (*h, *x)).collect();
+        self.jobs_pending.retain(|(.., t)| t.elapsed() < grace);
+        for (h, hash) in due {
+            self.register_jobs(h, &hash)?;
+        }
         // a blocking send above (jobs, accumulator start) may have outlived `bh`
         let bh = self.ledger.blockhash()?;
         for t in txs.iter_mut() {
