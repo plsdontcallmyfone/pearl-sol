@@ -33,17 +33,20 @@ export function nativeTransferTx(wallet, req, recentBlockhash) {
   const payTo = b58decode(req.payTo);
   const feePayer = req.extra?.feePayer ? b58decode(req.extra.feePayer) : payer;
   if (eq(payTo, payer)) throw new Error("payTo is the proxy wallet itself");
-  if (!eq(feePayer, payer) && eq(feePayer, payTo)) throw new Error("fee payer equals payTo");
+  // storefront-x402 names its own wallet as both fee payer and payTo (it co-signs as fee payer
+  // and receives the transfer); then the message has 2 signers and no separate payTo key
   const sep = !eq(feePayer, payer);
-  const keys = sep ? [feePayer, payer, payTo, SYSTEM] : [payer, payTo, SYSTEM];
+  const feeIsPayTo = sep && eq(feePayer, payTo);
+  const keys = !sep ? [payer, payTo, SYSTEM] : feeIsPayTo ? [feePayer, payer, SYSTEM] : [feePayer, payer, payTo, SYSTEM];
   const iPayer = sep ? 1 : 0;
+  const iPayTo = !sep ? 1 : feeIsPayTo ? 0 : 2;
   const nSig = sep ? 2 : 1;
   const msg = Uint8Array.from([
     nSig, 0, 1,
     ...compactU16(keys.length), ...keys.flatMap((k) => [...k]),
     ...b58decode(recentBlockhash),
     ...compactU16(1),
-    keys.length - 1, ...compactU16(2), iPayer, iPayer + 1,
+    keys.length - 1, ...compactU16(2), iPayer, iPayTo,
     ...compactU16(12), 2, 0, 0, 0, ...u64le(req.maxAmountRequired),
   ]);
   const sigs = new Array(nSig).fill(null).map(() => new Uint8Array(64));

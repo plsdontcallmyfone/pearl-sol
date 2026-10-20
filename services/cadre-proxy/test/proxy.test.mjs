@@ -261,6 +261,16 @@ test("x402 native payment: legacy transfer of exactly the amount, storefront as 
     assert.equal(v.payer.toBase58(), w.address);
     assert.equal(v.needsFeePayerSig, true);
   }
+  // the real storefront names its wallet as fee payer AND payTo (found by the live check)
+  const same = { ...req, payTo: b58encode(new Uint8Array(32).fill(9)) };
+  const tx2 = nativeTransferTx(w, same, bh);
+  const msg2 = tx2.subarray(129);
+  assert.deepEqual([...msg2.subarray(0, 4)], [2, 0, 1, 3], "fee payer = payTo is one key");
+  if (x402?.verifyExact) {
+    const v2 = x402.verifyExact(x402.decodePaymentHeader(paymentHeader(w, same, bh)), { ...same, asset: "So11111111111111111111111111111111111111112", resource: "", description: "", mimeType: "", maxTimeoutSeconds: 60, extra: { ...same.extra, decimals: 9 } });
+    assert.equal(v2.amount, 123456n);
+    assert.equal(v2.payer.toBase58(), w.address);
+  }
   // CLI topup without --pay only shows the requirements; with --pay refuses a public RPC
   const env = { ...process.env, CADRE_PROXY_HOME: join(dir, "pay-home"), CADRE_GATEWAY: GW };
   const out = await new Promise((ok) => {
