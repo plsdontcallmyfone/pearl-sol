@@ -628,8 +628,12 @@ CLAUDE.md "Who is working on what".
    Fixes on the way: crank trade.ts PumpSwap path; pearl-miner --deliver orphan sweep (jobs mined by
    non-delivering miners); header-relay confirm-poll / send-gap / fresh blockhash / --no-relay and the
    relay moved to box 1 (Solana devnet public RPC limits, DEVNET.md "Solana devnet RPC budget"); explorer
-   SOL_POLL_MS. e2e: see DEVNET.md "End to end results". Open: a keyed Solana devnet RPC would lift the
-   relay limit (owner); header relay above 10 slots stops confirming from one IP.
+   SOL_POLL_MS. e2e (DEVNET.md "End to end results"): run 1 FAIL at step 4 (light client behind; fixed),
+   run 2 7/7 PASS (130.9 min). Owner 2026-10-20: dedicated Solana RPC from keys/devnet/solana-rpc-url;
+   plumbing done (deploy/with-rpc.sh, devnet-deploy.sh rpc-url, URL redacted in logs), file NOT provided
+   yet, services on the public RPC. NEXT: when the file exists, `scripts/devnet-deploy.sh rpc-url`, ctl
+   restart the Solana units on boxes 0-2, then scripts/devnet-e2e.sh twice. Header relay above 10 slots
+   stops confirming from one IP (public RPC; recheck on the dedicated one).
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

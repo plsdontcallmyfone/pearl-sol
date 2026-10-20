@@ -5,7 +5,7 @@ side on Solana devnet. Everything here is devnet only: no mainnet, no pump.fun m
 Owner decisions (2026-10-18): public devnet first; 3 new BitLaunch boxes, one node each; the
 docs/SPEC.md chain parameters and buyback defaults unchanged; no domain, sslip.io names with https.
 
-Status (2026-10-19, evening): LIVE end to end. Agent chain on 3 nodes (open p2p, miners on every
+Status (2026-10-20): LIVE end to end, e2e run 2 7/7 PASS. Agent chain on 3 nodes (open p2p, miners on every
 box), upgraded in place (rolling, chain kept finalizing) to commit fe8e04a, which has RejectResult
 (tx kind 13), RegisterModel / PostSegments and the token-side changes. Solana devnet programs deployed
 from the same commit, initialized, light client following, proof modes on, relayer, header-relay,
@@ -232,6 +232,41 @@ keep up with Solana devnet's public RPC limits (see "Solana devnet RPC budget" a
 pacing, blockhash and placement fixes. After the run, cadre-settle finished both of its flows by proof:
 "released withdrawal 0 by proof against final header 1719" (23:37 UTC) and "finalized order 6 by proof
 against final header 1741" (23:50 UTC).
+
+Run 2 (2026-10-20 01:30-03:41 UTC, E2E_RUN=run2): 7/7 PASS, 130.9 min, ops SOL 17.9743 -> 17.8916.
+
+    PASS  1. preflight: public endpoints, SPEC genesis params, light client  (0.5 min)
+    PASS  2. fund throwaway e2e keys from ops  (0.1 min)
+    PASS  3. bridge in (pump.fun buy + deposit) and x402 storefront order, both unlocked K deep  (30.6 min)
+    PASS  4. bridge out (BridgeLock -> release_proof) and the paid job (mined, delivered, completed -> finalize_order_proof)  (33.7 min)
+    PASS  5. storefront buyback into the mining reserve  (0.2 min)
+    PASS  6. refund: underpaid order held back and refunded on Solana  (65.7 min)
+    PASS  7. explorer shows the paid job  (0.1 min)
+    relay lag samples: [75,68,53,38,38,1,0,1,0,1,0,1,1,0,0,1,3,0,1,0,1,1,1,1,0,0]
+
+Details: user bought 5,277,628.605793 CADRE on PumpSwap, deposit nonce 7 and x402 order 8 unlocked at
+2016; bridge out released by release_proof after 33.6 min; job 6131729... mined in 2 blocks, completed
+at 2020 by box 0's miner, Order finalized by finalize_order_proof; buyback totals 2 buys, 0 to the
+reserve (it is above the cap: burns); order 9 held back (protocol_fee_below_min) and refunded by
+refund_deposit after 63.8 min; invariant OK after all 7 steps. Run 3 (the second passing run) waits
+for the dedicated RPC below.
+
+### Dedicated Solana RPC (owner decision 2026-10-20)
+
+The devnet services use a dedicated RPC from keys/devnet/solana-rpc-url (one line, gitignored, 0600,
+written by the owner) once it exists. `scripts/devnet-deploy.sh rpc-url` copies that file to
+/etc/lode/solana-rpc-url on each box (0600, lode; the only file besides the repo that goes to the
+boxes), then `ctl N restart` the units. Every Solana-using unit (relayer, storefront, crank, explorer,
+cadre-api, cadre-settle, cadre-header-relay) starts through /opt/lode/bin/with-rpc (deploy/with-rpc.sh),
+which reads the file at start; without it the public RPC in the env files stays. Logs show only
+scheme://host of the Solana RPC. The Mac-side scripts (devnet-solana.sh, devnet-init, devnet-e2e) keep
+the public RPC. Status 2026-10-20 03:50 UTC: plumbing deployed, file not provided yet, so every
+service runs on the public RPC.
+
+SOL totals (devnet, 2026-10-20 03:50 UTC): deployer 89.9999 -> 45.9612 (11.54 program rent, 20 to ops,
+0.5 to the storefront wallet, 12 to the two relay keys); ops 17.8916, storefront wallet 0.5190, relay
+box 1 2.0896, relay box 2 2.2225; 20 relay work accounts hold about 7.3 SOL rent (refundable with
+`header-relay close-works`).
 
 ## Files
 

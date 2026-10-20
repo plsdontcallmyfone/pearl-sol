@@ -248,3 +248,28 @@ the box; step 11 554.6 s, chat answer "Paris"); tools/cadre unittest 5 pass on t
 verifyExact) and a live paid request through the proxy; cadre-web e2e 18/18 at 01:21 UTC with the
 strict x402 check, after fixing the e2e's approval pump (the earlier intermittent wallet-tx
 failures).
+
+## Public devnet (2026-10-19/20, "devnet finish" agent)
+
+Commit under test for the chain and programs: fe8e04a (devnet nodes and Solana programs), later
+commits for services (miner orphan sweep 9a352f1, header-relay fixes 2871eeb..16e89ca and the lanes
+commit, explorer SOL_POLL_MS). Suites:
+
+- On devnet box 0 (`deploy/test.sh`, commit dc8ee22): chain 95, crates 96 (1 ignored), pearl-cli 38,
+  header-relay 3, header-relay devnet build, bridge LiteSVM 13, lightclient LiteSVM 18, explorer 32: all PASS.
+  relayer and storefront-x402 abort there with litesvm's std::bad_alloc (known, HANDOFF item 13); on the
+  Mac: relayer 33/33, storefront-x402 14/14 PASS.
+- After the fixes (box 0): pearl-miner producer 10 + pool 4 + standing 4 PASS (new
+  delivers_orphaned_mined_out_job); header-relay 3 and lightclient LiteSVM 16 + 2 PASS after each
+  header-relay change; explorer 32 and cadre-api 31 PASS on the Mac after SOL_POLL_MS.
+- pearl-wallet (dev, production build): unit 144/144, headless UI 73/73 (after merging danishseal
+  cadre-chain's pixel wordmark; the font check now counts Geist under base.css's aliased family names).
+
+End to end against the public devnet (scripts/devnet-e2e.sh from the Mac): see docs/DEVNET.md
+"End to end results" for the step lines. Run 1 FAIL at step 4 (light client behind, see the fixes
+there; its flows settled after the run by cadre-settle). Run 2 (2026-10-20 01:30-03:41 UTC): 7/7 PASS
+in 130.9 min (steps 3 30.6, 4 33.7, 6 65.7 min), invariant OK after every step, light-client lag 0-3
+from step 4 on. A second passing run (run 3) was not done: the owner chose a dedicated Solana RPC
+(2026-10-20) and asked to rerun twice on it; its URL file was not provided by the end of this session.
+Redaction and wrapper checks: explorer 32, cadre-api 31, relayer 33 PASS on the Mac; header-relay 3 PASS
+on box 0; with-rpc falls back to the env value without the file and exports the file's URL with it.
