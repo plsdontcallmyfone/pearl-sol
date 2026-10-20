@@ -24,8 +24,9 @@ pub const RECIPE_W7A7_SQ_ASYM: u8 = 1;
 pub const RECIPE_NAME: &str = "cadre-w7a7-sq-asym-v1";
 /// Most rows (prompt plus generated tokens, padded) one ticket may produce.
 pub const MAX_TICKET_ROWS: u32 = 4096;
-/// Most matrices one model may register.
-pub const MAX_MODEL_MATRICES: usize = 384;
+/// Most matrices one model may register (chain/agent-types `MAX_MODEL_MATRICES`; 384 before the
+/// chain's upgrade height, see `max_model_matrices` there). An 8B int7 model registers 640.
+pub const MAX_MODEL_MATRICES: usize = 1024;
 /// Largest k of a registered matrix: wider weights are registered as k shards (row ranges of
 /// B, partial products summed outside the proof), since the Solana light client verifies job
 /// blocks only up to this k (a k = 8192 opening does not fit one Solana tx).

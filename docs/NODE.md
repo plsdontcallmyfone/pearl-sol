@@ -15,6 +15,11 @@ agent-node pubkey SEED_HEX                             # p2p / account key of a 
 
 ## Join the public devnet with your own node
 
+Scheduled upgrade: from devnet height 4200 a RegisterModel may carry up to 1024 matrices (was 384,
+SPEC 4.5). Build from main of 2026-10-20 or later (any build that has
+`DEVNET_MODEL_MATRICES_HEIGHT` in chain/agent-types/src/tx.rs) before then; an older node stops
+following the chain at the first block that registers a bigger model.
+
 Verified 2026-10-20 on the test box (Ubuntu 24.04 x86_64, 4 vCPU, load about 19 from another
 stack, fresh directory, public repo at main): build 474 s with `CARGO_BUILD_JOBS=2` (largest
 process 988 MiB RSS; build cache 778 MB, cargo registry 300 MB, binary 19 MB); a fresh data dir

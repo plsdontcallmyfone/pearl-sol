@@ -399,6 +399,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if let Some(p) = job {
             executor::precheck_post_job(p, &self.chain.tip().config)?;
         }
+        if let TxBody::RegisterModel(m) = &tx.body {
+            let next = self.chain.tip_height() + 1;
+            let max = agent_types::tx::max_model_matrices(tx.chain_id, next);
+            if m.matrices.len() > max {
+                return Err(format!("a model registers 1..={max} matrices at height {next}"));
+            }
+        }
         // social kinds (SPEC 4.6): activation height and the social fee floor
         executor::precheck_social(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
         let bytes = tx.encode();

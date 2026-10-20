@@ -736,8 +736,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if m.recipe != pearl_job::standing::RECIPE_W7A7_SQ_ASYM {
             return bad(format!("unknown recipe {}", m.recipe));
         }
-        if m.matrices.is_empty() || m.matrices.len() > agent_types::tx::MAX_MODEL_MATRICES {
-            return bad("a model registers 1..=384 matrices");
+        let max = agent_types::tx::max_model_matrices(self.env.chain_id, self.env.height);
+        if m.matrices.is_empty() || m.matrices.len() > max {
+            return bad(format!("a model registers 1..={max} matrices at height {}", self.env.height));
         }
         let mut base = [0u8; 52];
         base[0..4].copy_from_slice(&m.matrices[0].k.to_le_bytes());

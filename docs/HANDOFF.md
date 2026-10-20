@@ -687,14 +687,59 @@ CLAUDE.md "Who is working on what".
      $/1M tokens and details: MAINNET.md section 7, TEST-REPORT "GPU worker on RunPod".
    - 8B accuracy (research/INT7-ACCURACY.md section 7): Llama-3.1-8B-Instruct WikiText-2 PPL 8.3131 fp16 ->
      8.5664 int7 (+3.05%); ARC-E/ARC-C/HellaSwag within 2 points of fp16 on 200 items each. 1B Instruct +2.51%.
-     The 8B has 640 matrices, over RegisterModel's 384: registering it needs a chain change.
+     The 8B has 640 matrices, over RegisterModel's 384: the chain change is item 21.
    - scripts/gpu/runpod-{create,bootstrap,stop}.sh (one pod, refuses a second; throwaway ssh key in .gpu/,
      gitignored; the pod clones the public repo and quantizes from public HF weights). tools/cadre/remote_worker.py
      puts a remote worker behind a gateway (forwards HTTP, copies each request's segment files back).
    - Left: nothing running (pod terminated, test box back on its CPU worker, pid in .demo/pids). Open: a
      standing GPU worker (provider, card count, worker next to the gateway so segments are not copied), the
-     384-matrix limit for 8B, the worker's per-token Python overhead (decode does not depend on context here,
+     384-matrix limit for 8B (DONE, item 21), the worker's per-token Python overhead (decode does not depend on context here,
      so it is launch-bound, not GPU-bound).
+
+21. REGISTERMODEL MATRIX LIMIT 384 -> 1024 (owner-approved 2026-10-20 for the 8B int7 model; "RegisterModel
+   matrix limit for 8B" row):
+   - Rule (SPEC 4.5): `MAX_MODEL_MATRICES = 1024` (chain/agent-types tx.rs, pearl-job standing.rs). A
+     RegisterModel tx may be up to `MAX_REGISTER_MODEL_TX_SIZE = 48 KiB`; every other kind keeps 16 KiB.
+     Coordinated upgrade height per chain (`max_model_matrices(chain_id, height)`): public devnet (chain
+     1128350802) keeps 384 below height 4200; every other chain has 1024 from genesis. Relaxation only:
+     existing blocks stay valid; below 4200 old and new nodes refuse the same blocks. Every devnet node
+     (including any outside node built from the NODE.md recipe) must run this commit or later before 4200.
+     The node RPC refuses an over-limit RegisterModel at admission.
+   - Where the limit lived: agent-types codec + executor + SPEC only. Not bounded elsewhere: the light
+     client never parses RegisterModel (PostSegments repeat k, n, hash_b), the gateway, worker, explorer,
+     cadre-api, extension and ~/pearl-wallet read the matrix count with no cap, p2p messages are 8 MiB,
+     blocks 16 MiB, RPC bodies 2 MiB, state values 1 MiB.
+   - Measured (test box, release, executor alone): RegisterModel tx 25,808 bytes at 640 matrices (41,168 at
+     1024; the largest name and URI make it 26,314 / 41,674); the Model record in state 25,849 / 41,209
+     bytes; executing the registration block 0.19-0.23 ms (640) and 0.24-0.30 ms (1024) against 0.11-0.14 ms
+     (144); one PostSegments tx of 64 segments 0.37-0.73 ms whatever the model size (the box ran at load
+     about 18), so a full 640-matrix round (10 txs) is 4.1-7.0 ms of block execution.
+   - Tests: agent-types 2 (codec limit and sizes incl. a 20 KiB non-RegisterModel refused; schedule),
+     executor standing 3 (640-matrix Llama-3.1-8B-shaped model registers, a full round of 640 segments in
+     10 PostSegments posts and its last matrix mines, 1025 refused; devnet refuses 640 at 4199 and takes it
+     at 4200, 384 still fine before; the cost measurement), agent-node network 1 (640-matrix tx sent to
+     node 1, gossiped to node 0, mined, the block reaches node 2, getModel 640 on all three; 1025 refused
+     at the RPC). Chain workspace 102 tests green on the test box.
+   - End to end (test box, own dir ~/regmodel, ports 10650-10657, 2-node private chain, real agent-node +
+     `pearl model register` on a synthetic 640-matrix manifest, k 2048 x n 8 each, 1280 files): (a) chain id 1347616811: 640
+     registered (tx included, getModel 640 on both nodes, `pearl model fetch` on node 1 rebuilt all 1280
+     files from blobs and checked every hash_b), 1025 refused at sendTx ("too large: matrices"), 1024
+     registered (getModel 1024 on both); (b) devnet chain id 1128350802 on a fresh private chain: 640
+     refused at sendTx at height 1377 ("1..=384 matrices"), 384 registered at 2255 and fetched; (c) the same
+     chain id, crossing the height: 640 refused at 1440, then after height 4215 registered at 4427, getModel
+     640 on both nodes, fetch on node 1 OK, both tips equal (5580). Script: e2e.sh in the session scratchpad
+     (not committed). Found on the way: `pearl model register` uploads every blob before the tx, and an
+     unreferenced blob lives `grace_blocks` (default 100) blocks; the first run's fast private chain
+     pruned the manifest before the tx landed. At the default put rate (1 MiB/s) the 8B's 7.5 GB takes
+     about 2 h, longer than 100 devnet blocks: the node an 8B is uploaded to needs a larger `grace_blocks`
+     (or put rate) for the upload.
+   - crates/pearl-cli/Cargo.lock refreshed (ureq's tls feature had added rustls, ring, webpki-roots and
+     friends without a lock update); `cargo build --release --locked` passes on the test box.
+   - Devnet rollout: ROLLOUT_RESULT
+   - Not done (owner, 2026-10-20): no 8B registration on devnet, no GPU; devnet stays on the 1B and the
+     CPU worker. Open for an 8B: the gateway's balance ticket budget (`max_blocks_balance`, capped at 10,000
+     blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
+     and quantize.py's equal-shard rule for vocabularies like Qwen3-8B's (MAINNET.md section 11 item 11).
 
 ## M1 components (SPEC v2, all DONE)
 

@@ -951,3 +951,52 @@ fn model_manifest_uploaded_long_after_registration_reaches_peers() {
         assert!(wait_blob(&ctx, &net.apis[2], &chunk_id, 30).await, "pinned 3 MB chunk fetched on demand");
     });
 }
+
+/// The 8B upgrade (SPEC 4.5) over the network: a 640-matrix RegisterModel (25,815 bytes, over
+/// the 16 KiB cap every other kind keeps) is accepted by node 1's RPC, gossiped to node 0,
+/// mined there and the block carrying it reaches node 2; every node then serves the model.
+/// A tx over the new 1024 limit is refused at the RPC.
+#[test]
+fn register_640_matrix_model_gossips_and_mines() {
+    use agent_types::{MatrixSpec, RegisterModel};
+    use pearl_job::standing;
+    runner(33).start(|ctx| async move {
+        let net = setup(&ctx, 3, 3, true).await;
+        net.apis[0].send(&unlock_tx(0, 1, pk(2), 100_000)).await.unwrap();
+        net.apis[0].mine(9).await;
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        let c = pearl_job::MiningConfig::localnet_default();
+        let reg = |name: &[u8], count: usize| RegisterModel {
+            name: name.to_vec(),
+            manifest_uri: format!("blob:{}", hex::encode([0x44u8; 32])).into_bytes(),
+            recipe: 1,
+            rank: c.rank,
+            rows_pattern: c.rows_pattern.to_bytes(),
+            cols_pattern: c.cols_pattern.to_bytes(),
+            matrices: (0..count).map(|i| MatrixSpec { k: 2048, n: if i < 608 { 4096 } else { 8016 }, hash_b: [(i % 251) as u8; 32] }).collect(),
+        };
+        let too_big = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::RegisterModel(reg(b"x", tx::MAX_MODEL_MATRICES + 1)));
+        assert!(net.apis[1].send(&too_big).await.is_err(), "1025 matrices: refused");
+        let t = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::RegisterModel(reg(b"llama-8b", 640)));
+        assert_eq!(t.encode().len(), 25_815);
+        net.apis[1].send(&t).await.unwrap();
+        // gossiped to node 0's mempool
+        let mut seen = false;
+        for _ in 0..100 {
+            if net.apis[0].call("getChainInfo", json!({})).await["mempool_size"].as_u64().unwrap() >= 1 {
+                seen = true;
+                break;
+            }
+            ctx.sleep(Duration::from_millis(100)).await;
+        }
+        assert!(seen, "the 640-matrix tx reached node 0 over p2p");
+        net.apis[0].mine(9).await;
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        let mhex = hex::encode(standing::model_id(&pk(2), b"llama-8b"));
+        for (i, a) in net.apis.iter().enumerate() {
+            let m = a.call("getModel", json!({"model_id": mhex})).await;
+            assert_eq!(m["matrix_count"], json!(640), "node {i}");
+            assert_eq!(m["matrices"].as_array().unwrap().len(), 640, "node {i}");
+        }
+    });
+}
