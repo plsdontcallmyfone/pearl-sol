@@ -27,6 +27,9 @@ set -euo pipefail
 
 main() {
   DEFAULT_RPC="https://rpc.64-95-12-116.sslip.io"
+  # The other public devnet nodes (docs/DEVNET.md): used when the default does not answer and
+  # no --rpc was given. All three serve the same chain.
+  DEVNET_RPCS=("$DEFAULT_RPC" "https://rpc.64-95-13-213.sslip.io" "https://rpc.64-95-12-22.sslip.io")
   DEFAULT_API="https://api.64-95-12-116.sslip.io"   # cadre-api of the same devnet (miner lookups)
   DEFAULT_REPO="https://github.com/plsdontcallmyfone/pearl-sol.git"
   TOOLCHAIN="1.95.0"
@@ -319,8 +322,18 @@ write_config() {
   (( threads > cores )) && warn "$threads threads on $cores cores: more threads than cores only slows each one down"
 
   local probe
-  probe="$(curl -s -m 10 -X POST -H 'content-type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getChainInfo","params":{}}' "$rpc" 2>/dev/null || true)"
+  probe="$(chain_info "$rpc")"
+  if [[ "$probe" != *'"result"'* && -z "$1" ]] && is_devnet_rpc "$rpc"; then
+    local alt
+    for alt in "${DEVNET_RPCS[@]}"; do
+      [[ "$alt" == "$rpc" ]] && continue
+      probe="$(chain_info "$alt")"
+      if [[ "$probe" == *'"result"'* ]]; then
+        warn "devnet node $rpc did not answer; using $alt (same chain; --rpc picks one yourself)"
+        rpc="$alt"; RPC_USED="$rpc"; break
+      fi
+    done
+  fi
   if [[ "$probe" == *'"result"'* ]]; then
     local h; h="$(printf '%s' "$probe" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | head -1)"
     ok "node $rpc answers${h:+ (height $h)}"
@@ -373,6 +386,12 @@ EOF
   chmod 755 "$RUNNER.new"; mv -f "$RUNNER.new" "$RUNNER"
   ok "runner $RUNNER"
 }
+
+chain_info() {
+  curl -s -m 10 -X POST -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getChainInfo","params":{}}' "$1" 2>/dev/null || true
+}
+is_devnet_rpc() { local u; for u in "${DEVNET_RPCS[@]}"; do [[ "$1" == "$u" ]] && return 0; done; return 1; }
 
 # ---------- 8. service ----------
 install_service() {
@@ -435,7 +454,7 @@ print_check() {
   echo "  Is it mining?  The log shows a stats line every ${STATS_USED:-60} s (nonces_per_s) and"
   echo "  a block_accepted line for each block this miner wins. How soon the first one comes depends on"
   echo "  your share of the network's hashrate."
-  if [[ "$RPC_USED" == "$DEFAULT_RPC" ]]; then
+  if is_devnet_rpc "$RPC_USED"; then
     echo "  Blocks credited to your address:  curl -s $DEFAULT_API/v1/miners/$PAYOUT"
   fi
   echo "  Balance:  curl -s -X POST -H 'content-type: application/json' \\"

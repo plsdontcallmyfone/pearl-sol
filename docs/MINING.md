@@ -17,7 +17,7 @@ reuses the build cache.
 |---|---|---|
 | `--pool URL` | `CADRE_POOL` | none (solo) |
 | `--solo` | | solo; clears a pool set earlier |
-| `--rpc URL` | `CADRE_RPC` | `https://rpc.64-95-12-116.sslip.io` (devnet node 0, docs/DEVNET.md) |
+| `--rpc URL` | `CADRE_RPC` | `https://rpc.64-95-12-116.sslip.io` (devnet node 0, docs/DEVNET.md); when it does not answer at install time and no `--rpc` was given, the first of devnet nodes 1 and 2 that answers |
 | `--threads N` | `CADRE_THREADS` | half the cores, at least 1 |
 | `--no-service` | `CADRE_NO_SERVICE=1` | service installed when `systemctl --user` works |
 | `--dry-run` | `CADRE_DRY_RUN=1` | prints each step, changes nothing |
