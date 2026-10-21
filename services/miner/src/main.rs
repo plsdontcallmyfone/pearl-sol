@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use ed25519_dalek::SigningKey;
 
 use pearl_miner::pool::{PoolMiner, PoolMinerConfig};
 use pearl_miner::{HttpAttester, Miner, MinerConfig, ResultAttester};
@@ -24,6 +25,11 @@ struct Args {
     /// Also signs SubmitResult / CompleteJob with --deliver.
     #[arg(long, default_value = "keys/localnet/miner-keypair.json")]
     payout: PathBuf,
+    /// Payout account (base58 public key) instead of a key file: nothing secret on disk, so
+    /// the Cadre Wallet can start a miner for one of its accounts. Pool mode, or solo
+    /// without --deliver (delivery signs txs, which needs the key).
+    #[arg(long, conflicts_with = "deliver")]
+    payout_address: Option<String>,
     #[arg(long, default_value_t = MinerConfig::default().threads)]
     threads: usize,
     /// Re-fetch the block template at least this often (ms).
@@ -69,7 +75,12 @@ struct Args {
 
 fn main() -> Result<()> {
     let a = Args::parse();
-    let key = read_key_file(&a.payout)?;
+    let payout = a.payout_address.as_deref().map(parse_address).transpose()?;
+    // With --payout-address the key only fills the struct: it never signs (no --deliver).
+    let key = match payout {
+        Some(_) => SigningKey::from_bytes(&[0u8; 32]),
+        None => read_key_file(&a.payout)?,
+    };
     if let Some(url) = &a.pool {
         let pool = HttpPool::new(url);
         let cfg = PoolMinerConfig {
@@ -79,7 +90,7 @@ fn main() -> Result<()> {
             max_shares: a.shares,
         };
         let data_node = nodes(&a.rpc)?;
-        let mut m = PoolMiner::new(&pool, key.verifying_key().to_bytes(), cfg, Box::new(|v| println!("{v}")));
+        let mut m = PoolMiner::new(&pool, payout.unwrap_or_else(|| key.verifying_key().to_bytes()), cfg, Box::new(|v| println!("{v}")));
         m.data_node = Some(&data_node);
         return m.run(&|| false);
     }
@@ -101,7 +112,13 @@ fn main() -> Result<()> {
     };
     let att: Option<&dyn ResultAttester> = if a.deliver { Some(&attester) } else { None };
     let mut miner = Miner::new(&node, att, key, cfg, Box::new(|v| println!("{v}")));
+    miner.payout = payout;
     miner.run(&|| false)
+}
+
+fn parse_address(s: &str) -> Result<[u8; 32]> {
+    let v = bs58::decode(s.trim()).into_vec().map_err(|e| anyhow::anyhow!("--payout-address is not base58: {e}"))?;
+    v.try_into().map_err(|v: Vec<u8>| anyhow::anyhow!("--payout-address must be 32 bytes, got {}", v.len()))
 }
 
 fn nodes(urls: &[String]) -> Result<FailoverNode> {

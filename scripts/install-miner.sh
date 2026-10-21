@@ -20,12 +20,19 @@
 #                    otherwise the command is printed
 #   --cli            also build the Cadre CLI (CADRE_CLI=1): bin/cadre
 #                    (`cadre` = health of every component, `cadre --help` for the rest)
+#   --extension-id ID  let the Cadre Wallet with this Chrome extension id start and stop the miner
+#                    (CADRE_EXTENSION_IDS, comma-separated; repeat the flag for several): installs
+#                    bin/cadre-miner-host and registers it (ag.cadre.miner) with Chrome, Chromium,
+#                    Brave, Edge and Arc. The wallet shows this command with its own id.
+#   --wallet-only    only what the wallet needs (CADRE_WALLET_ONLY=1): no payout key, config or
+#                    service; the wallet starts the miner paying its own account (--payout-address)
 #   --dry-run        show every step and command, change nothing (CADRE_DRY_RUN=1)
 #   -h, --help
 # Source (one of):
 #   CADRE_SRC=PATH   local checkout dir or tarball (.tar, .tar.gz, .tgz; e.g. a `git archive`)
 #   CADRE_REPO=URL   git URL (default below), CADRE_REF=branch|tag|commit (default main)
 # Layout: CADRE_HOME (default ~/.cadre): bin/pearl-miner, bin/cadre-miner (runner), miner.env,
+#   bin/cadre-miner-host + wallet-miner.{pid,json,log} (with --extension-id),
 #   miner-key.json (0600, never printed), src/, target/ (or CARGO_TARGET_DIR), results/, models/.
 #
 # The private key is never printed, logged or passed on a command line. Nothing here touches
@@ -49,6 +56,9 @@ main() {
   NO_LINGER="${CADRE_NO_LINGER:-0}"
   WITH_CLI="${CADRE_CLI:-0}"
   local opt_rpc="${CADRE_RPC:-}" opt_pool="${CADRE_POOL:-}" opt_threads="${CADRE_THREADS:-}" opt_solo=0
+  WALLET_ONLY="${CADRE_WALLET_ONLY:-0}"
+  EXT_IDS=()
+  if [[ -n "${CADRE_EXTENSION_IDS:-}" ]]; then IFS=',' read -r -a EXT_IDS <<<"$CADRE_EXTENSION_IDS"; fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,6 +70,9 @@ main() {
       --threads) [[ $# -ge 2 ]] || die "--threads needs a number" "example: --threads 4"; opt_threads="$2"; shift 2 ;;
       --threads=*) opt_threads="${1#*=}"; shift ;;
       --no-service) NO_SERVICE=1; shift ;;
+      --extension-id) [[ $# -ge 2 && -n "$2" ]] || die "--extension-id needs an id" "the Cadre Wallet's Mining page shows the command with its id"; EXT_IDS+=("$2"); shift 2 ;;
+      --extension-id=*) EXT_IDS+=("${1#*=}"); shift ;;
+      --wallet-only) WALLET_ONLY=1; shift ;;
       --no-linger) NO_LINGER=1; shift ;;
       --cli) WITH_CLI=1; shift ;;
       --dry-run) DRY=1; shift ;;
@@ -72,11 +85,19 @@ main() {
     die "--threads must be a positive integer (got '$opt_threads')" "example: --threads 2"
   fi
 
+  local id
+  for id in "${EXT_IDS[@]}"; do
+    [[ "$id" =~ ^[a-p]{32}$ ]] || die "not a Chrome extension id: '$id'" "32 letters a-p, as shown on chrome://extensions or the wallet's Mining page"
+  done
+  [[ $WALLET_ONLY == 1 && ${#EXT_IDS[@]} -eq 0 ]] && die "--wallet-only needs --extension-id" "copy the command from the Cadre Wallet's Mining page"
+
   BIN="$CADRE_HOME/bin"; SRC="$CADRE_HOME/src"; ENV_FILE="$CADRE_HOME/miner.env"
   KEY="$CADRE_HOME/miner-key.json"; RUNNER="$BIN/cadre-miner"
   TARGET="${CARGO_TARGET_DIR:-$CADRE_HOME/target}"
   T0=$(date +%s); STEP=0; NSTEPS=8
-  [[ $WITH_CLI == 1 ]] && NSTEPS=$((NSTEPS + 1))
+  [[ ${#EXT_IDS[@]} -gt 0 ]] && NSTEPS=9
+  [[ $WALLET_ONLY == 1 ]] && NSTEPS=6
+  [[ $WITH_CLI == 1 && $WALLET_ONLY != 1 ]] && NSTEPS=$((NSTEPS + 1))
   [[ $DRY == 1 ]] && echo "Dry run: nothing will be changed."
 
   step "Checking the system"
@@ -93,6 +114,17 @@ main() {
 
   step "Building pearl-miner (release; first build takes a few minutes)"
   build_miner
+
+  if [[ ${#EXT_IDS[@]} -gt 0 ]]; then
+    step "Cadre Wallet connection"
+    install_wallet_host
+  fi
+
+  if [[ $WALLET_ONLY == 1 ]]; then
+    echo
+    ok "Done in $(( $(date +%s) - T0 )) s. Open the Cadre Wallet, Mining, and press Start mining."
+    return
+  fi
 
   if [[ $WITH_CLI == 1 ]]; then
     step "Building the Cadre CLI (cadre)"
@@ -268,6 +300,9 @@ build_miner() {
   mkdir -p "$BIN"
   # Copy then rename, so a miner that is running keeps its old binary until it restarts.
   cp "$TARGET/release/pearl-miner" "$BIN/.pearl-miner.new" && chmod 755 "$BIN/.pearl-miner.new" && mv -f "$BIN/.pearl-miner.new" "$BIN/pearl-miner"
+  if [[ -f "$TARGET/release/cadre-miner-host" ]]; then
+    cp "$TARGET/release/cadre-miner-host" "$BIN/.cadre-miner-host.new" && chmod 755 "$BIN/.cadre-miner-host.new" && mv -f "$BIN/.cadre-miner-host.new" "$BIN/cadre-miner-host"
+  fi
   ok "built in $(( $(date +%s) - bt0 )) s: $BIN/pearl-miner"
   "$BIN/pearl-miner" --help >/dev/null || die "the built binary does not run" "remove $TARGET and run again"
 }
@@ -286,6 +321,51 @@ build_cli() {
   done
   ok "built in $(( $(date +%s) - bt0 )) s: $BIN/cadre (try: $BIN/cadre, $BIN/cadre ping api)"
   "$BIN/cadre" --version >/dev/null || die "the built CLI does not run" "remove $TARGET/cli and run again"
+}
+
+# ---------- wallet host (--extension-id) ----------
+# Native messaging host dirs (user level) of the Chromium-family browsers. Chrome always; the
+# others only when their profile dir exists.
+wallet_host_dirs() {
+  if [[ $OS == Darwin ]]; then
+    local a="$HOME/Library/Application Support"
+    echo "always|$a/Google/Chrome/NativeMessagingHosts"
+    echo "$a/Chromium|$a/Chromium/NativeMessagingHosts"
+    echo "$a/BraveSoftware/Brave-Browser|$a/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+    echo "$a/Microsoft Edge|$a/Microsoft Edge/NativeMessagingHosts"
+    echo "$a/Arc/User Data|$a/Arc/User Data/NativeMessagingHosts"
+  else
+    local c="${XDG_CONFIG_HOME:-$HOME/.config}"
+    echo "always|$c/google-chrome/NativeMessagingHosts"
+    echo "$c/chromium|$c/chromium/NativeMessagingHosts"
+    echo "$c/BraveSoftware/Brave-Browser|$c/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+    echo "$c/microsoft-edge|$c/microsoft-edge/NativeMessagingHosts"
+  fi
+}
+
+install_wallet_host() {
+  local host="$BIN/cadre-miner-host" name="ag.cadre.miner"
+  if [[ $DRY == 1 ]]; then
+    run "write $name.json (path $host, extension ids ${EXT_IDS[*]}) into each browser's NativeMessagingHosts"
+    return
+  fi
+  [[ -x "$host" ]] || die "cadre-miner-host was not built" "the source is older than the wallet host; use CADRE_REF=main"
+  local line want dir f ids origins id
+  while IFS= read -r line; do
+    want="${line%%|*}"; dir="${line#*|}"
+    [[ $want == always || -d "$want" ]] || continue
+    mkdir -p "$dir"; f="$dir/$name.json"
+    # keep wallets registered earlier
+    ids=("${EXT_IDS[@]}")
+    if [[ -f "$f" ]]; then
+      while IFS= read -r id; do ids+=("$id"); done < <(grep -o 'chrome-extension://[a-p]\{32\}/' "$f" | sed 's|chrome-extension://||; s|/||')
+    fi
+    origins=$(printf '%s\n' "${ids[@]}" | sort -u | sed 's|.*|    "chrome-extension://&/"|' | paste -sd, - | sed 's/,/,\n/g')
+    printf '{\n  "name": "%s",\n  "description": "Cadre miner control for the Cadre Wallet",\n  "path": "%s",\n  "type": "stdio",\n  "allowed_origins": [\n%b\n  ]\n}\n' \
+      "$name" "$host" "$origins" > "$f.new" && mv -f "$f.new" "$f"
+    ok "registered with $(basename "$(dirname "$(dirname "$dir")")")/$(basename "$(dirname "$dir")"): $f"
+  done < <(wallet_host_dirs)
+  ok "the wallet starts and stops the miner from its Mining page (payouts go to the wallet account)"
 }
 
 # ---------- 6. key ----------

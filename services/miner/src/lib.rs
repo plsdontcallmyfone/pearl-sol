@@ -153,6 +153,9 @@ pub struct Miner<'a> {
     pub node: &'a dyn NodeApi,
     pub attester: Option<&'a dyn ResultAttester>,
     pub key: SigningKey,
+    /// Payout account when it differs from `key` (`--payout-address`): blocks pay this account
+    /// and `key` never signs, so this only works without delivery (no SubmitResult/CompleteJob).
+    pub payout: Option<[u8; 32]>,
     pub cfg: MinerConfig,
     pub stats: Stats,
     log: Logger,
@@ -194,6 +197,7 @@ impl<'a> Miner<'a> {
             node,
             attester,
             key,
+            payout: None,
             cfg,
             stats: Stats::default(),
             log,
@@ -211,7 +215,7 @@ impl<'a> Miner<'a> {
     }
 
     pub fn me(&self) -> [u8; 32] {
-        self.key.verifying_key().to_bytes()
+        self.payout.unwrap_or_else(|| self.key.verifying_key().to_bytes())
     }
 
     fn log(&self, v: Value) {
