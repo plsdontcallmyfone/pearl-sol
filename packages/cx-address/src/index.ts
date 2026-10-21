@@ -241,7 +241,7 @@ interface Out {
 }
 
 function chunkOut(chunk: Uint8Array, counter: number): Out {
-  let cv = IV;
+  let cv: Uint32Array = IV;
   const blocks = Math.max(1, Math.ceil(chunk.length / 64));
   for (let i = 0; i < blocks - 1; i++) {
     cv = compress(cv, words(chunk.subarray(i * 64, i * 64 + 64)), counter, 64, i === 0 ? CHUNK_START : 0).subarray(0, 8);
