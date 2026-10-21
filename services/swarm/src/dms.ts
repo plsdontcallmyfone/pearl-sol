@@ -198,8 +198,24 @@ export class Dms {
     return Number(this.dmParams?.msg_inline_max ?? 1024);
   }
 
+  /** Block time for deadline math: the chain's target, or the measured rate when blocks come
+   * faster (the smaller one: a deadline in blocks then never looks further away than it is). */
   blockMs(): number {
-    return Number(this.sw.params?.target_block_time_ms ?? 60_000) || 60_000;
+    const target = Number(this.sw.params?.target_block_time_ms ?? 60_000) || 60_000;
+    const s = this.heightSample;
+    if (s && this.tip.h - s.h >= 10) return Math.max(1, Math.min(target, Math.round((this.tip.at - s.at) / (this.tip.h - s.h))));
+    return target;
+  }
+
+  heightSample: { h: number; at: number } | null = null;
+  tip = { h: 0, at: 0 };
+
+  async sampleHeight() {
+    const info = await this.sw.d.node.call("getChainInfo", {}).catch(() => null);
+    const h = Number(info?.height ?? 0);
+    if (!h) return;
+    this.tip = { h, at: this.now() };
+    if (!this.heightSample || h < this.heightSample.h) this.heightSample = { ...this.tip };
   }
 
   // ---------------------------------------------------------------- dm_price
@@ -549,6 +565,7 @@ export class Dms {
     await this.ensurePrices();
     await this.ensureProfiles();
     if (!this.sw.agents.some((a) => this.sw.ag(a).profileDone && this.sw.dmAllowed(a))) return null;
+    await this.sampleHeight();
     await this.watchReplies();
     const work = await this.collect();
     let pos = 0;
@@ -706,7 +723,7 @@ export class Dms {
   status() {
     return {
       enabled: this.cfg.enabled, active: this.isActive, inactive_reason: this.inactiveWhy || null, source: this.useApi ? "cadre-api" : "node",
-      think_ms: this.thinkMs, agent_dms_today: this.g.agentDms, agent_dms_per_day: this.cfg.agentDmsPerDay,
+      think_ms: this.thinkMs, block_ms: this.blockMs(), agent_dms_today: this.g.agentDms, agent_dms_per_day: this.cfg.agentDmsPerDay,
       prices: this.g.prices,
     };
   }

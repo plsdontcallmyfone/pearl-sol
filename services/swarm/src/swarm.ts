@@ -46,6 +46,7 @@ export interface Agent { persona: Persona; wallet: Wallet }
 
 interface AgentState {
   funded?: boolean;
+  fundTx?: string;
   linkTx?: string;
   linked?: boolean;
   profileTx?: string;
@@ -185,7 +186,7 @@ export class Swarm {
   }
 
   /** Has `h` landed? A dropped tx clears `field` so the step is sent again. */
-  async landed(s: AgentState, field: "linkTx" | "profileTx", w: Wallet): Promise<boolean> {
+  async landed(s: AgentState, field: "linkTx" | "profileTx" | "fundTx", w: Wallet): Promise<boolean> {
     const h = s[field];
     if (!h) return false;
     const x = await this.txState(h);
@@ -305,8 +306,18 @@ export class Swarm {
           const h = await this.send(this.op, { kind: "Transfer", to: a.wallet.publicKey, amount });
           this.budget.bookTransfer(amount);
           s.funded = true;
+          s.fundTx = h;
           this.log("funded", { agent: a.persona.handle, account: a.wallet.address, amount: amount.toString(), tx: h });
         }
+      }
+      // the agent's own txs wait until its fee funding is included (a pooled tx from an empty
+      // account is refused: "balance 0 cannot pay ... in fees")
+      if (s.fundTx) {
+        if (!(await this.landed(s, "fundTx", this.op))) {
+          if (!s.fundTx) s.funded = false; // dropped: fund again
+          continue;
+        }
+        delete s.fundTx;
       }
       if (wantHouse && !s.linked) {
         if (s.linkTx) {

@@ -3,6 +3,7 @@
 //   node src/main.ts pubkeys <dir>    print the public addresses (operator + agents) as JSON
 //   node src/main.ts run              tick forever (systemd cadre-swarm.service)
 //   node src/main.ts once             one tick, then print the status JSON
+//   node src/main.ts dm-price         derive each persona's dm_price from the live inputs and print them (read-only, no keys)
 // Env: SWARM_KEYS (key dir), CHAIN_RPC, GATEWAY_URL, CADRE_API, SOLANA_RPC, SWARM_STATE,
 // SWARM_KILL_FILE, SWARM_STATUS_PORT and the budget knobs listed in README.md.
 import { createServer } from "node:http";
@@ -12,7 +13,8 @@ import { CadreApi, Gateway, latestBlockhash, NodeRpc } from "./clients.ts";
 import { dmConfigFromEnv } from "./dms.ts";
 import { PERSONAS } from "./personas.ts";
 import { type Agent, Swarm, type SwarmConfig } from "./swarm.ts";
-import { createKeyFile, loadWallet } from "./wallet.ts";
+import { randomBytes } from "node:crypto";
+import { createKeyFile, loadWallet, walletFromSeed } from "./wallet.ts";
 
 const env = process.env;
 const num = (k: string, d: number) => (env[k] === undefined || env[k] === "" ? d : Number(env[k]));
@@ -66,6 +68,21 @@ async function main() {
     return;
   }
   const cfg = configFromEnv();
+  if (cmd === "dm-price") {
+    // read-only: getParams from the node, /v1/models from the gateway, /v1/inference/models and
+    // /v1/pump/quote from cadre-api; throwaway wallets (only the personas matter for the rows)
+    const w = walletFromSeed(randomBytes(32));
+    const agents = PERSONAS.slice(0, num("SWARM_AGENTS", PERSONAS.length)).map((persona) => ({ persona, wallet: w }));
+    const out: any[] = [];
+    const sw = new Swarm({ ...cfg, stateFile: `/tmp/cadre-dm-price-${process.pid}.json`, dm: { ...cfg.dm!, priceOverride: undefined } }, {
+      node: new NodeRpc(env.CHAIN_RPC ?? "http://127.0.0.1:10630"), gateway: new Gateway(env.GATEWAY_URL ?? "http://127.0.0.1:10664", w), api: new CadreApi(env.CADRE_API ?? "http://127.0.0.1:10685"),
+      latestBlockhash, now: () => Date.now(), rand: Math.random, log: (e) => out.push(e),
+    }, w, agents);
+    await sw.refreshParams().catch((e) => out.push({ event: "params_unavailable", error: String(e.message) }));
+    await sw.dms!.derivePrices();
+    for (const e of out) console.log(JSON.stringify(e));
+    return;
+  }
   const dir = env.SWARM_KEYS ?? "/etc/lode/keys/swarm";
   const { operator, agents } = loadAgents(dir);
   const sw = new Swarm(cfg, {
