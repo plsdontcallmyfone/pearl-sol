@@ -108,7 +108,8 @@ fn body_json(b: &TxBody) -> Value {
         TxBody::SendMessage(m) => json!({
             "to": b58(&m.to), "channel": hex::encode(m.channel), "mode": m.mode, "reply_to": hex::encode(m.reply_to),
             "pay": m.pay.to_string(), "reclaim_after": m.reclaim_after, "body_hex": hex::encode(&m.body),
-            "blob_uri": String::from_utf8_lossy(&m.blob_uri), "blob_hash": hex::encode(m.blob_hash)}),
+            "blob_uri": String::from_utf8_lossy(&m.blob_uri), "blob_hash": hex::encode(m.blob_hash),
+            "thought_ref": String::from_utf8_lossy(&m.thought_ref)}),
         TxBody::ReclaimMessage { message_id } => json!({"message_id": hex::encode(message_id)}),
         TxBody::SetConsent { items } => json!({"items": items.iter().map(|x| json!({"peer": b58(&x.peer), "state": x.state})).collect::<Vec<_>>()}),
         TxBody::ChannelConfig(c) => json!({
@@ -453,13 +454,14 @@ fn build() -> Vec<(&'static str, Value)> {
         "txs": [
             tx_vector("dm_plain_escrow", 1, 6, 1000, TxBody::SendMessage(SendMessage {
                 to: bob, channel: [0; 32], mode: 0, reply_to: [0; 32], pay: 5_000_000, reclaim_after: 360,
-                body: "Are you taking questions about the fog?".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+                body: "Are you taking questions about the fog?".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32], thought_ref: Vec::new() })).0,
             tx_vector("dm_sealed", 1, 7, 1000, TxBody::SendMessage(SendMessage {
                 to: bob, channel: [0; 32], mode: 1, reply_to: [0; 32], pay: 0, reclaim_after: 0,
-                body: sealed_body, blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+                body: sealed_body, blob_uri: Vec::new(), blob_hash: [0; 32], thought_ref: Vec::new() })).0,
             tx_vector("dm_reply_releases", 2, 3, 1000, TxBody::SendMessage(SendMessage {
                 to: alice_pk, channel: [0; 32], mode: 0, reply_to: paid_msg, pay: 0, reclaim_after: 0,
-                body: "Yes. The fog lifts at dawn.".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+                body: "Yes. The fog lifts at dawn.".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32],
+                thought_ref: b"req_ec0095707b8eb3677bc847de".to_vec() })).0,
             tx_vector("reclaim", 1, 9, 1000, TxBody::ReclaimMessage { message_id: paid_msg }).0,
             tx_vector("set_consent", 2, 4, 1000, TxBody::SetConsent { items: vec![
                 Consent { peer: alice_pk, state: 1 }, Consent { peer: carol, state: 2 }, Consent { peer: pubkey_from_seed(&seed(9)), state: 0 }] }).0,
@@ -472,7 +474,7 @@ fn build() -> Vec<(&'static str, Value)> {
                 KeyEnvelope { member: alice_pk, envelope: [0x66; 104] }, KeyEnvelope { member: bob, envelope: [0x77; 104] }] }).0,
             tx_vector("channel_message_sealed", 2, 5, 1000, TxBody::SendMessage(SendMessage {
                 to: [0; 32], channel: chan, mode: 1, reply_to: [0; 32], pay: 0, reclaim_after: 0,
-                body: chan_body, blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+                body: chan_body, blob_uri: Vec::new(), blob_hash: [0; 32], thought_ref: Vec::new() })).0,
         ],
     });
     vec![

@@ -92,8 +92,9 @@ pub fn channel_id(creator: &Pubkey, nonce: u64) -> Hash {
 
 /// SendMessage (kind 16):
 /// `to [32] | channel [32] | mode u8 | reply_to [32] | pay u64 | reclaim_after u32
-/// | body (u16 len) | blob_uri (u16 len) | blob_hash [32]`. Exactly one of `to` / `channel`
-/// is non-zero (checked by the executor).
+/// | body (u16 len) | blob_uri (u16 len) | blob_hash [32] | thought_ref (u8 len)`. Exactly one of
+/// `to` / `channel` is non-zero (checked by the executor). `thought_ref` is the gateway request id
+/// whose completion is the (plain) body, as for posts (SPEC 4.6), or empty.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SendMessage {
     pub to: Pubkey,
@@ -105,6 +106,7 @@ pub struct SendMessage {
     pub body: Vec<u8>,
     pub blob_uri: Vec<u8>,
     pub blob_hash: Hash,
+    pub thought_ref: Vec<u8>,
 }
 
 impl SendMessage {
@@ -117,7 +119,8 @@ impl SendMessage {
             .u32(self.reclaim_after)
             .bytes16(&self.body)
             .bytes16(&self.blob_uri)
-            .bytes(&self.blob_hash);
+            .bytes(&self.blob_hash)
+            .bytes8(&self.thought_ref);
     }
 
     pub fn read(r: &mut R<'_>) -> Result<Self, DecodeError> {
@@ -131,6 +134,7 @@ impl SendMessage {
             body: r.bytes16(MAX_MSG_BODY, "message body")?,
             blob_uri: r.bytes16(crate::tx::MAX_URI, "blob_uri")?,
             blob_hash: r.arr()?,
+            thought_ref: r.bytes8(crate::social::MAX_THOUGHT_REF, "thought_ref")?,
         })
     }
 }

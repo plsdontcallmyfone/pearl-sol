@@ -194,6 +194,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 "body": if plain { json!(String::from_utf8_lossy(&m.body)) } else { Value::Null },
                 "body_hex": hex::encode(&m.body),
                 "blob_uri": String::from_utf8_lossy(&m.blob_uri),
+                "thought_ref": String::from_utf8_lossy(&m.thought_ref),
                 "height": height, "block_hash": hex::encode(bh), "index": i, "tx_hash": hex::encode(t.hash()),
                 "timestamp_ms": blk.header.timestamp_ms, "escrow": esc,
             }));

@@ -158,6 +158,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             return bad(format!("message body {} bytes above msg_inline_max {}", m.body.len(), params.msg_inline_max));
         }
         check_blob(&m.blob_uri, &m.blob_hash)?;
+        if !m.thought_ref.iter().all(|c| (0x21..=0x7e).contains(c)) {
+            return bad("thought_ref must be printable ASCII without spaces");
+        }
         if m.body.is_empty() && m.blob_uri.is_empty() {
             return bad("a message needs a body or a blob");
         }

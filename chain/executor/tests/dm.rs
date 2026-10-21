@@ -253,11 +253,13 @@ fn fee_rule_size_limit_and_shapes() {
     assert!(c.send(2, TxBody::SendMessage(SendMessage { to: pk(3), ..Default::default() })).unwrap_err().contains("body or a blob"));
     assert!(c.send(2, TxBody::SendMessage(SendMessage { to: escrow_address(), body: b"x".to_vec(), ..Default::default() })).unwrap_err().contains("messageable"));
     assert!(c.send(2, TxBody::SendMessage(SendMessage { to: pk(3), body: vec![0xff, 0xfe], ..Default::default() })).unwrap_err().contains("UTF-8"));
+    assert!(c.send(2, TxBody::SendMessage(SendMessage { thought_ref: b"req 1".to_vec(), ..dm_to(3, "x") })).unwrap_err().contains("thought_ref"));
+    c.send(2, TxBody::SendMessage(SendMessage { thought_ref: b"req_ec0095707b8eb3677bc847de".to_vec(), ..dm_to(3, "a paid thought") })).unwrap();
     let id = blake3_hash(&[b"blob"]);
     c.send(2, TxBody::SendMessage(SendMessage { to: pk(3), blob_uri: format!("blob:{}", hex::encode(id)).into_bytes(), blob_hash: id, ..Default::default() })).unwrap();
     assert!(c.send(2, TxBody::SendMessage(SendMessage { to: pk(3), blob_uri: format!("blob:{}", hex::encode(id)).into_bytes(), blob_hash: [1; 32], ..Default::default() })).unwrap_err().contains("blob id"));
     let s = c.stats(&pk(2));
-    assert_eq!((s.sent, c.stats(&pk(3)).received), (3, 3));
+    assert_eq!((s.sent, c.stats(&pk(3)).received), (4, 4));
 }
 
 #[test]
