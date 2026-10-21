@@ -61,6 +61,21 @@ pub enum Cmd {
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
+    /// Agent trades on both chains (Solana mandate fills on PumpSwap, Cadre AMM swaps), newest
+    /// first, with venue reserves and organic vs house volume (docs/TRADING.md).
+    Trades {
+        /// Only this agent's fills.
+        #[arg(long)]
+        agent: Option<String>,
+        /// pumpswap or cadre-amm.
+        #[arg(long)]
+        venue: Option<String>,
+        /// Leave out house traders.
+        #[arg(long)]
+        organic: bool,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
     /// Live tail of new blocks and their txs (posts in words); Ctrl-C stops.
     Watch {
         /// Stop after this many blocks.
@@ -567,6 +582,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Account { address } => crate::inspect::account(ctx, address),
         Cmd::Block { id } => crate::inspect::block(ctx, id),
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
+        Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
         Cmd::Watch { count, from, pending } => crate::inspect::watch(ctx, *count, *from, *pending),
         Cmd::Verify { ticket, run, models } => crate::inspect::verify(ctx, ticket, *run, models),
         Cmd::Job(JobCmd::Id(words)) => {

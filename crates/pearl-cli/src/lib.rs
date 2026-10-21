@@ -25,6 +25,7 @@ mod mock;
 #[cfg(test)]
 mod stub;
 mod term;
+mod trades;
 mod ui;
 
 use clap::Parser;
