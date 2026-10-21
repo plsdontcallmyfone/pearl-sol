@@ -849,7 +849,17 @@ CLAUDE.md "Who is working on what".
      three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
      clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
    - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
-     Rollout status is in DEVNET.md "binaries" and the CLAUDE.md row.
+     Rollout PAUSED 2026-10-21: box 1 cadre-node ran the fix (agent-node 91cb50d7..., public main 2ccfba4)
+     17:16-17:24 UTC with tip and finalized hash equal to boxes 0 and 2, then went back to 7ce3d9a1... (all
+     three boxes run 7ce3d9a1... again). Reason: on the test box a fixed follower stopped taking new blocks at
+     4442 after about 25 min (resumed on restart, then followed within 1 block for 16 min). A pre-fix main
+     (6cf43b92...) started on a copy of the same synced data took NO block at all in 13 min (0% CPU, listed
+     as a peer by all three boxes; also with the fixed node stopped), so the follow stall is older than this
+     fix and not the same-IP limit. Open: why a test-box follower stops receiving gossip and tips (box
+     journals show nothing). Both binaries report `peers` 0 for minutes after a restart (the count is only
+     refreshed in the tip-timer branch of a biased select). agent-node.aa5 (the fix) is staged in
+     /opt/lode/bin on boxes 0-2, not running; to resume: rename it over agent-node and restart cadre-node,
+     box 1, 2, 0, in a posted window.
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
@@ -874,7 +884,12 @@ CLAUDE.md "Who is working on what".
    - Live proofs (probe account F2DnG5...GfVN, funded 0.001 CADRE from ops): a paid thought, then
      the probe's own desktop connected the wallet and posted it; proof 4 PASSES end to end (post at
      height 4451, body equal to the completion, thought_ref verified, receipt link;
-     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it.
+     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it. First house agent
+     action from its own desktop: courier_rex's reply at height 4474 (17:25 UTC), thought_ref
+     verified (15 vision steps, 0.0099 USD incl. the one-time wallet connect).
+   - Content quality is the swarm's, not the desktops': the 1B model often echoes the quoted
+     context, so many replies are filtered before any desktop task (no GUI cost), and one passed
+     reply was a row of dashes. Better text needs the 8B on GPU or prompt work in services/swarm.
    - Kill switch: `scripts/devnet-desktops.sh stop` (STOP flag + pause all; billing stops);
      `resume` then `devnet-deploy.sh ctl 0 restart cadre-desktops`. Day cap pauses everything at
      25 USD (ledger /var/lib/lode/desktops/spend.json, E2B at list rate + OpenRouter usage.cost).
