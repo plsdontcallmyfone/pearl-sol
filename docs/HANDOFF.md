@@ -848,18 +848,38 @@ CLAUDE.md "Who is working on what".
      in under 80 s (389 MB data, 166 MiB RSS), tip 3894a69f..., finalized 4322 3ac10d0a..., equal to all
      three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
      clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
-   - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
-     Rollout PAUSED 2026-10-21: box 1 cadre-node ran the fix (agent-node 91cb50d7..., public main 2ccfba4)
-     17:16-17:24 UTC with tip and finalized hash equal to boxes 0 and 2, then went back to 7ce3d9a1... (all
-     three boxes run 7ce3d9a1... again). Reason: on the test box a fixed follower stopped taking new blocks at
-     4442 after about 25 min (resumed on restart, then followed within 1 block for 16 min). A pre-fix main
-     (6cf43b92...) started on a copy of the same synced data took NO block at all in 13 min (0% CPU, listed
-     as a peer by all three boxes; also with the fixed node stopped), so the follow stall is older than this
-     fix and not the same-IP limit. Open: why a test-box follower stops receiving gossip and tips (box
-     journals show nothing). Both binaries report `peers` 0 for minutes after a restart (the count is only
-     refreshed in the tip-timer branch of a biased select). agent-node.aa5 (the fix) is staged in
-     /opt/lode/bin on boxes 0-2, not running; to resume: rename it over agent-node and restart cadre-node,
-     box 1, 2, 0, in a posted window.
+   - Devnet boxes: run the fix since 2026-10-21 ~19:05 UTC as part of fix3 (below).
+   - FOLLOWER STALL + MEMORY BLOWUP, ONE CAUSE (found 2026-10-21 18:10-18:40 UTC on the test box,
+     ~/follow-stall): a node missing many blobs (devnet references about 2,200 model and job blobs,
+     ~4.9 GB) kept up to 1024 blob fetches in flight with a 2 s resolver timeout; answers of up to 4 MiB
+     could not arrive in time, so every key was asked again about every 2 s (logged: 77,974 timeouts in
+     2.5 min over 1024 keys). Each peer read every asked blob in its node loop and queued it into that
+     peer's single send queue, bounded at 1024 FRAMES (not bytes). Effects: (1) the follower's peers
+     dropped its block, tip and header traffic behind the blob answers, so after a missed block (a
+     one-block fork at 4515 here) the parent header never arrived and the node stopped following the
+     tip while every peer listed it as connected; (2) the serving boxes held gigabytes of queued answers:
+     box 1 (2 GB) OOM-killed 18:33:58 UTC, box 0 6 GB RSS. My two blob-enabled test-box followers were the
+     flood; they stopped 18:35:58 and box RSS went flat. A node with the default 1 GiB blob quota also
+     re-fetched forever what it could never store (the 10-block prune pass wanted it again).
+   - Fix (main 0c57977..ba9f406, rolled out as agent-node fix3 6661bb6b... built from branch follow-stall
+     7c641c8): open net send path has a bulk lane per peer for the blob channels (`register_bulk`), drained
+     only when the normal lane is empty, with byte budgets `bulk_peer_bytes` 16 MiB and `bulk_total_bytes`
+     128 MiB (over budget: dropped and counted in getPeers stats `bulk_dropped`); inbound blob frames are
+     dropped (`bulk_in_dropped`) instead of blocking the connection's reader when the consumer is full
+     (backlog 64); at most 16 blob fetches in flight (rpc/src/blobfetch.rs, stale after 5 blocks: cancelled
+     and queued again), blob resolver timeout 30 s; the node loop's tip timer is the first branch of its
+     biased select (it was starved: no tip announcements, `peers` 0 for minutes after a restart); a full
+     blob store stops wanting blobs (follow-up commit). getBlobStats `fetch_in_flight`, getPeers
+     `queue_dropped` / `bulk_dropped`.
+   - Tests: net tests/open.rs `normal_lane_is_not_held_behind_bulk_frames` (without the lane the normal
+     messages waited 52.9 s behind blob frames) and `bulk_queue_bytes_are_bounded_per_peer_and_in_total`
+     (2 GB offered to 3 peers over 1 MB/s links stays within the budgets); rpc blobfetch unit tests (2000
+     wanted, at most 16 in flight, a fetch nobody answers gives its slot back); chain workspace 164/164 on
+     the test box on main with contracts merged.
+   - Devnet rollout (run by the orchestrator, agent restarts are blocked): cadre-node only, box 1, 2, 0
+     around 19:05 UTC, agent-node.pre-fix3 kept on each box; after each, equal tip and finalized hash
+     (4599 149d4ca0681f, 4 peers); RSS about 1 min after restart 153 / 196 / 171 MB. Rollback:
+     `cp -p agent-node.pre-fix3 agent-node.new && mv -f agent-node.new agent-node`, restart cadre-node.
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 

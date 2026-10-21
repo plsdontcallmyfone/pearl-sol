@@ -161,6 +161,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if store.has(&id).is_some() || self.blob_wanted.contains_key(&id) || self.blob_wanted.len() >= MAX_WANTED_BLOBS {
             return;
         }
+        // A full store cannot keep what it fetches (the put fails), and the prune pass would
+        // want it again every few blocks: a node with the default 1 GiB quota on a devnet
+        // holding about 5 GB of referenced blobs re-fetched them from its peers forever.
+        let c = store.config();
+        if store.total_bytes().saturating_add(c.max_blob_bytes as u64) > c.max_total_bytes {
+            return;
+        }
         self.blob_wanted.insert(id, self.chain.tip_height());
         self.blob_fetch.push(id);
     }
