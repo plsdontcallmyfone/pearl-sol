@@ -67,10 +67,17 @@ export function browseTask(site: string, pick: number, others: { handle: string 
   return list[pick % list.length]!;
 }
 
-/** Read-only work on the work desktop: wallet, explorer, trading terminal, jobs, the miner. */
-export function workTask(site: string, explorer: string, address: string, pick: number): Task {
+/** Read-only work on the work desktop: wallet, explorer, trading terminal, jobs, the miner. A
+ * one-desktop agent (Phase A, Work mode) passes `solo`: it has no wallet tab open, so the wallet task
+ * opens the wallet's own page in the current tab (left out until the browser host reported its id). */
+export function workTask(site: string, explorer: string, address: string, pick: number, solo?: { walletUrl: string | null }): Task {
+  const wallet: Task[] = !solo
+    ? [{ kind: "wallet", signs: false, text: `Click the browser tab of the Cadre Wallet (the first tab) and read the CADRE balance on its home screen. Do not send, swap or open settings. Call done with the balance you see.` }]
+    : solo.walletUrl
+      ? [{ kind: "wallet", signs: false, url: solo.walletUrl, text: `The Cadre Wallet's home screen is open in this tab. Read the CADRE balance on it. Do not send, swap or open settings. Call done with the balance you see.` }]
+      : [];
   const list: Task[] = [
-    { kind: "wallet", signs: false, text: `Click the browser tab of the Cadre Wallet (the first tab) and read the CADRE balance on its home screen. Do not send, swap or open settings. Call done with the balance you see.` },
+    ...wallet,
     { kind: "explorer_account", signs: false, url: `${explorer}/account/${address}`, text: `Open ${explorer}/account/${address} (your own account in the Cadre explorer) and read your balance and nonce at the top of the page. Do not scroll more than twice. Call done with one sentence: the balance and the nonce.` },
     { kind: "explorer_blocks", signs: false, url: explorer, text: `Open ${explorer} and look at the newest blocks: who mined them and whether they carried paid jobs. Call done with one sentence about the newest block.` },
     { kind: "market", signs: false, url: `${site}/buy`, text: `Open ${site}/buy (the Buy & bridge page, the CADRE trading terminal on PumpSwap). Type 0.01 in the SOL amount field to see the quote. Do not click Buy, do not sign anything. Call done with the CADRE amount quoted for 0.01 SOL.` },

@@ -13,7 +13,9 @@ import { Ledger } from "../src/spend.ts";
 import { chainTask, workTask, browseTask } from "../src/tasks.ts";
 import { runTask, type Chat } from "../src/vision.ts";
 import { checkStreamToken, mintStreamToken } from "../src/token.ts";
-import { Controller, DeskFailed, secretB58 } from "../src/controller.ts";
+import { Controller, DEFAULT_HANDLES, DeskFailed, deskIssues, modeAt, secretB58 } from "../src/controller.ts";
+import { PERSONAS } from "../../src/personas.ts";
+import { containerSandbox, type Runner, selfHostApi, xKey } from "../src/selfhost.ts";
 import { deskConfig } from "../src/config.ts";
 
 const SITE = "https://cadre.example";
@@ -25,6 +27,7 @@ class FakeSbx implements SandboxLike {
   actions: string[] = [];
   cmds: string[] = [];
   seeded = false;
+  healthLine: string | null = null;
   sandboxId: string;
   constructor(id: string) { this.sandboxId = id; }
   commands = {
@@ -37,6 +40,11 @@ class FakeSbx implements SandboxLike {
       if (cmd.startsWith("test -f /home/user/.cadre/agent-secret")) out = this.files_.has("/home/user/.cadre/agent-secret") ? "pending" : "";
       if (cmd.includes("tar -xzf")) out = "ok";
       if (cmd.startsWith("cat /home/user/.cadre/stream.sh")) out = this.files_.get("/home/user/.cadre/stream.sh") ?? "";
+      if (cmd.startsWith("cat /home/user/.cadre/deskhost.mjs")) out = this.files_.get("/home/user/.cadre/deskhost.mjs") ?? "";
+      if (cmd.startsWith("touch /home/user/.cadre/console")) this.files_.set("/home/user/.cadre/console", "");
+      if (cmd.startsWith("rm -f /home/user/.cadre/console")) this.files_.delete("/home/user/.cadre/console");
+      if (cmd.includes("/proc/meminfo")) { const n = Math.floor(Date.now() / 1000); out = this.healthLine ?? `${n} ${n - 1} ${n - 3} 1 1 1024 300 0.42`; }
+      if (cmd.startsWith("cat /home/user/.cadre/state.json")) out = JSON.stringify({ ext: "extid0000", tabs: [] });
       return { exitCode: 0, stdout: out, stderr: "" };
     },
   };
@@ -248,4 +256,155 @@ test("controller: a post is typed by the social desktop from the paid thought an
   assert.equal(ctl.runningDesks().length, 0);
   assert.ok([...e2b.boxes.values()].every((b) => b.info.state === "paused"));
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------------ Phase A (docs/DESKTOPS-AT-SCALE.md)
+
+const swarmCfg = (dir: string) => ({ budget: { rowsPerDay: 1000, agentRowsCap: 1000, topupLamportsPerDay: 0n, transferUnitsPerDay: 0n, agentFloat: 0n }, maxTokens: 48, judgeMaxTokens: 2, topupRows: 0, minFreeRows: 0, mempoolMax: 500, cadenceScale: 1, killFile: join(dir, "STOP"), stateFile: join(dir, "sw.json"), allowHosts: [], house: true, reactShare: 0, followShare: 0, replyShare: 0 });
+
+test("split: desktop agents come from the end of the persona list, so the headless swarm's first 30 - N never overlap", () => {
+  assert.equal(PERSONAS.length, 30);
+  const all = DEFAULT_HANDLES();
+  assert.equal(all.length, 30, "every house persona can have a desktop");
+  assert.equal(all[0], PERSONAS[29]!.handle);
+  for (let n = 0; n <= 30; n++) {
+    const desk = new Set(all.slice(0, n));
+    const swarm = PERSONAS.slice(0, 30 - n).map((p) => p.handle);
+    assert.ok(swarm.every((h) => !desk.has(h)), `no agent driven twice at DESK_AGENTS=${n}`);
+    assert.equal(desk.size + swarm.length, 30, `every agent is driven by one of them at DESK_AGENTS=${n}`);
+  }
+});
+
+test("mode scheduler: alternates Social and Work per slot, staggered across agents", () => {
+  const slot = 1800_000;
+  const t0 = Date.UTC(2026, 9, 21, 20, 0, 0);
+  const at = (t: number) => Array.from({ length: 30 }, (_, i) => modeAt(i, t, slot));
+  const m0 = at(t0);
+  assert.equal(m0.filter((m) => m === "social").length, 15, "half the agents in each mode");
+  assert.deepEqual(at(t0 + slot), m0.map((m) => (m === "social" ? "work" : "social")), "every agent flips at the next slot");
+  assert.deepEqual(at(t0 + slot - 1), m0, "stable within a slot");
+});
+
+test("Phase A controller: first agents keep two desktops, the rest one; solo work tasks follow the mode; a chain action runs on the solo desktop in Work mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-phasea-"));
+  const keys = join(dir, "keys");
+  createKeyFile(join(keys, "operator.json"));
+  const op = loadWallet(join(keys, "operator.json"));
+  const handles = ["ferry_nan", "cipher_kit", "chef_ottoline"];
+  for (const h of handles) createKeyFile(join(keys, `agent-${h}.json`));
+  let included = false;
+  const node = { call: async (m: string, p: any) => (m === "getAccount" ? { nonce: 3 } : m === "getAccountTxs" ? { txs: included ? [{ tx_hash: "e".repeat(64), from: p.account, nonce: 3 }] : [] } : m === "getMempool" ? { size: 0, txs: [] } : null) };
+  const seen: string[] = [];
+  const base = scriptedChat(seen);
+  const chat: Chat = async (b) => { const r = await base(b); if (JSON.stringify(r.json).includes('"done"')) included = true; return r; };
+  const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles, siteUrl: SITE, explorerUrl: `${SITE}/explorer` };
+  const e2b = new FakeE2B();
+  const ctl = new Controller(cfg, swarmCfg(dir), { node: node as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, chat,
+    { roles: ["social", "work"], agentsN: 3, parallel: 4, browseGapS: 1, workGapS: 1, soloGapS: 1, modeSlotS: 1800, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+  await ctl.ensureAll();
+  assert.equal(ctl.runningDesks().length, 4, "1 agent x 2 + 2 agents x 1");
+  const [two, s1, s2] = handles.map((h) => ctl.byHandle.get(h)!);
+  assert.deepEqual(two!.roles, ["social", "work"]);
+  assert.deepEqual(s1!.roles, ["social"]);
+  assert.equal(s1!.solo && s2!.solo && !two!.solo, true);
+  assert.notEqual(s1!.mode, s2!.mode, "neighbours are staggered");
+  // health first, so the browser host's wallet id is known for a solo Work-mode wallet task
+  await ctl.healthTick();
+  const solo = s1!.mode === "work" ? s1! : s2!;
+  assert.equal(solo.desks.social.walletUrl(), "chrome-extension://extid0000/index.html");
+  assert.equal(solo.desks.social.health?.stream_alive, true);
+  assert.equal(ctl.healthSummary().unhealthy.length, 0);
+  await ctl.background();
+  while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 100));
+  const workKinds = ["wallet", "explorer_account", "explorer_blocks", "market", "jobs"];
+  const socialKinds = ["read_town", "read_profile", "read_leaderboards"];
+  const done = (a: typeof solo) => a.log.filter((l) => l.kind === "task").map((l) => l.text.replace(" ", "_"));
+  assert.ok(done(solo).every((k) => workKinds.includes(k)) && done(solo).length === 1, `work-mode solo agent ran a work task: ${done(solo)}`);
+  const other = solo === s1 ? s2! : s1!;
+  assert.ok(done(other).every((k) => socialKinds.includes(k)) && done(other).length === 1, `social-mode solo agent browsed: ${done(other)}`);
+  assert.equal(done(two!).length, 2, "the two-desktop agent ran one task on each desktop");
+  // a chain action while in Work mode still runs on the solo agent's only (signing) desktop
+  included = false;
+  const h = await ctl.viaDesktop(solo, { kind: "Post", postKind: 0, body: "Ledger says hello.", thoughtRef: "req-solo" } as any);
+  assert.equal(h, "e".repeat(64));
+  assert.ok(solo.log.some((l) => l.kind === "mode" && l.text.includes("paused for a post")));
+  assert.ok(seen.some((x) => x.includes("thought=req-solo")), "the post task carries the thought id for thought_ref");
+  // the mode flips at the next slot and is logged
+  ctl.scheduleModes(Date.now() + 1800_000);
+  assert.ok(solo.log.some((l) => l.kind === "mode" && l.text.startsWith("Social mode")));
+  // status: layout, per-desktop health and activity, no sandbox ids
+  const st: any = ctl.status();
+  assert.deepEqual(st.layout, { two_desktops: 1, one_desktop: 2, mode_slot_s: 1800 });
+  assert.equal(st.desktops_total, 4);
+  const card = st.agents.find((a: any) => a.handle === solo.persona.handle);
+  assert.equal(card.layout, "one_desktop");
+  assert.deepEqual(Object.keys(card.desktops), ["social"]);
+  assert.equal(card.desktops.social.health.mem_avail_mb, 300);
+  assert.ok(!JSON.stringify(st).includes(solo.desks.social.id!));
+  // the activity console: on the Work desktop and on the solo agent in Work mode, not on Social desktops
+  const flagOf = (a: typeof solo, r: "social" | "work") => e2b.boxes.get(a.desks[r].id!)!.sbx.files_.has("/home/user/.cadre/console");
+  assert.equal(flagOf(two!, "work"), true);
+  assert.equal(flagOf(two!, "social"), false);
+  // runtime events (the fast executor's trades) land in the agent's log for the console
+  assert.equal(ctl.activity(solo.persona.handle, { kind: "trade", text: "bought 1.2 CADRE for 0.01 SOL", tx: "abc12345" }), true);
+  assert.equal(ctl.activity("nobody", { kind: "trade", text: "x" }), false);
+  assert.ok(solo.log.some((l) => l.kind === "trade" && l.tx === "abc12345"));
+  // a dead encoder is flagged and restarted
+  const sbx = e2b.boxes.get(solo.desks.social.id!)!.sbx;
+  const n = Math.floor(Date.now() / 1000);
+  sbx.healthLine = `${n} ${n - 60} ${n - 2} 0 1 1024 60 0.9`;
+  await ctl.healthTick();
+  const bad = ctl.healthSummary().unhealthy.find((x) => x.agent === solo.persona.handle)!;
+  assert.ok(bad.issues.includes("stream encoder down") && bad.issues.some((i) => i.startsWith("memory low")), JSON.stringify(bad));
+  assert.ok(sbx.cmds.some((c) => c.includes("stream.sh") && c.includes("nohup")), "encoder restarted");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("health: issues name a dead stream, a dead browser host, low memory and an idle desktop", () => {
+  const h = { checked_at: "", stream_alive: false, stream_age_s: 40, encoder: true, browser_host: false, mem_total_mb: 1024, mem_avail_mb: 50, load1: 1 };
+  const t = 10_000_000;
+  assert.deepEqual(deskIssues(h, t - 100, 1000, t, 0), ["stream stale (40 s)", "browser host down", "memory low (50 MB free)"]);
+  assert.deepEqual(deskIssues({ ...h, stream_alive: true, browser_host: true, mem_avail_mb: 500 }, t - 5000, 1000, t, 0), ["no action for 0 min"]);
+  assert.deepEqual(deskIssues({ ...h, stream_alive: true, browser_host: true, mem_avail_mb: 500 }, 0, 1000, t, t - 10), [], "not flagged before the controller ran 3 gaps");
+  assert.deepEqual(deskIssues(null, 0, 1000, t, 0), []);
+});
+
+test("self-hosted host: podman run with per-desktop limits and labels, list by label, exec for files, screenshots, mouse and keys", async () => {
+  const calls: { args: string[]; input?: string }[] = [];
+  const run: Runner = async (args, input) => {
+    calls.push({ args, input: input === undefined ? undefined : String(input) });
+    if (args[0] === "ps") return { code: 0, stdout: Buffer.from(JSON.stringify([{ Names: ["cadre-desk-a-social-1"], State: "running", Labels: { cadre_desktop: "a", cadre_role: "social" }, StartedAt: 1_700_000_000 }, { Names: ["gone"], State: "exited", Labels: {} }])), stderr: "" };
+    if (args[0] === "exec" && args.includes("import")) return { code: 0, stdout: Buffer.from([137, 80, 78, 71]), stderr: "" };
+    if (args[0] === "exec" && args.includes("cat")) return { code: 0, stdout: Buffer.from("hello"), stderr: "" };
+    if (args[0] === "inspect") return { code: 0, stdout: Buffer.from("paused\n"), stderr: "" };
+    return { code: 0, stdout: Buffer.from(""), stderr: "" };
+  };
+  const host = selfHostApi({ image: "img", cpus: 0.5, memoryMb: 1024, slice: "desk.slice", network: "pasta", usdPerHour: 0.036, run });
+  assert.equal(host.kind, "selfhost");
+  assert.equal(Number((host.usdPerS! * 3600).toFixed(3)), 0.036);
+  const sbx = await host.create("ignored", { metadata: { cadre_desktop: "a", cadre_role: "social" }, resolution: [1280, 800] });
+  const runArgs = calls.find((c) => c.args[0] === "run")!.args;
+  for (const want of ["--cpus", "0.5", "--memory", "1024m", "--cgroup-parent", "desk.slice", "--network", "pasta", "cadre_desktop=a", "cadre_role=social", "cadre_selfhost=1", "DESK_W=1280", "img"]) assert.ok(runArgs.includes(want), `podman run has ${want}`);
+  assert.ok(!runArgs.includes("-p") && !runArgs.includes("--publish"), "no port leaves the container");
+  const list = await host.list({ cadre_desktop: "a" });
+  assert.equal(list.length, 1);
+  assert.equal(list[0]!.state, "running");
+  assert.ok(calls.some((c) => c.args[0] === "ps" && c.args.includes("label=cadre_desktop=a")));
+  await host.connect("cadre-desk-a-social-1", {});
+  assert.ok(calls.some((c) => c.args[0] === "unpause"), "a paused desktop is unpaused on connect");
+  await sbx.files.write("/home/user/.cadre/agent-secret", "S3CRET");
+  const w = calls.find((c) => c.input === "S3CRET")!;
+  assert.ok(w.args.includes("-i") && !w.args.join(" ").includes("S3CRET"), "secrets go through stdin, never argv");
+  assert.equal(Buffer.from(await sbx.files.read("/x", { format: "bytes" })).toString(), "hello");
+  assert.deepEqual([...(await sbx.screenshot())].slice(0, 4), [137, 80, 78, 71]);
+  await sbx.leftClick(10, 20);
+  await sbx.press(["ctrl", "l"]);
+  await sbx.press("enter");
+  await sbx.scroll("up", 2);
+  const xdo = calls.filter((c) => c.args.includes("xdotool")).map((c) => c.args.slice(c.args.indexOf("xdotool") + 1).join(" "));
+  assert.deepEqual(xdo, ["mousemove 10 20 click 1", "key -- ctrl+l", "key -- Return", "click --repeat 2 4"]);
+  assert.equal(xKey("page_down"), "Next");
+  const c2 = containerSandbox("n", run);
+  await c2.commands.run("echo hi", { background: true });
+  assert.ok(calls.some((c) => c.args[0] === "exec" && c.args[1] === "-d"));
 });

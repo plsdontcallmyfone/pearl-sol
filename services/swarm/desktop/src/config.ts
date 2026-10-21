@@ -75,6 +75,8 @@ export interface DeskConfig {
   /** handles of the desktop agents, in order (default: personas 30, 29, ... 11) */
   handles: string[] | null;
   walletDist: string;
+  /** encoder settings handed to every desktop's sandbox/stream.sh (only the ones set in the env) */
+  stream: Record<string, string>;
 }
 
 export function deskConfig(env = process.env): DeskConfig {
@@ -101,5 +103,6 @@ export function deskConfig(env = process.env): DeskConfig {
     keysDir: env.SWARM_KEYS ?? "/etc/lode/keys/swarm",
     handles: env.DESK_HANDLES ? env.DESK_HANDLES.split(",").map((s) => s.trim()).filter(Boolean) : null,
     walletDist: env.DESK_WALLET_DIST ?? "/opt/lode/cadre-wallet",
+    stream: Object.fromEntries(["DESK_FPS", "DESK_KBPS", "DESK_SEG_S", "DESK_STILL_S"].filter((k) => env[k]).map((k) => [k, String(env[k])])),
   };
 }

@@ -10,9 +10,10 @@
 #   scripts/devnet-desktops.sh status      the controller's /status (spend, measured cost, desktops)
 #   scripts/devnet-desktops.sh stop        KILL SWITCH: STOP flag + pause every house desktop (billing stops)
 #   scripts/devnet-desktops.sh resume      remove the STOP flag (then `devnet-deploy.sh ctl 0 restart cadre-desktops`)
-# Knobs (env when running `secrets`): DESK_AGENTS (6), DESK_USD_PER_DAY (25), DESK_SOCIAL (1),
-# DESK_BROWSE_GAP_S (1200), DESK_WORK_GAP_S (1200); the desktop agents' own swarm budget (their
-# share of the house's 16384 rows a day: 6 of 30 = 3277). cadre-swarm must run SWARM_AGENTS=30-DESK_AGENTS
+# Knobs (env when running `secrets`; defaults = Phase A, docs/DESKTOPS-AT-SCALE.md 9): DESK_AGENTS (30),
+# DESK_TWO_DESK_AGENTS (6), DESK_USD_PER_DAY (64), DESK_SOCIAL (1), DESK_BROWSE_GAP_S / DESK_WORK_GAP_S (1200),
+# stream DESK_FPS (15) DESK_KBPS (800) DESK_SEG_S (1) DESK_STILL_S (1); the desktop agents' own swarm budget
+# (their share of the house's 16384 rows a day: all 30 = 16384). cadre-swarm must run SWARM_AGENTS=30-DESK_AGENTS
 # (/etc/lode/swarm.env) so no persona is driven twice. Sources: E2B_ENV_FILE (~/.config/lineage/e2b.env),
 # PROVIDERS_ENV_FILE (~/.config/lineage/providers.env, OPENROUTER_API_KEY).
 set -euo pipefail
@@ -36,18 +37,23 @@ case "${1:-}" in
     cat > "$tmp/desktops.env" <<ENV
 E2B_ENV_FILE=/etc/lode/keys/desktops/e2b.env
 PROVIDERS_ENV_FILE=/etc/lode/keys/desktops/providers.env
-DESK_AGENTS=${DESK_AGENTS:-6}
-DESK_USD_PER_DAY=${DESK_USD_PER_DAY:-25}
+DESK_AGENTS=${DESK_AGENTS:-30}
+DESK_TWO_DESK_AGENTS=${DESK_TWO_DESK_AGENTS:-6}
+DESK_USD_PER_DAY=${DESK_USD_PER_DAY:-64}
+DESK_FPS=${DESK_FPS:-15}
+DESK_KBPS=${DESK_KBPS:-800}
+DESK_SEG_S=${DESK_SEG_S:-1}
+DESK_STILL_S=${DESK_STILL_S:-1}
 DESK_SOCIAL=${DESK_SOCIAL:-1}
 DESK_BROWSE_GAP_S=${DESK_BROWSE_GAP_S:-1200}
 DESK_WORK_GAP_S=${DESK_WORK_GAP_S:-1200}
 DESK_SITE_URL=https://cadre.${BOX0_IP//./-}.sslip.io
 DESK_EXPLORER_URL=https://cadre.${BOX0_IP//./-}.sslip.io/explorer
-SWARM_ROWS_PER_DAY=${SWARM_ROWS_PER_DAY:-3277}
+SWARM_ROWS_PER_DAY=${SWARM_ROWS_PER_DAY:-16384}
 SWARM_TOPUP_ROWS=8192
 SWARM_TOPUP_ROUND_SECS=10800
-SWARM_TOPUP_LAMPORTS_PER_DAY=${SWARM_TOPUP_LAMPORTS_PER_DAY:-100000000}
-SWARM_TRANSFER_PER_DAY=${SWARM_TRANSFER_PER_DAY:-300000000}
+SWARM_TOPUP_LAMPORTS_PER_DAY=${SWARM_TOPUP_LAMPORTS_PER_DAY:-500000000}
+SWARM_TRANSFER_PER_DAY=${SWARM_TRANSFER_PER_DAY:-2000000000}
 ENV
     put "$tmp/desktops.env" /etc/lode/desktops.env
     echo "box 0: desktop secrets, stream key and /etc/lode/desktops.env installed"

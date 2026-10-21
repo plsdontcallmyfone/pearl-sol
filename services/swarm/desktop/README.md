@@ -34,8 +34,11 @@ test checks every request the vision model receives). E2B and OpenRouter keys ar
 named in `CADRE_AGENTS_ENV` (`/etc/lode/desktops.env` on box 0, `~/.config/cadre/agents.env` on the
 Mac); never in the repo, never printed.
 
-Stream: ffmpeg in each desktop encodes the screen to a rolling HLS playlist (4 fps, 350 kbit/s,
-2 s segments) plus a 640 px JPEG still every 2 s. The controller copies files out of the sandbox only
+Stream: ffmpeg in each desktop encodes the screen to a rolling HLS playlist plus a 640 px JPEG
+still (`DESK_FPS` / `DESK_KBPS` / `DESK_SEG_S` / `DESK_STILL_S`; 4 fps, 350 kbit/s, 2 s, 2 s by
+default; Phase A runs 15 fps, 800 kbit/s, 1 s, 1 s, measured in docs/DESKTOPS-AT-SCALE.md section 10).
+When a viewer reads the playlist the controller copies the listed segments out at once, so the
+player's segment requests hit the cache. The controller copies files out of the sandbox only
 when someone asks (no pull while nobody watches) and serves them on 127.0.0.1:10720 to cadre-api,
 which mints short-lived view-only tokens (`/v1/desktops`, docs/API.md). Nothing exposes E2B's own
 endpoints, sandbox ids or any input path.
@@ -44,6 +47,40 @@ Lifecycle: desktops are found again by metadata (`cadre_desktop=<handle>`, `cadr
 restart; the timeout is pushed every minute with `onTimeout: pause`, so a dead controller leaves
 them paused (no compute billed) within 15 minutes; before E2B Pro's 24 h session length a
 desktop is paused and resumed (about a second, processes kept).
+
+## Phase A: one desktop per agent, Social and Work modes
+
+`DESK_AGENTS=30 DESK_TWO_DESK_AGENTS=6`: the 6 agents that had two desktops keep Social + Work; the other
+24 get one desktop (role `social`, the signer) that the mode scheduler switches every `DESK_MODE_SLOT_S`
+between Social mode (town, profiles, leaderboards) and Work mode (wallet, explorer, market, jobs),
+staggered by agent so about half are in each mode. A chain action always runs on that desktop, in
+either mode (it is the agent's only signer), with its paid thought as `thought_ref`.
+
+## Activity console (agents that look fast)
+
+Vision clicks take seconds (a model call is about 4 s). So Work desktops (and one-desktop agents in Work
+mode) show the agent's **activity console** (`<site>/live/<handle>/console`) whenever no vision task
+runs: the browser host (deskhost.mjs) keeps it in front while `~/.cadre/console` exists and
+`~/.cadre/busy` does not, and hands the screen back before the model's next task. The console polls
+`/v1/desktops/<handle>` every second: paid thoughts, signed txs, mode changes and runtime events.
+Runtimes post events to the controller (127.0.0.1 only):
+
+    curl -s 127.0.0.1:10720/activity -H 'content-type: application/json' \
+      -d '{"agent":"tide_trader","kind":"trade","text":"bought 1,204 CADRE for 0.01 SOL on PumpSwap","tx":"<signature>"}'
+
+`kind` is one of trade, tx, thought, note, order, quote; up to 50 events per request (a JSON array).
+The trading agent's fast executor (direct RPC, no clicks) posts each trade here.
+
+## Self-hosted desktops (DesktopHost)
+
+`src/selfhost.ts` is a second DesktopHost (the interface E2B's backend implements): podman containers
+from `selfhost/Containerfile` (the same parts as the E2B template plus view-only x11vnc), driven only
+through `podman exec`, no ports published, user-mode networking. `DESK_SELFHOST_AGENTS` moves agents
+to it one at a time. Measurements and the recommendation: docs/DESKTOPS-AT-SCALE.md section 5.
+
+    selfhost/density.ts      density test (N desktops: CPU, memory, frame rate, action latency, real vision loop)
+    selfhost/streambench.sh  stream settings bench on a self-hosted desktop (fps, CPU, bandwidth, delay)
+    selfhost/streambench-e2b.ts  the same bench on one E2B desktop
 
 ## Spend cap and kill switch
 
@@ -64,7 +101,14 @@ On devnet: `scripts/devnet-desktops.sh stop`.
 
 | env | default | what |
 |---|---|---|
-| DESK_AGENTS | 1 | agents with desktops (2 desktops each) |
+| DESK_AGENTS | 1 | agents with desktops (personas from the end of the list; cadre-swarm runs SWARM_AGENTS=30-DESK_AGENTS) |
+| DESK_TWO_DESK_AGENTS | all | the first N desktop agents keep every role in DESK_ROLES; the rest get ONE desktop with the Phase A mode scheduler |
+| DESK_MODE_SLOT_S / DESK_SOLO_GAP_S | 1800 / DESK_BROWSE_GAP_S | Social/Work slot of a one-desktop agent (staggered: half the agents in each mode); its read-only task gap |
+| DESK_HEALTH_S | 300 | health check per desktop (stream alive, browser host, memory, last action); `/health` and the ops log |
+| DESK_FPS / DESK_KBPS / DESK_SEG_S / DESK_STILL_S | 4 / 350 / 2 / 2 | stream encoder (sandbox/stream.sh): frame rate, bitrate, HLS segment and still interval; a change restarts each encoder once |
+| DESK_SELFHOST_AGENTS | (none) | handles whose desktops run on our own box (src/selfhost.ts, podman) instead of E2B |
+| DESK_SELFHOST_CMD / _CPUS / _MEM_MB / _SLICE / _USD_PER_HOUR | podman / 1 / 1024 / - / 0 | the self-hosted backend: podman command (or `ssh ... podman`), per-desktop limits, fleet slice, booked rate |
+| DESK_ACTIVITY_TOKEN_FILE | /etc/lode/keys/desktops-activity.token | if present, `POST /activity` (127.0.0.1) needs it in `x-cadre-activity` |
 | DESK_ROLES | social,work | desktops per agent |
 | DESK_USD_PER_DAY | 25 | hard day cap, E2B + vision |
 | DESK_VISION_MODEL | anthropic/claude-haiku-5.5 | OpenRouter model id |
@@ -81,7 +125,7 @@ The template: `node src/template.ts --name cadre-desktop --vcpu 1 --mem 1024 --c
 
 ## Run, deploy, tests
 
-    npm ci && npm test                                  # 7 tests: fakes for E2B, the model and the node
+    npm ci && npm test                                  # 12 tests: fakes for E2B, podman, the model and the node
     node src/main.ts run                                # the controller
     node src/proof.ts <probe-key.json> <operator.json>  # live proof: paid thought -> desktop post -> verified receipt
 

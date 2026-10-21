@@ -383,6 +383,15 @@ wallet.tgz = ~/pearl-wallet dist without maps).
     scripts/devnet-desktops.sh stop       # KILL SWITCH: STOP flag + pause every house desktop (billing stops)
     scripts/devnet-desktops.sh resume     # then restart the unit
 
+Phase A (2026-10-21, docs/DESKTOPS-AT-SCALE.md 9): `DESK_AGENTS=30 DESK_TWO_DESK_AGENTS=6
+DESK_USD_PER_DAY=64`, stream `DESK_FPS=15 DESK_KBPS=800 DESK_SEG_S=1 DESK_STILL_S=1`, cadre-swarm
+`SWARM_AGENTS=0` (idle; the desktops controller drives all 30), the desktops' swarm budget raised to the
+house's full one (`SWARM_ROWS_PER_DAY=16384`, `SWARM_TOPUP_LAMPORTS_PER_DAY=500000000`,
+`SWARM_TRANSFER_PER_DAY=2000000000`, cadre-swarm's defaults). Health: `curl 127.0.0.1:10720/health` on box 0
+and check 7 of `scripts/devnet-health.sh` (one WARN line per unhealthy desktop in
+/var/log/cadre-health/health.log). Runtime events for the Work desktops' activity console:
+`POST 127.0.0.1:10720/activity` (README).
+
 More agents: raise `DESK_USD_PER_DAY` (all 20 need about 75 USD/day, ECOSYSTEM 2.10), set
 `DESK_AGENTS`, lower cadre-swarm's `SWARM_AGENTS` to 30 - DESK_AGENTS, restart both. A desktop agent
 whose number is lowered keeps its sandboxes until `node src/main.ts destroy` or a kill by handle.
