@@ -95,6 +95,25 @@ if [[ -x $CADRE_CLI ]]; then
   done < <(timeout 90 "$CADRE_CLI" status --health --local --network devnet 2>/dev/null)
 fi
 
+# 8. house desktops (only where cadre-desktops runs): one WARN line per unhealthy desktop
+#    (stream down or stale, browser host down, memory low, no action for 3 task gaps)
+DESKTOPS_URL="${DESKTOPS_URL:-http://127.0.0.1:10720}"
+if systemctl is-enabled --quiet cadre-desktops 2>/dev/null; then
+  dh="$(curl -s -m 10 "$DESKTOPS_URL/health")"
+  if [[ -z $dh ]]; then emit WARN desktops "controller did not answer"; else
+    while IFS='|' read -r lvl check msg; do emit "$lvl" "$check" "$msg"; done < <(python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+if d.get("capped"): print("OK|desktops|paused at the day cap until 00:00 UTC")
+elif not d.get("ok"): print("OK|desktops|stopped by the kill switch")
+else:
+    bad = [u for u in d.get("unhealthy", []) if u.get("state") == "running"]
+    print(("WARN" if bad else "OK") + "|desktops|%d of %d running, %d streams alive, %d unhealthy" % (d.get("running", 0), d.get("desktops", 0), d.get("streams_alive", 0), len(bad)))
+    for u in bad[:40]: print("WARN|desk:%s/%s|%s" % (u["agent"], u["role"], "; ".join(u["issues"])[:200]))
+' "$dh" 2>/dev/null || echo "WARN|desktops|health answer unreadable")
+  fi
+fi
+
 overall=OK; for f in "${fails[@]:-}"; do [[ $f == *:FAIL ]] && overall=FAIL; [[ $f == *:WARN && $overall == OK ]] && overall=WARN; done
 echo "$now $overall ${fails[*]:-}" > "$LOG_DIR/status"
 tail -n 20000 "$LOG_DIR/health.log" > "$LOG_DIR/health.log.tmp" && mv "$LOG_DIR/health.log.tmp" "$LOG_DIR/health.log"

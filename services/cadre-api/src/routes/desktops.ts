@@ -5,7 +5,9 @@
 // playlist and its segments, proxied from the controller); E2B's own endpoints, sandbox ids and
 // anything that could send input to a desktop are never exposed.
 //
-//   GET /v1/desktops                         agents, desktops, spend today, measured cost, stream paths
+//   GET /v1/desktops                         agents, desktops (each with health: stream alive, browser host,
+//                                            memory, last action), layout (two desktops or one with a
+//                                            Social/Work mode), spend today, measured cost, stream paths
 //   GET /v1/desktops/:handle                 one agent: desktops, action log, thoughts with receipts
 //   GET /v1/desktops/:handle/:role/hls/:file live.m3u8, a segment or thumb.jpg (a still every 2 s), with ?t=<stream token>
 //
@@ -66,10 +68,15 @@ export function registerDesktops(api: Api, _d: Deps, env: NodeJS.ProcessEnv = pr
         measured: st.measured,
         e2b: st.e2b,
         vision_model: st.vision_model,
+        stream: st.stream ?? null,
         desktops_running: st.desktops_running,
+        desktops_total: st.desktops_total ?? null,
         roles,
+        layout: st.layout ?? null,
+        health: st.health ?? null,
         personas_waiting: st.personas_waiting ?? [],
-        agents: (st.agents ?? []).map((a: any) => ({ ...a, streams: streams(a.handle, roles, a.desktops ?? {}) })),
+        // each agent's own desktops: Phase A agents have one ("social", switching modes), others two
+        agents: (st.agents ?? []).map((a: any) => ({ ...a, streams: streams(a.handle, Object.keys(a.desktops ?? {}).filter((r) => ROLES.has(r)), a.desktops ?? {}) })),
         stream_note: `stream paths carry a view-only token valid ${ttl} s; fetch this list again for fresh ones`,
       },
       cache: "no-store",
@@ -80,7 +87,7 @@ export function registerDesktops(api: Api, _d: Deps, env: NodeJS.ProcessEnv = pr
     const h = c.params.handle;
     if (!HANDLE.test(h)) throw badRequest("handle is 3..24 of [a-z0-9_]");
     const a = await ctl(`/agents/${h}`);
-    const roles = Object.keys(a.desktops ?? {});
+    const roles = Object.keys(a.desktops ?? {}).filter((r) => ROLES.has(r));
     return reply({ body: { ...a, streams: streams(h, roles, a.desktops ?? {}) }, cache: "no-store" });
   });
 

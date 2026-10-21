@@ -1,0 +1,31 @@
+{
+  "solana": {
+    "program": "BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc",
+    "config": "Euayzq1d6sdT9d5PukVEJucyRC58aPKpwmxynYirWSqJ",
+    "mint": "BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e",
+    "buyback_vault": "9D3hqn9D2TsT4pS7p7J5sAHNB9QBHVJnPSKX8d7kJbQ6",
+    "user": "H919SkKQQoS3HuJK2gNQdsCvFibBdWzW388xpi5tVQ3p",
+    "init_config_sig": "5ujMhXFA33yqWzQv62nrrr1rrX81EZQy7GXVW6sMCUTU58faNiYF6zVpB6w1JMvEddPBfFKT9XqRAEo2hbki21uc",
+    "pool": "5vKCFRAKp4bxvGCxJL1S2vuTgjYEXoMHMQ8rnFGo5kfZ",
+    "mandates": {
+      "7g93HBvUF7F1zNUahKnpxXEB3ryhBXNFS58ciX1zJxkL": {
+        "id": 1,
+        "mandate": "9bZmThUm7FtsJHrEmeRXtSQWYm9ssqym28kgbqmpikWW",
+        "vault": "9C8ag2NfWWP5XsBpN8NnPEwv5R6p1ZBTSgEyE2fnmVBx",
+        "open_sig": "2HitQhgXc9XQMN9kmKadPkKa5z9q2SAUJKFuv63bJeBEDALWS8AL7XUqsdsLLxSBGkYAT58WRXtVnB1Tfs1oY8Ht"
+      },
+      "8zKacMLKoWnciLNgdEQJUTWziX5G1CmQzL2aJPZEnVxu": {
+        "id": 2,
+        "mandate": "HF5WzsLC34FWDkU26fo2chkg3Tr6eZ12wHwPz4RcsP9g",
+        "vault": "LyFBRGydUNjguHWJ4qGhz7YKx53764GBm5ToQggUwKU",
+        "open_sig": "5bTGF2DL5MnNZDyoXVFyarQ12zGpEfRMUbBzRPrARUXbaNxHvGWiojjhGBkygu4mr2SewQ3qmuWpErjW4obtwBN2"
+      },
+      "BKqWM2ruS7m6pN6ZXo2nEmtgJpT59mquhF2iEaUSFtsq": {
+        "id": 3,
+        "mandate": "BXANFQV96k7ujWbz1vWaXb1yjg1zwaWRPDRchyKxf9c7",
+        "vault": "54Zb7HR7sz5kVpwbW1YCvVY38kFMLXeisA78MoepMHiv",
+        "open_sig": "3wiCi6gwihULzoPqMV7MqkEqjso7tEtTzmqxPmnkQKewkiW8gUi9bmoGN8RFDVFd43jwZyo6KgNWjRgdBXGtT2Mv"
+      }
+    }
+  }
+}

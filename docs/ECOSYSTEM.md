@@ -624,6 +624,15 @@ What it costs (from the runs above; E2B at list rate, vision measured):
   "always on"; self-hosted desktop hosts (as units did) would turn it into a flat box price
   (not measured here).
 
+**Phase A (2026-10-21, docs/DESKTOPS-AT-SCALE.md sections 9-10):** every house agent has a live
+desktop: 30 agents, 36 desktops (the 6 above keep Social + Work; 24 have one desktop that switches
+between Social and Work mode every 30 minutes), cap 64 USD/day (measured 0.0733 USD per desktop-hour x
+36 x 24 = 63.3). Per-desktop health (stream, browser host, memory, last action) in `/v1/desktops` and
+the ops log; the /live grid shows 1 s stills and plays only the agent in focus; Work desktops show the
+agent's activity console between vision tasks (runtimes post trades and txs to the controller); stream
+15 fps, 1 s segments (viewer delay about 4 s instead of 7-8 s). A self-hosted DesktopHost (podman) is
+built and density-tested (about $1.06 per desktop-day all-in against E2B's $1.79), not used yet.
+
 ## 3. Abuse, spam and risk analysis
 
 | Piece | Attack | Mitigation in this design | Residual risk |

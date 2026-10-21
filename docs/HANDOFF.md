@@ -1090,6 +1090,54 @@ CLAUDE.md "Who is working on what".
     bounty 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 (explorer /contract/<address>; docs/DEVNET.md "Contracts").
 
 
+31. DESKTOPS PHASE A + SELF-HOSTED DENSITY TEST + FAST-LOOKING DESKTOPS (owner 2026-10-21; "desktops Phase A" row;
+   docs/DESKTOPS-AT-SCALE.md sections 5.1, 9, 10):
+   - Code (services/swarm/desktop): per-agent layout (`DESK_TWO_DESK_AGENTS`: the first N keep Social + Work, the rest
+     one desktop) and the Phase A mode scheduler (one desktop, Social/Work every `DESK_MODE_SLOT_S` 1800 s, staggered;
+     chain actions run on it in either mode with `thought_ref`); `DEFAULT_HANDLES` now all 30 personas from the end
+     (a test checks no agent is driven twice for every DESK_AGENTS); per-desktop health every 300 s (stream, browser
+     host, memory, last action; self-heal of the encoder / browser host; `/health`, `/status`, ops log check 7 in
+     scripts/devnet-health.sh); stream settings `DESK_FPS/KBPS/SEG_S/STILL_S` (a change restarts each encoder once;
+     playlist read prefetches segments); activity console on Work desktops (deskhost.mjs keeps
+     `/live/<handle>/console` in front between vision tasks; `POST 127.0.0.1:10720/activity` for runtime events such as
+     the fast executor's trades); `DesktopHost` with E2B and self-hosted (podman, src/selfhost.ts) backends,
+     `DESK_SELFHOST_AGENTS` per agent. 12 tests (test box). cadre-api /v1/desktops: per-agent streams (one-desktop
+     agents get one), `layout`, `health`, `stream`; 5 tests. ~/cadre-web: /live for 30 (1 s stills per tile, live
+     video only for the focused agent, filters), /live/<handle> one-desktop view with health, /live/<handle>/console.
+   - Measured: E2B 0.0733 USD per desktop-hour on box 0 (51 desktop-hours) -> 36 desktops 63.3 USD/day, cap 64.
+     Density on the test box (5/10/15/20 desktops, 1 vCPU / 1 GiB each, 5-core slice): 0.13-0.29 cores and about
+     590 MiB per desktop, 4.0 fps held at 20 even with the shared box 97% busy; vision 3.3-3.9 s p50 per call;
+     ~33 desktops per 10 vCPU / 64 GB box at 15 fps -> about $1.06 per desktop-day all-in vs E2B $1.79.
+     Recommendation: Phase A stays on E2B (two boxes would cost about the same); self-host Phase B and user agents.
+     Stream: 15 fps / 800 kbit/s / 1 s segments / 1 s stills on 1 vCPU uses 0.28-0.34 of the vCPU on E2B, no
+     throttling, browser CPU unchanged; viewer delay about 4 s (from 7-8 s); VNC would be 0.1-0.2 s (next step:
+     view-only VNC relay, not built). Raw: selfhost/*.ts|sh in the repo; results in the section 5.1 / 10 tables.
+   - Test box: podman + slirp4netns + passt installed (apt), image localhost/cadre-desktop-selfhost kept (2 GB) for
+     reruns, /root/desk-density; slice removed, every container removed; `podman build` left netavark iptables chains
+     for podman's own bridge subnet (no published ports).
+   - Deploy (box 0: desktops.env, swarm.env, cadre-swarm + cadre-desktops + cadre-api restarts, health script, site):
+     commands handed to the orchestrator (the permission check blocks agent restarts).
+
+31. CX ADDRESS FORMAT (owner 2026-10-21: "Cx" + hex, EIP-55 style checksum, option A: the full
+   address stays the 32-byte key; "Cx address format" row): DONE in code, docs and the site; node
+   and service restarts pending (commands below). Spec + vectors: SPEC 2.1, vectors/cx-address.json
+   (Rust chain/agent-types/src/cx.rs, TS packages/cx-address; checksum = blake3 over the lowercase
+   hex). Example C1Epvwo9... = Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06,
+   short Cxa380...7d06. Inputs take Cx, lowercase Cx and base58 everywhere; JSON keeps base58 and
+   adds `<field>_cx` (RPC.md "Addresses", API.md "Addresses"). Surfaces: node RPC (parse32 + one
+   output pass chain/rpc/src/cxjson.rs, also WS notifications), cadre/pearl CLI (fmt::parse_chain_addr,
+   cx_str, short_addr, JSON pass; entry screen card), cadre-api (src/cx.ts: inputs normalized to
+   base58 before handlers, 400 bad_address with cx_code, `_cx` on replies except signable payloads),
+   explorer (addr() view helper, agent page shows "Cadre address" + "Solana address (same key)"),
+   swarm / user agents / desktops (log + status `_cx`, isAddress accepts Cx), ~/cadre-web 79016bf
+   (CxAddr everywhere, inputs + routes take Cx), Cadre Wallet dev + danishseal cadre-extension
+   cadre-chain 8bbabb0d0 (receive, send validation, approvals, window.pearl adds `cx`; Phantom
+   path test with the "abandon ... about" vector), ~/cadre-docs b45446d (reference/addresses).
+   Not converted yet: services/swarm/trading (not on main; trading row asked to use shortCx/toCx),
+   CLI contract return values of type addr, the old extension/ prototype, agent-node `pubkey` output
+   (scripts parse it). The RPC change ships with the NEXT cadre-node rolling upgrade (no window of
+   its own); cadre-api already adds `_cx` itself, so nothing waits on it.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

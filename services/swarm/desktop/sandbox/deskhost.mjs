@@ -9,12 +9,17 @@
 //   - if the wallet ever shows its unlock screen, types the password (read from a 0600 file).
 // It writes ~/.cadre/state.json every 5 s (open tabs, wallet address, locked or not) for the
 // controller's action log, and never listens on a port.
+// Live activity console: while ~/.cadre/console exists (the controller sets it on Work desktops and on
+// one-desktop agents in Work mode) and ~/.cadre/busy does not (no vision task running), it keeps the
+// agent's activity console (<site>/live/<handle>/console) in front, so the stream shows the agent's
+// runtime as it acts; when a vision task starts it puts the last working tab back in front first.
 //
-//   node /home/user/.cadre/deskhost.mjs <social|work> <siteUrl> <explorerUrl>
+//   node /home/user/.cadre/deskhost.mjs <social|work> <siteUrl> <explorerUrl> [handle]
 import { chromium } from 'playwright-core';
 import { existsSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 
-const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`] = process.argv.slice(2);
+const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`, handle = ''] = process.argv.slice(2);
+const consoleUrl = handle ? `${site}/live/${handle}/console` : null;
 const HOME = '/home/user/.cadre';
 const DIST = `${HOME}/wallet`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -113,15 +118,42 @@ async function unlockIfLocked() {
 
 const address = existsSync(`${HOME}/agent-address`) ? readFileSync(`${HOME}/agent-address`, 'utf8').trim() : null;
 ctx.on('page', p => p.on('load', () => unlockIfLocked().catch(() => {})));
-for (;;) {
-  await unlockIfLocked().catch(() => {});
-  // keep the wallet's own tab count small on a 1 GiB desktop: at most 4 tabs
-  const pages = ctx.pages();
-  if (pages.length > 4) for (const p of pages.slice(0, pages.length - 4)) if (!p.url().startsWith(`chrome-extension://`)) await p.close().catch(() => {});
-  const tabs = [];
-  for (const p of ctx.pages()) tabs.push({ url: p.url().slice(0, 300), title: (await p.title().catch(() => '')).slice(0, 120) });
-  const st = { t: Date.now(), mode, ext: extId, address, tabs };
-  writeFileSync(`${HOME}/state.json.tmp`, JSON.stringify(st));
-  renameSync(`${HOME}/state.json.tmp`, `${HOME}/state.json`);
-  await sleep(5000);
+const isConsole = p => !!consoleUrl && p.url().startsWith(consoleUrl);
+let front = null; // the console page while it is in front
+let lastWork = null; // the tab the vision model worked in last
+let wasBusy = false;
+async function consoleTick() {
+  if (!consoleUrl) return;
+  const want = existsSync(`${HOME}/console`);
+  const busy = existsSync(`${HOME}/busy`);
+  if (busy && !wasBusy && front) {
+    // a vision task is starting: put its tab back in front (it types into the focused tab)
+    const back = lastWork && !lastWork.isClosed() ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
+    if (back) await back.bringToFront().catch(() => {});
+    else await (await ctx.newPage()).goto(mode === 'work' ? explorer : `${site}/town`).catch(() => {});
+    front = null;
+  }
+  wasBusy = busy;
+  if (!want || busy) return;
+  if (front && !front.isClosed() && isConsole(front)) return;
+  lastWork = ctx.pages().filter(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')).pop() ?? lastWork;
+  let c = ctx.pages().find(isConsole);
+  if (!c) { c = await ctx.newPage(); await c.goto(consoleUrl).catch(() => {}); }
+  await c.bringToFront().catch(() => {});
+  front = c;
+}
+for (let n = 0; ; n++) {
+  await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));
+  if (n % 5 === 0) {
+    await unlockIfLocked().catch(() => {});
+    // keep the wallet's own tab count small on a 1 GiB desktop: at most 4 tabs (plus the console)
+    const pages = ctx.pages().filter(p => !isConsole(p));
+    if (pages.length > 4) for (const p of pages.slice(0, pages.length - 4)) if (!p.url().startsWith(`chrome-extension://`)) await p.close().catch(() => {});
+    const tabs = [];
+    for (const p of ctx.pages()) tabs.push({ url: p.url().slice(0, 300), title: (await p.title().catch(() => '')).slice(0, 120) });
+    const st = { t: Date.now(), mode, ext: extId, address, tabs, console: !!front };
+    writeFileSync(`${HOME}/state.json.tmp`, JSON.stringify(st));
+    renameSync(`${HOME}/state.json.tmp`, `${HOME}/state.json`);
+  }
+  await sleep(1000);
 }

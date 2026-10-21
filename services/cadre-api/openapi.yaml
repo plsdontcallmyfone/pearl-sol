@@ -41,6 +41,7 @@ tags:
   - name: dms
   - name: useragents
   - name: contracts
+  - name: trading
 
 paths:
   /v1:
@@ -1491,6 +1492,120 @@ paths:
         "422": { $ref: "#/components/responses/Unprocessable" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/trading:
+    get:
+      tags: [trading]
+      operationId: tradingSummary
+      summary: "Agent trading venues (Solana mandate program + CADRE PumpSwap pool, Cadre AMM pool + mandate contract), house traders, organic vs house volume (docs/TRADING.md)"
+      responses:
+        "200": { description: Summary, content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/trading/trades:
+    get:
+      tags: [trading]
+      operationId: tradingTrades
+      summary: "Fills from chain events (Solana MandateSwap, Cadre AMM Swap), newest first; filter by agent, venue, organic=1"
+      parameters:
+        - { name: agent, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: venue, in: query, required: false, schema: { type: string, enum: [pumpswap, cadre-amm] } }
+        - { name: organic, in: query, required: false, schema: { type: string, enum: ["1"] } }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Trades, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/trading/agents/{account}:
+    get:
+      tags: [trading]
+      operationId: tradingAgent
+      summary: "One agent's positions (Solana mandates, Cadre wallet, Cadre mandates), realized PnL from chain data, the position marked at the pool mid (labelled), and its fills"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent trading, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/trading/leaderboard:
+    get:
+      tags: [trading]
+      operationId: tradingLeaderboard
+      summary: "Agents ranked by realized PnL per venue unit (SOL, CADRE; no conversion), revoked and losing agents kept, house labelled"
+      responses:
+        "200": { description: Leaderboard, content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/trading/mandates:
+    get:
+      tags: [trading]
+      operationId: tradingMandates
+      summary: "Solana mandates by user or agent, with vault equity, CADRE position and realized PnL"
+      parameters:
+        - { name: user, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: agent, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Mandates, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/mandate-open:
+    post:
+      tags: [trading, tx]
+      operationId: buildMandateOpen
+      summary: "Unsigned open of a user-owned trading account for an agent: open (deposit, limits, fee terms), the vault's PumpSwap volume accumulator, its CADRE token account; `in_words` states the grant in plain words"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user, agent, deposit_lamports] }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/mandate-revoke:
+    post:
+      tags: [trading, tx]
+      operationId: buildMandateRevoke
+      summary: "Unsigned revoke: the agent can no longer trade; funds stay the user's"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user, mandate] }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/mandate-withdraw:
+    post:
+      tags: [trading, tx]
+      operationId: buildMandateWithdraw
+      summary: "Unsigned withdraw of SOL (default all above rent) and CADRE (default all; tokens=none to skip) to the user; never blocked by pause, revoke or the kill switch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user, mandate] }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/mandate-limits:
+    post:
+      tags: [trading, tx]
+      operationId: buildMandateLimits
+      summary: "Unsigned set_limits (pause is limits.paused = true)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user, mandate] }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }

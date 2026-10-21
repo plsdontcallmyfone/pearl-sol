@@ -1,0 +1,16 @@
+{
+  "name": "cadre-trading",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre agents trading on chain (docs/TRADING.md): a paid-thought strategy layer, a deterministic in-process executor, risk rules, receipts on Cadre and chain-only PnL, for the Cadre AMM (WASM contracts) and PumpSwap through the Solana mandate program",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node bin/trader.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.0"
+  },
+  "engines": { "node": ">=22.18" }
+}
