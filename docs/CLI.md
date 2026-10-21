@@ -143,13 +143,32 @@ prints the overview (tests/entry_cli.rs).
 | PgUp/PgDn, Up/Down | Scroll the conversation; ctrl+l clears it (back to the start page) |
 | Esc / ctrl+c | Esc closes the palette or cancels a pending DM, else quits; ctrl+c quits. Raw mode, the alternate screen, bracketed paste and the cursor are restored on exit and in a panic hook |
 
-Colors are opencode's default dark theme: background `#0a0a0a`, prompt panel `#1e1e1e`, muted
-`#808080` ("cadre", hint words, footer), text `#eeeeee` ("agents", model, keys), blue `#5c9cf5`
-(bar, mode label), placeholder `#606060`, logo shadows 25% of the ink over the background
-(`#282828`, `#434343`). Checked against the reference screenshot by downscaling the render to its
-scale and comparing peak grays (screenshots/cli/entry-compare-reference.png). Truecolor with
-`COLORTERM=truecolor|24bit`, else the nearest xterm-256 index; `NO_COLOR` drops colors (dim and
-bold carry the two tones).
+Colors are opencode's default dark theme: prompt panel `#1e1e1e`, muted `#808080` ("cadre",
+hint words, footer), text `#eeeeee` ("agents", model, keys), blue `#5c9cf5` (bar, mode label),
+placeholder `#606060`, logo shadows 25% of the ink over opencode's `#0a0a0a` (`#282828`,
+`#434343`). The screen itself is never painted: everything sits on the terminal's own background
+(only the prompt panel, the logo shadows and the palette paint one), so a terminal theme cannot
+turn painted cells into colored blocks (owner feedback 2026-10-21, over ssh). Checked against the
+reference screenshot by downscaling the render to its scale and comparing peak grays
+(screenshots/cli/entry-compare-reference.png).
+
+Color depth: `NO_COLOR` (not empty) drops colors (dim and bold carry the two tones);
+`CADRE_COLOR=truecolor|256|none` forces one; `COLORTERM=truecolor|24bit` means truecolor; otherwise
+truecolor too, because ssh does not forward COLORTERM (TERM is just `xterm-256color` there) and
+nearly every terminal takes 24-bit color. 256 colors only for terminals that clearly cannot
+(`TERM=linux`, `vt*`, `ansi`, `dumb`, macOS Terminal.app). In 256 colors every gray is a gray-ramp
+entry (232-255), never one of the 16 system colors or a color-cube cell that themes tint. To pass
+COLORTERM through ssh anyway: `ssh -o SendEnv=COLORTERM host` (the server's sshd needs
+`AcceptEnv COLORTERM`), or `ssh -t host CADRE_COLOR=truecolor /opt/lode/bin/cadre`.
+
+Real-terminal check (2026-10-21, after the feedback): xterm 390 on Xvfb with TERM=xterm-256color
+and no COLORTERM (what ssh gives): `screenshots/cli/entry-xterm-ssh-env-120x40.png`,
+`entry-xterm-ssh-env-80x30.png`, `entry-xterm-truecolor-120x40.png` (COLORTERM=truecolor),
+`entry-xterm-256-120x40.png` (CADRE_COLOR=256). A real `ssh -tt` session from the Mac to the test
+box emitted only truecolor (5260 foreground codes, no 256-color codes) and three background colors:
+the panel and the two logo shadows. xterm draws block characters from the font, so the wordmark's
+rows show thin seams there; terminals that draw block elements themselves (Ghostty, iTerm2, kitty,
+WezTerm, Alacritty) do not.
 
 Sizes: full robot from 44 columns and 39 rows; the half-size robot (22 x 12, densest character of
 each 2 x 2 block) on shorter terminals; none on very small ones. The wordmark is side by side from

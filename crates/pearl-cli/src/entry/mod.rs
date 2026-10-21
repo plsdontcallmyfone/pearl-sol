@@ -1129,7 +1129,8 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let (w, h) = (area.width, area.height);
     let pen = Pen { mode: app.color };
     let buf = f.buffer_mut();
-    fill(buf, area, pen.bg(BG));
+    // the terminal's own background everywhere; only the prompt panel and the palette paint one
+    fill(buf, area, Style::default().bg(ratatui::style::Color::Reset));
     let mut cursor = None;
     if app.transcript.is_empty() {
         let p = plan_home(w, h);
