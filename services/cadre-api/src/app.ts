@@ -17,6 +17,7 @@ import { registerDms } from "./routes/dms.ts";
 import { registerDesktops } from "./routes/desktops.ts";
 import { registerUserAgents } from "./routes/useragents.ts";
 import { registerContracts } from "./routes/contracts.ts";
+import { registerTxStatus } from "./routes/txstatus.ts";
 
 export const VERSION = "1.0.0";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -85,5 +86,6 @@ export function build(d: Deps): Api {
   registerDesktops(api, d);
   registerUserAgents(api, d);
   registerContracts(api, d);
+  registerTxStatus(api, d);
   return api;
 }

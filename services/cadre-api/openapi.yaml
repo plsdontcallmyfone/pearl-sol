@@ -519,11 +519,22 @@ paths:
     get:
       tags: [tx]
       operationId: chainTxStatus
-      summary: Agent-chain tx status (pending | included, confirmations)
+      summary: "Agent-chain tx (node getTx, fields unchanged) plus tx_status: the normalized status (see /v1/tx/chain/{hash}/status)"
       parameters: [{ name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }]
       responses:
-        "200": { description: Tx, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "200": { description: Tx, content: { application/json: { schema: { type: object, additionalProperties: true, properties: { tx_status: { $ref: "#/components/schemas/TxStatus" } } } } } }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/tx/chain/{hash}/status:
+    get:
+      tags: [tx]
+      operationId: chainTxStatusOnly
+      summary: "Tx status pending | preconfirmed (weak blocks on the tip, docs/SPEED.md 2.4) | included (N of K) | final, with a one-line risk note; node getTxStatus, getTx on older nodes (final then derived from the finalized height)"
+      parameters: [{ name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }]
+      responses:
+        "200": { description: Status, content: { application/json: { schema: { $ref: "#/components/schemas/TxStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { description: The node did not answer }
   /v1/tx/solana:
     post:
       tags: [tx]
@@ -1508,6 +1519,31 @@ components:
     Refused: { description: "The chain would refuse the tx now (code refused, message = the rule)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     Unavailable: { description: An upstream is unreachable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   schemas:
+    TxStatus:
+      type: object
+      required: [status, final, risk]
+      properties:
+        tx_hash: { type: string }
+        status: { type: string, enum: [pending, preconfirmed, included, final] }
+        preconf:
+          type: object
+          nullable: true
+          description: "Weak-block evidence on the current tip (SPEED.md 2.4); not binding (2.5)"
+          properties:
+            weak_count: { type: integer }
+            weak_miners: { type: integer }
+            weak_share: { type: number, description: "0..1: share of weak blocks on the tip since the tx first appeared that list it" }
+            first_seen_ms: { type: integer, nullable: true }
+            latest_age_ms: { type: integer, nullable: true }
+            confidence: { type: string, enum: [low, medium, high] }
+        block_hash: { type: string, nullable: true }
+        height: { type: integer, nullable: true }
+        confirmations: { type: integer, nullable: true }
+        final: { type: boolean }
+        finality_k: { type: integer, nullable: true }
+        final_source: { type: string, nullable: true, enum: [node, derived] }
+        risk: { type: string, description: "What this status does and does not guarantee" }
+        node_api: { type: string, enum: [getTxStatus, getTx] }
     Address: { type: string, pattern: "^[1-9A-HJ-NP-Za-km-z]{32,44}$", description: base58 32-byte key (same key on both chains) }
     Hex32: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
     Amount: { type: string, pattern: "^\\d+$", description: decimal string of base units }

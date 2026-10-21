@@ -8,6 +8,7 @@ import type { Summary } from "./models.ts";
 import { KNOWN_EVENTS, decodeContractTx, eventTopic, isContractKind, isUnknownMethod, splitMethod, withTopicNames } from "./contracts.ts";
 import { codePage, contractPage, contractsPage, txPage } from "./contract-view.ts";
 import { notFound } from "./views.ts";
+import { normalizeTxStatus } from "./txstatus.ts";
 
 type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
 const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
@@ -84,11 +85,11 @@ export async function txModel(ix: Indexer, hash: string) {
   const contract = isContractKind(tx.kind) && tx.tx ? decodeContractTx(tx.tx) : null;
   let receipt: Read | null = null;
   if (isContractKind(tx.kind)) {
-    if (tx.status === "pending") receipt = { ok: false, reason: "pending in the mempool: a receipt exists once the tx is in a block" };
+    if (tx.status === "pending" || tx.status === "preconfirmed") receipt = { ok: false, reason: "pending in the mempool: a receipt exists once the tx is in a block" };
     else if (tx.receipt) receipt = { ok: true, v: { ...tx.receipt, events: withTopicNames(tx.receipt.events), method: tx.receipt && contract?.body.args ? splitMethod(String(contract.body.args))?.method ?? null : null } };
     else receipt = { ok: false, reason: "the node returned no receipt for this contract tx" };
   }
-  return { tx_hash: hash.toLowerCase(), tx: { ok: true as const, v: { ...tx, tx: undefined } }, contract, receipt };
+  return { tx_hash: hash.toLowerCase(), tx: { ok: true as const, v: { ...tx, tx: undefined } }, tx_status: normalizeTxStatus(tx, ix.chainInfo), contract, receipt };
 }
 
 export async function contractRoute(ix: Indexer, api: boolean, rest: string[], q: URLSearchParams, sm: Summary): Promise<Res | null> {
