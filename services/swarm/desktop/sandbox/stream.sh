@@ -9,8 +9,13 @@
 W=${DESK_W:-1280}; H=${DESK_H:-800}; FPS=${DESK_FPS:-4}; KBPS=${DESK_KBPS:-350}; SEG=${DESK_SEG_S:-2}; STILL=${DESK_STILL_S:-2}
 GOP=$(awk -v f="$FPS" -v s="$SEG" 'BEGIN{g=int(f*s+0.5); if(g<1)g=1; print g}')
 mkdir -p /tmp/stream
+# one encoder loop per desktop (a second start exits here)
+exec 9>/tmp/stream.lock
+flock -n 9 || exit 0
 while true; do
-  nice -n 5 ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse 1 -framerate "$FPS" -video_size "${W}x${H}" -i :0 \
+  # -y: after a crash (e.g. the OOM killer) the old still is overwritten instead of ffmpeg refusing
+  # to start ("thumb.jpg already exists"), which left a stream frozen for hours on 2026-10-21
+  nice -n 5 ffmpeg -y -nostdin -loglevel error -f x11grab -draw_mouse 1 -framerate "$FPS" -video_size "${W}x${H}" -i :0 \
     -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v baseline \
     -b:v "${KBPS}k" -maxrate "${KBPS}k" -bufsize "$((KBPS * 2))k" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
     -f hls -hls_time "$SEG" -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \
