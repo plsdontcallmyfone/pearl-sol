@@ -798,6 +798,11 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         // 4. accumulate final headers in order (one tx in flight: order matters)
         let acc = self.ledger.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
+        if let Some((start, count, _)) = acc {
+            if self.owns_shared(3, start + count) {
+                self.fill_final_gap(cfg, start + count)?;
+            }
+        }
         let acc_next = match acc {
             None => {
                 if cfg.admin == pk {
@@ -893,7 +898,8 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         let (_, paths) = chain::tx_root_paths(&txs, cb.as_deref());
         for (job_id, i) in jobs {
-            if self.ledger.account(&client::job_addr(&job_id))?.is_some() {
+            if let Some(data) = self.ledger.account(&client::job_addr(&job_id))? {
+                self.replace_dead_job(&job_id, &data, hash, &txs[i], &paths[i])?;
                 continue;
             }
             let pk = self.ledger.pk();
@@ -901,6 +907,61 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                 Ok(_) => println!("registered job {} (posted at {height})", hex::encode(job_id)),
                 Err(e) => crate::rlog!("register job {}: {e:#}", hex::encode(job_id)),
             }
+        }
+        Ok(())
+    }
+
+    /// L-2 (docs/SECURITY-REVIEW.md): a run of canonical headers more than CANON_LEN below the
+    /// tip that was never marked final (a tip jump by a burst of connects) can only be marked
+    /// final top-down, each by its final child. Marks up to 64 per call, highest first, from
+    /// the lowest final header above `next` (the accumulator's next height).
+    fn fill_final_gap(&mut self, cfg: &lightclient::Config, next: u64) -> Result<()> {
+        let ring_low = cfg.tip_height.saturating_sub(CANON_LEN as u64 - 1);
+        if next > cfg.final_floor || next >= ring_low {
+            return Ok(());
+        }
+        // step 3 marks the ring from max(final_height, ring_low) + 1, so the first final
+        // header can be one above ring_low
+        let top = (ring_low + 1).min(cfg.final_floor);
+        let mut hashes: Vec<(u64, [u8; 32])> = vec![];
+        for h in next..=top {
+            let Some(x) = self.node_hash(h)? else { return Ok(()) };
+            hashes.push((h, x));
+        }
+        let st = self.ledger.accounts(&hashes.iter().map(|(_, x)| client::header_addr(x)).collect::<Vec<_>>())?;
+        let recs: Vec<Option<Rec>> = st.iter().map(|d| d.as_deref().and_then(rec_of)).collect();
+        if matches!(recs[0], Some((_, true, ..))) {
+            return Ok(());
+        }
+        // lowest final record above `next`; the ring's lowest header is marked by step 3
+        let Some(f) = recs.iter().position(|r| matches!(r, Some((_, true, ..)))) else { return Ok(()) };
+        let lo = f.saturating_sub(64);
+        let ixs: Vec<Instruction> = (lo..f).rev().filter(|&i| matches!(recs[i], Some((lightclient::STATUS_VERIFIED, false, ..)))).map(|i| client::mark_final_linked(&hashes[i].1, &hashes[i + 1].1)).collect();
+        for c in ixs.chunks(FINALS_PER_TX) {
+            if let Err(e) = ledger::send_wait(self.ledger, c, &[], CU_FINAL_EACH * c.len() as u32 * 2 + 20_000) {
+                crate::rlog!("final gap at {next}: {e:#}");
+                break;
+            }
+        }
+        println!("final gap: marked {} headers by final child (from {} down)", ixs.len(), hashes[f].0);
+        Ok(())
+    }
+
+    /// L-1 (docs/SECURITY-REVIEW.md): the job's commit came from another block; when the node
+    /// says that block is not canonical, re-register from this canonical one (`replace_job`).
+    fn replace_dead_job(&mut self, job_id: &[u8; 32], data: &[u8], hash: &[u8; 32], tx: &[u8], path: &[u8]) -> Result<()> {
+        let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut &data[..])?;
+        if jc.posted_block == *hash {
+            return Ok(());
+        }
+        let Some(witness) = self.node_hash(jc.posted_height)? else { return Ok(()) };
+        if witness == jc.posted_block {
+            return Ok(()); // the commit's block is canonical: nothing to replace
+        }
+        let pk = self.ledger.pk();
+        match ledger::send_wait(self.ledger, &[client::replace_job(pk, hash, &witness, *job_id, tx.to_vec(), path.to_vec())], &[], MAX_CU) {
+            Ok(_) => println!("replaced job {} (dead commit at {})", hex::encode(job_id), jc.posted_height),
+            Err(e) => crate::rlog!("replace job {}: {e:#}", hex::encode(job_id)),
         }
         Ok(())
     }

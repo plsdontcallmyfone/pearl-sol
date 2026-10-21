@@ -491,3 +491,38 @@ fn two_lanes_send_each_shared_step_once() {
     assert_eq!(tip, 24);
     assert_eq!(failed, 0, "errors {errors:?}");
 }
+
+/// Security pass 2026-10-21, L-2 (docs/SECURITY-REVIEW.md): someone else verified a long run
+/// of headers and connected them in one burst, so the light-client tip jumped more than the
+/// 256-entry canonical ring past the last header marked final. The relay fills that gap top
+/// down (`mark_final` with the final child) and the accumulator catches up to the floor
+/// instead of stalling on `NotFinal` for good.
+#[test]
+fn fills_a_final_gap_after_a_tip_jump() {
+    let p = small_params();
+    let total = lightclient::CANON_LEN + 24;
+    let blocks = mine(&p, total);
+    let mut env = Env::new(p, &blocks[0]);
+    for b in &blocks[1..] {
+        env.relay(b).unwrap();
+    }
+    let c0 = env.config();
+    assert_eq!(c0.tip_height, total as u64);
+    assert_eq!(c0.final_height, 0, "nothing marked final yet");
+    let mut sim = Sim::new(env.svm, env.payer, 0x51);
+    let chain = Chain { blocks: Rc::new(RefCell::new(blocks.clone())), visible: Rc::new(Cell::new(blocks.len())), fetches: Rc::new(RefCell::new(0)) };
+    let mut r = Relay::new(chain, &mut sim, vec![Keypair::new()], Opts { parallel: 1, exact_cu: true, resend_after: Duration::ZERO, shared_grace: Duration::ZERO });
+    r.ensure_works().unwrap();
+    let mut acc_next = 0;
+    for _ in 0..80 {
+        r.pass().unwrap();
+        r.ledger.pause(0);
+        let acc = r.ledger.account(&lightclient::client::acc_addr()).unwrap().and_then(|d| lightclient::client::acc_state(&d)).unwrap();
+        acc_next = acc.0 + acc.1;
+        if acc_next > c0.final_floor {
+            break;
+        }
+    }
+    println!("final gap: accumulator at {acc_next}, floor {}", c0.final_floor);
+    assert_eq!(acc_next, c0.final_floor + 1, "accumulator stalled at {acc_next}");
+}
