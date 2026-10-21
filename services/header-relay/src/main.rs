@@ -120,6 +120,18 @@ enum Cmd {
         #[arg(long)]
         retain_final: Option<u64>,
     },
+    /// Admin: schedule the chain's speed upgrade on the light client (docs/SPEED.md 3.5):
+    /// headers above HEIGHT are checked against TARGET_MS, the final floor uses K once the tip
+    /// reaches HEIGHT. Grows the config account once (rent from the payer). Changeable only
+    /// while the light-client tip is below HEIGHT.
+    SetSpeed {
+        #[arg(long)]
+        height: u64,
+        #[arg(long, default_value_t = 30_000)]
+        target_ms: u64,
+        #[arg(long, default_value_t = 60)]
+        k: u32,
+    },
     /// Close this relay's work accounts (rent back to the payer).
     CloseWorks {
         #[arg(long, default_value = ".header-relay/work-keypair.json")]
@@ -225,6 +237,14 @@ fn run() -> Result<()> {
             println!("{}", json!({"max_future_ms": p.max_future_ms, "relay_reward": p.relay_reward, "retain_final": p.retain_final}));
             Ok(())
         }
+        Cmd::SetSpeed { height, target_ms, k } => {
+            let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
+            s.send(&[client::set_speed(s.pk(), height, target_ms, k)], &[])?;
+            let d = s.account(&client::config_pda())?.context("light client not initialized")?;
+            let sp = lightclient::SpeedSchedule::read(&d).context("schedule not stored")?;
+            println!("{}", json!({"speed_height": sp.speed_height, "target_block_time_ms": sp.target_block_time_ms, "finality_k": sp.finality_k}));
+            Ok(())
+        }
         Cmd::CloseWorks { work, parallel, keep } => {
             let mut s = Sol::new(&cli.solana, read_key(&cli.payer)?, cli.cu_price).with_poll(cli.confirm_poll_ms).with_send_gap(cli.send_gap_ms);
             for i in keep..parallel.max(1) {
@@ -248,11 +268,13 @@ fn run() -> Result<()> {
             match s.config() {
                 Ok(c) => {
                     let acc = s.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d));
+                    let speed = s.account(&client::config_pda())?.and_then(|d| lightclient::SpeedSchedule::read(&d));
                     let node_h = node.info().ok().and_then(|i| chain::num(&i["height"]).ok());
                     println!("{}", json!({"initialized": true, "tip_height": c.tip_height, "tip_hash": hex::encode(c.tip_hash),
                         "final_height": c.final_height, "final_floor": c.final_floor, "checkpoint_height": c.checkpoint_height,
                         "node_height": node_h, "lag_blocks": node_h.map(|h| h.saturating_sub(c.tip_height)),
-                        "accumulator": acc.map(|(st, n, last)| json!({"start_height": st, "count": n, "next_height": st + n, "last_hash": hex::encode(last)}))}))
+                        "accumulator": acc.map(|(st, n, last)| json!({"start_height": st, "count": n, "next_height": st + n, "last_hash": hex::encode(last)})),
+                        "speed": speed.map(|sp| json!({"speed_height": sp.speed_height, "target_block_time_ms": sp.target_block_time_ms, "finality_k": sp.finality_k}))}))
                 }
                 Err(_) => println!("{}", json!({"initialized": false})),
             }
