@@ -40,11 +40,15 @@ pub const BLOB_PRUNE_EVERY: u64 = 10;
 pub const BLOB_SCAN_JOBS: u64 = 100_000;
 /// At most this many blob fetches in flight.
 pub const MAX_WANTED_BLOBS: usize = 1024;
+/// Unsolicited blob pushes stop once the store is `1 / PUSH_SHARE_DIVISOR` full.
+pub const PUSH_SHARE_DIVISOR: u64 = 2;
 
 /// WebSocket subscriber: topics and a channel of JSON notification strings.
 pub struct Subscriber {
     pub topics: Vec<String>,
-    pub tx: futures::channel::mpsc::UnboundedSender<String>,
+    /// Bounded (server::WS_QUEUE): a subscriber that stops reading is dropped when its
+    /// queue fills, instead of growing the node's memory without bound.
+    pub tx: futures::channel::mpsc::Sender<String>,
 }
 
 pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
@@ -70,7 +74,18 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// Chunk blob ids listed by each registered model's manifest we hold (SPEC 4.5),
     /// keyed by manifest blob id: pinned, never pruned.
     pub model_pins: HashMap<BlobId, Vec<BlobId>>,
+    /// [`Core::blob_refs`] of the tip it was computed on: getBlob of a missing id reads it
+    /// instead of rescanning up to BLOB_SCAN_JOBS jobs per call (security pass 2026-10-21).
+    pub refs_cache: Option<(Hash, Arc<HashMap<BlobId, u64>>)>,
+    /// Last template request: `(time, tip, miner, choice, mempool size, template id)`.
+    /// getBlockTemplate is public and executes up to max_block_txs txs, so repeats within
+    /// [`TEMPLATE_REUSE_MS`] get the same template (security pass 2026-10-21).
+    pub last_template: Option<(u64, Hash, Pubkey, JobChoice, usize, String)>,
 }
+
+/// A getBlockTemplate for the same tip, miner, choice and mempool size within this many
+/// milliseconds reuses the last template.
+pub const TEMPLATE_REUSE_MS: u64 = 1000;
 
 /// Blob ids a `cadre-model-v1` manifest lists (every file's chunks).
 pub fn manifest_blobs(data: &[u8]) -> Vec<BlobId> {
@@ -118,6 +133,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             peer_info: None,
             static_peers: Vec::new(),
             model_pins: HashMap::new(),
+            refs_cache: None,
+            last_template: None,
         }
     }
 
@@ -187,6 +204,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         if !store.take_peer(peer, data.len(), now_ms) {
             debug!("blob push over the peer budget: dropped");
+            return true;
+        }
+        // Unsolicited pushes (not a blob this node is fetching for a job) may fill at most
+        // half the store, so peers cannot crowd out the data jobs reference (security pass
+        // 2026-10-21); the referenced half is reached through fetches.
+        if !self.blob_wanted.contains_key(&id) && store.total_bytes().saturating_add(data.len() as u64) > store.config().max_total_bytes / PUSH_SHARE_DIVISOR {
+            debug!("blob push over the unsolicited share of the store: dropped");
             return true;
         }
         match store.put(data, height).await {
@@ -276,6 +300,19 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         Ok(refs)
     }
 
+    /// [`Core::blob_refs`] at the current tip, computed at most once per tip.
+    pub async fn blob_refs_cached(&mut self) -> Result<Arc<HashMap<BlobId, u64>>, ChainError> {
+        let tip = self.chain.tip().hash;
+        if let Some((h, r)) = &self.refs_cache {
+            if *h == tip {
+                return Ok(r.clone());
+            }
+        }
+        let r = Arc::new(self.blob_refs().await?);
+        self.refs_cache = Some((tip, r.clone()));
+        Ok(r)
+    }
+
     /// getModel / listModels: does this node hold the model's manifest, and is it fetching it?
     /// A registered model whose manifest no node holds (its upload never ran) shows
     /// `manifest_present: false, manifest_fetching: true` on every node.
@@ -335,7 +372,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         let tip = self.chain.tip_height();
         self.last_blob_prune = tip;
-        let refs = match self.blob_refs().await {
+        let refs = match self.blob_refs_cached().await {
             Ok(r) => r,
             Err(e) => {
                 debug!("blob prune skipped: {e}");
@@ -408,8 +445,18 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         // social kinds (SPEC 4.6): activation height and the social fee floor
         executor::precheck_social(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
+        // BridgeUnlock pays no fee: only attester-signed, unprocessed deposits are pooled
+        if let TxBody::BridgeUnlock { solana_nonce, .. } = &tx.body {
+            executor::precheck_bridge_unlock(&tx, &self.chain.tip().config)?;
+            if self.chain.read_tip(&schema::deposit_key(*solana_nonce)).await.map_err(|e| e.to_string())?.is_some() {
+                return Err(format!("deposit {solana_nonce} already processed"));
+            }
+        }
+        if tx.from == self.chain.tip().config.admin {
+            executor::precheck_admin_config(&tx, acc.balance)?;
+        }
         let bytes = tx.encode();
-        let h = self.mempool.insert(tx, acc.nonce, min_fee).map_err(|e| e.to_string())?;
+        let h = self.mempool.insert_funded(tx, acc.nonce, acc.balance, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;
         if relay {
             self.outbox.push(Outbound::Tx(bytes));
@@ -529,8 +576,15 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     }
 
     pub async fn template(&mut self, miner: Pubkey, choice: JobChoice, now_ms: u64) -> Result<(String, Template), ChainError> {
-        let txs = self.candidate_txs().await;
         let tip = self.chain.tip().hash;
+        if let Some((t0, h, m, c, n, id)) = &self.last_template {
+            if *h == tip && *m == miner && *c == choice && *n == self.mempool.len() && now_ms >= *t0 && now_ms - *t0 < TEMPLATE_REUSE_MS {
+                if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
+                    return Ok((id.clone(), t.clone()));
+                }
+            }
+        }
+        let txs = self.candidate_txs().await;
         let t = {
             let avail = |j: &schema::JobRecord| self.job_data_available(j);
             self.chain.build_template_filtered(tip, miner, choice, &txs, now_ms, &avail).await
@@ -551,6 +605,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 self.templates.pop_front();
             }
         }
+        self.last_template = Some((now_ms, tip, miner, choice, self.mempool.len(), id.clone()));
         Ok((id, t))
     }
 
@@ -573,11 +628,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             return;
         }
         let msg = json!({"jsonrpc": "2.0", "method": "notify", "params": {"topic": topic, "data": data}}).to_string();
-        self.subscribers.retain(|s| {
+        self.subscribers.retain_mut(|s| {
             if !s.topics.iter().any(|t| t == topic) {
                 return !s.tx.is_closed();
             }
-            s.tx.unbounded_send(msg.clone()).is_ok()
+            s.tx.try_send(msg.clone()).is_ok()
         });
     }
 

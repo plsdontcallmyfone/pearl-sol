@@ -64,7 +64,7 @@ impl std::fmt::Debug for PeerCount {
 /// blocks (bad PoW, bad roots, bad target, ...) yes; context-dependent rejections
 /// (orphans, future timestamps, reorgs deeper than K, internal errors) no.
 pub fn ban_worthy(reason: &str) -> bool {
-    reason.starts_with("invalid:") && !reason.contains("too far in the future")
+    reason.starts_with("invalid:") && !consensus_pow::is_time_too_new(reason)
 }
 
 pub fn now_ms<C: Clock>(c: &C) -> u64 {
@@ -265,7 +265,8 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             let ok = match Block::decode(&value) {
                 Ok(b) if b.hash() == key => {
                     let r = core.add_block(b, now, true).await;
-                    r.accepted || !r.reason.as_deref().unwrap_or("").starts_with("invalid")
+                    // same rule as gossip: a future timestamp is not the serving peer's fault
+                    r.accepted || !ban_worthy(r.reason.as_deref().unwrap_or(""))
                 }
                 _ => false,
             };
