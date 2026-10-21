@@ -87,6 +87,13 @@ pub struct Config {
     /// blob pushes and blob fetch traffic). The writer drains it only when the normal lane is
     /// empty, so multi-MB blob frames never delay or crowd out block and tip gossip.
     pub bulk_queue_size: usize,
+    /// Bytes at most queued on one peer's bulk lane, and on all peers' together; a bulk
+    /// frame over either budget is dropped (a blob answer then times out and is asked again
+    /// later). Blob answers are up to 4 MiB each and a busy peer can ask for many: without a
+    /// byte bound a node held gigabytes of answers for one slow peer (devnet box 1 was
+    /// OOM-killed, 2026-10-21).
+    pub bulk_peer_bytes: usize,
+    pub bulk_total_bytes: usize,
     pub max_new: usize,
     pub max_tried: usize,
     pub max_per_source: usize,
@@ -130,6 +137,8 @@ impl Config {
             max_message: crate::MAX_MESSAGE,
             queue_size: 1024,
             bulk_queue_size: 64,
+            bulk_peer_bytes: 16 << 20,
+            bulk_total_bytes: 128 << 20,
             max_new: 4096,
             max_tried: 1024,
             max_per_source: 256,
@@ -188,6 +197,9 @@ impl Rand {
 
 pub(crate) struct ChannelIn {
     pub tx: futures::channel::mpsc::Sender<(ed25519::PublicKey, commonware_runtime::IoBuf)>,
+    /// Bulk channel: a full local backlog drops the frame (counted) instead of blocking the
+    /// connection's reader, so a slow blob consumer never stalls block and tip gossip.
+    pub bulk: bool,
     /// Inbound messages per second allowed per peer, and burst.
     pub rate: f64,
     pub burst: f64,
@@ -235,7 +247,7 @@ where
         let per_cell = quota.replenish_interval().as_secs_f64().max(1e-9);
         let rate = 2.0 / per_cell;
         let burst = 2.0 * quota.burst_size().get() as f64;
-        self.channels.insert(channel, ChannelIn { tx, rate, burst });
+        self.channels.insert(channel, ChannelIn { tx, bulk, rate, burst });
         let sender = Sender::new(channel, self.cfg.max_message, bulk, self.oracle.clone(), self.context.child("sender"), quota);
         (sender, Receiver::new(rx))
     }

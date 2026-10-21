@@ -330,3 +330,58 @@ fn normal_lane_is_not_held_behind_bulk_frames() {
         assert!(bulk_got.load(Ordering::SeqCst) >= 10, "bulk frames still flow");
     });
 }
+
+/// Memory bound: a node asked to send far more bulk data than its links carry (peers
+/// fetching blobs faster than they can arrive) holds at most `bulk_peer_bytes` per peer and
+/// `bulk_total_bytes` in all queued; the rest is dropped and counted. Before 2026-10-21 the
+/// per-peer queue was bounded only in frames (1024, each up to 4 MiB): devnet nodes serving
+/// blobs to one slow follower grew to gigabytes and box 1 was OOM-killed.
+#[test]
+fn bulk_queue_bytes_are_bounded_per_peer_and_in_total() {
+    const BULK: u64 = 8;
+    runner(43).start(|ctx| async move {
+        let mk = |i: u64, port: u16, seeds: &[u16]| {
+            let net = net::open::testing::ThrottledNetwork::new(ctx.child("net"), ctx.child("clock"), 1_000_000.0);
+            let mut c = cfg(i, port, seeds);
+            c.bulk_peer_bytes = 8 << 20;
+            c.bulk_total_bytes = 20 << 20;
+            let (mut n, oracle) = Network::new(ctx.child("node").with_attribute("i", i), net, c);
+            let q = Quota::per_second(std::num::NonZeroU32::new(100_000).unwrap());
+            let normal = n.register(CH, q, 4096);
+            let bulk = n.register_bulk(BULK, q, 64);
+            n.start();
+            (oracle, normal, bulk)
+        };
+        let (oa, _na, (mut ba, _)) = mk(0, 3500, &[]);
+        let mut others = Vec::new();
+        for i in 1..4u64 {
+            let (o, n, (_bs, mut br)) = mk(i, 3500 + i as u16, &[3500]);
+            // consume what arrives, like a blob consumer
+            ctx.child("rx").spawn(move |_| async move { while br.recv().await.is_ok() {} });
+            others.push((o, n));
+        }
+        while oa.peers().len() < 3 {
+            ctx.sleep(Duration::from_millis(100)).await;
+        }
+        let frame = vec![9u8; 1 << 20];
+        let mut max_queued = 0usize;
+        // 2000 x 1 MiB to all three peers, 20 per 100 ms (200 MB/s offered vs 1 MB/s links)
+        for round in 0..100 {
+            for _ in 0..20 {
+                let _ = ba.send(Recipients::All, IoBuf::from(frame.clone()), false);
+            }
+            let st = oa.stats();
+            max_queued = max_queued.max(st.bulk_queued_bytes);
+            assert!(st.bulk_queued_bytes <= 20 << 20, "round {round}: {} bytes queued, over the total budget", st.bulk_queued_bytes);
+            ctx.sleep(Duration::from_millis(100)).await;
+        }
+        let st = oa.stats();
+        assert!(max_queued > 8 << 20, "the test reached the per-peer budget on several peers: {max_queued}");
+        assert!(st.bulk_dropped > 1000, "{st:?}");
+        assert_eq!(st.queue_dropped, 0, "{st:?}");
+        // queued frames drain and their bytes are given back
+        ctx.sleep(Duration::from_secs(40)).await;
+        assert_eq!(oa.stats().bulk_queued_bytes, 0);
+        assert_eq!(oa.peers().len(), 3, "links stay up");
+    });
+}

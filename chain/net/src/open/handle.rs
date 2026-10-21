@@ -56,6 +56,9 @@ pub struct NetStats {
     /// Frames not sent because a peer's send queue was full (normal lane, bulk lane).
     pub queue_dropped: u64,
     pub bulk_dropped: u64,
+    pub bulk_in_dropped: u64,
+    /// Bytes queued on all bulk lanes now.
+    pub bulk_queued_bytes: usize,
 }
 
 pub(crate) fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -129,6 +132,8 @@ impl Oracle {
             rate_dropped: s.counters.rate_dropped,
             queue_dropped: s.counters.queue_dropped,
             bulk_dropped: s.counters.bulk_dropped,
+            bulk_in_dropped: s.counters.bulk_in_dropped,
+            bulk_queued_bytes: s.bulk_total.load(std::sync::atomic::Ordering::SeqCst),
         }
     }
 }
@@ -217,10 +222,27 @@ impl commonware_p2p::UnlimitedSender for ChannelSender {
             Recipients::One(p) => vec![p],
         };
         let mut dropped = 0u64;
+        let len = bufs.len();
+        let (peer_cap, total_cap) = (s.cfg.bulk_peer_bytes, s.cfg.bulk_total_bytes);
+        let total = s.bulk_total.clone();
         for k in targets {
             if let Some(p) = s.peers.get_mut(&k) {
-                let q = if self.bulk { &mut p.bulk } else { &mut p.queue };
-                if q.try_send(bufs.clone()).is_err() {
+                if !self.bulk {
+                    if p.queue.try_send(bufs.clone()).is_err() {
+                        dropped += 1;
+                    }
+                    continue;
+                }
+                use std::sync::atomic::Ordering::SeqCst;
+                if p.bulk_bytes.load(SeqCst) + len > peer_cap || total.load(SeqCst) + len > total_cap {
+                    dropped += 1;
+                    continue;
+                }
+                p.bulk_bytes.fetch_add(len, SeqCst);
+                total.fetch_add(len, SeqCst);
+                if p.bulk.try_send(bufs.clone()).is_err() {
+                    super::state::release(&p.bulk_bytes, len);
+                    super::state::release(&total, len);
                     dropped += 1;
                 }
             }
