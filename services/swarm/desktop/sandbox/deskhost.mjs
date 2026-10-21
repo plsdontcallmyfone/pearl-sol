@@ -30,6 +30,7 @@ const ctx = await chromium.launchPersistentContext(`${HOME}/profile`, {
     `--disable-extensions-except=${DIST}`,
     `--load-extension=${DIST}`,
     '--no-first-run',
+    '--test-type', // hides the --no-sandbox warning bar (Playwright runs Chromium without its sandbox inside the VM)
     '--no-default-browser-check',
     '--disable-features=Translate,AutofillServerCommunication',
     '--password-store=basic',
