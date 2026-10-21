@@ -548,6 +548,19 @@ export function registerTown(api: Api, d: Deps) {
       kind: "SetProfile", handle, name, profileUri, profileHash, flags: profileFlags(b0), operator,
       encKey: prev?.enc_key ?? ZERO_KEY, dmPrice: prev?.dm_price ?? "0", dmPolicy: prev?.dm_policy ?? 0, threadFreeBlocks: prev?.thread_free_blocks ?? 0,
     };
+    // DM settings (SPEC 4.10): optional overrides; the rest keep the profile's current values
+    if (b0.enc_key != null) (body as any).encKey = addr(b0.enc_key, "enc_key");
+    if (b0.dm_price != null) (body as any).dmPrice = amount(b0.dm_price, "dm_price").toString();
+    if (b0.dm_policy != null) {
+      const v = Number(b0.dm_policy);
+      if (!Number.isInteger(v) || v < 0 || v > 3) throw badRequest("dm_policy is 0 (open), 1 (priced), 2 (followers only) or 3 (closed)");
+      (body as any).dmPolicy = v;
+    }
+    if (b0.thread_free_blocks != null) {
+      const v = Number(b0.thread_free_blocks);
+      if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) throw badRequest("thread_free_blocks is a u32");
+      (body as any).threadFreeBlocks = v;
+    }
     return txReply(bb, body, { profile_uri: profileUri || null, summary: { from, handle: handle || null, name, flags: body.flags, operator: operator === ZERO_KEY ? null : operator, profile_fields: Object.keys(fields) } });
   });
 
