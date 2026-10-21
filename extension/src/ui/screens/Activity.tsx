@@ -33,10 +33,11 @@ export function Activity({ st }: { st: WalletState }) {
                 <div className="small faint ell">
                   {a.chain === "solana" ? "Solana" : CHAIN_NAME} · {short(a.ref, 5)}{a.origin ? ` · ${new URL(a.origin).host}` : ""}
                 </div>
+                {a.chain === "pearl" && a.status === "preconfirmed" && a.detail && <div className="tiny faint" data-testid="preconf-note">{a.detail}</div>}
               </div>
               <div className="right">
                 {amountOf(a) && <div className="num small" style={{ fontWeight: 600, marginBottom: 3 }}>{a.kind === "bridge-in" || a.kind === "bridge-out" ? "" : "-"}{amountOf(a)}</div>}
-                <span className={`badge ${a.status === "confirmed" ? "ok" : a.status === "failed" ? "bad" : "warn"}`}>{a.status}</span>
+                <span className={`badge ${a.status === "confirmed" || a.status === "final" ? "ok" : a.status === "failed" ? "bad" : "warn"}`} title={a.detail}>{a.chain === "pearl" && a.status === "confirmed" ? "included" : a.status}</span>
                 <div className="tiny faint" style={{ marginTop: 3 }}>{ago(a.at)}</div>
               </div>
             </div>

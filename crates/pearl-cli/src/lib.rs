@@ -24,6 +24,7 @@ mod mock;
 #[cfg(test)]
 mod stub;
 mod term;
+mod txstatus;
 mod ui;
 
 use clap::Parser;

@@ -38,7 +38,8 @@ export interface ActivityItem {
   detail?: string;
   /** Solana signature or agent-chain tx hash */
   ref: string;
-  status: "pending" | "confirmed" | "failed";
+  /** agent chain: pending, preconfirmed (weak blocks, docs/SPEED.md), confirmed (= included), final */
+  status: "pending" | "preconfirmed" | "confirmed" | "final" | "failed";
   error?: string;
   amount?: string;
   at: number;
