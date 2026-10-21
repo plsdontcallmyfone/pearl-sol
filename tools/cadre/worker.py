@@ -1,8 +1,11 @@
 """Cadre model worker: serves a registered model directory in int7 (SPEC 4.5 recipe 1).
 
 Every registered matrix's GEMM runs as the exact int32 product C = A B that its standing
-job proves (torch._int_mm, int8 x int8 -> int32, operands in [-64, 64]); scales, the
-zero-point correction, attention (QK^T, softmax, PV), RoPE, RMSNorm and SiLU run in fp32.
+job proves (torch._int_mm, int8 x int8 -> int32, operands in [-64, 64]). The glue between them
+(scales, zero points, attention, RoPE, RMSNorm, SiLU, the greedy pick) runs as cadre-glue-v1 by
+default (tools/cadre/glue.py, SPEC 4.7): integer and bit-specified binary64 arithmetic, so A is
+the same bits on every device and an evaluator can replay the request; `--glue fp32` runs the
+old fp32 glue (not replayable).
 For each request the worker keeps every matrix's A (int7 activations, all rows of the
 request stacked: prompt, then each generated token) and C, and writes them for the gateway,
 which posts them as the ticket's segments.
@@ -19,15 +22,13 @@ HTTP (127.0.0.1 only):
 CLI checks:
   python worker.py --model DIR --ppl N      WikiText-2 test PPL over N windows of 1024 tokens
 
-Greedy decoding only (deterministic on one platform).
+Greedy decoding only (under cadre-glue-v1 deterministic on every platform).
 
 Devices: --device cpu (default) or cuda. The int32 product C = A B is exact integer
 arithmetic on both (torch._int_mm: int8 x int8 with int32 accumulation, |C| <= 64 * 64 * 2048),
-so for a given A every C is bit-identical on CPU and GPU, and a segment verifies the same
-everywhere (tools/cadre/gpu_check.py checks it). The fp32 glue (norms, attention, softmax,
-scales) is not bit-identical across devices, so A itself can differ in a few elements
-between a CPU and a GPU run of the same prompt; a segment is (A, C) as served, and the proof
-only needs C = A B.
+so for a given A every C is bit-identical on CPU and GPU. Under cadre-glue-v1 A itself is
+bit-identical too (tools/cadre/gpu_replay_check.py: A40 vs Xeon, 0 of 144 matrices differ);
+under the fp32 glue it differs in many elements between a CPU and a GPU run of the same prompt.
 """
 import argparse, json, math, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

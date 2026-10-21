@@ -871,6 +871,31 @@ CLAUDE.md "Who is working on what".
      used by others): top it up or give the desktops their own key. More agents need the owner to
      raise DESK_USD_PER_DAY (DESK_AGENTS=20 needs about 75) and cadre-swarm SWARM_AGENTS=10.
 
+26. VERIFIABLE AI ANSWERS: cadre-glue-v1 DETERMINISTIC GLUE + FULL TICKET REPLAY (2026-10-21, "verifiable AI:
+   deterministic glue replay" row; SPEC 4.7, docs/PROOFS.md row 11, research/VERIFIABLE-AI.md, EVALUATORS 4):
+   - Chosen: (a) deterministic glue. Integer fixed point across reductions, single binary64 ops elementwise,
+     integer exp/cos/sin tables. TOPLOC-style tolerance (b) is unnecessary once (a) holds; bonds/slashing (c)
+     are designed on top (SPEC 4.7), not built (chain/ is under the Phase 1 / matrix-limit rollouts).
+   - Code: tools/cadre/glue.py (the worker's default; `--glue fp32` keeps the old path); crates/cadre-glue (an
+     independent Rust implementation: forward, replay, cadre-fraud-v1, byte-level decode, `cadre-replay` CLI);
+     services/attester replay.rs (full ticket replay inside check_ticket; a mismatch is a RejectResult plus
+     `GET /proofs/<ticket>`); cadre-gateway ledger + response blob carry the replay bundle (prompt_ids,
+     output_ids, max_new_tokens, stop, glue).
+   - Measured: PPL 16.1770 vs 16.1694 fp32 glue (+0.05%), tasks within noise (A40, 40 x 1024). A40 vs Xeon:
+     0 of 144 matrices differ, logits of 3 full windows bit-identical; fp32 glue: 126-144 differ, 2 of 4
+     answers changed. Speed: decode 2.8x slower on GPU (7.2-8.4 vs 19.2-24.7 tok/s, launch-bound), 1.5x on CPU.
+     Replay: a 96-row, 144-segment ticket accepted in 19.2 s on the loaded test box; the replay's own cost is
+     the glue (~15% of the GEMM check that already existed).
+   - Found and fixed: torch's CPU float64 sqrt (SLEEF) is not correctly rounded (1 ulp in 5 of 1024 rows);
+     CPU sqrt now from numpy, and the spec requires correct rounding. gemm_bt slice bug for n < threads.
+   - GPU: one A40, 15:49-16:55 UTC, $0.66, terminated (API: no pods).
+   - NOT DONE / NEXT: (1) roll out the new worker + gateway + evaluator on the test box and devnet box 0. Their
+     running workers still use the fp32 glue, so their tickets get the GEMM-only check. A restart changes
+     answers slightly (new glue), so announce a window in CLAUDE.md first; this row did no restarts.
+     (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
+     data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
+     GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

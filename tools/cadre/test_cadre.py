@@ -125,6 +125,16 @@ class Cadre(unittest.TestCase):
                 self.assertAlmostEqual(rt.rows_s[p][i] / 2 ** 30, math.sin(p * f), delta=3e-9)
         self.assertAlmostEqual(glue.softmax_l(64) / 2 ** 24, math.log2(math.e) / 8, delta=1e-7)
 
+    def test_sqrt_is_correctly_rounded(self):
+        # torch's CPU float64 sqrt (SLEEF) can be one ulp off; the glue must match IEEE sqrt
+        import math
+        import glue
+        g = torch.Generator().manual_seed(3)
+        v = torch.rand(200000, generator=g, dtype=torch.float64) * torch.exp2(torch.randint(-40, 40, (200000,), generator=g).double())
+        r = glue.sqrt_rn(v)
+        self.assertEqual([x.hex() for x in r.tolist()[:2000]], [math.sqrt(x).hex() for x in v.tolist()[:2000]])
+        self.assertTrue(all(a == math.sqrt(b) for a, b in zip(r.tolist(), v.tolist())))
+
     def test_fp32_glue_is_still_selectable(self):
         m = worker.Model(self.out, glue="fp32")
         self.assertIsNone(m.det)

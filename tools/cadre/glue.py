@@ -121,6 +121,15 @@ def softmax_l(hd):
     return ((LOG2E_Q62 << 20) // math.isqrt(hd << 40)) >> 38
 
 
+def sqrt_rn(v):
+    """Correctly rounded binary64 sqrt (IEEE 754). torch's CPU float64 sqrt is vectorized through
+    SLEEF and is off by one ulp on some inputs (measured 2026-10-21: 5 of 1024 rows of one window
+    against CUDA, math.sqrt and Rust); numpy's sqrt is the hardware's sqrtpd, CUDA's is IEEE."""
+    if v.device.type == "cpu":
+        return torch.from_numpy(np.sqrt(v.numpy()))
+    return torch.sqrt(v)
+
+
 # ----------------------------------------------------------------- the glue
 
 
@@ -138,7 +147,9 @@ class DetGlue:
         self.rope_tab = RopeTable(model.inv_freq.cpu().numpy())
         self.pow2 = torch.tensor([2.0 ** k for k in range(-128, 128)], dtype=torch.float64, device=dev)
         n = self.hidden
-        self.norm_bits = (62 - math.ceil(math.log2(n))) // 2
+        # sum of squares < 2^52 so its int64 -> binary64 conversion is exact on every device (a
+        # vectorized CPU conversion of a value above 2^53 may round differently from CUDA's)
+        self.norm_bits = (52 - math.ceil(math.log2(n))) // 2
         self.n_t = torch.tensor(float(n), dtype=torch.float64, device=dev)
         self.eps_t = torch.tensor(self.eps, dtype=torch.float64, device=dev)
         self.one_t = torch.tensor(1.0, dtype=torch.float64, device=dev)
@@ -187,7 +198,7 @@ class DetGlue:
         hs = torch.bitwise_right_shift(h, shift[:, None])
         ss = (hs * hs).sum(-1)
         ms = (ss.double() * self.pow2[128 + 2 * shift - 2 * H_FRAC]) / self.n_t
-        return self.one_t / torch.sqrt(ms + self.eps_t)
+        return self.one_t / sqrt_rn(ms + self.eps_t)
 
     def quant(self, u):
         """recipe 1's per-row asymmetric int7 in binary64: s = (max-min)/128 (1 if 0),
@@ -315,6 +326,7 @@ class DetGlue:
             up = self.lin(f"layers.{li}.up", x, inv * p16, cap)
             gd = self.groups[f"layers.{li}.down"][0]
             h = self.add_res(h, self.lin(f"layers.{li}.down", ((self.silu(gte) * up) * gd) + 0.0, 1.0, cap))
+        self.last_h = h  # the final residual stream (tests hash it against the Rust replay)
         inv = self.inv_rms(h)[:, None]
         gf = self.groups["lm_head"][0]
         return self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap)

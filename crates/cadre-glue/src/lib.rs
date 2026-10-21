@@ -301,7 +301,8 @@ impl Model {
         eos.sort();
         eos.dedup();
         let period = man["rows_pattern"].as_array().map(|x| x.len()).unwrap_or(4).max(1);
-        let norm_bits = (62 - (hidden as f64).log2().ceil() as i64) / 2;
+        // sum of squares < 2^52: its i64 -> f64 conversion is exact (SPEC 4.7)
+        let norm_bits = (52 - (hidden as f64).log2().ceil() as i64) / 2;
         Ok(Self {
             dir: dir.to_path_buf(),
             hidden,
@@ -583,6 +584,12 @@ impl Model {
 /// token but the last), stacked in order; `m` is the round's padded row count. Every segment's
 /// A goes through `sink` in matrix-index order. Returns the greedy token after every row.
 pub fn forward_round(model: &Model, requests: &[Vec<u32>], m: usize, sink: &mut dyn GemmSink) -> Result<Vec<Vec<u32>>> {
+    Ok(forward_round_h(model, requests, m, sink)?.0)
+}
+
+/// [`forward_round`] plus the sha256 of the final residual stream h (i64 LE, all rows, before the
+/// final norm), the state an int7 rounding could hide; both implementations print it.
+pub fn forward_round_h(model: &Model, requests: &[Vec<u32>], m: usize, sink: &mut dyn GemmSink) -> Result<(Vec<Vec<u32>>, String)> {
     let rows: usize = requests.iter().map(|r| r.len()).sum();
     ensure!(rows <= m && rows > 0, "round of {rows} rows does not fit m = {m}");
     ensure!(requests.iter().all(|r| !r.is_empty() && r.len() <= T_MAX), "a request has 0 or more than {T_MAX} rows");
@@ -665,6 +672,14 @@ pub fn forward_round(model: &Model, requests: &[Vec<u32>], m: usize, sink: &mut 
         let y = model.lin(&format!("layers.{li}.down"), &u, &unit, rows, m, sink, None)?;
         Model::add_res(&mut h, &y);
     }
+    let h_digest = {
+        use sha2::Digest;
+        let mut d = sha2::Sha256::new();
+        for x in &h {
+            d.update(x.to_le_bytes());
+        }
+        hex::encode(d.finalize())
+    };
     let inv = model.inv_rms(&h, rows);
     let sa: Vec<f64> = inv.iter().map(|x| x * p16).collect();
     let gf = &model.groups["lm_head"].g;
@@ -680,5 +695,5 @@ pub fn forward_round(model: &Model, requests: &[Vec<u32>], m: usize, sink: &mut 
     if am.iter().any(|x| x.1 == u32::MAX) {
         bail!("lm_head produced no finite logit");
     }
-    Ok(out)
+    Ok((out, h_digest))
 }

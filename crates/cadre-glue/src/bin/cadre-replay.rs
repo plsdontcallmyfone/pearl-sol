@@ -16,7 +16,7 @@ use anyhow::{anyhow, Context, Result};
 use cadre_glue::fraud::{self, FraudProof};
 use cadre_glue::replay::{first_diff, Mismatch, RequestClaim};
 use cadre_glue::tokenizer::Tokenizer;
-use cadre_glue::{forward_round, gemm_bt, GemmSink, Model};
+use cadre_glue::{forward_round_h, gemm_bt, GemmSink, Model};
 use serde_json::json;
 
 fn arg(args: &[String], k: &str) -> Option<String> {
@@ -93,7 +93,7 @@ fn run(args: &[String]) -> Result<(bool, serde_json::Value)> {
             let rows = req.rows();
             let t1 = Instant::now();
             let mut sink = FileSink { model: &model, run: run.clone(), rows: rows.len(), mismatch: None, c_bad: None, gemm_s: 0.0 };
-            let res = forward_round(&model, &[rows.clone()], rows.len(), &mut sink);
+            let res = forward_round_h(&model, &[rows.clone()], rows.len(), &mut sink);
             let replay_s = t1.elapsed().as_secs_f64();
             let timing = json!({"load_s": load_s, "replay_s": replay_s, "gemm_s": sink.gemm_s, "glue_s": replay_s - sink.gemm_s, "rows": rows.len()});
             if let Some(mx) = sink.mismatch.clone() {
@@ -119,12 +119,13 @@ fn run(args: &[String]) -> Result<(bool, serde_json::Value)> {
                 }
                 return Ok((false, json!({"verdict": "fraud", "kind": "activation", "matrix": mx.matrix, "matrix_name": name, "mismatch": mx, "reason": proof.reason, "timing": timing})));
             }
-            let predicted = res?.pop().unwrap();
+            let (mut predicted, h_digest) = res?;
+            let predicted = predicted.pop().unwrap();
             if let Some(i) = sink.c_bad {
                 return Ok((false, json!({"verdict": "fraud", "kind": "product", "matrix": i, "reason": format!("served C of matrix {i} is not A B"), "timing": timing})));
             }
             match req.check(&predicted, &tok, &model.eos)? {
-                Ok(text) => Ok((true, json!({"verdict": "honest", "matrices": model.matrices, "text": text, "timing": timing}))),
+                Ok(text) => Ok((true, json!({"verdict": "honest", "matrices": model.matrices, "text": text, "h_sha256": h_digest, "timing": timing}))),
                 Err(r) => Ok((false, json!({"verdict": "fraud", "kind": "tokens", "reason": r, "timing": timing}))),
             }
         }

@@ -97,7 +97,11 @@ def main():
         run = os.path.join(a.work, f"req{i}")
         r, req = serve(model, msgs, n, stop, run)
         v = replay(a.replay, "local", "--model", a.model, "--run", run)
-        emit("honest_replay", v.get("verdict") == "honest" and v.get("text") == r["text"], request=i, rows=r["rows"], text=r["text"], tokens=len(r["output_ids"]),
+        # the final residual stream, all rows at once (bit-identical to the served incremental pass)
+        with torch.no_grad():
+            model.forward(req["prompt_ids"] + req["output_ids"][:-1], model.new_cache(), None)
+        h_py = hashlib.sha256(model.det.last_h.cpu().contiguous().numpy().astype("<i8").tobytes()).hexdigest()
+        emit("honest_replay", v.get("verdict") == "honest" and v.get("text") == r["text"] and v.get("h_sha256") == h_py, h_python=h_py, h_rust=v.get("h_sha256"), request=i, rows=r["rows"], text=r["text"], tokens=len(r["output_ids"]),
              serve_timing=r["timing"], replay=v.get("timing"), verdict=v.get("verdict"), reason=v.get("reason"))
         runs.append((run, r, req))
 

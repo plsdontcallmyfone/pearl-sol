@@ -372,6 +372,21 @@ Test box 64.95.13.106, own dir ~/regmodel, release builds (HANDOFF item 21).
   (138 min before the fix with box 0 alone), Order finalized by finalize_order_proof, result hash = ticket's.
 
 
+## Verifiable AI: cadre-glue-v1 replay (2026-10-21, "verifiable AI: deterministic glue replay" row)
+
+Model: Llama-3.2-1B-Instruct int7 (recipe 1, 144 matrices). Raw lines:
+docs/measurements/verify-ai-2026-10-21/.
+
+| Suite | Where | Result |
+|---|---|---|
+| tools/cadre/test_cadre.py (tiny synthetic Llama; + `test_glue_prefill_equals_token_by_token`, `test_glue_tables`, `test_sqrt_is_correctly_rounded`, `test_fp32_glue_is_still_selectable`) | test box | 9/9 OK |
+| tools/cadre/test_replay.py (real 1B model, Python worker serves, Rust `cadre-replay` replays) | test box | 19/19: tables Python = Rust (sha256 757b2c06...), Rust decode = HF on 60 random sequences, 4 honest requests replayed bit for bit (48-65 rows; final residual stream sha256 equal Python vs Rust), 3 cheaters (one A element changed by one step, C recomputed so the GEMM is correct) caught at layers.0.qkv, layers.4.down{2048:4096}, lm_head[120240:128256] with matrix, row and column named, 3 fraud proofs valid and refused on the honest A, wrong last token caught (tokens), wrong first token caught (activation), wrong text hash caught, truncated answer caught |
+| services/attester tests/replay.rs `ticket_full_replay_accepts_honest_and_rejects_altered_activations` (real evaluator, mock node, 2 requests in one round, 100 rows, 144 segments) | test box | PASS: honest Accept in 19.2 s (96 rows); altered A in matrix 61 Reject naming segment 4df38dcc..., row 90 col 7, request req1, proof at /proofs/<ticket> verifies against the altered blob and fails on the honest one; wrong C Reject ("committed C is not A B", matrix 3) |
+| services/attester (all) + crates/cadre-glue + services/inference-gateway | test box | 34 passed, 0 failed (incl. gateway.rs 10, cadre-glue tables 4, the replay test) |
+| services/inference-gateway tests/gateway.rs (+ `served_requests_keep_the_replay_bundle`) | test box | 10/10 |
+| crates/cadre-glue tests/tables.rs | Mac + box | 4/4 (found and fixed a gemm_bt slice bug for n smaller than the thread count) |
+| tools/cadre/gpu_replay_check.py (RunPod A40 vs the pod's Xeon Gold 6342, same model files) | pod | PASS: cadre-glue-v1 0 of 144 matrices differ in A or C on all 4 prompts, tokens equal, Rust replay of every GPU-served request "honest"; fp32 glue 126, 126, 144, 144 matrices differ and 2 of 4 answers changed |
+
 ## Ecosystem Phase 1: the town (2026-10-20/21, "ecosystem Phase 1" row)
 
 | Suite | Where | Result |
@@ -416,3 +431,10 @@ Fix aa5db01 (HANDOFF item 24). Test box 64.95.13.106, own dir ~/sync-fix, releas
 | E2B concurrency: 40 `cadre-desktop` sandboxes created at once | Mac -> E2B | 40/40 in 18 s, all listed running, killed |
 | live runs on box 0: 1 agent x 2 desktops 15 min, 3 x 2 17.6 min, 6 x 2 31 min | box 0 -> E2B + OpenRouter | 6/5, 20/17, 24/23 read-only tasks ok; costs in ECOSYSTEM 2.10 |
 | live proof (`node src/proof.ts`): paid thought -> the probe's desktop connects the wallet, enters the text, signs the Post | box 0 -> devnet | tx at 4322 (text retyped by the model, quotes lost) and 4347 (byte-identical via type_given_text); `thought_ref` waits for the site with `?thought=` |
+| tools/cadre/logits_check.py (A40 vs Xeon, 3 WikiText-2 windows of 1024 tokens) | pod | binary64 logits bit-identical on all 3 (131,334,144 values each) and every A / C equal; before the sqrt fix 362k-745k logits differed by 1 ulp (torch CPU sqrt via SLEEF, 5 of 1024 rows of `inv_rms`), now fixed |
+| Accuracy, A40 (eval_accuracy.py, 40 x 1024 WikiText-2 + 200 items per task) | pod | cadre-glue-v1 PPL 16.1770 vs fp32 glue 16.1694 (+0.05%); ARC-E 0.625 / 0.640, ARC-C 0.320 / 0.330, HellaSwag acc_norm 0.575 / 0.585 (within the ~3 point SE) |
+
+GPU: one RunPod A40 at $0.59/hr, 15:49-16:55 UTC, $0.66 spent, terminated (API shows no pods,
+spend $0/hr). Not covered: the live devnet / test-box gateways still run workers started before
+this change (fp32 glue); no live paid ticket has been replayed end to end on a chain yet (the
+evaluator path is tested on a mock node with real model data).
