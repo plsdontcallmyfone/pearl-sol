@@ -1,5 +1,6 @@
 
 explorer.@IP@.sslip.io {
+	import sec
 	encode gzip
 	# token metadata URI of the devnet mint (pump.fun create_v2 uri)
 	handle /cadre-token.json {
@@ -11,6 +12,7 @@ explorer.@IP@.sslip.io {
 }
 
 storefront.@IP@.sslip.io {
+	import sec
 	header Access-Control-Allow-Origin *
 	header Access-Control-Allow-Headers "content-type, x-payment"
 	@pre method OPTIONS
@@ -19,6 +21,7 @@ storefront.@IP@.sslip.io {
 }
 
 relayer.@IP@.sslip.io {
+	import sec
 	@get method GET
 	handle @get {
 		header Access-Control-Allow-Origin *
@@ -29,6 +32,7 @@ relayer.@IP@.sslip.io {
 
 # cadre-api (services/cadre-api, docs/API.md): CORS, caching and rate limits are the app's
 api.@IP@.sslip.io {
+	import sec
 	encode gzip
 	request_body {
 		max_size 2MB
@@ -43,6 +47,7 @@ api.@IP@.sslip.io {
 
 # Cadre website (~/cadre-web, cadre-web.service on :10710); serves /install-miner.sh (devnet defaults)
 cadre.@IP@.sslip.io {
+	import sec
 	encode gzip
 	reverse_proxy 127.0.0.1:10710
 }

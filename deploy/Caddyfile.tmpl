@@ -1,6 +1,17 @@
 # Cadre devnet https front (docs/DEVNET.md). @IP@ = this box's IPv4 with dashes (sslip.io).
 # Certificates: Let's Encrypt via caddy's automatic HTTPS (ports 80 + 443 open in ufw).
+# security headers for every site (set only when the app did not set them; `?` = default)
+(sec) {
+	header {
+		?Strict-Transport-Security "max-age=31536000"
+		?X-Content-Type-Options nosniff
+		?Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
 rpc.@IP@.sslip.io {
+	import sec
 	encode gzip
 	@ws path /ws /ws/*
 	handle @ws {
