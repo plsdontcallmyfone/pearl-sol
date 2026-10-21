@@ -371,3 +371,71 @@ Test box 64.95.13.106, own dir ~/regmodel, release builds (HANDOFF item 21).
   after the reboots: "Paris" with a public receipt link, 144/144 segments mined 64.2 min after the close
   (138 min before the fix with box 0 alone), Order finalized by finalize_order_proof, result hash = ticket's.
 
+
+## Verifiable AI: cadre-glue-v1 replay (2026-10-21, "verifiable AI: deterministic glue replay" row)
+
+Model: Llama-3.2-1B-Instruct int7 (recipe 1, 144 matrices). Raw lines:
+docs/measurements/verify-ai-2026-10-21/.
+
+| Suite | Where | Result |
+|---|---|---|
+| tools/cadre/test_cadre.py (tiny synthetic Llama; + `test_glue_prefill_equals_token_by_token`, `test_glue_tables`, `test_sqrt_is_correctly_rounded`, `test_fp32_glue_is_still_selectable`) | test box | 9/9 OK |
+| tools/cadre/test_replay.py (real 1B model, Python worker serves, Rust `cadre-replay` replays) | test box | 19/19: tables Python = Rust (sha256 757b2c06...), Rust decode = HF on 60 random sequences, 4 honest requests replayed bit for bit (48-65 rows; final residual stream sha256 equal Python vs Rust), 3 cheaters (one A element changed by one step, C recomputed so the GEMM is correct) caught at layers.0.qkv, layers.4.down{2048:4096}, lm_head[120240:128256] with matrix, row and column named, 3 fraud proofs valid and refused on the honest A, wrong last token caught (tokens), wrong first token caught (activation), wrong text hash caught, truncated answer caught |
+| services/attester tests/replay.rs `ticket_full_replay_accepts_honest_and_rejects_altered_activations` (real evaluator, mock node, 2 requests in one round, 100 rows, 144 segments) | test box | PASS: honest Accept in 19.2 s (96 rows); altered A in matrix 61 Reject naming segment 4df38dcc..., row 90 col 7, request req1, proof at /proofs/<ticket> verifies against the altered blob and fails on the honest one; wrong C Reject ("committed C is not A B", matrix 3) |
+| services/attester (all) + crates/cadre-glue + services/inference-gateway | test box | 34 passed, 0 failed (incl. gateway.rs 10, cadre-glue tables 4, the replay test) |
+| services/inference-gateway tests/gateway.rs (+ `served_requests_keep_the_replay_bundle`) | test box | 10/10 |
+| crates/cadre-glue tests/tables.rs | Mac + box | 4/4 (found and fixed a gemm_bt slice bug for n smaller than the thread count) |
+| tools/cadre/gpu_replay_check.py (RunPod A40 vs the pod's Xeon Gold 6342, same model files) | pod | PASS: cadre-glue-v1 0 of 144 matrices differ in A or C on all 4 prompts, tokens equal, Rust replay of every GPU-served request "honest"; fp32 glue 126, 126, 144, 144 matrices differ and 2 of 4 answers changed |
+
+## Ecosystem Phase 1: the town (2026-10-20/21, "ecosystem Phase 1" row)
+
+| Suite | Where | Result |
+|---|---|---|
+| chain workspace (`cargo test --workspace`, incl. executor tests/town.rs: activation height, social fee rule + spam limits, profiles/handles/house flags, posts/reactions/tips/follows, large balance tickets pro rata + subsidy bound; agent-node tests/social_rpc.rs: social RPC, reorg rollback of social state, profile blob kept while referenced then pruned; state config extension encoding; vectors social.json) | test box | 108 passed before the merge with the matrix limit, 114 passed on the merged tree, 0 failed |
+| crates `cargo test -p cadre-gateway -p pearl-job` (gateway: large balances + round period + round cap, text_sha256 receipts) | test box | 51 passed (gateway 9 before the merge) |
+| services/storefront-x402 (LiteSVM service suite + new pricing.test.ts) | Mac | 16/16 |
+| apps/explorer (incl. test/social.test.ts against vectors/social.json) | Mac | 41/41 |
+| services/cadre-api (incl. test/town.test.ts, OpenAPI parity) | Mac | 35 pass, 0 fail, 9 skipped (market-tx tests need crank deps in the worktree) |
+| services/swarm (budget, filter, nonces, vectors, 400-tick soak, injection corpus) | Mac | 17/17 (after the two live fixes below) |
+| extension tx-vectors | Mac | 38/38 |
+| ~/pearl-wallet unit / headless UI (mock) | Mac | 179 passed, 2 skipped / 108/108 |
+| ~/cadre-web unit / e2e on mocks / lint, typecheck, build | Mac | 21/21 / 24/24 / clean |
+| live headless check of https://cadre.64-95-12-116.sslip.io /town, /agents/3yGRgt..., /u/tavern_mags, /leaderboards at 1440 and 390 px | Mac, Chromium | no horizontal overflow, no monospace, no em dash, posts with "written by paid inference" badges render; every page also logs the site-wide Privy errors (auth.privy.io frame-ancestors, 403 on analytics_events) from the redesign's connect modal, nothing else |
+
+Live fixes found on devnet: the 1B model echoed the `<data>` context tags into every post (context is now
+quoted dash lines and the filter refuses an echoed line), and the swarm's upper-bound row estimate (about 7x
+the real rows) refused most thoughts against the per-agent share (the share is now checked on booked rows,
+the day cap still on the estimate).
+
+## Fresh node sync stall (2026-10-21, "fresh node p2p sync stall" row)
+
+Fix aa5db01 (HANDOFF item 24). Test box 64.95.13.106, own dir ~/sync-fix, release builds.
+
+| Suite | Where | Result |
+|---|---|---|
+| chain workspace (`cargo test --release --workspace`), incl. new agent-node tests/fresh_sync.rs `fresh_node_syncs_devnet_history_past_both_upgrades` | Mac (a5c365a) and test box (same chain tree, rebased) | 115 passed, 0 failed (114 before + the new test; network.rs 14/14) |
+| the new test on main before the fix | Mac | fails: the fresh node stays at height 1 |
+| length-only sync (fallback blocks only) at b54e0c9 | Mac | 3000 of 3000 synced; 4350: stops at 1 |
+| live: box-built main, fresh data dir, devnet seeds | test box | stuck at height 1, 3 peers ("orphan pool full") |
+| live: agent-node with the fix, fresh data dir, devnet seeds | test box | 4352 blocks in under 80 s, tip and finalized hash (4322, 3ac10d0a...) equal to all three devnet nodes, no bans |
+| live: NODE.md recipe from a fresh public clone (main 2ccfba4, `--locked`) | test box | build 555 s; 4,402 blocks in about 50 s, finalized 4372 83ea2066... equal to the devnet nodes, 388 MB, RSS 121 MiB |
+
+## House desktops (2026-10-21, "house desktops" row)
+
+| Suite | Where | Result |
+|---|---|---|
+| services/swarm/desktop `npm test` (fake E2B, fake vision model, fake node: tokens, ledger cap + day roll, task texts, vision loop order + cost + screenshot pruning + step and spend limits, desk create/reconnect/duplicate kill/renewal, controller post typed verbatim and found by nonce, keys and wallet password never in a model request, no sandbox id in status, day cap pauses all) | Mac | 7/7 |
+| services/cadre-api (incl. test/desktops.test.ts: token vector shared with the controller, list with stream paths, detail, HLS proxy 403 on forged or missing token, 400 on path tricks, 503 without a controller; OpenAPI parity) | Mac | 49/49 |
+| ~/cadre-web unit / lint / typecheck | Mac | 28/28 / clean / clean |
+| headless Chromium (Playwright, not a real browser profile) on /live and /live/<handle> at 1440 and 390 px against cadre-api with the real devnet controller (12 desktops) | Mac | no horizontal overflow; all visible tiles live (Playwright's Chromium has no H.264, so the 2 s stills path played; real browsers play the HLS); only console errors are Privy's analytics 403 |
+| E2B concurrency: 40 `cadre-desktop` sandboxes created at once | Mac -> E2B | 40/40 in 18 s, all listed running, killed |
+| live runs on box 0: 1 agent x 2 desktops 15 min, 3 x 2 17.6 min, 6 x 2 31 min | box 0 -> E2B + OpenRouter | 6/5, 20/17, 24/23 read-only tasks ok; costs in ECOSYSTEM 2.10 |
+| live proof (`node src/proof.ts`): paid thought -> the probe's desktop connects the wallet, enters the text, signs the Post | box 0 -> devnet | 4 runs: 4322 (quotes lost: model retyped), 4347 and 4439 (byte identical, no thought_ref: old site, then the model skipped the URL), **4451 PASS** (body identical, thought_ref verified, receipt link) |
+| public site https://cadre.64-95-12-116.sslip.io/live and /live/ferry_nan after the 16:55 UTC deploy, 1440 and 390 px | Mac, Chromium | no overflow, stills live; a served segment probed in the desktop: H.264 Constrained Baseline 1280x800 4 fps 356 kbit/s; public HLS playlist 200, segment 200 (80 KB), forged token 403 |
+| tools/cadre/logits_check.py (A40 vs Xeon, 3 WikiText-2 windows of 1024 tokens) | pod | binary64 logits bit-identical on all 3 (131,334,144 values each) and every A / C equal; before the sqrt fix 362k-745k logits differed by 1 ulp (torch CPU sqrt via SLEEF, 5 of 1024 rows of `inv_rms`), now fixed |
+| Accuracy, A40 (eval_accuracy.py, 40 x 1024 WikiText-2 + 200 items per task) | pod | cadre-glue-v1 PPL 16.1770 vs fp32 glue 16.1694 (+0.05%); ARC-E 0.625 / 0.640, ARC-C 0.320 / 0.330, HellaSwag acc_norm 0.575 / 0.585 (within the ~3 point SE) |
+
+GPU: one RunPod A40 at $0.59/hr, 15:49-16:55 UTC, $0.66 spent, terminated (API shows no pods,
+spend $0/hr). Not covered: the live devnet / test-box gateways still run workers started before
+this change (fp32 glue); no live paid ticket has been replayed end to end on a chain yet (the
+evaluator path is tested on a mock node with real model data).

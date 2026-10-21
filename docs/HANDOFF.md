@@ -748,10 +748,170 @@ CLAUDE.md "Who is working on what".
      Seen on the way: a fresh node on the test box (old and new binary alike) stalled at height 1-2 syncing
      devnet over p2p ("orphan pool full" on gossiped blocks); the NODE.md join recipe synced on 2026-10-20, so
      the header sync path needs a look (not this row's change: the old deployed binary does the same).
+     Closed by item 24 (the orphan pool cap, not a commit; fixed in the sync-fix commit).
    - Not done (owner, 2026-10-20): no 8B registration on devnet, no GPU; devnet stays on the 1B and the
      CPU worker. Open for an 8B: the gateway's balance ticket budget (`max_blocks_balance`, capped at 10,000
      blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
      and quantize.py's equal-shard rule for vocabularies like Qwen3-8B's (MAINNET.md section 11 item 11).
+
+22. ECOSYSTEM PHASE 1, "THE TOWN IS ALIVE" (M1.1-M1.5, 2026-10-20/21, "ecosystem Phase 1" row):
+   - Owner decisions recorded in docs/ECOSYSTEM.md 5.1: D2 outside AI price = 2 x the measured A40 cost
+     ($3.86 per 1M tokens) = chain config key 25 `price_mlamports_per_gflop` 14736 (derivation there, SOL/USD
+     105.985 Coinbase spot 2026-10-20 20:00 UTC); D1/D3 about 30 house personas on the 1B CPU worker, A40 +
+     8B + hundreds of agents later with a daily cap (no GPU started); D4-D9 defaults accepted.
+   - M1.1 chain (SPEC 4.6): SetProfile 14, OperatorLink 15, Post 22, React 23, Follow 24 (agent-types
+     social.rs, executor social.rs, state social.rs, rpc social.rs), social fee rule `max(min_fee,
+     social_min_fee + social_byte_fee x len)`, handles first come, house flag only for a declared house
+     operator with its OperatorLink, post refs, tips, follows; config keys 19-26 (encoded only once set, so
+     the config record matched old nodes); profile blobs pinned while referenced; devnet activation height
+     3260; vectors chain/agent-types/vectors/social.json. RPC getProfile, getHandle, listProfiles, getPost,
+     getFollowCounts, isFollowing.
+   - M1.2 apps/explorer social.ts (town index, thought receipts, text avatars, house spend line) and cadre-api
+     town routes (docs/API.md "Town"). M1.3 ~/cadre-web /town, full profiles, /u/[handle], /leaderboards
+     (live: hardest thinkers, most tipped; the rest are labelled stubs with reasons); ~/pearl-wallet dev
+     660ced61f social codecs, approvals in words, profile editor, Town page and profile (also on danishseal
+     cadre-chain). M1.4 services/swarm (house swarm v0, README). M1.5 `max_balance_rows` (balance-form
+     tickets above 4096 rows, pro-rata pay unchanged), cadre-gateway per-ticket `round_secs` (large balances
+     every 3 h by default) + round cap 2,044 rows (one 4 MiB A blob at k 2048) + `text_sha256` receipts,
+     storefront-x402 reads the price knobs from the chain.
+   - LIVE on devnet since 2026-10-21 (docs/DEVNET.md "Town"): 30 house profiles, verified posts on
+     https://cadre.64-95-12-116.sslip.io/town (thought badge = sha256(body) equals the receipt's text_sha256).
+   - Open: the site's Privy modal (teammate redesign 99a6d08) logs console errors on every page of the devnet
+     host (auth.privy.io frame-ancestors and a 403 on analytics): the Privy app's allowed origins need
+     cadre.64-95-12-116.sslip.io (Privy dashboard, owner or teammate). The first 8192-row ticket's first
+     settlement round is due 3 h after its first request (round period), so `round_posted` for it lands
+     after this report. The wallet's town screens were checked headless on mocks, not signed live on devnet.
+     Phase 2 (DMs) next.
+23. USER AGENTS: "SPAWN YOUR OWN CADRE AGENT" (owner 2026-10-21; ECOSYSTEM 7, SPEC 4.8, API.md "User agents"):
+   BUILT. services/swarm/agents: AgentRunner subclasses the house swarm's Swarm (operator = the user;
+   same tick/budget/paid thoughts/filter/encoder), agent spec v1 signed by the operator's Solana
+   wallet and committed in the profile blob, per-day SOL/CADRE/row caps from the agent's own wallet,
+   receipt posts (`receipt sol:<sig> ...`) anchoring Solana actions on Cadre, the agent pays its
+   operator's OperatorLink fee when the operator holds no CADRE. Hosted runtime cadre-agents (:10730,
+   deploy/systemd/cadre-agents.service, keys AES-256-GCM at rest under /etc/lode/keys/agents/master.hex,
+   sealed upload/export X25519+HKDF+AES-GCM, operator-signed create/spec/pause/resume/withdraw/
+   export/delete); self-hosted runner bin/cadre-agent.ts. cadre-api routes/useragents.ts (tx/encode
+   for Solana-wallet signing, builders register-agent/transfer/sol-transfer/spl-transfer/sol-memo,
+   /v1/useragents/{a}(/card,/history), /v1/operators/{a}/agents, /v1/hosted/* pass-through via
+   CADRE_AGENTS_URL). ~/cadre-web /agents/new wizard, /agents/mine(/[a]), operator card on profiles.
+   Tests: agents 18, cadre-api 56 (7 new), cadre-web unit 28 (7 new).
+   DEVNET WALKTHROUGH 2026-10-21 (headless Chromium, our test user key keys/devnet/useragents/user-test.json
+   FkKLr1WNTHUtBdXCMShVqAcX7AppSd9oEkoFQq6fjMqo, runtime + cadre-api + site run on the Mac at
+   10730/10731/10732 against the public devnet chain and Solana devnet): agent
+   9CDcU57w5vejND297HBjUvfxU58TuCHaaq7hJFwakaL7 (@tide_iax9fp); SOL funding 311MPrVc4hDu...; CADRE
+   Transfer 8f95e401... (block 4339, signed by the test wallet's signMessage); SetProfile 8f7b3f5a...
+   and OperatorLink df182250... (block 4341); RegisterAgent 31c8dc1c... (4343); x402 top-up order 34
+   (ticket d65887c9..., BridgeUnlock f8c9da29... at 4349); memo checkpoint on Solana 36aSEDJLqjsj...
+   anchored by receipt post 9f4428be... (4353); paid thought req_ec0095707b8eb3677bc847de; verified
+   on Cadre (all 8 checks); pause/resume via signed requests. e2e/agents-devnet.mjs 15/15 PASS
+   (the run then stopped at a screenshot on ENOSPC: the Mac disk filled, partly from this row's
+   scratch copy of node_modules, removed), e2e/agents-screens.mjs 28/32 (the 4 FAILs are the
+   browser logging cadre-api's 503 when the Mac's IP gets 429 from the public Solana devnet RPC).
+   That Mac-hosted agent was then withdrawn to the operator on devnet (SOL transfer HcKp2CyDkdDt...,
+   receipt post 6cc25f1d..., Cadre Transfer e3af8d8e...) and deleted from the Mac runtime.
+   LIVE ON DEVNET BOX 0 since 2026-10-21 16:51 UTC: cadre-agents.service (:10730, master key
+   /etc/lode/keys/agents/master.hex, state /var/lib/lode/agents), cadre-api restarted with the drop-in
+   /etc/systemd/system/cadre-api.service.d/agents.conf (CADRE_AGENTS_URL), site redeployed from
+   cadre-web main: https://cadre.64-95-12-116.sslip.io/agents/new, /agents/mine,
+   https://api.64-95-12-116.sslip.io/v1/hosted. Second walkthrough fully on the public URLs: 18/19 PASS
+   (the FAIL is the browser logging cadre-api 502/503s from box 0's public Solana RPC 429s): agent
+   FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge (@tide_icsp7l), SOL funding 2o6N8ZEpXRzA..., CADRE
+   Transfer 2130336f... (4430), SetProfile 848808a3... (4431), RegisterAgent d1f2ef09... (4433),
+   OperatorLink f1a13f5b... (4435), verified 8/8. It keeps running on box 0; its x402 top-up retries
+   while box 0's IP gets 429 from the public Solana RPC (the dedicated RPC URL, SESSION-HANDOFF
+   "Waiting on the owner" 1, fixes it). Not deployed: user-agent desktops (wait for the desktop
+   controller to host user agents); npm publish of cadre-agent (owner's npm account).
+
+24. FRESH NODE SYNC STALL FIXED (2026-10-21, "fresh node p2p sync stall" row):
+   - Symptom: a node with empty storage joining the public devnet stopped at height 1-2 ("orphan pool
+     full"); the NODE.md recipe had synced 3,022 blocks on 2026-10-20.
+   - Root cause: chain length, not a commit. Headers-first sync walks back from a peer's tip and asked for
+     every body as soon as its header arrived (chain/bin/agent-node/src/node.rs), so bodies came newest first
+     and waited in the orphan pool (`MAX_ORPHANS` 4096, chain/consensus-pow/src/chain.rs) for their parents.
+     Past 4096 each body was refused while the resolver counted it delivered and never asked again, leaving a
+     gap above block 1. Devnet passed 4096 blocks on 2026-10-21. `MAX_HEADERS_ONLY` (16384, each entry with a
+     ~25 KB proof) would have done the same at about 16k blocks.
+   - Shown: a length-only test (fallback blocks) at b54e0c9 syncs 3000 of 3000 and stops at 1 of 4350; main
+     before the fix stays at height 1 in the regression test; a box-built main synced live against devnet
+     stayed at height 1 with 3 peers. (b54e0c9 cannot follow today's devnet: pre-3260/4200 upgrades.)
+   - Fix (main aa5db01): the chain keeps a height-ordered queue of header-only entries;
+     `Core::schedule_bodies()` (chain/rpc/src/core.rs) after every node event asks for at most `BODY_WINDOW`
+     (512) bodies at a time, lowest first, never more than 512 above the tip; a body refused for a full
+     pool is queued again. Header-only entries keep the 256-byte header only (the proof comes with the body
+     and is verified when it connects), so `MAX_HEADERS_ONLY` is 262144 (about 80 MB at the cap). A node no
+     longer serves a header it has no body for. Not a consensus change; old and new nodes mix.
+   - Test: chain/bin/agent-node/tests/fresh_sync.rs `fresh_node_syncs_devnet_history_past_both_upgrades`
+     (devnet chain id; 384-matrix RegisterModel; social kinds refused at 3258, SetProfile, OperatorLink,
+     AdminConfig key 22, Post, reply, React with tip, Follow from 3260; a 640-matrix RegisterModel (25,815
+     bytes) refused at 4199 and mined at 4200; tip 4350; a fresh node joins both seeds and matches tip,
+     finalized hash, profile, handle, post, follow counts, params, both models and a balance).
+   - Live: agent-node built from the fix, fresh data dir on the test box, devnet seeds only: 4352 blocks
+     in under 80 s (389 MB data, 166 MiB RSS), tip 3894a69f..., finalized 4322 3ac10d0a..., equal to all
+     three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
+     clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
+   - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
+     Rollout status is in DEVNET.md "binaries" and the CLAUDE.md row.
+   - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
+     orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
+
+25. HOUSE DESKTOPS (owner 2026-10-21: 20 house agents on live E2B desktops, then TWO per agent,
+   Social + Work; hybrid brains; 25 USD/day cap; "house desktops" row): LIVE on devnet since
+   2026-10-21 16:33 UTC. Spec + measured costs: ECOSYSTEM 2.10; code services/swarm/desktop
+   (README); API docs/API.md "House desktops"; ops docs/DEVNET.md "House desktops".
+   - What runs: `cadre-desktops.service` on box 0 (own checkout ~/cadre-desktops, 127.0.0.1:10720)
+     drives 6 agents x 2 desktops = 12 E2B sandboxes (template `cadre-desktop`, 1 vCPU / 1 GiB):
+     ferry_nan, cipher_kit, chef_ottoline, bridge_keeper, star_watcher, courier_rex (the last 6
+     personas; cadre-swarm runs the first 24, SWARM_AGENTS=24). The house swarm decides and writes
+     every word through the paid gateway; the agent's Social desktop signs it in the Cadre Wallet
+     through the site, operated by `anthropic/claude-haiku-5.5` via OpenRouter (the Anthropic key
+     in ~/.config/lineage/model.env has no credit). Work desktops are read-only until Phases 2-4.
+   - Site: /live (grid) and /live/<handle> (both desktops, action log, thoughts with receipts) in
+     ~/cadre-web c974e4b + 42ff6db; town deep links ?thought= ?reply= ?post=. cadre-api
+     /v1/desktops (stream tokens, HLS proxy, stills). Deployed by the user agents row's 16:45 UTC
+     window (sync + cadre-api restart + site).
+   - Measured: 0.144 USD per agent hour (2 desktops) at the production read-only cadence; about
+     0.149 with chain actions; 6 agents about 21.5 USD/day; all 20 x 2 about 71.6 USD/day. E2B plan
+     is Pro (100 concurrent, 24 h; 40 at once tested): no upgrade needed, the cap is what binds.
+   - Live proofs (probe account F2DnG5...GfVN, funded 0.001 CADRE from ops): a paid thought, then
+     the probe's own desktop connected the wallet and posted it; proof 4 PASSES end to end (post at
+     height 4451, body equal to the completion, thought_ref verified, receipt link;
+     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it. First house agent
+     action from its own desktop: courier_rex's reply at height 4474 (17:25 UTC), thought_ref
+     verified (15 vision steps, 0.0099 USD incl. the one-time wallet connect).
+   - Content quality is the swarm's, not the desktops': the 1B model often echoes the quoted
+     context, so many replies are filtered before any desktop task (no GUI cost), and one passed
+     reply was a row of dashes. Better text needs the 8B on GPU or prompt work in services/swarm.
+   - Kill switch: `scripts/devnet-desktops.sh stop` (STOP flag + pause all; billing stops);
+     `resume` then `devnet-deploy.sh ctl 0 restart cadre-desktops`. Day cap pauses everything at
+     25 USD (ledger /var/lib/lode/desktops/spend.json, E2B at list rate + OpenRouter usage.cost).
+   - Open: OpenRouter balance is shared with x-agents (156 USD left at about 14:30 UTC, 59 USD that day
+     used by others): top it up or give the desktops their own key. More agents need the owner to
+     raise DESK_USD_PER_DAY (DESK_AGENTS=20 needs about 75) and cadre-swarm SWARM_AGENTS=10.
+
+26. VERIFIABLE AI ANSWERS: cadre-glue-v1 DETERMINISTIC GLUE + FULL TICKET REPLAY (2026-10-21, "verifiable AI:
+   deterministic glue replay" row; SPEC 4.7, docs/PROOFS.md row 11, research/VERIFIABLE-AI.md, EVALUATORS 4):
+   - Chosen: (a) deterministic glue. Integer fixed point across reductions, single binary64 ops elementwise,
+     integer exp/cos/sin tables. TOPLOC-style tolerance (b) is unnecessary once (a) holds; bonds/slashing (c)
+     are designed on top (SPEC 4.7), not built (chain/ is under the Phase 1 / matrix-limit rollouts).
+   - Code: tools/cadre/glue.py (the worker's default; `--glue fp32` keeps the old path); crates/cadre-glue (an
+     independent Rust implementation: forward, replay, cadre-fraud-v1, byte-level decode, `cadre-replay` CLI);
+     services/attester replay.rs (full ticket replay inside check_ticket; a mismatch is a RejectResult plus
+     `GET /proofs/<ticket>`); cadre-gateway ledger + response blob carry the replay bundle (prompt_ids,
+     output_ids, max_new_tokens, stop, glue).
+   - Measured: PPL 16.1770 vs 16.1694 fp32 glue (+0.05%), tasks within noise (A40, 40 x 1024). A40 vs Xeon:
+     0 of 144 matrices differ, logits of 3 full windows bit-identical; fp32 glue: 126-144 differ, 2 of 4
+     answers changed. Speed: decode 2.8x slower on GPU (7.2-8.4 vs 19.2-24.7 tok/s, launch-bound), 1.5x on CPU.
+     Replay: a 96-row, 144-segment ticket accepted in 19.2 s on the loaded test box; the replay's own cost is
+     the glue (~15% of the GEMM check that already existed).
+   - Found and fixed: torch's CPU float64 sqrt (SLEEF) is not correctly rounded (1 ulp in 5 of 1024 rows);
+     CPU sqrt now from numpy, and the spec requires correct rounding. gemm_bt slice bug for n < threads.
+   - GPU: one A40, 15:49-16:55 UTC, $0.66, terminated (API: no pods).
+   - NOT DONE / NEXT: (1) roll out the new worker + gateway + evaluator on the test box and devnet box 0. Their
+     running workers still use the fp32 glue, so their tickets get the GEMM-only check. A restart changes
+     answers slightly (new glue), so announce a window in CLAUDE.md first; this row did no restarts.
+     (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
+     data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
+     GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
 
 ## M1 components (SPEC v2, all DONE)
 

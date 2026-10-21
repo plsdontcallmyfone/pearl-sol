@@ -12,7 +12,7 @@
 //!   height, key = hash); on restart the node reopens QMDB at the last commit, finds `F`
 //!   among the stored blocks and re-executes everything above it.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
@@ -46,6 +46,14 @@ pub enum ChainError {
     TooDeep,
     #[error("internal: {0}")]
     Internal(String),
+}
+
+/// The one context-dependent "invalid" reason: retried later, never cached or banned for.
+pub const TIME_TOO_NEW: &str = "timestamp too far in the future";
+
+/// Is this rejection message the future-timestamp one?
+pub fn is_time_too_new(msg: &str) -> bool {
+    msg.contains(TIME_TOO_NEW)
 }
 
 fn invalid<T>(m: impl Into<String>) -> Result<T, ChainError> {
@@ -131,7 +139,24 @@ pub struct Template {
 
 const MTP_SPAN: usize = 11;
 const MAX_ORPHANS: usize = 4096;
-const MAX_HEADERS_ONLY: usize = 16384;
+/// Headers waiting for their bodies (headers-first sync walks back from a peer's tip to the
+/// node's chain, so a fresh node holds one per block of history). Only the 256-byte header is
+/// kept (the proof comes again with the body and is verified then), so this is about 80 MB at
+/// the cap.
+const MAX_HEADERS_ONLY: usize = 1 << 18;
+/// Most bodies headers-first sync asks for at once, lowest height first and at most this far
+/// above the tip. Bodies whose parent has not connected wait in the orphan pool, so this stays
+/// well under [`MAX_ORPHANS`] (2026-10-21: asking for every body at once overflowed the pool on
+/// a chain longer than it, and a fresh devnet node stopped at height 1).
+pub const BODY_WINDOW: usize = 512;
+/// Byte budget of the orphan pool (security pass 2026-10-21). An orphan's work cannot be
+/// checked before its parent connects, so any peer can send them for free; without a budget a
+/// peer could park MAX_ORPHANS blocks of up to MAX_BLOCK_SIZE (16 MiB) at heights finality
+/// never prunes and leave the pool full for honest bodies. Devnet blocks are about 25 KB and
+/// sync keeps at most BODY_WINDOW bodies in flight, so honest use stays far below it. Over its
+/// count or bytes the pool drops its oldest orphan, and that orphan's header goes back to the
+/// body queue so its body is asked for again.
+pub const MAX_ORPHAN_BYTES: usize = 256 << 20;
 
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
@@ -145,7 +170,17 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     canon: Vec<CanonEntry>,
     orphans: HashMap<Hash, Block>,
     orphans_by_parent: HashMap<Hash, Vec<Hash>>,
-    headers_only: HashMap<Hash, (Header, Vec<u8>)>,
+    headers_only: HashMap<Hash, Header>,
+    /// Header-only entries whose body has not been asked for yet, by height.
+    body_queue: BTreeSet<(u64, Hash)>,
+    /// Header-only entries whose body was asked for ([`Chain::next_bodies`]).
+    body_asked: HashSet<Hash>,
+    /// Insertion order and bytes of `orphans`, insertion order of `headers_only` (budgets:
+    /// over a cap the oldest entry is dropped instead of refusing new ones, so junk cannot
+    /// leave either buffer full for honest entries).
+    orphan_order: VecDeque<Hash>,
+    orphan_bytes: usize,
+    header_order: VecDeque<Hash>,
     invalid: HashSet<Hash>,
     /// Blocks refused for forking below F (their descendants are refused too).
     too_deep: HashSet<Hash>,
@@ -318,6 +353,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             orphans: HashMap::new(),
             orphans_by_parent: HashMap::new(),
             headers_only: HashMap::new(),
+            body_queue: BTreeSet::new(),
+            body_asked: HashSet::new(),
+            orphan_order: VecDeque::new(),
+            orphan_bytes: 0,
+            header_order: VecDeque::new(),
             invalid: HashSet::new(),
             too_deep: HashSet::new(),
             tx_index: HashMap::new(),
@@ -635,6 +675,39 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         self.headers_only.keys().copied().collect()
     }
 
+    /// Bodies to ask peers for now (headers-first sync): header-only entries not asked for yet,
+    /// lowest height first, at most `window` above the tip and at most `window` outstanding.
+    /// Each hash is handed out once; a body that could not be kept is handed out again.
+    pub fn next_bodies(&mut self, window: usize) -> Vec<Hash> {
+        let limit = self.tip_height().saturating_add(window as u64);
+        let mut out = Vec::new();
+        while self.body_asked.len() < window {
+            let Some(&(height, hash)) = self.body_queue.first() else { break };
+            if height > limit {
+                break;
+            }
+            self.body_queue.pop_first();
+            if self.headers_only.contains_key(&hash) {
+                self.body_asked.insert(hash);
+                out.push(hash);
+            }
+        }
+        out
+    }
+
+    /// Bodies asked for and not yet received.
+    pub fn bodies_outstanding(&self) -> usize {
+        self.body_asked.len()
+    }
+
+    /// A header-only entry got its body (connected or orphaned) or was dropped.
+    fn forget_header(&mut self, hash: &Hash) {
+        if let Some(hd) = self.headers_only.remove(hash) {
+            self.body_queue.remove(&(hd.height, *hash));
+        }
+        self.body_asked.remove(hash);
+    }
+
     /// Read `key` in the tip's state.
     pub async fn read_tip(&self, key: &schema::Key) -> Result<Option<Vec<u8>>, ChainError> {
         self.store.get(&self.tip().snapshot, key).await.map_err(internal)
@@ -660,9 +733,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
 
     /// Header + proof for sync (live, final, orphan or header-only).
     pub async fn header_with_proof(&self, h: &Hash) -> Result<Option<Vec<u8>>, ChainError> {
-        if let Some((hd, p)) = self.headers_only.get(h) {
-            return Ok(Some(encode_header_with_proof(hd, p)));
-        }
+        // header-only entries keep no proof: a peer asking gets it from a node with the block
         Ok(self.get_block(h).await?.map(|b| encode_header_with_proof(&b.header, &b.proof)))
     }
 
@@ -761,7 +832,22 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if header.is_fallback() {
             self.check_pow(&header, None, &proof, &cfg)?;
         } else {
-            let job = self.read_tip(&schema::job_key(&header.job_id)).await?;
+            // The job of a job block lives in its parent's state. With the parent live, check
+            // the work now (a header naming a job its parent does not have is invalid); only
+            // headers above unknown ancestry wait for their body (security pass 2026-10-21:
+            // reading the tip state let anyone hang free headers off any live block).
+            let job = match self.live.get(&header.prev_hash) {
+                Some(p) => {
+                    let snap = p.snapshot.clone();
+                    let j = self.store.get(&snap, &schema::job_key(&header.job_id)).await.map_err(internal)?;
+                    if j.is_none() {
+                        self.invalid.insert(hash);
+                        return invalid("job block names a job its parent does not have");
+                    }
+                    j
+                }
+                None => self.read_tip(&schema::job_key(&header.job_id)).await?,
+            };
             if let Some(j) = job {
                 let j = JobRecord::decode(&j).map_err(internal)?;
                 let pj = j.pearl_job().map_err(ChainError::Invalid)?;
@@ -775,10 +861,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             self.too_deep.insert(hash);
             return Err(ChainError::TooDeep);
         }
-        if self.headers_only.len() >= MAX_HEADERS_ONLY {
-            return Err(internal("header buffer full"));
+        while self.headers_only.len() >= MAX_HEADERS_ONLY {
+            let Some(old) = self.header_order.pop_front() else { break };
+            if self.headers_only.contains_key(&old) {
+                debug!(header = %hex(&old), "header buffer full: dropped the oldest");
+                self.forget_header(&old);
+            }
         }
-        self.headers_only.insert(hash, (header, proof));
+        self.header_order.push_back(hash);
+        self.body_queue.insert((header.height, hash));
+        self.headers_only.insert(hash, header);
         Ok(HeaderAccept::Stored { need_parent: if parent_known { None } else { Some(header.prev_hash) } })
     }
 
@@ -790,6 +882,54 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 invalid(format!("bad proof of work: {e}"))
             }
         }
+    }
+
+    // ------------------------------------------------------------------ orphan budget
+
+    fn orphan_size(b: &Block) -> usize {
+        Header::SIZE + b.proof.len() + b.txs.iter().map(|t| t.encode().len() + 4).sum::<usize>() + 128
+    }
+
+    /// Bytes held by the orphan pool.
+    pub fn orphan_bytes(&self) -> usize {
+        self.orphan_bytes
+    }
+
+    /// Header-only entries held.
+    pub fn headers_only_count(&self) -> usize {
+        self.headers_only.len()
+    }
+
+    fn store_orphan(&mut self, hash: Hash, parent: Hash, block: Block) {
+        let size = Self::orphan_size(&block);
+        while !self.orphans.is_empty() && (self.orphans.len() >= MAX_ORPHANS || self.orphan_bytes + size > MAX_ORPHAN_BYTES) {
+            let Some(old) = self.orphan_order.pop_front() else { break };
+            if let Some(b) = self.take_orphan(&old) {
+                debug!(orphan = %hex(&old), height = b.header.height, "orphan pool over budget: dropped the oldest");
+                // its body is asked for again when the window reaches it
+                if !self.headers_only.contains_key(&old) && self.headers_only.len() < MAX_HEADERS_ONLY {
+                    self.header_order.push_back(old);
+                    self.body_queue.insert((b.header.height, old));
+                    self.headers_only.insert(old, b.header);
+                }
+            }
+        }
+        self.orphan_bytes += size;
+        self.orphan_order.push_back(hash);
+        self.orphans_by_parent.entry(parent).or_default().push(hash);
+        self.orphans.insert(hash, block);
+    }
+
+    fn take_orphan(&mut self, h: &Hash) -> Option<Block> {
+        let b = self.orphans.remove(h)?;
+        self.orphan_bytes -= Self::orphan_size(&b);
+        if let Some(v) = self.orphans_by_parent.get_mut(&b.header.prev_hash) {
+            v.retain(|x| x != h);
+            if v.is_empty() {
+                self.orphans_by_parent.remove(&b.header.prev_hash);
+            }
+        }
+        Some(b)
     }
 
     // ------------------------------------------------------------------ blocks
@@ -821,12 +961,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.too_deep.insert(hash);
                 return Err(ChainError::TooDeep);
             }
-            if self.orphans.len() >= MAX_ORPHANS {
-                return Err(internal("orphan pool full"));
-            }
-            self.headers_only.remove(&hash);
-            self.orphans_by_parent.entry(parent).or_default().push(hash);
-            self.orphans.insert(hash, block);
+            self.forget_header(&hash);
+            self.store_orphan(hash, parent, block);
             return Ok((Accept::Orphan { missing: parent }, Vec::new()));
         }
         let mut events = Vec::new();
@@ -836,7 +972,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let mut any_tip = tip;
         while let Some(p) = queue.pop_front() {
             for child in self.orphans_by_parent.remove(&p).unwrap_or_default() {
-                if let Some(b) = self.orphans.remove(&child) {
+                if let Some(b) = self.take_orphan(&child) {
                     match self.connect(b, now_ms, &mut events).await {
                         Ok(t) => {
                             any_tip |= t;
@@ -858,7 +994,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let (snap, summary, config) = match res {
             Ok(x) => x,
             Err(e) => {
-                if matches!(e, ChainError::Invalid(_)) {
+                // A block "too far in the future" is not invalid for good: it becomes valid
+                // as the clock advances. Caching it would leave a node whose clock runs a
+                // little behind on its own fork for good (a miner could aim a timestamp at
+                // that edge to split the network). Security pass 2026-10-21.
+                if matches!(&e, ChainError::Invalid(m) if !is_time_too_new(m)) {
                     self.invalid.insert(hash);
                 }
                 return Err(e);
@@ -869,7 +1009,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let log_base = parent.snapshot.log_size;
         self.archive_put(&block).await?;
         self.rewards_put(&hash, h.height, &Rewards { fees: summary.fees, subsidy: summary.subsidy, matured: summary.matured }).await?;
-        self.headers_only.remove(&hash);
+        self.forget_header(&hash);
         self.live.insert(
             hash,
             LiveNode { header: h, hash, cum_work, snapshot: snap, summary, txs: Arc::new(block.txs), config, log_base },
@@ -893,7 +1033,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             return invalid("timestamp not after median time past");
         }
         if h.timestamp_ms > now_ms.saturating_add(pcfg.max_future_ms) {
-            return invalid("timestamp too far in the future");
+            return invalid(TIME_TOO_NEW);
         }
         let want = self.required_bits(&h.prev_hash);
         if h.target_bits != want {
@@ -1044,7 +1184,15 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             v.retain(|h| orphans.contains_key(h));
             !v.is_empty()
         });
-        self.headers_only.retain(|_, (hd, _)| hd.height > target_h);
+        self.headers_only.retain(|_, hd| hd.height > target_h);
+        self.body_queue.retain(|(h, _)| *h > target_h);
+        let headers = &self.headers_only;
+        self.body_asked.retain(|h| headers.contains_key(h));
+        self.orphan_bytes = self.orphans.values().map(Self::orphan_size).sum();
+        let o = &self.orphans;
+        self.orphan_order.retain(|h| o.contains_key(h));
+        let hd = &self.headers_only;
+        self.header_order.retain(|h| hd.contains_key(h));
         if self.invalid.len() > 100_000 {
             self.invalid.clear();
         }

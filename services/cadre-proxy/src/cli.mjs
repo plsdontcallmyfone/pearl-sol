@@ -139,7 +139,7 @@ async function main() {
     }
     case "serve": {
       const ledger = new Ledger(resolve(o.ledger), caps);
-      const proxy = new Proxy({ gateway: o.gateway, wallet, apiKey: keyRec?.api_key ?? null, ledger, token: o.token ?? null, defaultMaxTokens: Number(o["default-max-tokens"]) });
+      const proxy = new Proxy({ gateway: o.gateway, wallet, apiKey: keyRec?.api_key ?? null, ledger, token: o.token ?? null, defaultMaxTokens: Number(o["default-max-tokens"]), allowOrigins: (process.env.CADRE_PROXY_ALLOW_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean) });
       await proxy.listen(Number(o.port), o.host);
       process.stderr.write(`cadre-proxy ${wallet.address} on http://${o.host}:${o.port}/v1 -> ${o.gateway} (auth ${keyRec ? "api-key" : "wallet"}, pid ${process.pid})\n`);
       return;

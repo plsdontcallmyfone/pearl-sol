@@ -459,14 +459,15 @@ test('admin rotates the attester set; old attesters no longer count', async () =
 });
 
 // Refund (owner decision 2026-10-17): a held-back order's deposit goes back to the buyer
-// through bridge refund_deposit (bridge signers over pearl-sol:refund:v1), then anyone
-// marks the Order Refunded from the bridge's refund record (no CPI).
-const refundMsg = (n, who, amount) => Buffer.concat([Buffer.from('pearl-sol:refund:v1'), le64(n), who.toBuffer(), le64(amount)]);
+// through bridge refund_deposit (bridge signers over pearl-sol:refund:v2 || bridge id, with the
+// Order passed: security pass 2026-10-21 B-1/B-2), then anyone marks the Order Refunded from the
+// bridge's refund record (no CPI).
+const refundMsg = (n, who, amount) => Buffer.concat([Buffer.from('pearl-sol:refund:v2'), BRIDGE.toBuffer(), le64(n), who.toBuffer(), le64(amount)]);
 const refundRecord = (n) => pda(['processed', Buffer.from([0]), le64(n)], BRIDGE);
 const refundIx = (n, who, whoToken) => br.methods.refundDeposit(bn(n), who).accountsStrict({
   payer: buyer.publicKey, config: BCFG, mint: MINT, vault: VAULT, deposit: pda(['deposit', le64(n)], BRIDGE), buyerToken: whoToken,
   refund: refundRecord(n), instructions: SYSVAR_INSTRUCTIONS_PUBKEY, tokenProgram: T22, systemProgram: SystemProgram.programId,
-}).instruction();
+}).remainingAccounts([{ pubkey: orderPda(n), isSigner: false, isWritable: false }]).instruction();
 const markIx = (n, rec = refundRecord(n)) => sf.methods.markRefunded().accountsStrict({ config: CONFIG, order: orderPda(n), refundRecord: rec }).instruction();
 
 test('refund: bridge refund_deposit returns the order tokens to the buyer; mark_refunded closes the Order', async () => {
@@ -509,17 +510,20 @@ test('refund: bridge refund_deposit returns the order tokens to the buyer; mark_
   fails([edIx(bridgeSigner, refundMsg(n, buyer.publicKey, tokens)), await refundIx(n, buyer.publicKey, bAta)], [buyer], /already in use|custom program error: 0x0/, 'refund twice');
 });
 
-test('refund: an Expired order can be refunded too; a refund to someone else is not a refund of the order', async () => {
+test('refund: an Expired order can be refunded too; a refund to someone else is refused by the bridge', async () => {
   const n2 = nonce0 + 1n; // expired above
   assert.equal(order(n2).status, 3);
   const tokens = BigInt(order(n2).tokens.toString());
   const other = Keypair.generate().publicKey;
   const oAta = ata(other, MINT, T22);
   ok([spl.createAssociatedTokenAccountIdempotentInstruction(buyer.publicKey, oAta, other, MINT, T22)], [buyer], 'other ata');
-  // the bridge pays whoever the signers named; the storefront only accepts its own buyer
-  ok([edIx(bridgeSigner, refundMsg(n2, other, tokens)), await refundIx(n2, other, oAta)], [buyer], 'refund to other');
-  fails([await markIx(n2)], [buyer], /BadAccount/, 'record names another buyer');
+  // since the 2026-10-21 security pass (B-1) the bridge pays only the order's buyer, even
+  // when the signers name someone else
+  fails([edIx(bridgeSigner, refundMsg(n2, other, tokens)), await refundIx(n2, other, oAta)], [buyer], /WrongRecipient/, 'refund to other');
   assert.equal(order(n2).status, 3);
+  const bAta = ata(buyer.publicKey, MINT, T22);
+  ok([edIx(bridgeSigner, refundMsg(n2, buyer.publicKey, tokens)), await refundIx(n2, buyer.publicKey, bAta), await markIx(n2)], [buyer], 'refund expired to its buyer');
+  assert.equal(order(n2).status, 4);
 });
 
 
@@ -761,6 +765,21 @@ test('buyback: per-call cap carries the rest; an empty vault refuses; cranker al
   ok([await setBbIx({ cranker: PublicKey.default })], [admin], 'permissionless again');
 });
 
+// Security pass 2026-10-21 (S-3): an open crank must spend the full amount, so a stranger cannot
+// throttle the buyback to min_buy per interval; an allowlisted cranker may still spend less.
+test('security S-3: an open buyback crank cannot be throttled with a dust spend', async () => {
+  await placeOrder(BigInt(LAMPORTS_PER_SOL / 5));
+  advance(61);
+  const minBuy = BigInt(config().buybackMinBuy.toString());
+  assert.ok(crankable() > 2n * minBuy, 'more than a dust buy is crankable');
+  fails([await crankIx(cranker.publicKey, 2n * minBuy)], [cranker], /PartialSpend/, 'dust spend by a stranger');
+  ok([await setBbIx({ cranker: admin.publicKey })], [admin], 'cranker = admin');
+  ok([await crankIx(admin.publicKey, 2n * minBuy)], [admin], 'allowlisted partial spend');
+  ok([await setBbIx({ cranker: PublicKey.default })], [admin], 'permissionless again');
+  advance(61);
+  ok([await crankIx(cranker.publicKey)], [cranker], 'full spend by a stranger');
+});
+
 test('buyback: burn destination lowers the mint supply by exactly the tokens bought; share 0 holds nothing', async () => {
   advance(61);
   ok([await setBbIx({ destination: 1 })], [admin], 'destination burn');
@@ -868,6 +887,42 @@ test('buyback: reserve cap (owner decision 2026-10-18): reserve below the cap, t
 });
 
 let graduated = false;
+// Security pass 2026-10-21 (S-1): anyone can send lamports to the next order's share record
+// PDA ["share", nonce] before the buyer's buy_job lands; that must not block the order.
+test('security S-1: a pre-funded share record PDA does not block buy_job', async () => {
+  const griefer = Keypair.generate();
+  svm.airdrop(griefer.publicKey, BigInt(LAMPORTS_PER_SOL));
+  const n = bridgeNonce();
+  ok([SystemProgram.transfer({ fromPubkey: griefer.publicKey, toPubkey: shareRec(n), lamports: Number(RENT_MIN) })], [griefer], 'pre-fund the next share record');
+  const { ix, draft } = await openIx();
+  ok([ix], [buyer], 'open');
+  ok([await buyIx(draft, n, LAMPORTS_PER_SOL / 10)], [buyer], 'buy_job with a pre-funded share PDA');
+  const acc = svm.getAccount(shareRec(n));
+  assert.equal(acc.owner.toBase58(), SF.toBase58(), 'share record owned by the storefront');
+  const rec = sf.coder.accounts.decode('shareRecord', Buffer.from(acc.data));
+  assert.equal(rec.nonce.toString(), n.toString());
+  assert.equal(rec.buyer.toBase58(), buyer.publicKey.toBase58());
+  await finalize(n);
+  ok([await settleIx(n)], [cranker], 'settle_share');
+});
+
+// Security pass 2026-10-21 (S-2): the admin key cannot redirect buyers' funds or buybacks once
+// the storefront is live: mint and bridge_program freeze at the first order, reserve_program at
+// the first buyback routed to the reserve.
+test('security S-2: mint, bridge_program and reserve_program freeze once used', async () => {
+  const c = config();
+  assert.ok(BigInt(c.orders.toString()) > 0n, 'orders placed');
+  assert.ok(BigInt(c.bbToReserve.toString()) > 0n, 'buybacks routed to the reserve');
+  const evil = Keypair.generate().publicKey;
+  fails([await updateIx({ bridgeProgram: evil })], [admin], /DestinationFrozen/, 'swap the bridge program');
+  fails([await updateIx({ mint: evil })], [admin], /DestinationFrozen/, 'swap the mint');
+  fails([await setBbIx({ reserveProgram: evil })], [admin], /DestinationFrozen/, 'swap the reserve program');
+  ok([await updateIx({ bridgeProgram: BRIDGE, mint: MINT })], [admin], 'same values are fine');
+  ok([await setBbIx({ reserveProgram: RESERVE_ID })], [admin], 'same reserve program is fine');
+  assert.equal(config().bridgeProgram.toBase58(), BRIDGE.toBase58());
+  assert.equal(config().mint.toBase58(), MINT.toBase58());
+});
+
 test('graduation: curve completes + migrate_v2; buy_job then refuses', async () => {
   const { ix: open, draft } = await openIx();
   ok([open], [buyer], 'open');

@@ -33,7 +33,7 @@ use pearl_job::standing;
 use pearl_node::tx::{self, Body, SegmentSpec, Tx};
 use pearl_node::{b58, NodeApi};
 
-pub use auth::{auth_message, Auth, Keys};
+pub use auth::{auth_message, auth_message_v2, Auth, Keys};
 pub use transport::{Evaluator, GenOpts, HttpEvaluator, HttpStorefront, HttpWorker, Storefront, Worker};
 
 pub fn now_ms() -> u64 {
@@ -208,6 +208,20 @@ pub struct Served {
     pub row_offset: Option<u32>,
     pub ttft_s: f64,
     pub decode_tokens_per_s: Option<f64>,
+    /// What an evaluator needs to replay the request (SPEC 4.7): the token ids the worker fed and
+    /// produced, the stopping rule and the glue it ran. Published in the response blob; the A
+    /// blobs already carry the prompt (layer 0 activations are the quantized embeddings), so
+    /// this adds no new exposure. Empty for requests served before this field existed.
+    #[serde(default)]
+    pub prompt_ids: Vec<u32>,
+    #[serde(default)]
+    pub output_ids: Vec<u32>,
+    #[serde(default)]
+    pub max_new_tokens: u32,
+    #[serde(default)]
+    pub stop: Vec<String>,
+    #[serde(default)]
+    pub glue: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -353,7 +367,14 @@ pub struct Gateway {
     price: Mutex<Option<(u64, Instant)>>,
     /// Measured: (ttft_s, decode tokens/s) of recent requests.
     pub recent: Mutex<VecDeque<(f64, Option<f64>, u32)>>,
+    /// When `discover` last ran for a wallet on an unauthenticated read (security pass V-8).
+    discovered: Mutex<std::collections::HashMap<[u8; 32], Instant>>,
 }
+
+/// Unauthenticated balance reads rescan the chain for a wallet at most this often.
+pub const DISCOVER_TTL: Duration = Duration::from_secs(15);
+/// Wallets remembered for the TTL above; past this, expired entries are dropped first.
+const DISCOVER_CACHE_MAX: usize = 10_000;
 
 pub enum Payload {
     Json(Value),
@@ -403,7 +424,9 @@ struct InferReq {
 impl Gateway {
     #[allow(clippy::too_many_arguments)]
     pub fn new(node: Box<dyn NodeApi>, storefront: Box<dyn Storefront>, worker: Box<dyn Worker>, evaluator: Box<dyn Evaluator>, key: SigningKey, model: ModelInfo, cfg: Config, log: Logger) -> Self {
-        let ledger = std::fs::read(cfg.work_dir.join("ledger.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut ledger: Ledger = std::fs::read(cfg.work_dir.join("ledger.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        ledger.keys.audience = Some(b58(&key.verifying_key().to_bytes()));
+        ledger.keys.require_audience = std::env::var(auth::REQUIRE_AUDIENCE_ENV).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         Self {
             node,
             storefront,
@@ -418,7 +441,30 @@ impl Gateway {
             settle_lock: Mutex::new(()),
             price: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
+            discovered: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// `discover` for an unauthenticated caller: at most once per wallet per
+    /// DISCOVER_TTL, so anonymous balance polls cannot fan out into node calls
+    /// (getAccountTxs + up to 100 getTicket each). Returns whether it ran.
+    fn discover_throttled(&self, w: &[u8; 32]) -> bool {
+        {
+            let mut d = self.discovered.lock().unwrap();
+            let now = Instant::now();
+            if d.get(w).is_some_and(|t| now.duration_since(*t) < DISCOVER_TTL) {
+                return false;
+            }
+            if d.len() >= DISCOVER_CACHE_MAX {
+                d.retain(|_, t| now.duration_since(*t) < DISCOVER_TTL);
+                if d.len() >= DISCOVER_CACHE_MAX {
+                    return false;
+                }
+            }
+            d.insert(*w, now);
+        }
+        self.discover(w);
+        true
     }
 
     pub fn server(&self) -> [u8; 32] {
@@ -451,7 +497,7 @@ impl Gateway {
             Err(e) => return err(401, "authentication_error", e),
         };
         let r: Result<HttpResponse> = (|| match (method, path) {
-            ("GET", "/health") => Ok(resp(200, json!({"ok": true, "server": b58(&self.server()), "model_id": hex::encode(self.model.model_id), "model": self.model.name, "api": "cadre-gateway v1"}))),
+            ("GET", "/health") => Ok(resp(200, json!({"ok": true, "server": b58(&self.server()), "model_id": hex::encode(self.model.model_id), "model": self.model.name, "api": "cadre-gateway v1", "auth": [auth::AUTH_DOMAIN_V2, auth::AUTH_DOMAIN]}))),
             ("GET", "/v1/models") => Ok(resp(200, self.models_json())),
             ("GET", "/v1/stats") => Ok(resp(200, self.stats_json())),
             ("POST", "/v1/keys") => {
@@ -471,17 +517,23 @@ impl Gateway {
             }
             ("POST", "/v1/balance/topup") => self.topup(headers, body),
             ("GET", "/v1/balance") => {
-                let w = match (auth.wallet(), q("wallet")) {
-                    (Some(w), _) => w,
-                    (None, Some(w)) => auth::parse_wallet(&w)?,
+                // an authenticated caller always rescans; anonymous reads are throttled (V-8)
+                match (auth.wallet(), q("wallet")) {
+                    (Some(w), _) => {
+                        self.discover(&w);
+                        Ok(resp(200, self.balance_json(&w)))
+                    }
+                    (None, Some(w)) => {
+                        let w = auth::parse_wallet(&w)?;
+                        self.discover_throttled(&w);
+                        Ok(resp(200, self.balance_json(&w)))
+                    }
                     _ => bail!("authenticate, or pass ?wallet=ADDR"),
-                };
-                self.discover(&w);
-                Ok(resp(200, self.balance_json(&w)))
+                }
             }
             ("GET", p) if p.starts_with("/v1/prepaid/") => {
                 let w = auth::parse_wallet(&p["/v1/prepaid/".len()..])?;
-                self.discover(&w);
+                self.discover_throttled(&w);
                 Ok(resp(200, self.balance_json(&w)))
             }
             ("POST", "/v1/balance/close") => {
@@ -907,6 +959,11 @@ impl Gateway {
                 request_id: id.into(), wallet: wallet.into(), ticket_id: ticket.into(), dir: dir.to_path_buf(), rows, prompt_tokens: r.ids.len() as u32,
                 completion_tokens: completion, body_sha256: body_sha.into(), output_sha256: out_sha, text_sha256: text_sha, charged_lamports: lpr.map(|x| x * rows as u64),
                 at_ms: now_ms(), round: None, row_offset: None, ttft_s: ttft, decode_tokens_per_s: decode,
+                prompt_ids: r.ids.clone(),
+                output_ids: gen["output_ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u32).collect()).unwrap_or_default(),
+                max_new_tokens: r.max_new,
+                stop: r.stop.clone(),
+                glue: gen["glue"].as_str().unwrap_or("").to_string(),
             };
             if let Some(t) = l.tickets.get_mut(ticket) {
                 t.reserved = t.reserved.saturating_sub(reserved);
@@ -1117,8 +1174,19 @@ impl Gateway {
                 .rounds
                 .iter()
                 .map(|r| {
-                    let reqs: Vec<Value> = r.requests.iter().filter_map(|q| l.requests.get(q)).map(|q| json!({"request_id": q.request_id, "body_sha256": q.body_sha256,
-                        "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256, "text_sha256": q.text_sha256})).collect();
+                    let reqs: Vec<Value> = r.requests.iter().filter_map(|q| l.requests.get(q)).map(|q| {
+                        let mut v = json!({"request_id": q.request_id, "body_sha256": q.body_sha256,
+                            "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256, "text_sha256": q.text_sha256});
+                        if !q.glue.is_empty() {
+                            // the replay bundle (SPEC 4.7): an evaluator rebuilds every A from these
+                            v["glue"] = json!(q.glue);
+                            v["prompt_ids"] = json!(q.prompt_ids);
+                            v["output_ids"] = json!(q.output_ids);
+                            v["max_new_tokens"] = json!(q.max_new_tokens);
+                            v["stop"] = json!(q.stop);
+                        }
+                        v
+                    }).collect();
                     json!({"round": r.round, "m": r.m, "requests": reqs})
                 })
                 .collect();
@@ -1133,6 +1201,15 @@ impl Gateway {
             "format": "cadre-response-v1", "model_id": hex::encode(self.model.model_id), "ticket_id": id,
             "request_hash": chain["standing"]["request_hash"], "rows": t.posted_rows(), "rounds": rounds, "segments": segments,
         });
+        // replayable (SPEC 4.7) when every request of every round ran the deterministic glue
+        let glue = {
+            let l = self.ledger.lock().unwrap();
+            let all: Vec<String> = t.rounds.iter().flat_map(|r| r.requests.iter()).map(|q| l.requests.get(q).map(|x| x.glue.clone()).unwrap_or_default()).collect();
+            if !all.is_empty() && all.iter().all(|g| g == "cadre-glue-v1") { Some("cadre-glue-v1") } else { None }
+        };
+        if let Some(g) = glue {
+            resp_v["glue"] = json!(g);
+        }
         if t.single {
             if let Some(q) = single_req {
                 resp_v["prompt_tokens"] = json!(q.prompt_tokens);

@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use primitive_types::U256;
@@ -368,7 +368,18 @@ struct Inner {
     chain_id: Option<u32>,
     /// Last send time of each pending payout (by nonce); not persisted.
     sent_at: HashMap<u64, Instant>,
+    /// Registrations with no accepted share yet (security pass V-10): kept in memory
+    /// only, at most MAX_PENDING_MINERS, dropped after PENDING_TTL without a request.
+    /// A miner moves into the persisted state with its first accepted share.
+    pending: HashMap<String, (MinerRec, Instant)>,
+    /// Ids of dropped pending registrations (never used for an accepted share), reused first.
+    free_ids: Vec<u32>,
 }
+
+/// Unproven registrations held at once; more answer an error until some expire.
+pub const MAX_PENDING_MINERS: usize = 4096;
+/// A pending registration that asks for no work and sends no share for this long is dropped.
+pub const PENDING_TTL: Duration = Duration::from_secs(30 * 60);
 
 pub struct Pool {
     node: Arc<dyn PoolNode>,
@@ -423,6 +434,8 @@ impl Pool {
                 last_template: None,
                 min_fee: 0,
                 chain_id: None,
+                pending: HashMap::new(),
+                free_ids: Vec::new(),
                 sent_at: HashMap::new(),
             }),
             submit_lock: Mutex::new(()),
@@ -474,8 +487,25 @@ impl Pool {
         if let Some(m) = g.st.miners.get(&k) {
             return Ok(m.clone());
         }
-        let id = g.st.next_miner_id.max(1);
+        let now = Instant::now();
+        if let Some((m, seen)) = g.pending.get_mut(&k) {
+            *seen = now;
+            return Ok(m.clone());
+        }
+        // Unproven registrations stay out of the state file (no write per registration)
+        // and are capped, so mass registration cannot slow writes or eat the nonce space.
+        let expired: Vec<String> = g.pending.iter().filter(|(_, (_, t))| now.duration_since(*t) >= PENDING_TTL).map(|(k, _)| k.clone()).collect();
+        for e in expired {
+            if let Some((m, _)) = g.pending.remove(&e) {
+                g.free_ids.push(m.id);
+            }
+        }
+        ensure!(g.pending.len() < MAX_PENDING_MINERS, "too many pending registrations; retry later");
         let bits = self.cfg.nonce_range_bits.min(63);
+        let (id, fresh) = match g.free_ids.pop() {
+            Some(id) => (id, false),
+            None => (g.st.next_miner_id.max(1), true),
+        };
         if (id as u128 + 1) << bits > u64::MAX as u128 + 1 {
             bail!("nonce space exhausted: no range left for miner {id}");
         }
@@ -496,16 +526,24 @@ impl Pool {
             tx_fees: 0,
             registered_ms: now_ms(),
         };
-        g.st.miners.insert(k.clone(), rec.clone());
-        g.st.next_miner_id = id + 1;
-        self.persist(&g.st)?;
+        g.pending.insert(k.clone(), (rec.clone(), now));
+        if fresh {
+            g.st.next_miner_id = id + 1;
+        }
         drop(g);
         self.log(json!({"event": "register", "miner": k, "id": id, "nonce_start": start, "nonce_end": end}));
         Ok(rec)
     }
 
     pub fn miner(&self, payout: &[u8; 32]) -> Option<MinerRec> {
-        self.inner.lock().unwrap().st.miners.get(&b58(payout)).cloned()
+        let g = self.inner.lock().unwrap();
+        let k = b58(payout);
+        g.st.miners.get(&k).cloned().or_else(|| g.pending.get(&k).map(|(m, _)| m.clone()))
+    }
+
+    /// Unproven registrations held in memory (not in the state file).
+    pub fn pending_miners(&self) -> usize {
+        self.inner.lock().unwrap().pending.len()
     }
 
     // ------------------------------------------------------------ templates
@@ -616,8 +654,11 @@ impl Pool {
         g.st.totals.rejected += 1;
         if let Some(m) = g.st.miners.get_mut(payout) {
             m.rejected += 1;
+        } else if let Some((m, _)) = g.pending.get_mut(payout) {
+            m.rejected += 1;
         }
-        self.persist(&g.st)?;
+        // Rejected-share counters are saved with the next accepted share or block, not on
+        // every rejection: unauthenticated junk shares must not each rewrite the state file.
         drop(g);
         self.log(json!({"event": "share_rejected", "miner": payout, "reason": reason, "stale": stale}));
         Ok(ShareOutcome::Rejected { reason, stale })
@@ -629,7 +670,7 @@ impl Pool {
         // 1. Cheap checks under the lock.
         let (work, miner) = {
             let g = self.inner.lock().unwrap();
-            let Some(m) = g.st.miners.get(&pk).cloned() else {
+            let Some(m) = g.st.miners.get(&pk).cloned().or_else(|| g.pending.get(&pk).map(|(m, _)| m.clone())) else {
                 drop(g);
                 return self.reject(&pk, "unregistered miner".into(), false);
             };
@@ -675,6 +716,21 @@ impl Pool {
             if work.template.header.prev_hash != g.tip.0 {
                 drop(g);
                 return self.reject(&pk, "stale work: a new block arrived".into(), true);
+            }
+            // First accepted share of a pending registration: it joins the persisted state.
+            if !g.st.miners.contains_key(&pk) {
+                match g.pending.remove(&pk) {
+                    Some((m, _)) if m.id == miner.id => {
+                        g.st.miners.insert(pk.clone(), m);
+                    }
+                    other => {
+                        if let Some(o) = other {
+                            g.pending.insert(pk.clone(), o);
+                        }
+                        drop(g);
+                        return self.reject(&pk, "registration expired; register again".into(), false);
+                    }
+                }
             }
             let height = header.height;
             let seen = g.st.seen.entry(work_id.to_string()).or_insert_with(|| (height, BTreeSet::new()));
@@ -950,7 +1006,11 @@ impl Pool {
 
     pub fn miner_json(&self, payout: &[u8; 32]) -> Value {
         let g = self.inner.lock().unwrap();
-        match g.st.miners.get(&b58(payout)) {
+        let k = b58(payout);
+        if let Some((m, _)) = g.pending.get(&k) {
+            return json!({"miner": m, "window_shares": 0, "payouts": [], "pending": true});
+        }
+        match g.st.miners.get(&k) {
             None => Value::Null,
             Some(m) => {
                 let window_shares = g.st.window.iter().filter(|s| s.miner == m.id).count();

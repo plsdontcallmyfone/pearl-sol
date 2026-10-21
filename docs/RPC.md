@@ -365,7 +365,7 @@ sendTx refuses a social tx below the activation height or under the social fee f
 (`max(min_fee, social_min_fee + social_byte_fee x tx bytes)`). getAccountTxs lists a Follow
 under each target (role `follow`) and an OperatorLink under its agent (role `operator`).
 
-### Contracts (SPEC 4.7, docs/CONTRACTS.md)
+### Contracts (SPEC 4.9, docs/CONTRACTS.md)
 
 Addresses are base58, hashes hex, binary (args, return data, keys, event data) hex. Contract
 object: `{"address", "code_hash", "admin": base58 | null, "upgradable", "creator", "label",
@@ -475,8 +475,10 @@ Solana). services/relayer reads `getParams` and does not sign an order unlock wi
 (`state.needsRefund`, tick `needsRefund`, `cli.ts status`) and re-checks it every tick, so
 lowering the floor unlocks it. Refund (2026-10-17): once the deposit has been held back
 for `REFUND_GRACE_MS` (default 1 h) the relayer refunds it on Solana: bridge
-`refund_deposit` (bridge signers over `pearl-sol:refund:v1 || nonce || buyer ||
-amount_spl`) pays the deposit back to the Order's buyer (tokens, not SOL) and writes the
+`refund_deposit` (bridge signers over `pearl-sol:refund:v2 || bridge program id || nonce ||
+buyer || amount_spl`, with the Order passed as the one remaining account; since the
+2026-10-21 security pass only an order deposit can be refunded, only to its Order's buyer)
+pays the deposit back to the Order's buyer (tokens, not SOL) and writes the
 refund record; storefront `mark_refunded` sets the Order to Refunded (status 4). From then
 on no relayer unlocks that deposit (SPEC 5.1 "Refunds"). Still, keep the storefront's
 minimum order size so that `amount x protocol_fee_bps / 10000 x 1000 >=

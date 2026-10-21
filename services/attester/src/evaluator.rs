@@ -16,10 +16,13 @@
 //! - HOLD: anything that is not the deliverer's provable fault (node or blob fetch errors,
 //!   the poster's own data missing or not matching its commitments). Retried next round.
 //!
-//! Inference tickets are accepted when the full ticket check passes (SPEC 5.4) and held
-//! otherwise: a ticket is never rejected automatically, because the M1 ticket check does
-//! not cover the fp32 glue between segments (REPUTATION 5.3) and its failure messages are
-//! not yet split into provable and transient ones. Segments have no delivery.
+//! Inference tickets are accepted when the full ticket check passes (SPEC 5.4). A ticket whose
+//! response carries the cadre-glue-v1 replay bundle is replayed in full (SPEC 4.7, replay.rs):
+//! every segment's A rebuilt and compared bit for bit, every C and c_hash, the tokens, the stop
+//! rule and the text hash; a replay mismatch is the server's provable fault, so the ticket is
+//! REJECTED and the cadre-fraud-v1 proof published at `GET /proofs/<ticket_id hex>`. Any other
+//! failure (missing data, fetch errors, old responses without the bundle failing the GEMM-only
+//! check) holds. Segments have no delivery.
 //!
 //! Every verdict is published at `GET /verdicts` and `GET /signatures/<job_id hex>` so
 //! other evaluators of a threshold job can collect the signatures (`--peer`).
@@ -115,6 +118,8 @@ pub struct Evaluator {
     verdicts: Mutex<HashMap<[u8; 96], Signed>>,
     /// first height a delivery's result could not be fetched
     unavailable_since: Mutex<HashMap<[u8; 96], u64>>,
+    /// cadre-fraud-v1 proofs behind ticket rejections, by ticket id hex (GET /proofs/<id>)
+    proofs: Mutex<HashMap<String, cadre_glue::fraud::FraudProof>>,
 }
 
 fn dkey(j: &[u8; 32], d: &[u8; 32], r: &[u8; 32]) -> [u8; 96] {
@@ -132,7 +137,7 @@ fn b58(b: &[u8]) -> String {
 impl Evaluator {
     pub fn new(att: Attester, cfg: EvalConfig) -> Result<Self> {
         anyhow::ensure!(matches!(att.source, JobSource::Node(_)), "the evaluator needs node mode");
-        Ok(Self { att, cfg, verdicts: Mutex::new(HashMap::new()), unavailable_since: Mutex::new(HashMap::new()) })
+        Ok(Self { att, cfg, verdicts: Mutex::new(HashMap::new()), unavailable_since: Mutex::new(HashMap::new()), proofs: Mutex::new(HashMap::new()) })
     }
 
     fn node(&self) -> &dyn NodeApi {
@@ -155,7 +160,15 @@ impl Evaluator {
             return match self.att.check_ticket(self.node(), job, &job.job_id) {
                 Ok(h) if h == rh => Verdict::Accept,
                 Ok(_) => Verdict::Hold("ticket check signed another result_hash".into()),
-                Err(e) => Verdict::Hold(format!("ticket check did not pass (tickets are never auto-rejected): {e:#}")),
+                // a cadre-glue-v1 replay mismatch is the server's provable fault (SPEC 4.7): reject,
+                // and publish the fraud proof at GET /proofs/<ticket>
+                Err(e) if e.downcast_ref::<crate::replay::TicketFraud>().is_some() => {
+                    let f = e.downcast_ref::<crate::replay::TicketFraud>().unwrap().0.clone();
+                    let reason = format!("replay: {}", f.reason);
+                    self.proofs.lock().unwrap().insert(hex::encode(job.job_id), f);
+                    Verdict::Reject(reason)
+                }
+                Err(e) => Verdict::Hold(format!("ticket check did not pass (held, not the server's provable fault): {e:#}")),
             };
         }
         if job.kind == "segment" {
@@ -346,6 +359,13 @@ impl Evaluator {
                        "spec": "docs/EVALUATORS.md", "verdicts": self.verdicts.lock().unwrap().len()}),
             ),
             ("GET", "/verdicts") => (200, serde_json::to_value(self.verdicts()).unwrap_or(Value::Null)),
+            ("GET", p) if p.starts_with("/proofs/") => {
+                let id = p.trim_start_matches("/proofs/").to_ascii_lowercase();
+                match self.proofs.lock().unwrap().get(&id) {
+                    Some(f) => (200, serde_json::to_value(f).unwrap_or(Value::Null)),
+                    None => (404, json!({"ok": false, "error": "no fraud proof for this job"})),
+                }
+            }
             ("GET", p) if p.starts_with("/signatures/") => {
                 let id = p.trim_start_matches("/signatures/").to_ascii_lowercase();
                 let v: Vec<Signed> = self.verdicts().into_iter().filter(|s| s.job_id == id).collect();
@@ -362,7 +382,20 @@ fn fetch_result(node: &dyn NodeApi, uri: &str, len: usize) -> Result<std::result
     let bytes = if uri.starts_with(pearl_job::data::BLOB_URI_PREFIX) {
         pearl_node::fetch_blob(node, uri)?
     } else if let Some(p) = uri.strip_prefix("file://") {
-        std::fs::read(p).with_context(|| format!("read {p}"))?
+        // The URI comes from the chain: never read a device, FIFO or oversized file
+        // (security pass V-2b). A wrong kind or size is the deliverer's fault; a
+        // missing file may still appear, so that stays an Err (hold).
+        let path = std::path::Path::new(p);
+        let want = (len as u64).saturating_mul(4);
+        if let Ok(md) = std::fs::metadata(path) {
+            if !md.is_file() {
+                return Ok(Err(format!("result uri {uri:?} is not a regular file")));
+            }
+            if md.len() != want {
+                return Ok(Err(format!("delivered C is {} bytes, expected m*n*4 = {want}", md.len())));
+            }
+        }
+        pearl_job::data::read_exact_file(path, want)?
     } else if uri.is_empty() {
         return Ok(Err("delivery has no result uri".into()));
     } else {

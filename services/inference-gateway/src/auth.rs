@@ -1,6 +1,6 @@
 //! Request authentication (SPEC 5.4): wallet-signed headers or a wallet-bound API key.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use anyhow::{anyhow, bail, ensure, Result};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const AUTH_DOMAIN: &str = "cadre-auth-v1";
+/// v2 binds the signature to one gateway (its server key), so a request signed for one
+/// gateway cannot be replayed to another within the skew window (security pass V-9).
+pub const AUTH_DOMAIN_V2: &str = "cadre-auth-v2";
+/// Set to 1 to refuse v1 (audience-less) signatures.
+pub const REQUIRE_AUDIENCE_ENV: &str = "CADRE_AUTH_REQUIRE_AUDIENCE";
 /// How far a signed request's timestamp may be from the gateway clock.
 pub const MAX_SKEW_MS: u64 = 120_000;
 pub const KEY_PREFIX: &str = "cadre_sk_";
@@ -21,6 +26,12 @@ pub fn auth_message(method: &str, path: &str, ts_ms: u64, body: &[u8]) -> Vec<u8
     format!("{AUTH_DOMAIN}\n{}\n{path}\n{ts_ms}\n{}", method.to_uppercase(), sha256_hex(body)).into_bytes()
 }
 
+/// v2: `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TS + "\n" + hex(sha256(body))`,
+/// AUDIENCE = the gateway's server key in base58 (`GET /health` -> `server`).
+pub fn auth_message_v2(audience: &str, method: &str, path: &str, ts_ms: u64, body: &[u8]) -> Vec<u8> {
+    format!("{AUTH_DOMAIN_V2}\n{audience}\n{}\n{path}\n{ts_ms}\n{}", method.to_uppercase(), sha256_hex(body)).into_bytes()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApiKey {
     pub key_id: String,
@@ -32,13 +43,37 @@ pub struct ApiKey {
     pub last_used_ms: Option<u64>,
 }
 
+/// When this process loaded its keys (unix ms). The replay guard lives in memory only, so a
+/// signed request is accepted only if it was signed after the gateway started: a request
+/// captured before a restart cannot be replayed into the fresh guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootMs(pub u64);
+
+impl Default for BootMs {
+    fn default() -> Self {
+        BootMs(crate::now_ms())
+    }
+}
+
 /// API keys (stored as sha256 of the key) and the replay guard for signatures.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Keys {
     /// sha256(api key) hex -> key record.
     pub keys: BTreeMap<String, ApiKey>,
+    /// Signatures seen in the last 2 x MAX_SKEW_MS, oldest first (expiry order) ...
     #[serde(skip)]
     pub seen: VecDeque<(u64, String)>,
+    /// ... and the same signatures as a set (constant-time replay lookups).
+    #[serde(skip)]
+    pub seen_set: HashSet<String>,
+    #[serde(skip)]
+    pub boot_ms: BootMs,
+    /// This gateway's server key (base58): v2 signatures must name it.
+    #[serde(skip)]
+    pub audience: Option<String>,
+    /// Refuse v1 signatures (they name no gateway).
+    #[serde(skip)]
+    pub require_audience: bool,
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -83,14 +118,23 @@ impl Keys {
         let wallet = parse_wallet(w)?;
         let ts: u64 = ts.trim().parse().map_err(|_| anyhow!("X-Cadre-Timestamp must be unix milliseconds"))?;
         ensure!(ts.abs_diff(now_ms) <= MAX_SKEW_MS, "X-Cadre-Timestamp is more than 120 s from the gateway clock");
+        ensure!(ts >= self.boot_ms.0, "X-Cadre-Timestamp is before the gateway started; sign the request again");
         let sig: [u8; 64] = hex::decode(sig.trim()).ok().and_then(|v| v.try_into().ok()).ok_or_else(|| anyhow!("X-Cadre-Signature must be 64 bytes hex"))?;
         let vk = VerifyingKey::from_bytes(&wallet).map_err(|_| anyhow!("X-Cadre-Wallet is not an ed25519 key"))?;
-        vk.verify_strict(&auth_message(method, path, ts, body), &Signature::from_bytes(&sig)).map_err(|_| anyhow!("bad X-Cadre-Signature"))?;
+        let sig_v = Signature::from_bytes(&sig);
+        let v2_ok = self.audience.as_deref().is_some_and(|a| vk.verify_strict(&auth_message_v2(a, method, path, ts, body), &sig_v).is_ok());
+        if !v2_ok {
+            ensure!(!self.require_audience, "bad X-Cadre-Signature (this gateway takes cadre-auth-v2 only, naming its server key)");
+            vk.verify_strict(&auth_message(method, path, ts, body), &sig_v).map_err(|_| anyhow!("bad X-Cadre-Signature"))?;
+        }
         let sh = hex::encode(sig);
         while self.seen.front().is_some_and(|(t, _)| *t + 2 * MAX_SKEW_MS < now_ms) {
-            self.seen.pop_front();
+            if let Some((_, old)) = self.seen.pop_front() {
+                self.seen_set.remove(&old);
+            }
         }
-        ensure!(!self.seen.iter().any(|(_, s)| *s == sh), "this signature was already used");
+        ensure!(!self.seen_set.contains(&sh), "this signature was already used");
+        self.seen_set.insert(sh.clone());
         self.seen.push_back((now_ms, sh));
         Ok(Auth::Wallet(wallet))
     }

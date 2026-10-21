@@ -157,18 +157,38 @@ own, and 0.4 to 0.6 tokens/s through the full paid flow (docs/measurements). On 
 paid devnet chat answered at 2.1 tokens/s (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl,
 docs/DEVNET.md "Inference"). A GPU worker would be needed for a real product.
 
+## Verifiable answers: what is proven (2026-10-21)
+
+Since 2026-10-21 a Cadre answer is replayable: the worker runs the deterministic glue
+cadre-glue-v1 (SPEC 4.7), so every honest CPU or GPU computes the same activations bit for bit.
+The reference evaluator replays every paid ticket whose response carries the replay bundle. It
+rebuilds every segment's activations from the request's token ids, rechecks every GEMM, and
+requires the output tokens, the stopping point and the text hash. Measured on an A40 against a
+Xeon CPU: 0 of 144 matrices differed on any test prompt (the old fp32 glue: 126-144 differed,
+and 2 of 4 answers changed). A server that posts correct GEMMs over altered activations is
+rejected on chain (RejectResult), with a fraud proof naming the segment and element that anyone
+can check (docs/PROOFS.md row 11).
+
+What you can claim: "every answer is exactly what the registered int7 model produces for that
+input under greedy decoding, and anyone can check it on a CPU". What you cannot claim yet:
+that cheating costs a bond (slashing is designed, not built), that the int7 model equals the
+original fp16 model (it is measured close, research/VERIFIABLE-AI.md), privacy (none), or
+sampled (temperature) output. Workers started before this change (devnet box 0, the test box)
+still run the fp32 glue until they restart, and their tickets get only the GEMM check.
+
 ## What Cadre deliberately does not do
 
 From research/agents/SYNTHESIS.md and research/narratives/SYNTHESIS.md: no token purchase
 per request, no free tier paid for by block rewards, no star ratings or count leaderboards,
-no slashing for anything the chain cannot prove, no "verifiable AI" claims before the int7
-replay check exists, no transferable credit, no treasury or supply expansion, and no
+no slashing for anything the chain cannot prove, no "verifiable AI" claim beyond what the
+replay check covers, no transferable credit, no treasury or supply expansion, and no
 matrix multiplication sold on data the buyer uploads.
 
 ## Later (after paid inference has real users)
 
 Stake CADRE for daily inference credit (Venice DIEM model, capped by real paid spend),
-evaluator fees and bonds, the int7 replay check, x402 Bazaar and OpenRouter listings, USDC
+evaluator fees and bonds (server and evaluator slashing on replay fraud proofs, designed in
+SPEC 4.7), x402 Bazaar and OpenRouter listings, USDC
 on Base, and 7-8B models on GPUs.
 
 ## Why CADRE: utility and incentives

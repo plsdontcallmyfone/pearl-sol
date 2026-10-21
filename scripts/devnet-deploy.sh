@@ -11,6 +11,9 @@
 #   scripts/devnet-deploy.sh rpc-url [N]       copy keys/devnet/solana-rpc-url (dedicated Solana RPC) to box N (default all), then ctl restart
 #   scripts/devnet-deploy.sh relay-key [N]     create the header relay's fee payer on box N (default HEADER_RELAY_BOX), print its pubkey
 #   scripts/devnet-deploy.sh svc-key N NAME    create /etc/lode/keys/NAME.json on box N (e.g. gateway), print its pubkey
+#   scripts/devnet-deploy.sh harden N          install the systemd sandbox drop-ins (deploy/systemd/hardening) for every cadre-* unit on box N; NO restart (each unit picks them up at its next restart: announced window only)
+#   scripts/devnet-deploy.sh health            install/refresh the health check (scripts/devnet-health.sh + cadre-health.timer) on box 0; runs it once
+#   scripts/devnet-deploy.sh os N              key-only sshd drop-in + unattended-upgrades (no auto reboot) on box N; reloads sshd only after a test login
 #   scripts/devnet-deploy.sh site              ~/cadre-web main -> box 0 (git bundle), npm ci + build for devnet, restart cadre-web
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
@@ -71,7 +74,7 @@ case "${1:-}" in
     is_relay_box "$n" && printf 'TOKEN_RPC=%s\nHR_PARALLEL=%s\nHR_CONFIRM_POLL_MS=%s\nHR_SEND_GAP_MS=%s\nHR_LANE=%s\n' \
       "$SOLANA_RPC" "$HR_PARALLEL" "${HR_CONFIRM_POLL_MS:-50}" "${HR_SEND_GAP_MS:-0}" "$(relay_lane "$n")" > "$tmp/header-relay.env"
     scpb "$n" "$tmp"/* "root@$ip:/tmp/"
-    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 644 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 644 header-relay.env /etc/lode/ || true; [ -f inference.env ] && install -o lode -g lode -m 644 inference.env /etc/lode/ || true
+    sshb "$n" root "set -e; cd /tmp; install -o lode -g lode -m 644 genesis.json /etc/lode/; install -o lode -g lode -m 600 miner.env /etc/lode/; install -o lode -g lode -m 600 node.json /etc/lode/; [ -f services.env ] && install -o lode -g lode -m 600 services.env /etc/lode/ || true; [ -f header-relay.env ] && install -o lode -g lode -m 600 header-relay.env /etc/lode/ || true; [ -f inference.env ] && install -o lode -g lode -m 600 inference.env /etc/lode/ || true
       install -m 644 Caddyfile /etc/caddy/Caddyfile; install -m 755 with-rpc /opt/lode/bin/with-rpc; rm -f /tmp/with-rpc; install -m 644 cadre-*.service /etc/systemd/system/; install -d -o lode -g lode /var/lib/lode/results /var/lib/lode/explorer /var/lib/lode/cadre-api /var/lib/lode/gateway /var/lib/lode/models
       systemctl daemon-reload; systemctl reload caddy || systemctl restart caddy; rm -f /tmp/cadre-*.service /tmp/genesis.json /tmp/node.json /tmp/*.env /tmp/Caddyfile; echo installed on box $n"
     ;;
@@ -107,6 +110,28 @@ case "${1:-}" in
 while n: n,r=divmod(n,58); o=A[r]+o
 print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     ;;
+  harden)
+    # systemd sandbox drop-ins (docs/DEVNET.md "Ops hardening"); verified by dry runs, see there.
+    n="$2"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    cp "$ROOT"/deploy/systemd/hardening/*.conf "$tmp/"; scpb "$n" "$tmp"/*.conf "root@$(ip_of "$n"):/tmp/"
+    sshb "$n" root 'set -e; cd /tmp
+      for u in $(systemctl list-unit-files --plain --no-legend "cadre-*.service" | awk "{print \$1}" | grep -v "^cadre-health"); do
+        d=/etc/systemd/system/$u.d; install -d -m 755 $d; install -m 644 common.conf $d/10-hardening.conf
+        case ${u%.service} in cadre-header-relay|cadre-settle|cadre-attester|cadre-gateway) install -m 644 native.conf $d/20-native.conf;; cadre-web) install -m 644 cadre-web.conf $d/20-web.conf;; esac
+        echo "$u: $(systemd-analyze security $u 2>/dev/null | tail -1 | sed "s/.*: //") (after restart)"
+      done
+      rm -f common.conf native.conf cadre-web.conf; systemctl daemon-reload; echo "drop-ins installed; nothing restarted"' ;;
+  health)
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    cp "$ROOT/scripts/devnet-health.sh" "$ROOT/deploy/systemd/cadre-health.service" "$ROOT/deploy/systemd/cadre-health.timer" "$tmp/"
+    scpb 0 "$tmp"/* "root@$BOX0_IP:/tmp/"
+    sshb 0 root 'set -e; cd /tmp; install -m 755 devnet-health.sh /opt/lode/bin/cadre-health; install -m 644 cadre-health.service cadre-health.timer /etc/systemd/system/; rm -f devnet-health.sh cadre-health.service cadre-health.timer
+      systemctl daemon-reload; systemctl enable --now cadre-health.timer >/dev/null 2>&1; systemctl start cadre-health.service; cat /var/log/cadre-health/status' ;;
+  os)
+    n="$2"; ip="$(ip_of "$n")"
+    scpb "$n" "$ROOT/deploy/ssh/00-cadre-hardening.conf" "$ROOT/deploy/apt/52cadre-unattended" "root@$ip:/tmp/"
+    sshb "$n" root 'set -e; install -m 644 /tmp/00-cadre-hardening.conf /etc/ssh/sshd_config.d/; install -m 644 /tmp/52cadre-unattended /etc/apt/apt.conf.d/; rm -f /tmp/00-cadre-hardening.conf /tmp/52cadre-unattended; sshd -t'
+    sshb "$n" root true && sshb "$n" lode true && sshb "$n" root 'systemctl reload ssh.service; sshd -T | grep -Ei "^(passwordauthentication|permitrootlogin) "' ;;
   ctl) n="$2"; act="$3"; shift 3; u="${*:-$(units_of "$n")}"; sshb "$n" root "systemctl $act $u; systemctl --no-pager --plain list-units 'cadre-*' | grep cadre" ;;
   status)
     for n in 0 1 2; do

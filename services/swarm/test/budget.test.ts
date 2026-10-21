@@ -16,9 +16,11 @@ test("day cap, agent cap, release, day roll", () => {
   assert.equal(b.agentCap("a"), 400); // min(hard cap 400, 3 x 333)
   assert.ok(b.reserve("a", 300, t0));
   b.commit("a", 300, 250);
-  assert.ok(!b.reserve("a", 200, t0), "agent cap 400: 250 + 200");
-  assert.ok(b.reserve("a", 150, t0));
-  b.commit("a", 150, 150);
+  // the agent share is checked against booked rows (the estimate is an upper bound, far above
+  // the real rows): 250 booked < 400, so this one is admitted and books 150 more
+  assert.ok(b.reserve("a", 200, t0), "agent 250 booked < cap 400");
+  b.commit("a", 200, 150);
+  assert.ok(!b.reserve("a", 10, t0), "agent at its cap 400: refused");
   assert.ok(b.reserve("b", 390, t0));
   b.commit("b", 390, 390);
   assert.ok(b.reserve("c", 210, t0));

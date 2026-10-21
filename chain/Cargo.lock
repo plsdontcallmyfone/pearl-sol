@@ -66,6 +66,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "primitive-types",
+ "proptest",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
@@ -872,6 +873,7 @@ dependencies = [
  "executor",
  "pearl-job",
  "primitive-types",
+ "proptest",
  "state",
  "thiserror",
  "tracing",
@@ -1308,6 +1310,7 @@ dependencies = [
  "futures",
  "hex",
  "pearl-job",
+ "proptest",
  "state",
  "thiserror",
 ]

@@ -1,0 +1,34 @@
+[Unit]
+Description=Cadre devnet health check (writes /var/log/cadre-health/{health.log,status}; no external messaging)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lode
+EnvironmentFile=-/etc/lode/health.env
+ExecStart=/opt/lode/bin/cadre-health
+LogsDirectory=cadre-health
+LogsDirectoryMode=0750
+StateDirectory=cadre-health
+TimeoutStartSec=240
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027

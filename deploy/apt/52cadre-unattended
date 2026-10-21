@@ -1,0 +1,6 @@
+// Cadre devnet boxes: security updates install daily, never an automatic reboot
+// (a reboot restarts the node and services; reboots happen in announced windows only).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";

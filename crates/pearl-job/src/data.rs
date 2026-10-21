@@ -39,9 +39,37 @@ pub fn write_i8(path: &Path, v: &[i8]) -> Result<()> {
     std::fs::write(path, crate::job::as_u8(v)).with_context(|| format!("write {}", path.display()))
 }
 
+/// Largest `manifest.json` read from disk.
+pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+
+/// Read a file that must be a regular file of exactly `expect` bytes. Checked on the
+/// metadata BEFORE reading, so a URI from the chain naming `/dev/zero`, a FIFO or a huge
+/// file cannot make a miner or evaluator read forever or run out of memory.
+pub fn read_exact_file(path: &Path, expect: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let md = std::fs::metadata(path).with_context(|| format!("read {}", path.display()))?;
+    ensure!(md.is_file(), "{} is not a regular file", path.display());
+    ensure!(md.len() == expect, "{} has {} bytes, expected {expect}", path.display(), md.len());
+    let mut b = Vec::with_capacity(expect as usize);
+    std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?.take(expect + 1).read_to_end(&mut b)?;
+    ensure!(b.len() as u64 == expect, "{} has {} bytes, expected {expect}", path.display(), b.len());
+    Ok(b)
+}
+
+/// Read a regular file of at most `max` bytes (same checks as [`read_exact_file`]).
+pub fn read_bounded_file(path: &Path, max: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let md = std::fs::metadata(path).with_context(|| format!("read {}", path.display()))?;
+    ensure!(md.is_file(), "{} is not a regular file", path.display());
+    ensure!(md.len() <= max, "{} has {} bytes, at most {max} allowed", path.display(), md.len());
+    let mut b = Vec::new();
+    std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?.take(max + 1).read_to_end(&mut b)?;
+    ensure!(b.len() as u64 <= max, "{} grew past {max} bytes while reading", path.display());
+    Ok(b)
+}
+
 pub fn read_i8(path: &Path, expect_len: usize) -> Result<Vec<i8>> {
-    let b = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    ensure!(b.len() == expect_len, "{} has {} bytes, expected {expect_len}", path.display(), b.len());
+    let b = read_exact_file(path, expect_len as u64)?;
     Ok(b.into_iter().map(|x| x as i8).collect())
 }
 
@@ -50,8 +78,7 @@ pub fn write_i32(path: &Path, v: &[i32]) -> Result<()> {
 }
 
 pub fn read_i32(path: &Path, expect_len: usize) -> Result<Vec<i32>> {
-    let b = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    ensure!(b.len() == expect_len * 4, "{} has {} bytes, expected {}", path.display(), b.len(), expect_len * 4);
+    let b = read_exact_file(path, expect_len as u64 * 4)?;
     Ok(b.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect())
 }
 
@@ -73,7 +100,7 @@ pub fn manifest_path(uri: &str) -> Result<PathBuf> {
 
 pub fn load(uri: &str) -> Result<JobData> {
     let mp = manifest_path(uri)?;
-    let manifest: Manifest = serde_json::from_slice(&std::fs::read(&mp).with_context(|| format!("read {}", mp.display()))?)
+    let manifest: Manifest = serde_json::from_slice(&read_bounded_file(&mp, MAX_MANIFEST_BYTES)?)
         .with_context(|| format!("parse {}", mp.display()))?;
     let dir = mp.parent().unwrap_or(Path::new("."));
     let (m, n, k) = (manifest.m as usize, manifest.n as usize, manifest.k as usize);

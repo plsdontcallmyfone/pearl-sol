@@ -93,6 +93,54 @@ class Cadre(unittest.TestCase):
         self.assertIn(r["finish_reason"], ("length", "stop"))
         self.assertEqual(r["completion_tokens"], len(r["output_ids"]))
 
+    def test_glue_prefill_equals_token_by_token(self):
+        # cadre-glue-v1 (SPEC 4.7): the A of every matrix is the same bits whether the rows come
+        # one at a time with a KV cache (how the worker serves) or all at once (how an evaluator
+        # replays), so the replay can rebuild A from the request alone
+        self.assertEqual(self.model.glue, "cadre-glue-v1")
+        d = os.path.join(self.tmp, "glue")
+        ids = [3, 1, 4, 1, 5, 9, 2, 6]
+        r = self.model.generate(ids, 6, d, pad=False)
+        rows = ids + r["output_ids"][:-1]
+        cap = {m.index: ([], []) for m in self.model.mats}
+        lg = self.model.forward(rows, self.model.new_cache(), cap)
+        for m in self.man["matrices"]:
+            a = np.fromfile(os.path.join(d, "a", f"{m['index']}.i8"), dtype=np.int8).reshape(len(rows), m["k"])
+            self.assertTrue(np.array_equal(torch.cat(cap[m["index"]][0]).numpy(), a), f"A of {m['name']}: prefill == decode")
+        self.assertEqual([self.model.pick(lg[i]) for i in range(len(ids) - 1, len(rows))], r["output_ids"], "teacher forcing gives the served tokens")
+
+    def test_glue_tables(self):
+        import math
+        import glue
+        e2 = glue.exp2_table()
+        self.assertEqual((e2[0], e2[4096], len(e2)), (1 << 30, 1 << 29, 4097))
+        for i in (1, 777, 2048, 4095):
+            self.assertAlmostEqual(e2[i] / 2 ** 30, 2 ** (-i / 4096), delta=2e-9)
+        rt = glue.RopeTable(np.array([1.0, 0.25, 3e-7], dtype=np.float32))
+        rt.ensure(4096)
+        self.assertEqual(rt.rows_c[0], [1 << 30] * 3)
+        for p in (1, 100, 4095):
+            for i, f in enumerate([1.0, 0.25, float(np.float32(3e-7))]):
+                self.assertAlmostEqual(rt.rows_c[p][i] / 2 ** 30, math.cos(p * f), delta=3e-9)
+                self.assertAlmostEqual(rt.rows_s[p][i] / 2 ** 30, math.sin(p * f), delta=3e-9)
+        self.assertAlmostEqual(glue.softmax_l(64) / 2 ** 24, math.log2(math.e) / 8, delta=1e-7)
+
+    def test_sqrt_is_correctly_rounded(self):
+        # torch's CPU float64 sqrt (SLEEF) can be one ulp off; the glue must match IEEE sqrt
+        import math
+        import glue
+        g = torch.Generator().manual_seed(3)
+        v = torch.rand(200000, generator=g, dtype=torch.float64) * torch.exp2(torch.randint(-40, 40, (200000,), generator=g).double())
+        r = glue.sqrt_rn(v)
+        self.assertEqual([x.hex() for x in r.tolist()[:2000]], [math.sqrt(x).hex() for x in v.tolist()[:2000]])
+        self.assertTrue(all(a == math.sqrt(b) for a, b in zip(r.tolist(), v.tolist())))
+
+    def test_fp32_glue_is_still_selectable(self):
+        m = worker.Model(self.out, glue="fp32")
+        self.assertIsNone(m.det)
+        r = m.generate([1, 2, 3], 3, None)
+        self.assertEqual(r["glue"], "fp32")
+
 
 class IntMm(unittest.TestCase):
     def test_small_row_product_is_exact_and_owns_only_its_rows(self):

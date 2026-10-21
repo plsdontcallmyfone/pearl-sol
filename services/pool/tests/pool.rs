@@ -222,7 +222,9 @@ fn share_accept_and_reject_rules() {
     assert_eq!(st.window.len(), 2);
     assert_eq!(st.miners[&b58(&a)].shares, 2);
     assert_eq!(st.miners[&b58(&a)].rejected, 5); // duplicate, wrong template, unknown, junk, stale
-    assert_eq!(st.miners[&b58(&b)].rejected, 1);
+    // b never had a share accepted: it is a pending registration, not in the saved state (V-10)
+    assert!(!st.miners.contains_key(&b58(&b)));
+    assert_eq!(pool.miner(&b).unwrap().rejected, 1);
     assert!(st.blocks.is_empty());
 }
 
@@ -501,4 +503,49 @@ fn default_share_factor_on_4x8_fallback() {
     let ratio = shares as f64 / blocks as f64;
     println!("4x8 fallback, factor {DEFAULT_SHARE_FACTOR}: {shares} shares, {blocks} blocks in 4000 nonces, {ratio:.2} shares per block");
     assert!(blocks >= 60 && (8.0..=14.0).contains(&ratio), "{shares} shares / {blocks} blocks");
+}
+
+/// Security pass V-10: registration is unauthenticated, so unproven registrations stay
+/// in memory (no state-file write each), are capped, and join the persisted state only
+/// with their first accepted share.
+#[test]
+fn unproven_registrations_are_not_persisted_until_a_share() {
+    let node = RewardNode::new(CHAIN, HARD, K, 0);
+    let state = tmp("pending");
+    let (pool, _) = open(&node, cfg(state.clone()));
+    let a = miner(4);
+    let b = miner(5);
+    let ra = pool.register(&a).unwrap();
+    let rb = pool.register(&b).unwrap();
+    assert_eq!((ra.id, rb.id), (1, 2));
+    assert_eq!(pool.register(&a).unwrap().id, 1, "idempotent while pending");
+    assert_eq!(pool.pending_miners(), 2);
+    let saved = std::fs::read(&state).map(|b| String::from_utf8(b).unwrap()).unwrap_or_default();
+    assert!(!saved.contains(&b58(&a)) && !saved.contains(&b58(&b)), "pending registrations are not written");
+    // a's first accepted share moves it into the saved state
+    let w = PoolApi::work(&pool, &a, false).unwrap();
+    let (_, o) = share(&pool, &a, &w, w.nonce_start);
+    assert_eq!(o, ShareOutcome::Accepted { block: None });
+    assert_eq!(pool.pending_miners(), 1);
+    let saved = String::from_utf8(std::fs::read(&state).unwrap()).unwrap();
+    assert!(saved.contains(&b58(&a)) && !saved.contains(&b58(&b)));
+    // a restart forgets b, keeps a with its id and range
+    drop(pool);
+    let (pool, _) = open(&node, cfg(state));
+    assert_eq!(pool.pending_miners(), 0);
+    assert_eq!(pool.miner(&a).unwrap().id, 1);
+    assert!(pool.miner(&b).is_none());
+}
+
+#[test]
+fn pending_registrations_are_capped() {
+    let node = RewardNode::new(CHAIN, HARD, K, 0);
+    let (pool, _) = open(&node, cfg(tmp("pending-cap")));
+    for i in 0..pearl_pool::MAX_PENDING_MINERS as u32 {
+        let mut k = [0u8; 32];
+        k[..4].copy_from_slice(&i.to_le_bytes());
+        pool.register(&k).unwrap();
+    }
+    let e = pool.register(&[0xee; 32]).unwrap_err().to_string();
+    assert!(e.contains("too many pending"), "{e}");
 }

@@ -156,6 +156,13 @@ fn run_node(
     let cfg = cw_tokio::Config::new().with_storage_directory(&nf.data_dir);
     let runner = cw_tokio::Runner::new(cfg);
     let use_mock = nf.verifier == "mock";
+    // The mock verifier accepts proofs that cost no work: never on the public devnet.
+    if use_mock && genesis.chain_id == agent_types::tx::DEVNET_CHAIN_ID {
+        anyhow::bail!("verifier \"mock\" is for local test chains only; the public devnet (chain_id {}) needs the real verifier", genesis.chain_id);
+    }
+    if use_mock {
+        eprintln!("WARNING: mock verifier: this node accepts blocks without proof of work (local tests only)");
+    }
     let blob_cfg = nf.blobs.config()?;
     let tip_interval = Duration::from_millis(nf.tip_interval_ms);
     runner.start(|context| async move {

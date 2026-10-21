@@ -30,6 +30,9 @@ impl RpcError {
 
 type R = Result<Value, RpcError>;
 
+/// Most segments getTicket lists in one call (each is a state read on the node actor).
+pub const MAX_TICKET_SEGMENTS: usize = 4096;
+
 pub fn b58(k: &[u8]) -> String {
     bs58::encode(k).into_string()
 }
@@ -519,7 +522,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     None => 0,
                 };
                 let mut segs = Vec::new();
+                // cap the state reads one call makes on the node actor
+                let mut truncated = false;
                 for (round, i) in (0..te.rounds).flat_map(|r| (0..count).map(move |i| (r, i))) {
+                    if segs.len() >= MAX_TICKET_SEGMENTS {
+                        truncated = true;
+                        break;
+                    }
                     let sid = pearl_job::standing::segment_id(&id, i as u16, round);
                     if let Some(sj) = self.job(&sid).await? {
                         segs.push(json!({"segment_id": hex::encode(sid), "round": round, "matrix": i, "m": sj.m, "k": sj.k, "n": sj.n,
@@ -531,6 +540,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 }
                 let mut v = job_json(&t, next);
                 v["segment_list"] = Value::Array(segs);
+                v["segment_list_truncated"] = json!(truncated);
                 Ok(v)
             }
             "getBlock" => {
@@ -665,7 +675,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     Some(d) => Ok(json!({"blob_id": hex::encode(id), "uri": blobs::blob_uri(&id), "size": d.len(), "data": b64(&d)})),
                     None => {
                         // not here: fetch it from peers if a job on the chain references it
-                        let refs = srv(self.blob_refs().await)?;
+                        let refs = srv(self.blob_refs_cached().await)?;
                         if refs.contains_key(&id) || self.model_pinned().await.contains(&id) {
                             self.want_blob(id);
                         }
