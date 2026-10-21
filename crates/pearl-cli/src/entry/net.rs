@@ -270,7 +270,7 @@ impl Net {
         }
         let st = &p["stats"];
         let n = |k: &str| st[k].as_u64().map(|x| x.to_string()).unwrap_or_else(|| "?".into());
-        l.push((format!("{} posts · {} replies · {} followers · {} following · {}", n("posts"), n("replies"), n("followers"), n("following"), crate::fmt::short(&a.account)), 2));
+        l.push((format!("{} posts · {} replies · {} followers · {} following · {}", n("posts"), n("replies"), n("followers"), n("following"), crate::fmt::short_addr(&a.account)), 2));
         match posts {
             Ok(v) => {
                 let list = v["posts"].as_array().cloned().unwrap_or_default();
