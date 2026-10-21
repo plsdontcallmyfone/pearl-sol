@@ -187,7 +187,7 @@ Objects:
   reclaim_after, reply_to|null, seen_ms, message_id, status: "sending"}`: SendMessage txs in the
   node's mempool (shown as "sending" until inclusion).
 - **Escrow** `{message_id, from, to, pay, height, deadline, blocks_left, state: open | released |
-  refunded | expired}`. `open` = in state and the reply window is open; `expired` = in state, window
+  refunded | expired, settled_tx, settled_height, declined}` (the last three null while in state). `open` = in state and the reply window is open; `expired` = in state, window
   over, reclaimable by the sender; `released` = a reply in time paid it out (tx named in
   `settled_tx`); `refunded` = a ReclaimMessage returned it (`settled_tx`, `declined` true when the
   recipient sent it).
@@ -201,17 +201,17 @@ Objects:
 
 | Endpoint | What |
 |---|---|
-| `GET /v1/dm/params` | node `getDmParams` + the fee rule inputs `{min_fee, social_min_fee, social_byte_fee}` + `activation_height`, `active` |
+| `GET /v1/dm/params` | node `getDmParams` + the fee rule inputs `{min_fee, social_min_fee, social_byte_fee}` + `fee_rule` + `activation_height`, `active` |
 | `GET /v1/dm/gate?from=&to=` | node `getDmGate` (what a DM needs in the next block: `can_send`, `required_pay`, `reason`, `consent`, `in_thread`, `enc_key`, `sealed_ok`) |
-| `GET /v1/inbox/{account}?box=all\|primary\|requests\|blocked&limit=1..200 (50)` | `{account, threads: Thread[], channels: ChannelCard[] (joined), pending: PendingMessage[] (to or from the account), escrows: {in: Escrow[], out: Escrow[]} (open and expired), stats (getDmStats), enc_key|null, tip_height, metadata_note}` |
+| `GET /v1/inbox/{account}?box=all\|primary\|requests\|blocked&limit=1..200 (50)` | `{account, threads: Thread[] (newest last message first), channels: ChannelCard[] (joined), pending: PendingMessage[] (to or from the account, or in a joined channel), escrows: {in: Escrow[], out: Escrow[]} (open and expired), stats (getDmStats), enc_key|null, tip_height, counts: {primary, requests, blocked}, metadata_note}` |
 | `GET /v1/threads/{a}/{b}?before=&limit=1..200 (50)` | `{a, b, messages: Message[] (newest first), next, pending: PendingMessage[], gate: getDmGate(a -> b), consent: {a_for_b, b_for_a}, metadata_note}` |
 | `GET /v1/messages/{message_id}` | one Message (with its Escrow) or 404 |
-| `GET /v1/escrows/{account}?role=sender\|recipient&state=` | Escrow[] for the account |
+| `GET /v1/escrows/{account}?role=sender\|recipient&state=` | `{account, role, state, tip_height, escrows: Escrow[]}` (newest first; no role = both) |
 | `GET /v1/consent/{account}` | `{account, allow: ProfileCard[], deny: ProfileCard[]}` from the index (each with `height`) |
 | `GET /v1/dm/stats/{account}` | node `getDmStats` |
 | `GET /v1/channels?offset=&limit=` | `{total, channels: ChannelCard[]}` (chain `listChannels` + index activity) |
-| `GET /v1/channels/{id}` | ChannelCard + `members: [{account: ProfileCard, since_height, admin}]` + `epochs: [{epoch, height, envelopes: [{member, envelope_hex}]}]` (sealed channels) |
-| `GET /v1/channels/{id}/messages?before=&limit=` | `{messages: Message[], next, pending}` |
+| `GET /v1/channels/{id}` | ChannelCard with `members` replaced by the list `[{account: ProfileCard, since_height, admin}]` (the count in `member_count`) + `epochs: [{epoch, height, envelopes: [{member, envelope_hex}]}]` (sealed channels) + `invites: [{account: ProfileCard, height}]` (open invites) |
+| `GET /v1/channels/{id}/messages?before=&limit=` | `{channel_id, messages: Message[], next, pending, metadata_note}` |
 | `GET /v1/channels/{id}/key?account=&epoch=` | the member's envelope for `epoch` (default the current one): `{channel_id, epoch, member, envelope_hex}` or 404 |
 | `GET /v1/inbox/{account}/stream` | SSE: `event: message` a Message to or from the account (per new canonical block), `event: pending` a PendingMessage (mempool, polled every 5 s), `event: escrow` an Escrow whose state changed; heartbeat comment every 15 s |
 
@@ -223,10 +223,10 @@ refuse it now, 422 `insufficient_funds` when balance < fee + pay):
 | Builder | Body |
 |---|---|
 | `POST /v1/tx/send-message` | `{from, to \| channel, mode: "plain" \| "sealed", body (text, plain) \| body_hex (sealed body from window.pearl.dm.seal), reply_to?, pay?, reclaim_after?, thought_ref?}` -> also `gate` and `message_id` |
-| `POST /v1/tx/reclaim-message` | `{from, message_id}` |
+| `POST /v1/tx/reclaim-message` | `{from, message_id}` -> also `escrow` (getMessageEscrow) and `declining` (the recipient sends it) |
 | `POST /v1/tx/set-consent` | `{from, items: [{peer, state: "allow" \| "deny" \| "clear"}]}` (1..64) |
 | `POST /v1/tx/channel-config` | `{from, channel_id?, name, about?, policy: "open" \| "invite" \| "paid", join_price?, mode: "plain" \| "sealed", admins?: []}` -> also `channel_id` on create |
-| `POST /v1/tx/channel-member` | `{from, channel, action: "join" \| "leave" \| "invite" \| "remove", member?, pay?}` |
+| `POST /v1/tx/channel-member` | `{from, channel, action: "join" \| "leave" \| "invite" \| "remove", member?, pay?}` (a paid join without `pay` pays the join price) -> also `channel`, `member` (getChannelMember) and `rekey` (set when the tx makes a key epoch due) |
 | `POST /v1/tx/channel-key` | `{from, channel, epoch, envelopes: [{member, envelope_hex}]}` (1..100) |
 
 window.pearl JSON form of the DM kinds (camelCase like the social kinds; keys base58, ids hex,

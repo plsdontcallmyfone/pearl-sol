@@ -24,6 +24,7 @@ import { addr, amount, solanaBalances } from "./wallet.ts";
 import { blake3 } from "../../../../apps/explorer/src/blake3.ts";
 import { b58decode, b58encode, hex } from "../../../../apps/explorer/src/codec.ts";
 import { avatar, decodeSocialTx, socialFee, socialSigningBytes, type SocialBody } from "../../../../apps/explorer/src/social.ts";
+import { ACTIONS, CONSENT_STATES, DM_KIND, dmFee, dmSigningBytes, messageBodyBytes, type DmBody } from "../../../../apps/explorer/src/dm.ts";
 import { ata, compileLegacy, computeUnitLimit, createAtaIdempotent, systemTransfer, TOKEN_2022, unsignedTx, type Ix } from "../sol.ts";
 import { verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
 
@@ -43,6 +44,7 @@ const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}...${a.slice(-4)}
 
 type AnyTx =
   | SocialBody
+  | DmBody
   | { kind: "Transfer"; to: string; amount: string }
   | { kind: "RegisterAgent"; name: string; uri: string };
 
@@ -57,7 +59,8 @@ export function signingBytes(chainId: number, from: string, nonce: bigint, fee: 
     if (u.length > 512) throw badRequest("uri is at most 512 bytes");
     return Uint8Array.from([...head, 1, n.length, ...n, ...u16(u.length), ...u]);
   }
-  return socialSigningBytes(chainId, from, nonce, fee, t);
+  if (t.kind in DM_KIND) return dmSigningBytes(chainId, from, nonce, fee, t as DmBody);
+  return socialSigningBytes(chainId, from, nonce, fee, t as SocialBody);
 }
 
 /** The action in plain words (shown before a Solana wallet signs bytes it cannot decode). */
@@ -71,6 +74,17 @@ export function plainWords(from: string, t: AnyTx, fee: bigint, chainId: number,
     case "Post": return `${["Post", "Reply", "Repost", "Quote"][t.postKind] ?? "Post"} on the town square: "${t.body.slice(0, 140)}${t.body.length > 140 ? "..." : ""}". ${tail}`;
     case "React": { const tips = t.items.reduce((s, x) => s + BigInt(x.tip), 0n); return `React to ${t.items.length} post(s)${tips ? `, tipping ${units(tips)} CADRE in total` : ""}. ${tail}`; }
     case "Follow": return `Follow ${t.items.filter((x) => x.on).length} and unfollow ${t.items.filter((x) => !x.on).length} account(s). ${tail}`;
+    case "SendMessage": {
+      const where = t.channel !== "0".repeat(64) ? `in channel ${t.channel.slice(0, 12)}...` : `to ${t.to}`;
+      const what = t.mode === 1 ? `a sealed message (${messageBodyBytes(t).length} bytes; the text is hidden, the sender, recipient, time, size and pay are public)` : `"${(t.body ?? "").slice(0, 140)}${(t.body ?? "").length > 140 ? "..." : ""}"`;
+      const pay = BigInt(t.pay) > 0n ? (t.reclaimAfter > 0 ? ` Pays ${units(t.pay)} CADRE into escrow (released by a reply within ${t.reclaimAfter} blocks, else reclaimable).` : ` Pays ${units(t.pay)} CADRE to the recipient.`) : "";
+      return `Send ${what} ${where}.${pay} ${tail}`;
+    }
+    case "ReclaimMessage": return `Reclaim the escrowed pay of message ${t.messageId.slice(0, 12)}... back to its sender. ${tail}`;
+    case "SetConsent": return `Set DM consent for ${t.items.length} account(s): ${t.items.map((x) => `${short(x.peer)} ${CONSENT_STATES[x.state] ?? x.state}`).join(", ")}. Moves no funds. ${tail}`;
+    case "ChannelConfig": return `${t.channelId === "0".repeat(64) ? "Create" : "Update"} the ${t.mode === 1 ? "sealed" : "plain"} channel "${t.name}" (${["open", "invite only", "paid join"][t.policy] ?? t.policy}${BigInt(t.joinPrice) > 0n ? `, join ${units(t.joinPrice)} CADRE` : ""}, ${t.admins.length} admin(s)). ${tail}`;
+    case "ChannelMember": return `${ACTIONS[t.action] ?? t.action} ${t.member === ZERO_KEY ? "yourself" : t.member} in channel ${t.channel.slice(0, 12)}...${BigInt(t.pay) > 0n ? `, paying ${units(t.pay)} CADRE` : ""}. ${tail}`;
+    case "ChannelKey": return `Post ${t.envelopes.length} key envelope(s) for epoch ${t.epoch} of channel ${t.channel.slice(0, 12)}... Moves no funds. ${tail}`;
   }
 }
 
@@ -81,11 +95,13 @@ function txOf(j: any): AnyTx {
   if (k === "Transfer") return { kind: k, to: addr(j.to, "to"), amount: amount(j.amount, "amount").toString() };
   if (k === "RegisterAgent") return { kind: k, name: String(j.name ?? ""), uri: String(j.uri ?? "") };
   if (["SetProfile", "OperatorLink", "Post", "React", "Follow"].includes(k)) return j as SocialBody;
-  throw badRequest(`kind ${k} is not encoded here (Transfer, RegisterAgent, SetProfile, OperatorLink, Post, React, Follow)`);
+  if (k in DM_KIND) return j as DmBody;
+  throw badRequest(`kind ${k} is not encoded here (Transfer, RegisterAgent, SetProfile, OperatorLink, Post, React, Follow, ${Object.keys(DM_KIND).join(", ")})`);
 }
 
 function feeOf(params: any, t: AnyTx): bigint {
-  return t.kind === "Transfer" || t.kind === "RegisterAgent" ? BigInt(params.min_fee) : socialFee(params, t);
+  if (t.kind === "Transfer" || t.kind === "RegisterAgent") return BigInt(params.min_fee);
+  return t.kind in DM_KIND ? dmFee(params, t as DmBody) : socialFee(params, t as SocialBody);
 }
 
 async function base(d: Deps, from: string) {

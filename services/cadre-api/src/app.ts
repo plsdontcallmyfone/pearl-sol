@@ -13,6 +13,7 @@ import { registerAgents } from "./routes/agents.ts";
 import { registerInference } from "./routes/inference.ts";
 import { registerMarket } from "./routes/market.ts";
 import { registerTown } from "./routes/town.ts";
+import { registerDms } from "./routes/dms.ts";
 import { registerDesktops } from "./routes/desktops.ts";
 import { registerUserAgents } from "./routes/useragents.ts";
 
@@ -79,6 +80,7 @@ export function build(d: Deps): Api {
   registerInference(api, d);
   registerMarket(api, d);
   registerTown(api, d);
+  registerDms(api, d);
   registerDesktops(api, d);
   registerUserAgents(api, d);
   return api;
