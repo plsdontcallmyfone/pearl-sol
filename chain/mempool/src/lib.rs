@@ -90,6 +90,10 @@ impl Mempool {
         v.sort();
         v
     }
+    /// Hash of the pooled tx of `from` at `nonce`, if any.
+    pub fn pooled_at(&self, from: &Pubkey, nonce: u64) -> Option<Hash> {
+        self.by_sender.get(from).and_then(|q| q.get(&nonce)).copied()
+    }
     pub fn senders(&self) -> Vec<Pubkey> {
         self.by_sender.keys().copied().collect()
     }

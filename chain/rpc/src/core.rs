@@ -29,6 +29,8 @@ pub enum Outbound {
     FetchBlob(BlobId),
     /// Stop fetching a blob nobody needs any more.
     CancelBlob(BlobId),
+    /// A weak block message (docs/SPEED.md 2.2), sent on the tips channel.
+    Weak(Vec<u8>),
 }
 
 /// Live peer list for getPeers (open net); returns the JSON result.
@@ -84,6 +86,8 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// getBlockTemplate is public and executes up to max_block_txs txs, so repeats within
     /// [`TEMPLATE_REUSE_MS`] get the same template (security pass 2026-10-21).
     pub last_template: Option<(u64, Hash, Pubkey, JobChoice, usize, String)>,
+    /// Weak blocks and pre-confirmations (docs/SPEED.md 2).
+    pub preconf: crate::preconf::Preconf,
 }
 
 /// A getBlockTemplate for the same tip, miner, choice and mempool size within this many
@@ -139,6 +143,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             model_pins: HashMap::new(),
             refs_cache: None,
             last_template: None,
+            preconf: Default::default(),
         }
     }
 
@@ -476,6 +481,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if tx.from == self.chain.tip().config.admin {
             executor::precheck_admin_config(&tx, acc.balance)?;
         }
+        crate::preconf::check_replacement(&self.preconf, &self.chain.tip().hash, &tx, self.mempool.pooled_at(&tx.from, tx.nonce))?;
         let bytes = tx.encode();
         let h = self.mempool.insert_funded(tx, acc.nonce, acc.balance, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;
@@ -570,6 +576,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             self.prune_blobs().await;
         }
         if tip_moved {
+            self.prune_weak();
             self.prune_mempool().await;
             self.templates.retain(|(_, t)| self.chain.live_node(&t.header.prev_hash).is_some());
         }

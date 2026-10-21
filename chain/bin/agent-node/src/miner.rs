@@ -63,7 +63,27 @@ pub fn mine(rpc: &str, miner: Pubkey, count: u64, job_mode: &str) -> Result<(u64
         };
         let range = nonce_base..nonce_base + 64;
         nonce_base += 64;
-        let Some(mb) = pearl_job::pow::mine_header(&ph, &pearl_job::BlockWork::Fallback(params), range)? else { continue };
+        // weak blocks (docs/SPEED.md 2.3): mine against the weak bound, send weak hits, keep going
+        let weak = t["weak_target_bits"].as_u64().map(|b| b as u32);
+        let mut strong_hit = None;
+        for n in range {
+            let mined = match weak {
+                Some(wb) => pearl_job::pow::mine_header_nonce_at(&ph, &pearl_job::BlockWork::Fallback(params), n, wb)?,
+                None => pearl_job::pow::mine_header_nonce(&ph, &pearl_job::BlockWork::Fallback(params), n)?.map(|b| (b, true)),
+            };
+            match mined {
+                Some((b, true)) => {
+                    strong_hit = Some(b);
+                    break;
+                }
+                Some((b, false)) => {
+                    let r = c.call("submitWeakBlock", json!({"header": hex::encode(b.header.to_bytes()), "proof": b64(&b.proof), "template_id": t["template_id"]}));
+                    tracing::debug!(height = hdr.height, ?r, "weak block");
+                }
+                None => {}
+            }
+        }
+        let Some(mb) = strong_hit else { continue };
         let r = c.call(
             "submitBlock",
             json!({"header": hex::encode(mb.header.to_bytes()), "proof": b64(&mb.proof), "template_id": t["template_id"]}),

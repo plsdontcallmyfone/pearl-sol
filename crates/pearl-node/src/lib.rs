@@ -217,6 +217,12 @@ pub struct Template {
 }
 
 impl Template {
+    /// Weak target the node offers for this template (docs/SPEED.md 2.3), None when weak
+    /// blocks are off or the node predates them.
+    pub fn weak_target_bits(&self) -> Option<u32> {
+        self.raw.get("weak_target_bits").and_then(|v| v.as_u64()).map(|b| b as u32)
+    }
+
     /// Same work as another template (same header except timestamp): nonces carry over.
     pub fn same_work(&self, o: &Template) -> bool {
         let (mut a, mut b) = (self.header, o.header);
@@ -348,6 +354,10 @@ pub trait NodeApi: Send + Sync {
         Ok(t)
     }
     fn submit_block(&self, template: &Template, block: &MinedBlock) -> Result<SubmitOutcome>;
+    /// `submitWeakBlock` (docs/SPEED.md 2.3): a proof that meets only the weak target.
+    fn submit_weak_block(&self, _template: &Template, _block: &MinedBlock) -> Result<SubmitOutcome> {
+        Ok(SubmitOutcome::Rejected { reason: "this node client does not send weak blocks".into() })
+    }
     fn get_job(&self, job_id: &[u8; 32]) -> Result<Option<JobInfo>>;
     fn get_account(&self, account: &[u8; 32]) -> Result<Account>;
     /// Returns the tx hash (hex) the node reports.

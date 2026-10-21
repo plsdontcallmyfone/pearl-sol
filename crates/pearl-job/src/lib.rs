@@ -31,7 +31,7 @@ use anyhow::Result;
 
 pub use job::{commit_a, commit_b, job_key, Job, JobHeader, MiningConfig, SeedDerivation};
 pub use mine::PreparedJob;
-pub use pow::{verify_block, verify_block_proof, BlockHeader, BlockWork, FallbackParams, MinedBlock};
+pub use pow::{verify_block, verify_block_at, verify_block_proof, weak_bits, weak_shift, BlockHeader, BlockWork, FallbackParams, MinedBlock};
 pub use proof::PlainProof;
 pub use spec::JobSpec;
 pub use verify::{verify_share, verify_share_with_target, verify_with_seed_mode, VerifiedShare};

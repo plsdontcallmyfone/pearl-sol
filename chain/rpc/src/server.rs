@@ -22,7 +22,7 @@ pub enum ApiRequest {
 
 pub type Mailbox = mpsc::Sender<ApiRequest>;
 
-pub const TOPICS: &[&str] = &["heads", "finalized", "txs", "withdrawals"];
+pub const TOPICS: &[&str] = &["heads", "finalized", "txs", "withdrawals", "weak"];
 
 /// Most calls in one JSON-RPC batch. Every call runs on the node actor, the same task that
 /// takes blocks and txs from peers, so one unbounded batch could stall consensus work

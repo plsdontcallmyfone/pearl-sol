@@ -162,8 +162,13 @@ accepts a valid block for that job. A miner may name a job or ask for a fallback
  "header_fields": {...}, "height": 121, "target_bits": 545259519, "chain_id": 1347616769,
  "job": Job | null, "fallback": {"m": 4, "n": 8, "config": "hex"},
  "tx_count": 3, "fees": "3000", "subsidy": "700", "min_fee": "1000",
- "coinbase": "hex (97 B receipt, the last tx_root leaf)", "mature_height": 151}
+ "coinbase": "hex (97 B receipt, the last tx_root leaf)", "mature_height": 151,
+ "weak_target_bits": 545259519, "weak_shift": 5}
 ```
+`weak_target_bits` / `weak_shift` (docs/SPEED.md 2.3): the weak target `target << weak_shift`
+(clamped at the pow limit) and the shift (5 at 60 s, 4 at 30 s); `weak_target_bits` is null when
+weak blocks are off (shift 0, block targets under 3.75 s). A miner that mines against the weak
+target sends hits that also meet `target_bits` to submitBlock and the others to submitWeakBlock.
 The header's `tx_root` already commits to the coinbase receipt (SPEC 3.4): txs, then the
 receipt as the last leaf. A miner only sets `nonce` / `proof_hash` (and may change
 `timestamp_ms`); it never rebuilds tx_root.
@@ -180,13 +185,42 @@ Txs come from the template with matching `tx_root` and parent. Result:
 {"accepted": false, "reason": "jackpot hash does not meet the share target"}
 ```
 
+### submitWeakBlock `{"header": "hex", "proof": "base64", "template_id"?: "hex"}`
+A weak block (docs/SPEED.md 2): a header from one of this node's templates whose proof meets
+`weak_target_bits` (not necessarily `target_bits`). The node checks it like a gossiped weak block,
+stores it and relays it on the tips channel. Result:
+```json
+{"accepted": true, "weak_hash": "hex", "size": 13050}
+{"accepted": false, "reason": "invalid: bad weak proof of work: ..."}
+```
+
+### getWeakBlocks `{"parent"?: "hex"}` (default: the tip)
+`{"parent", "weak_shift", "count", "weak_blocks": [{"hash", "height", "miner", "job_id",
+"tx_count", "received_ms", "size", "timestamp_ms", "tx_hashes": ["hex"]}], "received_total",
+"invalid_total"}`: the weak blocks this node holds on that parent (at most 256; parents more than
+2 below the tip are pruned).
+
+### getTxStatus `{"tx_hash": "hex"}`
+`{"tx_hash", "status": "pending|preconfirmed|included|final|unknown", "preconf"?, "block_hash"?,
+"height"?, "confirmations"?, "final": bool}` without the tx body. `preconf` (status
+preconfirmed): `{"weak_count", "weak_miners", "weak_share", "first_seen_ms", "latest_age_ms",
+"confidence": "low|medium|high"}` over the weak blocks on the current tip (docs/SPEED.md 2.4;
+what it guarantees: 2.5). `unknown`: neither pooled, nor listed by a weak block on the tip, nor
+in a canonical block on this node.
+
 ### sendTx `{"tx": "base64"}`
 Checks decoding, chain id, signature, fee, nonce (>= account nonce, within 64), then
-gossips. Result `{"tx_hash": "hex"}`.
+gossips. Result `{"tx_hash": "hex"}`. A same-nonce replacement of a pooled tx that a weak block on
+the tip lists is refused (`... is preconfirmed by a weak block on the tip and cannot be
+replaced`, docs/SPEED.md 2.6).
 
 ### getTx `{"tx_hash": "hex"}`
-`{"tx_hash", "status": "pending|included", "block_hash"?, "height"?, "index"?,
-"confirmations"?, "tx": "base64", "kind": "Transfer", "from": "base58", "nonce": n, "fee": "1000"}` or null.
+`{"tx_hash", "status": "pending|preconfirmed|included|final", "preconf"?, "final": bool,
+"block_hash"?, "height"?, "index"?, "confirmations"?, "tx": "base64", "kind": "Transfer", "from":
+"base58", "nonce": n, "fee": "1000"}` or null. `final` (status and flag) once the block is at or
+below the finalized height; clients that only knew `included` treat `final` as included.
+`preconf` as in getTxStatus. A tx listed by a weak block on the tip but not pooled here answers
+like getTxStatus (no body).
 
 ### getAccount `{"account": "base58"}`
 `{"account": "base58", "balance": "0", "nonce": 0, "route": Route | null}` (always an object;
@@ -526,7 +560,7 @@ buyback is all on Solana (storefront-x402 `GET /buyback`, `pearl buyback`).
 ### getMempool `{}`
 `{"size": 2, "txs": ["hex"]}`
 
-### subscribe (WebSocket only) `{"topics": ["heads", "finalized", "txs", "withdrawals"]}`
+### subscribe (WebSocket only) `{"topics": ["heads", "finalized", "txs", "withdrawals", "weak"]}`
 Result `{"subscribed": [...]}`. Notifications:
 ```json
 {"jsonrpc": "2.0", "method": "notify", "params": {"topic": "heads", "data": {
@@ -537,6 +571,8 @@ Result `{"subscribed": [...]}`. Notifications:
 - `finalized`: `{"hash", "height"}` when the K-deep block advances.
 - `txs`: `{"tx_hash"}` for each tx accepted into the mempool.
 - `withdrawals`: a Withdrawal object when it becomes final.
+- `weak`: `{"hash", "parent", "height", "miner", "job_id", "tx_count", "received_ms"}` per new
+  weak block this node accepted (docs/SPEED.md 2).
 
 ## Transactions (summary; exact bytes in `chain/agent-types/src/tx.rs` and vectors)
 

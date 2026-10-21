@@ -4,6 +4,7 @@
 pub mod blobfetch;
 pub mod core;
 pub mod dispatch;
+pub mod preconf;
 mod dm;
 mod reject;
 mod contracts;

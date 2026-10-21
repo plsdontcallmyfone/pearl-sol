@@ -34,6 +34,8 @@ use tracing::{debug, info, warn};
 use crate::difficulty::{next_bits, nbits_to_target, work, Retarget};
 use crate::verifier::PowVerifier;
 
+pub mod weak;
+
 pub type BlockArchive<E> = prunable::Archive<EightCap, E, B3, Vec<u8>>;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -1062,7 +1064,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             Some(j) => Some(j.pearl_job().map_err(ChainError::Invalid)?),
             None => None,
         };
+        let t_pow = std::time::Instant::now();
         self.check_pow(h, pj.as_ref(), &block.proof, &pcfg)?;
+        let pow_us = t_pow.elapsed().as_micros() as u64;
+        let t_exec = std::time::Instant::now();
         // Execute.
         let env = BlockEnv {
             chain_id: self.genesis.chain_id,
@@ -1093,6 +1098,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             return invalid("contracts record mismatch");
         }
         let config = self.read_config(&snap).await?;
+        debug!(height = h.height, pow_us, exec_us = t_exec.elapsed().as_micros() as u64, txs = block.txs.len(), proof_len = block.proof.len(), "block timing");
         Ok((snap, summary, config))
     }
 

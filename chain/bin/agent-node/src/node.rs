@@ -105,6 +105,9 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                 Outbound::FetchBlob(h) => {
                     let _ = self.blob_fetch.fetch(sync::key(&h));
                 }
+                Outbound::Weak(b) => {
+                    let _ = self.tips.send(Recipients::All, IoBuf::from(b), false);
+                }
                 Outbound::CancelBlob(h) => {
                     let k = sync::key(&h);
                     let _ = self.blob_fetch.retain(move |key, _| *key != k);
@@ -189,10 +192,16 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 seen[1] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
+                let t_dec = std::time::Instant::now();
                 match Block::decode(buf.as_ref()) {
                     Ok(b) => {
+                        let decode_us = t_dec.elapsed().as_micros() as u64;
                         let now = now_ms(&context);
+                        let (bh, bheight, bsize) = (b.hash(), b.header.height, buf.as_ref().len());
+                        let t_add = std::time::Instant::now();
                         let r = core.add_block(b, now, true).await;
+                        debug!(block = %hex::encode(&bh[..6]), height = bheight, size = bsize, decode_us, add_us = t_add.elapsed().as_micros() as u64,
+                               received_ms = now, accepted = r.accepted, "gossiped block timing");
                         if !r.accepted {
                             let reason = r.reason.unwrap_or_default();
                             if ban_worthy(&reason) {
@@ -230,9 +239,15 @@ pub async fn run<E, CE, V, S, R, D, B>(
             msg = tips_r.recv() => {
                 seen[4] += 1;
                 let Ok((peer, buf)) = msg else { break };
-                seen_peers.insert(peer);
+                seen_peers.insert(peer.clone());
                 let b = buf.as_ref();
-                if b.len() == 40 {
+                if consensus_pow::is_weak_msg(b) {
+                    // weak block (docs/SPEED.md 2.2): invalid ones get the peer blocked like a bad block
+                    if let rpc::preconf::WeakOutcome::Invalid(reason) = core.add_weak(b, now_ms(&context)).await {
+                        warn!(?peer, %reason, "invalid weak block from peer: blocking it");
+                        let _ = gossip_blocker.block(peer.clone());
+                    }
+                } else if b.len() == 40 {
                     let h: [u8; 32] = b[..32].try_into().unwrap();
                     let height = u64::from_le_bytes(b[32..40].try_into().unwrap());
                     if height > core.chain.finalized().header.height && !core.chain.is_known(&h) {

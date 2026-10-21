@@ -4,3 +4,4 @@
 pub mod config;
 pub mod miner;
 pub mod node;
+pub mod probe;

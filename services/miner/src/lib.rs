@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
 use pearl_job::freivalds::result_hash;
-use pearl_job::pow::{mine_header_nonce, BlockWork, MinedBlock};
+use pearl_job::pow::{mine_header_nonce, mine_header_nonce_at, BlockWork, MinedBlock};
 use pearl_job::{data, PreparedJob};
 use pearl_node::tx::{self, Body, Tx};
 use pearl_node::{b58, JobInfo, NodeApi, SubmitOutcome, Template};
@@ -142,6 +142,9 @@ pub struct Stats {
     pub rejected: u64,
     pub fallback_accepted: u64,
     pub completed: u64,
+    /// Weak blocks found and accepted by the node (docs/SPEED.md 2.3).
+    pub weak_found: u64,
+    pub weak_accepted: u64,
 }
 
 pub type Logger = Box<dyn Fn(Value) + Send + Sync>;
@@ -178,7 +181,8 @@ fn stats_tick(ticker: &mut (Instant, u64), stats: &mut Stats, done: &AtomicU64, 
     stats.nonces = n;
     log(json!({"event": "stats", "height": height, "nonces_per_s": (n - ticker.1) as f64 / dt,
                "nonces": n, "found": stats.found, "accepted": stats.accepted,
-               "rejected": stats.rejected, "completed": stats.completed, "threads": cfg.threads}));
+               "rejected": stats.rejected, "completed": stats.completed, "threads": cfg.threads,
+               "weak_found": stats.weak_found, "weak_accepted": stats.weak_accepted}));
     *ticker = (Instant::now(), n);
 }
 
@@ -257,6 +261,11 @@ impl<'a> Miner<'a> {
         };
         let stop = AtomicBool::new(false);
         let found: Mutex<Option<MinedBlock>> = Mutex::new(None);
+        // weak blocks (docs/SPEED.md 2.3): nonces are mined against the weak bound; weak hits
+        // are sent from this thread while the workers keep going on the same template
+        let weak_bits = t.weak_target_bits();
+        let weak_hits: Mutex<Vec<MinedBlock>> = Mutex::new(Vec::new());
+        let weak_hits = &weak_hits;
         let err: Mutex<Option<String>> = Mutex::new(None);
         let header = t.header;
         let (nonce, done) = (&self.nonce, &self.nonces_done);
@@ -266,10 +275,14 @@ impl<'a> Miner<'a> {
                 s.spawn(move || {
                     while !stop.load(Ordering::Relaxed) && Instant::now() < until {
                         let n = nonce.fetch_add(1, Ordering::Relaxed);
-                        let r = mine_header_nonce(&header, work, n);
+                        let r = match weak_bits {
+                            Some(wb) => mine_header_nonce_at(&header, work, n, wb),
+                            None => mine_header_nonce(&header, work, n).map(|o| o.map(|b| (b, true))),
+                        };
                         done.fetch_add(1, Ordering::Relaxed);
                         match r {
-                            Ok(Some(b)) => {
+                            Ok(Some((b, false))) => weak_hits.lock().unwrap().push(b),
+                            Ok(Some((b, true))) => {
                                 found.lock().unwrap().get_or_insert(b);
                                 stop.store(true, Ordering::Relaxed);
                             }
@@ -284,6 +297,15 @@ impl<'a> Miner<'a> {
             }
             while !stop.load(Ordering::Relaxed) && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(20));
+                let hits: Vec<MinedBlock> = std::mem::take(&mut *weak_hits.lock().unwrap());
+                for w in hits {
+                    self.stats.weak_found += 1;
+                    match self.node.submit_weak_block(t, &w) {
+                        Ok(SubmitOutcome::Accepted { .. }) => self.stats.weak_accepted += 1,
+                        Ok(SubmitOutcome::Rejected { reason }) => (self.log)(json!({"event": "weak_rejected", "height": w.header.height, "reason": reason})),
+                        Err(e) => (self.log)(json!({"event": "weak_failed", "error": format!("{e:#}")})),
+                    }
+                }
                 stats_tick(&mut self.ticker, &mut self.stats, done, &self.cfg, &self.log, header.height);
             }
         });
