@@ -4,7 +4,7 @@
 // including SSE streams, pass through unchanged and the receipt is booked in the ledger.
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { gatewayHeaders } from "./auth.mjs";
+import { audienceOf, gatewayHeaders } from "./auth.mjs";
 
 const PASS_HEADERS = ["content-type", "cache-control", "x-cadre-request", "x-cadre-ticket", "x-cadre-order", "x-cadre-rows", "x-cadre-charged-lamports", "x-cadre-receipt", "x-cadre-explorer", "x-payment-response"];
 const AUTHED_FORWARD = [
@@ -61,8 +61,21 @@ export class Proxy {
     const buf = body === undefined || body === null ? Buffer.alloc(0) : Buffer.isBuffer(body) ? body : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
     const headers = { accept: "application/json, text/event-stream" };
     if (buf.length) headers["content-type"] = "application/json";
-    if (auth) Object.assign(headers, gatewayHeaders({ wallet: this.cfg.wallet, apiKey: this.cfg.apiKey }, method, path, buf));
+    if (auth) {
+      const audience = this.cfg.apiKey ? null : await this.audience();
+      Object.assign(headers, gatewayHeaders({ wallet: this.cfg.wallet, apiKey: this.cfg.apiKey, audience }, method, path, buf));
+    }
     return fetch(this.gateway + path, { method, headers, body: method === "GET" || method === "DELETE" ? undefined : buf, signal });
+  }
+
+  /** The gateway's server key (cadre-auth-v2 audience), from its /v1/models. */
+  async audience() {
+    if (!this.aud) {
+      const r = await this.gw("GET", "/v1/models", null, { auth: false });
+      if (!r.ok) throw new Error(`gateway /v1/models: HTTP ${r.status}`);
+      this.aud = audienceOf(await r.json());
+    }
+    return this.aud;
   }
 
   async modelList() {

@@ -38,8 +38,10 @@ any Solana wallet (it pays the top-up in SOL).
 ## Gateway auth
 
 Default: wallet-signature headers on every forwarded request (`X-Cadre-Wallet`,
-`X-Cadre-Timestamp`, `X-Cadre-Signature` = raw ed25519 over `"cadre-auth-v1\n" + METHOD +
-"\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`, PATH without the query). Or
+`X-Cadre-Timestamp`, `X-Cadre-Signature` = raw ed25519 over `"cadre-auth-v2\n" + AUDIENCE +
+"\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`, PATH without the
+query, AUDIENCE = the gateway's server key, read once from its `/v1/models`
+(`data[0].cadre.server`), so a signature only works at that gateway). Or
 `node src/cli.mjs key` makes a gateway API key (`POST /v1/keys`), saved to
 `api-key.json` (0600, never printed), and `serve --use-api-key` sends it as a bearer token.
 

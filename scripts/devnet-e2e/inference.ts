@@ -56,9 +56,11 @@ async function nodeCall(method: string, params: Record<string, unknown> = {}): P
   return j.result;
 }
 const { ed25519 } = await import("@noble/curves/ed25519");
+let audience = "";
 function signed(method: string, gatewayPath: string, body: string): Record<string, string> {
   const ts = Date.now();
-  const m = `cadre-auth-v1\n${method}\n${gatewayPath}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`;
+  // cadre-auth-v2: names the gateway's server key (from /v1/openai/models), security pass V-9
+  const m = `cadre-auth-v2\n${audience}\n${method}\n${gatewayPath}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`;
   const sig = Buffer.from(ed25519.sign(Buffer.from(m), buyer.secretKey.subarray(0, 32))).toString("hex");
   return { "content-type": "application/json", "x-cadre-wallet": buyer.publicKey.toBase58(), "x-cadre-timestamp": String(ts), "x-cadre-signature": sig };
 }
@@ -69,6 +71,8 @@ log("models", { status: models.status, served_by_gateway: models.body?.served_by
 const oaModels = await api("/v1/openai/models");
 if (oaModels.status !== 200) throw new Error(`/v1/openai/models ${oaModels.status} ${JSON.stringify(oaModels.body).slice(0, 300)}`);
 const model = oaModels.body.data[0];
+audience = model.cadre?.server ?? "";
+if (!audience) throw new Error("/v1/openai/models names no cadre.server (the cadre-auth-v2 audience)");
 result.model = { id: model.id, pricing: model.cadre?.pricing, model_id: model.cadre?.model_id };
 log("model", result.model);
 

@@ -285,7 +285,7 @@ paths:
       tags: [inference]
       operationId: balance
       summary: Prepaid balance, wallet-authenticated (the gateway's GET /v1/balance)
-      description: "Send `X-Cadre-Wallet`, `X-Cadre-Timestamp`, `X-Cadre-Signature` signed over the GATEWAY path `/v1/balance` (cadre-auth-v1, SPEC 5.4), or `Authorization: Bearer cadre_sk_...`, or `?wallet=`. Forwarded unchanged."
+      description: "Send `X-Cadre-Wallet`, `X-Cadre-Timestamp`, `X-Cadre-Signature` signed over the GATEWAY path `/v1/balance` (cadre-auth-v2, SPEC 5.4), or `Authorization: Bearer cadre_sk_...`, or `?wallet=`. Forwarded unchanged."
       parameters: [{ name: wallet, in: query, schema: { type: string } }]
       responses:
         "200": { description: Balance, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
@@ -345,7 +345,7 @@ paths:
       tags: [inference]
       operationId: apiKeys
       summary: The wallet's API keys (the gateway's GET /v1/keys, wallet-signed); the same as GET /v1/openai/keys
-      description: "Sign with cadre-auth-v1 over the GATEWAY path `/v1/keys` (method GET, empty body). Returns `{wallet, keys: [{key_id, created_ms, last_used_ms}]}`, oldest first; `last_used_ms` is null until the key authenticates a request. Never the key itself (shown once by POST /v1/openai/keys). An API key cannot list keys (400)."
+      description: "Sign with cadre-auth-v2 over the GATEWAY path `/v1/keys` (method GET, empty body). Returns `{wallet, keys: [{key_id, created_ms, last_used_ms}]}`, oldest first; `last_used_ms` is null until the key authenticates a request. Never the key itself (shown once by POST /v1/openai/keys). An API key cannot list keys (400)."
       responses:
         "200": { description: Keys, content: { application/json: { schema: { type: object, additionalProperties: true, properties: { wallet: { $ref: "#/components/schemas/Address" }, keys: { type: array, items: { type: object, properties: { key_id: { type: string }, created_ms: { type: integer }, last_used_ms: { type: [integer, "null"] } } } } } } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -355,7 +355,7 @@ paths:
       tags: [inference]
       operationId: openaiGet
       summary: Pass-through to the gateway (GET models, keys, balance, prepaid/{wallet}, receipts, requests/{id}, stats)
-      description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT`, `X-Cadre-Wallet`, `X-Cadre-Timestamp` and `X-Cadre-Signature` headers (`X-Cadre-Account` is sent as `X-Cadre-Wallet`) and the body byte for byte, so a cadre-auth-v1 signature over the gateway path (`/v1/{path}`) verifies; streams the reply as is (SSE included) and copies the receipt headers (`X-Cadre-Request`, `-Ticket`, `-Order`, `-Rows`, `-Charged-Lamports`, `-Receipt`, `-Explorer`, all exposed to browsers). Served paths - models, completions, chat/completions, embeddings, keys, balance, prepaid, receipts, requests, stats. Only the wait for the reply headers (30 min) and silence between streamed bytes (10 min) are bounded, never the whole answer.
+      description: OpenAI-compatible base URL `/v1/openai`. Forwards to the inference gateway's `/v1/{path}` with the client's `Authorization`, `X-PAYMENT`, `X-Cadre-Wallet`, `X-Cadre-Timestamp` and `X-Cadre-Signature` headers (`X-Cadre-Account` is sent as `X-Cadre-Wallet`) and the body byte for byte, so a cadre-auth-v2 signature over the gateway path (`/v1/{path}`) verifies; streams the reply as is (SSE included) and copies the receipt headers (`X-Cadre-Request`, `-Ticket`, `-Order`, `-Rows`, `-Charged-Lamports`, `-Receipt`, `-Explorer`, all exposed to browsers). Served paths - models, completions, chat/completions, embeddings, keys, balance, prepaid, receipts, requests, stats. Only the wait for the reply headers (30 min) and silence between streamed bytes (10 min) are bounded, never the whole answer.
       parameters: [{ name: path, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { description: Gateway reply, content: { application/json: { schema: { type: object, additionalProperties: true } } } }

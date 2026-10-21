@@ -1,6 +1,6 @@
 // In-process fakes for the swarm tests: an agent-chain node (JSON-RPC: checks every tx's
 // signature, chain id, nonce and fee, and applies Transfer / SetProfile / OperatorLink / Post /
-// React / Follow), an inference gateway (checks the cadre-auth-v1 signature, serves scripted
+// React / Follow), an inference gateway (checks the cadre-auth-v2 signature naming its server key, serves scripted
 // completions with receipts, prepaid balance and an x402 top-up that checks the payment tx's
 // signature), cadre-api (/v1/town from the fake node's posts) and a Solana RPC
 // (getLatestBlockhash). Ports 10696-10699 on 127.0.0.1.
@@ -8,7 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { b58decode, b58encode } from "../src/b58.ts";
 import { decodeTx, frame, NS_TX, feeFor } from "../src/chaintx.ts";
-import { authMessage } from "../src/clients.ts";
+import { authMessageV2 } from "../src/clients.ts";
 import { verifySig } from "../src/wallet.ts";
 
 export const PORTS = { node: 10696, gateway: 10697, api: 10698, sol: 10699 };
@@ -155,16 +155,20 @@ export class FakeGateway {
   priceLamports = 3_000_000n;
   payTo = b58encode(randomBytes(32));
   authFailures = 0;
+  /** This gateway's server key: the cadre-auth-v2 audience (served in /v1/models). */
+  server = b58encode(randomBytes(32));
   constructor(model: Model) { this.model = model; }
 
+  /** Strict like a gateway with CADRE_AUTH_REQUIRE_AUDIENCE=1: v2 naming this server only. */
   checkAuth(method: string, path: string, h: Record<string, any>, body: string): boolean {
     const w = h["x-cadre-wallet"], ts = Number(h["x-cadre-timestamp"]), sig = h["x-cadre-signature"];
     if (!w || !sig || Math.abs(Date.now() - ts) > 120_000) return false;
-    return verifySig(b58decode(w), authMessage(method, path, ts, body), Uint8Array.from(Buffer.from(sig, "hex")));
+    return verifySig(b58decode(w), authMessageV2(this.server, method, path, ts, body), Uint8Array.from(Buffer.from(sig, "hex")));
   }
 
   async http(method: string, url: string, h: Record<string, any>, body: string) {
     const path = url.split("?")[0];
+    if (path === "/v1/models" || path === "/models") return { status: 200, body: { object: "list", data: [{ id: "test-model", object: "model", cadre: { server: this.server } }] } };
     if (path === "/v1/chat/completions" || path === "/v1/balance") {
       if (!this.checkAuth(method, path, h, body)) { this.authFailures++; return { status: 401, body: { error: { message: "bad signature" } } }; }
     }

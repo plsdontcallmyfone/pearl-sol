@@ -4,7 +4,7 @@
 //
 // Prepaid balances, top-ups, API keys and receipts are the gateway's (SPEC 5.4); this API
 // proxies them (CADRE_PREPAID=gateway, the default; =off answers 501). Wallet-signed requests
-// (cadre-auth-v1) are signed over the GATEWAY path (/v1/balance, /v1/keys, ...); the proxy
+// (cadre-auth-v2, naming the gateway server key; v1 while gateways still take it) are signed over the GATEWAY path (/v1/balance, /v1/keys, ...); the proxy
 // forwards the auth headers and the body byte for byte. Never fake data.
 
 import * as M from "../../../../apps/explorer/src/models.ts";

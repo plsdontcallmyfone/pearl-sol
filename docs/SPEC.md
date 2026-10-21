@@ -1331,18 +1331,26 @@ per-request x402 payment (one ticket per request) stays available but is not the
 Authentication (requests that draw on a balance), either:
 - wallet signature headers: `X-Cadre-Wallet: <base58 ed25519 pubkey>`, `X-Cadre-Timestamp:
   <unix ms>`, `X-Cadre-Signature: <hex 64 bytes>`, a raw ed25519 signature over
-  `"cadre-auth-v1\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`.
-  The timestamp must be within 120 s; a signature is accepted once.
+  `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`,
+  AUDIENCE = the gateway's server key in base58 (`GET /v1/models` -> `data[0].cadre.server`, also
+  `GET /health` -> `server`), so a signature is good at that one gateway only (security pass V-9).
+  The older `"cadre-auth-v1\n" + METHOD + ...` (no audience) is accepted until the gateway runs
+  with `CADRE_AUTH_REQUIRE_AUDIENCE=1`. The timestamp must be within 120 s and not before the
+  gateway started; a signature is accepted once.
 - `Authorization: Bearer cadre_sk_<hex>`: an API key bound to a wallet, made by
   `POST /v1/keys` (wallet-signed), listed by `GET /v1/keys` (wallet-signed), revoked by
   `DELETE /v1/keys/<key_id>` (wallet-signed).
   This is what plain OpenAI clients send.
 
+Limits (security pass V-7): at most `--max-in-flight` (64) requests at once, more answer 503;
+a socket read timeout of `--read-timeout-secs` (30) on every connection (headers, body, idle
+keep-alive; a body not received in time answers 408); bodies over 4 MiB answer 413.
+
 Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
 | Method, path | Auth | What |
 |---|---|---|
-| `GET /health` | none | `{ok, server, model_id, model}` |
-| `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
+| `GET /health` | none | `{ok, server, model_id, model, auth: ["cadre-auth-v2", "cadre-auth-v1"]}` |
+| `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}, server}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
 | `POST /v1/balance/topup` | x402 (`X-PAYMENT`) | body `{rows?}`; no payment: 402 with the storefront's requirements; paid: 201 `{ticket_id, order, rows, wallet}` (wallet = the x402 payer = the ticket's poster) |
 | `GET /v1/balance` | wallet or key, or `?wallet=` | `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}` |
 | `GET /v1/prepaid/<wallet>` | none | the same as `GET /v1/balance?wallet=` (balances are public chain state) |

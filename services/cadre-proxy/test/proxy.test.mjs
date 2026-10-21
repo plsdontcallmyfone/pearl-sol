@@ -23,6 +23,8 @@ const dir = mkdtempSync(join(tmpdir(), "cadre-proxy-test-"));
 const seen = [];
 let gwServer;
 let price = "10";
+// the fake gateway's server key: wallet signatures must name it (cadre-auth-v2)
+const GW_SERVER = "GwServer1111111111111111111111111111111111";
 
 function edOk(pub, msg, sig) {
   const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(pub)]), format: "der", type: "spki" });
@@ -35,7 +37,7 @@ function checkAuth(req, body) {
   const w = req.headers["x-cadre-wallet"], ts = req.headers["x-cadre-timestamp"], sig = req.headers["x-cadre-signature"];
   if (!w || !ts || !sig) return { ok: false };
   const path = req.url.split("?")[0];
-  const msg = Buffer.from(`cadre-auth-v1\n${req.method}\n${path}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`);
+  const msg = Buffer.from(`cadre-auth-v2\n${GW_SERVER}\n${req.method}\n${path}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`);
   return { ok: Math.abs(Number(ts) - Date.now()) < 120_000 && edOk(b58decode(w), msg, Buffer.from(sig, "hex")), kind: "wallet", wallet: w };
 }
 
@@ -58,7 +60,7 @@ before(async () => {
       res.end(JSON.stringify(v));
     };
     if (req.url === "/v1/models") {
-      return json(200, { object: "list", data: [{ id: "llama-3.2-1b-w7a7", object: "model", context_length: 4096, cadre: { model_id: "ab".repeat(32), pricing: { lamports_per_row: price } } }] });
+      return json(200, { object: "list", data: [{ id: "llama-3.2-1b-w7a7", object: "model", context_length: 4096, cadre: { model_id: "ab".repeat(32), server: GW_SERVER, pricing: { lamports_per_row: price } } }] });
     }
     if (req.url === "/v1/balance/topup") {
       if (req.headers["x-payment"]) return json(201, { ticket_id: "t2", rows: 4096, got_payment: req.headers["x-payment"] });

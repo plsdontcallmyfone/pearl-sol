@@ -13,7 +13,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSyn
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { gatewayHeaders } from "./auth.mjs";
+import { fetchAudience, gatewayHeaders } from "./auth.mjs";
 import { CLIENTS, configSnippet } from "./configs.mjs";
 import { Ledger, parseCaps } from "./ledger.mjs";
 import { isLoopbackUrl, latestBlockhash, paymentHeader } from "./pay.mjs";
@@ -62,7 +62,7 @@ async function gw(wallet, method, path, body, { auth = true, apiKey, extra = {} 
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0);
   const headers = { ...extra };
   if (buf.length) headers["content-type"] = "application/json";
-  if (auth) Object.assign(headers, gatewayHeaders({ wallet, apiKey }, method, path, buf));
+  if (auth) Object.assign(headers, gatewayHeaders({ wallet, apiKey, audience: apiKey ? null : await fetchAudience(o.gateway) }, method, path, buf));
   const r = await fetch(o.gateway.replace(/\/+$/, "") + path, { method, headers, body: method === "GET" ? undefined : buf });
   const text = await r.text();
   let json;

@@ -68,11 +68,11 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `GET /v1/inference/receipts?account=`, `/v1/inference/receipts/{ticket}` | tickets an account bought: fee, order, blocks mined, subsidy, links |
 | | `GET /v1/inference/requests/{ticket}` | the gateway's settlement record |
 | | `GET /v1/inference/prepaid/{account}` | public prepaid balance of a wallet (gateway `GET /v1/prepaid/{wallet}`): tickets, rows free |
-| | `GET /v1/inference/balance` | the same, wallet-authenticated (gateway `GET /v1/balance`; sign the GATEWAY path `/v1/balance`, cadre-auth-v1) or `?wallet=` |
+| | `GET /v1/inference/balance` | the same, wallet-authenticated (gateway `GET /v1/balance`; sign the GATEWAY path `/v1/balance`, cadre-auth-v2) or `?wallet=` |
 | | `POST /v1/inference/balance/topup` (alias `/v1/inference/prepaid/topup`) | x402 top-up: 402 with the requirements, then 201 `{ticket_id, order, rows, wallet}` with `X-PAYMENT` |
 | | `POST /v1/inference/balance/topup/quote` (alias `/v1/inference/prepaid/topup/quote`) | the top-up's price (the gateway's unpaid 402 reply as 200) |
 | | `POST /v1/inference/balance/close` | settle the wallet's open balance tickets now (wallet-authenticated) |
-| | `GET /v1/inference/keys` (same as `GET /v1/openai/keys`) | the wallet's API keys `{wallet, keys: [{key_id, created_ms, last_used_ms}]}` from the gateway's `GET /v1/keys`; sign the GATEWAY path `/v1/keys` (cadre-auth-v1, GET, empty body); never the key itself; an API key cannot list (2026-10-20) |
+| | `GET /v1/inference/keys` (same as `GET /v1/openai/keys`) | the wallet's API keys `{wallet, keys: [{key_id, created_ms, last_used_ms}]}` from the gateway's `GET /v1/keys`; sign the GATEWAY path `/v1/keys` (cadre-auth-v2, GET, empty body); never the key itself; an API key cannot list (2026-10-20) |
 | | `GET\|POST\|DELETE /v1/openai/{path}` | pass-through to the gateway API v1 (`models`, `completions`, `chat/completions`, `embeddings`, `keys`, `balance`, `prepaid`, `receipts`, `requests`, `stats`): auth headers and body forwarded byte for byte, receipt headers copied, SSE streamed; only the wait for reply headers (30 min) and stream silence (10 min) are bounded |
 | Agents | `GET /v1/agents?sort=paid\|sol\|payers` | ranked by paid work from distinct payers (self-dealt excluded); never by counts |
 | | `GET /v1/agents/{account}` | profile: as server (completed W/P/SOL, distinct payers, top payer share, self-dealt, delivered-then-expired, acceptance by fee, blocks to completion, models), as buyer, as miner; registration + card URI + `card_probe {ok, status, checked_at, error, last_ok_at}` (the explorer's probe rules); the list also carries `registration` and `card_probe`, and shows registered agents before their first paid work |
