@@ -632,3 +632,32 @@ on devnet box 0 (binary copied to /tmp, run as lode with `--local`, removed afte
 warn cadre-api, warn buyback, warn reserve, warn supply
 result WARN
 ```
+
+## Smart contracts (2026-10-21, "smart contracts" row; docs/CONTRACTS.md 11)
+
+- Chain workspace on the test box with contracts merged into main: 159 passed, 0 failed (before the last
+  main merges: 131, then 134). New suites: contracts/tests/vm.rs (5 + 1 ignored measurement: examples
+  validate, deterministic gas, query mode read-only, 11 malicious modules refused at deploy, runtime
+  attacks stop deterministically), executor/tests/contracts.rs (10: fees and refunds, failures land with
+  state undone, cross-contract calls, reentrancy refused, call depth, storage deposits, escrow/token/bounty
+  flows incl. a native job and a town post by a contract, block gas limit and fee floor, migrate/admin,
+  devnet activation height, determinism digest, gas table), state/tests/contract_proof.rs (storage proof
+  against state_root), bin/agent-node/tests/contracts_rpc.rs (3 node actors agree, reorg undoes a call,
+  final storage proof), agent-types vectors contracts.json.
+- pearl-verify-sbf: tests/contracts.rs 1 (record, event, receipt under tx_root; tampering fails) + crosscheck 13.
+- pearl-cli: 39 passed (incl. the ABI vector). cadre-api: contract + spec + neighbouring suites 40/40 on the
+  merged tree; explorer 56/56. Extension 93 passed (contracts 23, tx-vectors 43); Cadre Wallet 229 passed,
+  UI checks 50/50 and 110/110 headless (pre-existing IDL drift and token/target failures unrelated).
+- Determinism across machines: the executor digest scenario printed the same state digest on the Mac
+  (arm64) and the test box (x86_64), 6b70aa8961335901a420fc65ed795062a0fbe2719ab64100d2f725accb31b435.
+  The counter example built from source on the test box has the same code hash as the Mac build
+  (bb7e5a908dabc16f...).
+- Live CLI check on a throwaway 1-node chain on the test box (ports 11750-11752, stopped after):
+  build from source, new, call, dry-run, query, show, events, token, ls all OK.
+- Replay: a fresh follower with the new agent-node synced the devnet from genesis (block 4587 hash and
+  state_root equal to all three boxes) before the rollout.
+- Devnet: first contract block 4703; 16 contract txs in 4703-4719 (4 DeployCode, 4 Instantiate, 8 Call), all status ok; the three nodes agreed on
+  tip and finalized hash throughout (docs/DEVNET.md "Contracts").
+- Not run: header-relay catchup tests (they need the lightclient .so built under token/, absent in the
+  build tree); a QMDB storage-proof verifier on Solana does not exist yet.
+

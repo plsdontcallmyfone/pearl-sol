@@ -1,0 +1,21 @@
+# Host-side tests for the trading contracts: they run the built wasm (contracts/target and the
+# SDK's example token) inside the real chain executor (chain/executor), with fees, receipts,
+# events and the supply invariant checked after every block. Its own workspace so the chain
+# workspace is not touched; build the wasm first (see contracts/README.md).
+[workspace]
+
+[package]
+name = "cadre-trading-contract-tests"
+edition = "2024"
+license = "ISC"
+version = "0.1.0"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+agent-types = { path = "../../chain/agent-types" }
+state = { path = "../../chain/state" }
+executor = { path = "../../chain/executor" }
+contracts = { path = "../../chain/contracts" }
+futures = "0.3"

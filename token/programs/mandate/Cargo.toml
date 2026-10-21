@@ -1,0 +1,22 @@
+[package]
+name = "mandate"
+version = "0.1.0"
+description = "Cadre delegated trading accounts (docs/TRADING.md, ECOSYSTEM 2.5): the user owns the account, the agent can only swap within on-chain limits"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "mandate"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+# public devnet program id (docs/DEVNET.md)
+devnet = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.31.1"

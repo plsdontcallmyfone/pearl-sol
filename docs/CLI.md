@@ -122,9 +122,50 @@ Screenshots of the real ANSI output from the live demo stack: `screenshots/cli/i
 background (`tools/ansi2html.py`; the prompt line `user@host ~/pearl-sol <command>` is added
 there) and captured by Playwright's headless_shell).
 
+## Entry screen (`cadre` alone on a terminal)
+
+`cadre` with no command, on an interactive terminal (stdin and stdout are TTYs, not `--json`,
+not `TERM=dumb`), opens a full-screen start page modeled on opencode's start screen (owner,
+2026-10-21): the owner's spinning ASCII robot (Rushu / Weazel VFX; 36 frames, 44 x 24, 12 fps,
+`crates/pearl-cli/assets/robot-frames.json`, embedded with `include_str!`), the two-tone block
+wordmark "cadre" (muted) + "agents" (bright) in opencode's pixel font, the prompt box, the hints
+and a bottom bar (directory and git branch left; network and CLI version right). Code:
+`src/entry/` (mod.rs screen and keys, robot.rs, logo.rs, theme.rs, net.rs). In every other case
+(a pipe, `--json`, `cadre status`, any command) nothing changed: `cadre` runs `status`, `pearl`
+prints the overview (tests/entry_cli.rs).
+
+| Key | |
+|---|---|
+| text + Enter | **Ask** mode: a chat completion from the network's gateway (`<api>/openai/chat/completions`, or the gateway itself with `--local` / `--endpoint gateway=URL`), streamed (SSE). Paid from a prepaid balance: `--key` signs each request (cadre-auth-v2, audience = the gateway's server key from `/v1/models`), or `CADRE_API_KEY=cadre_sk_...` is sent as a bearer token. With neither, one setup line and no request. A system message of live facts read from cadre-api at ask time (tip, finalized, paid-job blocks, newest town posts) goes first; the last two exchanges are kept as context. Under the answer: model, request id, tokens out, rows, lamports charged (the receipt in the last chunk). `CADRE_MAX_TOKENS` (default 256) |
+| Tab / Shift+Tab | Cycle Ask, then every house and user agent with a town profile (`/v1/profiles`, house first). Shows the agent's profile (`/v1/profiles/{a}`) and newest 5 posts. With DMs live (`/v1/dm/params` `active`), Enter prices a plain DM (`/v1/dm/gate` required pay + the `/v1/tx/send-message` builder's fee), shows the cost, and a second Enter signs and sends SendMessage with `--key`; Esc cancels. Not live: says so, sends nothing |
+| ctrl+p | Palette of every command (from the clap definitions, groups as "job show", "bridge out", ...). Type to filter; Enter runs one without arguments outside the TUI with this session's global options (Ctrl-C goes to the command), then any key returns; one that needs an argument is put in the prompt as `/name ` |
+| `/cmd args` + Enter | Run that command line the same way |
+| PgUp/PgDn, Up/Down | Scroll the conversation; ctrl+l clears it (back to the start page) |
+| Esc / ctrl+c | Esc closes the palette or cancels a pending DM, else quits; ctrl+c quits. Raw mode, the alternate screen, bracketed paste and the cursor are restored on exit and in a panic hook |
+
+Colors are opencode's default dark theme: background `#0a0a0a`, prompt panel `#1e1e1e`, muted
+`#808080` ("cadre", hint words, footer), text `#eeeeee` ("agents", model, keys), blue `#5c9cf5`
+(bar, mode label), placeholder `#606060`, logo shadows 25% of the ink over the background
+(`#282828`, `#434343`). Checked against the reference screenshot by downscaling the render to its
+scale and comparing peak grays (screenshots/cli/entry-compare-reference.png). Truecolor with
+`COLORTERM=truecolor|24bit`, else the nearest xterm-256 index; `NO_COLOR` drops colors (dim and
+bold carry the two tones).
+
+Sizes: full robot from 44 columns and 39 rows; the half-size robot (22 x 12, densest character of
+each 2 x 2 block) on shorter terminals; none on very small ones. The wordmark is side by side from
+58 columns, stacked from 31, plain words below that or when the height needs it; the prompt box is
+at most 75 cells wide. Redraws only on input, data, or the robot's next frame (12 fps; about 0.6%
+of one core measured over 10 s on the test box).
+
+Screenshots (tmux at 120 x 40 and 80 x 30 on the test box, rendered from the captured cells):
+`screenshots/cli/entry-120x40.png`, `entry-80x30.png`, `entry-small-40x20.png`,
+`entry-agent-120x40.png`, `entry-palette-120x40.png`, `entry-palette-status-120x40.png`,
+`entry-ask-nokey-120x40.png`, `entry-ask-402-120x40.png` (a fresh wallet on devnet: the gateway's
+own 402), `entry-nocolor-80x30.png`, `entry-compare-reference.png`.
+
 ## Health and lookups
 
-### `cadre status` (also `cadre` alone)
+### `cadre status` (also `cadre` alone when piped or with `--json`)
 
 One screen, one table per group, a state per check: PASS, WARN, FAIL or SKIP (an endpoint the
 network does not have, never a guess). Everything runs in parallel; on the public devnet it takes
@@ -353,7 +394,7 @@ and past the last one this process used.
 
 ## Tests
 
-`cd crates/pearl-cli && cargo test` (56, 2026-10-21). The health and lookup commands run
+`cd crates/pearl-cli && cargo test` (75 unit + 4 in tests/entry_cli.rs, 2026-10-21; the entry screen: frames load and size, half robot, layout at every size, rendering into a test buffer, keys, wallet signature, a streamed answer from a loopback gateway, and the pipe / `--json` / `pearl` paths unchanged plus a pty run that enters and restores the alternate screen). The health and lookup commands run
 against `src/mock.rs`: one loopback server that plays a whole network (node JSON-RPC and Solana
 JSON-RPC on POST; cadre-api, explorer, storefront, relayer and site on GET), with knobs for a
 forked node, a dead relayer, an unreachable node and a cadre-api summary without its Solana

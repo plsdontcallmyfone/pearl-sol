@@ -49,6 +49,12 @@ ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 clap = { version = "4", features = ["derive", "env"] }
 ratatui = "0.29"
 crossterm = "0.28"
+# entry screen: cell widths for wrapping (ratatui's own version)
+unicode-width = "0.2"
+
+# entry screen: ignore SIGINT while a palette command runs in the foreground
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.dev]
 opt-level = 1

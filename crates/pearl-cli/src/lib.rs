@@ -11,6 +11,7 @@ mod contract;
 mod ctx;
 mod decode;
 mod endpoints;
+pub mod entry;
 mod fmt;
 mod health;
 mod html;
@@ -48,6 +49,16 @@ pub fn main() {
     let bin = if name.starts_with("cadre") { "cadre" } else { "pearl" };
     let m = Cli::command().name(bin).bin_name(bin).get_matches();
     let mut cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
+    // `cadre` alone on an interactive terminal: the entry screen (src/entry/); anywhere
+    // else (a pipe, --json, TERM=dumb) exactly as before
+    if entry::should_open_here(bin, cli.cmd.is_some(), cli.opts.json) {
+        let launch = entry::Launch { opts: cli.opts, forward: std::env::args_os().skip(1).collect(), commands: palette() };
+        let code = entry::run(launch).unwrap_or_else(|e| {
+            eprintln!("{}", term::Style::detect().step_line(false, &format!("error: {e:#}")));
+            1
+        });
+        std::process::exit(code);
+    }
     // `cadre` with no command: status (the health screen); `pearl`: the overview box
     if cli.cmd.is_none() && bin == "cadre" {
         cli.cmd = Some(commands::Cmd::Status { health: false });
@@ -67,6 +78,28 @@ pub fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Every command for the entry screen's ctrl+p palette, from the clap definitions
+/// (subcommand groups listed as "group sub").
+pub fn palette() -> Vec<entry::PaletteCmd> {
+    use clap::CommandFactory;
+    let about = |c: &clap::Command| c.get_about().map(|a| a.to_string()).unwrap_or_default();
+    let needs = |c: &clap::Command| c.get_arguments().any(|a| a.is_positional() && a.is_required_set()) || c.is_subcommand_required_set();
+    let mut out = vec![];
+    for c in Cli::command().get_subcommands() {
+        if c.get_name() == "help" {
+            continue;
+        }
+        if c.has_subcommands() {
+            for s in c.get_subcommands().filter(|s| s.get_name() != "help") {
+                out.push(entry::PaletteCmd { name: format!("{} {}", c.get_name(), s.get_name()), about: about(s), needs_args: needs(s) });
+            }
+        } else {
+            out.push(entry::PaletteCmd { name: c.get_name().to_string(), about: about(c), needs_args: needs(c) });
+        }
+    }
+    out
 }
 
 /// The result, and whether a step already printed its error.
@@ -121,5 +154,17 @@ mod tests {
     fn clap_definitions_are_valid() {
         super::Cli::command().debug_assert();
         crate::commands::Line::command().debug_assert();
+    }
+
+    #[test]
+    fn palette_lists_every_command() {
+        let p = super::palette();
+        let names: Vec<&str> = p.iter().map(|c| c.name.as_str()).collect();
+        for want in ["status", "ping", "agents", "agent", "tx", "block", "watch", "verify", "account", "dashboard", "job show", "bridge out", "contract call"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        assert!(p.iter().find(|c| c.name == "tx").unwrap().needs_args);
+        assert!(!p.iter().find(|c| c.name == "status").unwrap().needs_args);
+        assert!(!names.contains(&"help"));
     }
 }
