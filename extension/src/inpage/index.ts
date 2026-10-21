@@ -6,6 +6,7 @@
 
 import { b58, b64, fromB58, fromB64 } from "../core/bytes";
 import { APP_NAME } from "../shared/constants";
+import { AbiField, encodeAbiFields, encodeCallArgs } from "../chain/abi";
 import { SOLANA_CHAINS } from "../shared/networks";
 
 const PAGE = "pearl-wallet:page";
@@ -76,6 +77,16 @@ const pearl = {
     const r = await request("pearl:signMessage", { message: b64(toBytes(message)) });
     return { signature: fromB64(r.signature), address: r.address as string, namespace: r.namespace as string };
   },
+  /**
+   * Contract input helpers (the call ABI, crates/cadre-contract-sdk abi.rs): pass the result as
+   * `args` of a Call / Instantiate / Migrate transaction, or pass `method` + `fields` instead.
+   * Fields: { u8 | u16 | u32 | u64: number | decimal string }, { bool }, { addr: base58 },
+   * { hash: hex }, { bytes: hex }, { str: text }.
+   */
+  contracts: Object.freeze({
+    encodeCallArgs: (method: string, fields: AbiField[] = []) => encodeCallArgs(method, fields),
+    encodeFields: (fields: AbiField[] = []) => encodeAbiFields(fields),
+  }),
   on(event: "accountChanged" | "disconnect", f: (d: any) => void) {
     (listeners[event] ??= new Set()).add(f);
     return () => listeners[event].delete(f);
@@ -87,7 +98,9 @@ function pearlTxParams(input: Uint8Array | string | { transaction: Record<string
   if (typeof input === "string") return { tx: input };
   return { transaction: jsonSafe(input.transaction) };
 }
-const jsonSafe = (o: Record<string, unknown>) => JSON.parse(JSON.stringify(o, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
+// bigints as decimal strings, bytes (contract code, args) as hex
+const jsonSafe = (o: Record<string, unknown>) =>
+  JSON.parse(JSON.stringify(o, (_, v) => (typeof v === "bigint" ? v.toString() : v instanceof Uint8Array ? Array.from(v, (x) => x.toString(16).padStart(2, "0")).join("") : v)));
 
 Object.defineProperty(window, "pearl", { value: Object.freeze(pearl), writable: false, configurable: false });
 

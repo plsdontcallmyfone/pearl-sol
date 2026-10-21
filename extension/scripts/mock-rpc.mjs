@@ -164,7 +164,11 @@ const JOBS = Array.from({ length: 9 }, (_, i) => job(i));
 function chain(method, p) {
   switch (method) {
     case "getChainInfo": return { chain_id: 1347616769, genesis_hash: "00".repeat(32), height: state.height, tip: hex(blake3(u64(state.height))), cumulative_work: "0x1", finalized_height: state.height - 30, finalized_hash: "00".repeat(32), target_bits: 545259519, next_target_bits: 545259519, mempool_size: 0, peers: 2, finality_k: 30, syncing: false };
-    case "getParams": return { admin: "", min_fee: "1000", finality_k: 30, emission_ppm: 7, alpha_ppm: 800000, attesters: [], attester_threshold: 1, bridge_paused: false, max_job_blocks: 100000, min_protocol_fee: "0", target_block_time_ms: 60000 };
+    case "getParams": return { admin: "", min_fee: "1000", finality_k: 30, emission_ppm: 7, alpha_ppm: 800000, attesters: [], attester_threshold: 1, bridge_paused: false, max_job_blocks: 100000, min_protocol_fee: "0", target_block_time_ms: 60000,
+      // contract fee rule: chain/state/src/config.rs CONTRACT_DEFAULTS
+      gas_price: "10000", gas_price_unit: "1000000", contract_base_fee: "1000", contract_byte_fee: "10", storage_byte_deposit: "100000", tx_gas_limit: "50000000" };
+    // the contracts.json vector contract (address rule: creator 6DDS..., nonce 7)
+    case "getContract": return p.address === "Ad49vfymLfb1oY4veT8yudCHGL6DM6aUpTMZuPbM7wcZ" ? { address: p.address, code_hash: "0d66d411a21e80d93afa1487b002a1867432c04ba1d08dc790d259639f6a69c4", admin: null, upgradable: false, creator: "6DDSqnFUxWMu66T4pgQJpaUxEmfYdrJLJdcJmUtL6HW7", label: "counter", created_height: 1 } : null;
     case "getAccount": return p.account === ME ? { account: ME, balance: String(state.native), nonce: state.nonce } : { account: p.account, balance: "0", nonce: 0 };
     case "getAgent": return p.account === ME ? state.agent : null;
     case "listJobs": {

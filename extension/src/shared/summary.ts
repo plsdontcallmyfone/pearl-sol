@@ -4,6 +4,7 @@ import { b58, equal, fromUtf8, hex } from "../core/bytes";
 import { UnsignedTx } from "../chain/tx";
 import { RESERVED } from "../chain/messages";
 import { summarizeSocial } from "../chain/social";
+import { ContractContext, summarizeContract } from "../chain/contracts";
 import { ParsedMessage, COMPUTE_BUDGET, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, ATA_PROGRAM, isWritableIndex } from "../solana/tx";
 import { disc } from "../solana/programs";
 import { NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, short, uriView } from "./constants";
@@ -30,7 +31,7 @@ const addr = (b: Uint8Array): Row["value"] => {
   return short(b58(b), 6);
 };
 
-export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: number): Summary {
+export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: number, contractCtx?: ContractContext): Summary {
   const warnings: string[] = [];
   if (me && b58(t.from) !== me) warnings.push(`Signer ${short(b58(t.from))} is not the connected account.`);
   if (expectChainId !== undefined && t.chainId !== expectChainId) warnings.push(`Chain id ${t.chainId} does not match this network (${expectChainId}).`);
@@ -97,6 +98,21 @@ export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: num
         headline = sm.headline;
         rows.push(...sm.rows);
         warnings.push(...sm.warnings);
+      }
+      break;
+    }
+    case "DeployCode":
+    case "Instantiate":
+    case "Call":
+    case "Migrate":
+    case "SetContractAdmin": {
+      const sm = summarizeContract(t, nat, { me, ...contractCtx });
+      if (sm) {
+        headline = sm.headline;
+        rows.push(...sm.rows);
+        warnings.push(...sm.warnings);
+        // the fee rows replace the plain fee line: the gas part is refunded for unused gas
+        head.splice(2, 1, ...sm.feeRows);
       }
       break;
     }

@@ -156,6 +156,29 @@ export interface BlockInfo {
   matured?: string | null;
 }
 
+/** docs/RPC.md "Contracts": getContract (null when unknown). */
+export interface ContractInfo {
+  address: string;
+  code_hash: string;
+  admin: string | null;
+  upgradable: boolean;
+  creator: string;
+  label: string;
+  created_height: number;
+  balance?: string;
+  code_size?: number;
+  [k: string]: unknown;
+}
+export interface CodeInfo {
+  code_hash: string;
+  deployer: string;
+  height: number;
+  size: number;
+  deposit: string;
+  instances: number;
+  [k: string]: unknown;
+}
+
 export class ChainRpc {
   constructor(public url: string) {}
   call<T>(method: string, params: Record<string, unknown> = {}) {
@@ -173,5 +196,8 @@ export class ChainRpc {
   block = (height: number) => this.call<BlockInfo | null>("getBlock", { height });
   bridgeEvents = (from_nonce = 0, limit = 100) => this.call<{ withdrawal_count: number; deposit_count: number; withdrawals: Withdrawal[] }>("getBridgeEvents", { from_nonce, limit });
   deposit = (solana_nonce: number) => this.call<{ processed: boolean; height?: number; confirmations?: number; final?: boolean; amount_spl?: string; recipient?: string }>("getDeposit", { solana_nonce });
+  contract = (address: string) => this.call<ContractInfo | null>("getContract", { address });
+  code = (code_hash: string) => this.call<CodeInfo | null>("getCode", { code_hash });
+  contractReceipt = (tx_hash: string) => this.call<Record<string, unknown> | null>("getContractReceipt", { tx_hash });
   escrow = () => this.call<{ escrow: string; escrow_balance: string; pool: string; pool_balance: string; total_supply: string; height: number }>("getEscrow");
 }
