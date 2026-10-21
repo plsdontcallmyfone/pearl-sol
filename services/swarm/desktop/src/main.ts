@@ -6,6 +6,7 @@
 //   node src/main.ts list         the house desktop sandboxes E2B lists (state, age), no secrets
 //   node src/main.ts resume       remove the STOP flag (the controller starts the desktops again)
 // Admin flag: the file DESK_KILL_FILE (default /var/lib/lode/desktops/STOP) or DESK_ENABLED=0.
+import { addCx } from "../../../../apps/explorer/src/cxjson.ts";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -91,7 +92,7 @@ async function main() {
   const cache = new Map<string, { at: number; body: Uint8Array }>();
   const send = (res: any, code: number, body: unknown, type = "application/json") => {
     res.writeHead(code, { "content-type": type, "cache-control": "no-store" });
-    res.end(type === "application/json" ? JSON.stringify(body) : body);
+    res.end(type === "application/json" ? JSON.stringify(addCx(body)) : body);
   };
   createServer(async (req, res) => {
     try {

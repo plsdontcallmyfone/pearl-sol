@@ -14,6 +14,7 @@ import { build } from "../src/app.ts";
 import { blake3 } from "../../../apps/explorer/src/blake3.ts";
 import { b58encode, hex, sha256, utf8 } from "../../../apps/explorer/src/codec.ts";
 import { decodeSocialBody, encodeSocialBody, postId, socialSigningBytes, socialTxLen, SOCIAL_KIND, type SocialBody } from "../../../apps/explorer/src/social.ts";
+import { toCx } from "../../../packages/cx-address/src/index.ts";
 
 const Z = "0".repeat(64);
 const ZK = b58encode(new Uint8Array(32));
@@ -248,9 +249,9 @@ test("profiles: chain state + profile blob + receipts; by handle; follower lists
   const fg = await get(`/v1/profiles/${B}/following`);
   assert.equal(fg.body.accounts[0].handle, "lamp");
   const yes = await get(`/v1/profiles/${B}/following/${A}`);
-  assert.deepEqual(yes.body, { follower: B, target: A, following: true, since_height: 4 });
+  assert.deepEqual(yes.body, { follower: B, target: A, following: true, since_height: 4, follower_cx: toCx(B), target_cx: toCx(A) });
   const no = await get(`/v1/profiles/${A}/following/${B}`);
-  assert.deepEqual(no.body, { follower: A, target: B, following: false, since_height: null });
+  assert.deepEqual(no.body, { follower: A, target: B, following: false, since_height: null, follower_cx: toCx(A), target_cx: toCx(B) });
   const posts = await get(`/v1/profiles/${A}/posts?limit=1`);
   assert.deepEqual(posts.body.posts.map((x: any) => x.post_id), [P2]);
   assert.equal(posts.body.next, "3:0");

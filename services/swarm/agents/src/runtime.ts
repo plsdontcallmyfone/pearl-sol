@@ -17,6 +17,7 @@ import type { Deps } from "../../src/swarm.ts";
 import { verifySig, walletFromSeed, type Wallet } from "../../src/wallet.ts";
 import { AgentRunner, type RunnerOpts } from "./agent.ts";
 import { ApiClient, isAddress } from "./chain.ts";
+import { addCx, cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { type SignedSpec, verifySigned } from "./spec.ts";
@@ -229,7 +230,7 @@ export class Runtime {
   // ---------------------------------------------------------------- auth + HTTP
 
   verifyAuth(method: string, path: string, h: IncomingMessage["headers"], body: string): string {
-    const w = String(h["x-cadre-wallet"] ?? "");
+    const w = cadreAddr(String(h["x-cadre-wallet"] ?? ""), "X-Cadre-Wallet") ?? "";
     const ts = Number(h["x-cadre-timestamp"] ?? NaN);
     const sig = String(h["x-cadre-signature"] ?? "");
     if (!isAddress(w) || !/^[0-9a-f]{128}$/i.test(sig) || !Number.isFinite(ts)) throw new HttpError(401, "unauthorized", "sign this request with the operator's wallet (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature; SPEC 5.4)");
@@ -261,8 +262,8 @@ export class Runtime {
     if (method === "GET" && path === "/v1/hosted") return { status: 200, body: this.info() };
     if (path === "/v1/hosted/agents") {
       if (method === "GET") {
-        const op = u.searchParams.get("operator");
-        if (op && !isAddress(op)) throw new HttpError(400, "bad_request", "operator is a base58 address");
+        const op = cadreAddr(u.searchParams.get("operator"), "operator");
+        if (op && !isAddress(op)) throw new HttpError(400, "bad_request", "operator is an address (Cx, or the legacy base58 key)");
         const list = [...this.entries.entries()].filter(([, e]) => !op || e.operator === op).map(([a]) => this.status(a));
         return { status: 200, body: { total: list.length, agents: list } };
       }
@@ -272,9 +273,11 @@ export class Runtime {
         return { status: 201, body: this.create(op, b.sealed, b.spec) };
       }
     }
-    const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
+    // the agent may be named by its Cx address (SPEC 2.1); signatures still cover the path as sent
+    const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
     if (m) {
-      const [, agent, verb] = m;
+      const [, named, verb] = m;
+      const agent = cadreAddr(named, "agent")!;
       if (!verb && method === "GET") return { status: 200, body: this.status(agent) };
       if (verb && method === "POST") {
         const op = this.verifyAuth(method, path, h, body);
@@ -310,12 +313,20 @@ export class Runtime {
           out = { status: he.status, body: { error: { code: he.code, message: he.message } } };
         }
         res.writeHead(out.status, { "content-type": "application/json", "cache-control": "no-store" });
-        res.end(JSON.stringify(out.body));
+        res.end(JSON.stringify(addCx(out.body)));
       });
     });
     s.listen(port, host);
     return s;
   }
+}
+
+/** A Cx address (or base58) as its base58 key; a bad Cx checksum is a 400. */
+function cadreAddr(v: string | null, name: string): string | null {
+  if (v === null) return null;
+  const r = cxInput(v);
+  if ("error" in r) throw new HttpError(400, "bad_address", `${name}: ${r.error}`);
+  return r.value;
 }
 
 export const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");

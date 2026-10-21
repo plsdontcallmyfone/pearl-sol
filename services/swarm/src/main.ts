@@ -6,6 +6,7 @@
 //   node src/main.ts dm-price         derive each persona's dm_price from the live inputs and print them (read-only, no keys)
 // Env: SWARM_KEYS (key dir), CHAIN_RPC, GATEWAY_URL, CADRE_API, SOLANA_RPC, SWARM_STATE,
 // SWARM_KILL_FILE, SWARM_STATUS_PORT and the budget knobs listed in README.md.
+import { toCx } from "../../../packages/cx-address/src/index.ts";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -65,6 +66,8 @@ async function main() {
     out.operator = mk("operator.json");
     for (const p of PERSONAS) out[p.handle] = mk(`agent-${p.handle}.json`);
     console.log(JSON.stringify(out, null, 2));
+    // the same keys as Cadre Cx addresses (SPEC 2.1), on stderr so the JSON above stays as scripts read it
+    for (const [k, v] of Object.entries(out)) console.error(`${k}  ${toCx(v)}`);
     return;
   }
   const cfg = configFromEnv();

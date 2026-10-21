@@ -24,7 +24,7 @@ import {
 import { b58encode } from "../../../../apps/explorer/src/codec.ts";
 
 export function addr(v: unknown, name = "address"): string {
-  if (!isAddress(v)) throw badRequest(`${name} must be a base58 32-byte address`);
+  if (!isAddress(v)) throw badRequest(`${name} must be an address (Cx, or the legacy base58 32-byte key)`);
   return v;
 }
 export function amount(v: unknown, name: string): bigint {

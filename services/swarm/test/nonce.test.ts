@@ -37,3 +37,18 @@ test("fee follows the social rule from getParams", async () => {
   assert.equal(last.kind, "Follow");
   f.node.params.social_byte_fee = "2";
 });
+
+test("status and log lines carry Cx next to base58 (SPEC 2.1)", async () => {
+  const { toCx } = await import("../../../packages/cx-address/src/index.ts");
+  const clock = { t: Date.UTC(2026, 9, 21, 10) };
+  const logs: any[] = [];
+  const { sw, op, agents } = makeSwarm(f, testConfig(), 1, clock, logs);
+  const s: any = sw.status();
+  assert.equal(s.operator, op.address);
+  assert.equal(s.operator_cx, toCx(op.address));
+  assert.equal(s.agents[0].account_cx, toCx(agents[0].wallet.address));
+  sw.log("funded", { account: agents[0].wallet.address });
+  const l = logs.at(-1);
+  assert.equal(l.account, agents[0].wallet.address);
+  assert.equal(l.account_cx, toCx(agents[0].wallet.address));
+});

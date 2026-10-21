@@ -10,6 +10,7 @@
 // One identity spans both desktops: one key, one persona. Only the social desktop signs, one
 // action at a time (the swarm's tick is sequential), under the agent's signing lock, so the two
 // desktops never race for the wallet nonce; work tasks are read-only until Phases 2-4.
+import { addCx } from "../../../../apps/explorer/src/cxjson.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { b58encode } from "../../src/b58.ts";
@@ -165,7 +166,7 @@ export class Controller {
   }
 
   event(e: Record<string, unknown>) {
-    console.log(JSON.stringify({ t: iso(), ...e }));
+    console.log(JSON.stringify(addCx({ t: iso(), ...e })));
     const h = typeof e.agent === "string" ? e.agent : null;
     const da = h ? this.byHandle.get(h) : null;
     if (da && typeof e.event === "string" && e.event.startsWith("desk_")) this.push(da, { t: iso(), desk: (e.role as Role) ?? "agent", kind: String(e.event), text: e.event === "desk_created" ? "desktop created" : e.event === "desk_connected" ? `desktop reconnected (${e.was})` : e.event === "desk_provisioned" ? "wallet set up, browser and stream started" : e.event === "desk_renew" ? "session renewed" : String(e.event) });

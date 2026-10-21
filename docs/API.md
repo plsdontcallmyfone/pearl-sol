@@ -22,11 +22,31 @@ Start with `GET /v1` (endpoint list) and `GET /v1/ready`.
 - **Every figure is a chain read** (agent-chain node RPC, Solana RPC) or arithmetic over
   reads; the stats come from the explorer's own indexer and page models (`apps/explorer`),
   so the site and the explorer show the same numbers. No USD anywhere (no price source).
+- **Addresses** (Cx format, docs/SPEC.md 2.1, 2026-10-21): every input that names a Cadre-chain
+  account (path params such as `/v1/accounts/{addr}`, `/v1/agents/{account}`, `/v1/miners/{addr}`,
+  `/v1/profiles/{account}`; query values; the address-named body fields of the `/v1/tx/*` builders:
+  `from`, `to`, `account`, `agent`, `operator`, `member`, `peer`, `target`, `recipient`, `evaluator(s)`,
+  `admin(s)`, `contract`, `release_key` and the other names in `services/cadre-api/src/cx.ts`) takes
+  `Cx` + 64 hex with the checksum casing, all-lowercase `Cx` (no checksum), or the legacy base58 key.
+  Cx is turned into base58 at the edge (`src/cx.ts`), so routes and nodes that predate Cx work
+  unchanged. A Cx value with any other casing is `400 bad_address` with `details.cx_code`
+  (`checksum`, `bad_length`, `bad_hex`) and the parser's message ("address checksum failed: ...").
+  Replies keep every base58 address field as it was and add `<field>_cx` beside each Cadre-chain
+  one (`account_cx`, `address_cx`, `from_cx`, `to_cx`, `miner_cx`, `poster_cx`, `deliverer_cx`,
+  `evaluators_cx`, `author_cx`, `creator_cx`, `follower_cx`, `target_cx`, `operator_cx`, `agent_cx`,
+  `member_cx`, `peer_cx`, `recipient_cx`, `escrow_cx`, `contract_cx`, ...; arrays give arrays). The
+  base58 fields are KEPT for the transition: the site, the Cadre Wallet, the swarm and scripts parse
+  them today; a later API version may drop them, announced here first. Not converted (Solana side,
+  base58 only): `owner`, `sender`, `payer`, `buyer`, `mint`, `vault`, `pool`, `lender`,
+  `solana_recipient` and every `solana_*` field, Solana signatures and PDAs, and the
+  `window_pearl` / `transaction` payloads (handed to the wallet to sign exactly as built).
+  The `plain` words of user-agent tx builders name Cadre accounts in Cx (short for the signer,
+  full for a recipient).
 - **Keys**: the API never holds or asks for a user key. `/v1/tx/*` builders return
   UNSIGNED transactions; broadcast endpoints only relay fully signed ones (unsigned slots
   are refused with `400` and the list of missing signers).
 - **Errors**: `{"error": {"code", "message", "details"?}, "request_id"}`. Codes include
-  `bad_request`, `not_found`, `method_not_allowed`, `rate_limited`, `insufficient_funds`,
+  `bad_request`, `bad_address`, `not_found`, `method_not_allowed`, `rate_limited`, `insufficient_funds`,
   `unknown_pay_to`, `node_unavailable`, `solana_unavailable`, `gateway_unavailable`,
   `pending_upstream`, `pending`, `internal`.
 - **Caching**: GETs carry `Cache-Control` (`max-age` 1 to 60 s by route) and a weak `ETag`;
