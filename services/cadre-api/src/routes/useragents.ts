@@ -16,6 +16,7 @@
 // - /v1/hosted/*: pass-through to the hosted runtime (services/swarm/agents), signed headers kept.
 // cadre-api still never holds a key: the runtime is a separate service.
 
+import { displayCx, shortAddress } from "../../../../packages/cx-address/src/index.ts";
 import { createHash } from "node:crypto";
 import type { Api, Ctx } from "../http.ts";
 import { ApiError, badRequest, notFound, reply } from "../http.ts";
@@ -40,7 +41,9 @@ const u16 = (v: number) => [v & 0xff, (v >> 8) & 0xff];
 const u32 = (v: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return [...b]; };
 const u64 = (v: bigint) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return [...b]; };
 const units = (v: bigint | string) => { const x = BigInt(v); const s = (x / 1_000_000_000n).toString(); const f = (x % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, ""); return f ? `${s}.${f}` : s; };
-const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}...${a.slice(-4)}` : a);
+// Cadre addresses in plain words: short Cx for the signer, the full Cx for anyone receiving funds or rights.
+const short = (a: string) => shortAddress(a);
+const full = (a: string) => displayCx(a) ?? a;
 
 type AnyTx =
   | SocialBody
@@ -67,15 +70,15 @@ export function signingBytes(chainId: number, from: string, nonce: bigint, fee: 
 export function plainWords(from: string, t: AnyTx, fee: bigint, chainId: number, nonce: bigint): string {
   const tail = `Fee ${units(fee)} CADRE from ${short(from)} (nonce ${nonce}, Cadre chain ${chainId}).`;
   switch (t.kind) {
-    case "Transfer": return `Send ${units(t.amount)} CADRE to ${t.to} on the Cadre chain. ${tail}`;
+    case "Transfer": return `Send ${units(t.amount)} CADRE to ${full(t.to)} on the Cadre chain. ${tail}`;
     case "RegisterAgent": return `Register ${short(from)} as an agent named "${t.name}" with the card ${t.uri || "(none)"}. Moves no funds. ${tail}`;
-    case "OperatorLink": return `${t.add ? "Link" : "Unlink"} the agent ${t.agent}: ${t.add ? "you become its operator on the Cadre chain (the link is public)" : "you stop being its operator"}. Moves no funds. ${tail}`;
-    case "SetProfile": return `Set the profile of ${short(from)}: @${t.handle || "(no handle)"}, "${t.name}", operator ${t.operator === ZERO_KEY ? "none" : t.operator}, profile blob ${t.profileUri || "(none)"}. Moves no funds. ${tail}`;
+    case "OperatorLink": return `${t.add ? "Link" : "Unlink"} the agent ${full(t.agent)}: ${t.add ? "you become its operator on the Cadre chain (the link is public)" : "you stop being its operator"}. Moves no funds. ${tail}`;
+    case "SetProfile": return `Set the profile of ${short(from)}: @${t.handle || "(no handle)"}, "${t.name}", operator ${t.operator === ZERO_KEY ? "none" : full(t.operator)}, profile blob ${t.profileUri || "(none)"}. Moves no funds. ${tail}`;
     case "Post": return `${["Post", "Reply", "Repost", "Quote"][t.postKind] ?? "Post"} on the town square: "${t.body.slice(0, 140)}${t.body.length > 140 ? "..." : ""}". ${tail}`;
     case "React": { const tips = t.items.reduce((s, x) => s + BigInt(x.tip), 0n); return `React to ${t.items.length} post(s)${tips ? `, tipping ${units(tips)} CADRE in total` : ""}. ${tail}`; }
     case "Follow": return `Follow ${t.items.filter((x) => x.on).length} and unfollow ${t.items.filter((x) => !x.on).length} account(s). ${tail}`;
     case "SendMessage": {
-      const where = t.channel !== "0".repeat(64) ? `in channel ${t.channel.slice(0, 12)}...` : `to ${t.to}`;
+      const where = t.channel !== "0".repeat(64) ? `in channel ${t.channel.slice(0, 12)}...` : `to ${full(t.to)}`;
       const what = t.mode === 1 ? `a sealed message (${messageBodyBytes(t).length} bytes; the text is hidden, the sender, recipient, time, size and pay are public)` : `"${(t.body ?? "").slice(0, 140)}${(t.body ?? "").length > 140 ? "..." : ""}"`;
       const pay = BigInt(t.pay) > 0n ? (t.reclaimAfter > 0 ? ` Pays ${units(t.pay)} CADRE into escrow (released by a reply within ${t.reclaimAfter} blocks, else reclaimable).` : ` Pays ${units(t.pay)} CADRE to the recipient.`) : "";
       return `Send ${what} ${where}.${pay} ${tail}`;
@@ -83,7 +86,7 @@ export function plainWords(from: string, t: AnyTx, fee: bigint, chainId: number,
     case "ReclaimMessage": return `Reclaim the escrowed pay of message ${t.messageId.slice(0, 12)}... back to its sender. ${tail}`;
     case "SetConsent": return `Set DM consent for ${t.items.length} account(s): ${t.items.map((x) => `${short(x.peer)} ${CONSENT_STATES[x.state] ?? x.state}`).join(", ")}. Moves no funds. ${tail}`;
     case "ChannelConfig": return `${t.channelId === "0".repeat(64) ? "Create" : "Update"} the ${t.mode === 1 ? "sealed" : "plain"} channel "${t.name}" (${["open", "invite only", "paid join"][t.policy] ?? t.policy}${BigInt(t.joinPrice) > 0n ? `, join ${units(t.joinPrice)} CADRE` : ""}, ${t.admins.length} admin(s)). ${tail}`;
-    case "ChannelMember": return `${ACTIONS[t.action] ?? t.action} ${t.member === ZERO_KEY ? "yourself" : t.member} in channel ${t.channel.slice(0, 12)}...${BigInt(t.pay) > 0n ? `, paying ${units(t.pay)} CADRE` : ""}. ${tail}`;
+    case "ChannelMember": return `${ACTIONS[t.action] ?? t.action} ${t.member === ZERO_KEY ? "yourself" : full(t.member)} in channel ${t.channel.slice(0, 12)}...${BigInt(t.pay) > 0n ? `, paying ${units(t.pay)} CADRE` : ""}. ${tail}`;
     case "ChannelKey": return `Post ${t.envelopes.length} key envelope(s) for epoch ${t.epoch} of channel ${t.channel.slice(0, 12)}... Moves no funds. ${tail}`;
   }
 }

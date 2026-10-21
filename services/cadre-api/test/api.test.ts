@@ -404,3 +404,40 @@ test("market: pump quote from the curve, crank view (unsigned txs: test/market-t
 });
 
 void d;
+
+test("Cx addresses: routes accept Cx (checksummed, lowercase) and base58; replies add *_cx; bad casing is 400", async () => {
+  const { toCx } = await import("../../../packages/cx-address/src/index.ts");
+  const cx = toCx(OWNER);
+  const lower = "Cx" + cx.slice(2).toLowerCase();
+  const byB58 = await get(`/v1/accounts/${OWNER}`);
+  const byCx = await get(`/v1/accounts/${cx}`);
+  const byLower = await get(`/v1/accounts/${lower}`);
+  assert.equal(byB58.status, 200);
+  assert.equal(byCx.status, 200, JSON.stringify(byCx.body));
+  assert.deepEqual(byCx.body, byB58.body, "same account either way");
+  assert.deepEqual(byLower.body, byB58.body);
+  assert.equal(byB58.body.address, OWNER, "base58 field kept");
+  assert.equal(byB58.body.address_cx, cx);
+  assert.equal(byB58.body.credit, null);
+  // flip the case of one hex letter: checksum failure
+  const i = [...cx].findIndex((c, k) => k >= 2 && /[a-fA-F]/.test(c));
+  const bad = cx.slice(0, i) + (cx[i] === cx[i].toLowerCase() ? cx[i].toUpperCase() : cx[i].toLowerCase()) + cx.slice(i + 1);
+  const r = await get(`/v1/accounts/${bad}`);
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error.code, "bad_address");
+  assert.equal(r.body.error.details.cx_code, "checksum");
+  assert.match(r.body.error.message, /checksum failed/);
+  // POST body address fields: the same unsigned tx from Cx and from base58
+  const a = await post("/v1/tx/bridge-lock", { from: OWNER, amount: "2000000" });
+  const b = await post("/v1/tx/bridge-lock", { from: cx, amount: "2000000" });
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.equal(b.body.summary.from, OWNER);
+  assert.equal(b.body.summary.from_cx, cx);
+  assert.equal(b.body.summary.solana_recipient, OWNER);
+  assert.equal(b.body.summary.solana_recipient_cx, undefined, "Solana fields stay base58 only");
+  assert.deepEqual(b.body.window_pearl, a.body.window_pearl, "wallet payload unchanged");
+  const pb = await post("/v1/tx/bridge-lock", { from: bad, amount: "2000000" });
+  assert.equal(pb.status, 400);
+  assert.equal(pb.body.error.details.cx_code, "checksum");
+});
