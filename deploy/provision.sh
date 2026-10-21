@@ -2,7 +2,7 @@
 # Fresh Ubuntu 24.04 box -> Lode public devnet host (docs/DEVNET.md). Run as root ON the box:
 #   ssh root@BOX 'bash -s' < deploy/provision.sh [build]
 # Creates user `lode` (services run as it), 4 GB swap, ufw (22, 80, 443, 10640 p2p),
-# caddy (https via Let's Encrypt for the sslip.io names). With `build` it also installs
+# caddy (https via Let's Encrypt for the sslip.io names), key-only sshd, unattended security updates. With `build` it also installs
 # apt build deps; toolchains (rust, solana, anchor, node) go in as `lode` via deploy/toolchain.sh.
 # Idempotent. Copies nothing from anywhere: keys arrive later, one file per service.
 set -euo pipefail
@@ -33,6 +33,25 @@ ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
 for p in 22/tcp 80/tcp 443/tcp 10640/tcp; do ufw allow "$p" >/dev/null; done
 ufw --force enable >/dev/null
+# ssh: key only (00- wins over 50-cloud-init.conf, which sets PasswordAuthentication yes on BitLaunch images)
+cat > /etc/ssh/sshd_config.d/00-cadre-hardening.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+PermitEmptyPasswords no
+X11Forwarding no
+MaxAuthTries 3
+LoginGraceTime 30
+SSHD
+sshd -t && systemctl reload ssh.service 2>/dev/null || true
+# security updates daily, never an automatic reboot (reboots happen in announced windows)
+apt-get install -y -q unattended-upgrades >/dev/null
+cat > /etc/apt/apt.conf.d/52cadre-unattended <<'APT'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+APT
 # journald: bounded logs
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nSystemMaxUse=2G\n' > /etc/systemd/journald.conf.d/lode.conf

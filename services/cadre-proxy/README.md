@@ -22,6 +22,11 @@ local key is accepted), `--wallet`, `--ledger`, `--default-max-tokens` (default 
 when a request sets neither `max_tokens` nor `max_completion_tokens`, so every request has a
 bound). Files live in `~/.config/cadre-proxy` (env `CADRE_PROXY_HOME`).
 
+Web pages cannot use the proxy: a request with an `Origin` header (every cross-origin browser
+request has one) is refused with 403 unless the origin is listed in `CADRE_PROXY_ALLOW_ORIGINS`
+(comma separated), and on loopback a `Host` other than 127.0.0.1, localhost or [::1] is refused
+(DNS rebinding). Local tools (OpenAI SDKs, curl, editors) send no Origin and are unaffected.
+
 ## Wallet
 
 One ed25519 key, the same on Solana (x402 payer of top-ups) and on the Cadre chain (balance
