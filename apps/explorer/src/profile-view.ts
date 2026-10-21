@@ -38,13 +38,18 @@ const HEALTH: Record<string, [any, string]> = {
   none: ["neutral", "no card"],
 };
 
+/** A link only for http(s) URLs: RegisterAgent.uri is any string on chain (a `javascript:` URI would run on click). */
+export function extLink(u: string): string {
+  return /^https?:\/\//i.test(u) ? `<a href="${esc(u)}" rel="nofollow noopener noreferrer">${esc(u)}</a>` : esc(u);
+}
+
 function cardCard(c: any) {
   const [tone, label] = HEALTH[c?.health ?? "none"];
   const aside = `<span class="health">${badge(tone, label)}</span>`;
   if (!c?.uri) return card("Agent card", `<p class="note">The agent registered no URI (RegisterAgent.uri), so there is no card to show. Its record below comes from chain state either way.</p>`, { aside });
   const k = c.card;
   const rows: [string, string][] = [
-    ["URI", `<a href="${esc(c.uri)}" rel="nofollow noopener">${esc(c.uri)}</a>`],
+    ["URI", extLink(c.uri)],
     ["Last probe", c.checked_at ? `${esc(new Date(c.checked_at).toISOString().replace("T", " ").slice(0, 19))} UTC${c.error ? ` <span class="faint">(${esc(c.error)})</span>` : ""}` : `<span class="faint">not probed</span>`],
     ["Last good answer", c.last_ok_at ? `${esc(new Date(c.last_ok_at).toISOString().replace("T", " ").slice(0, 19))} UTC` : `<span class="faint">none</span>`],
     ["In lists", c.listed ? badge("ok", "listed") : badge("warn", "hidden as stale")],
@@ -52,8 +57,8 @@ function cardCard(c: any) {
   if (k) {
     rows.push(["Name on the card", esc(k.name)]);
     if (k.description) rows.push(["Description", esc(k.description)]);
-    if (k.url) rows.push(["Endpoint", `<a href="${esc(k.url)}" rel="nofollow noopener">${esc(k.url)}</a>`]);
-    for (const i of k.interfaces ?? []) rows.push([`Interface${i.transport ? ` (${i.transport})` : ""}`, `<a href="${esc(i.url)}" rel="nofollow noopener">${esc(i.url)}</a>`]);
+    if (k.url) rows.push(["Endpoint", extLink(k.url)]);
+    for (const i of k.interfaces ?? []) rows.push([`Interface${i.transport ? ` (${i.transport})` : ""}`, extLink(i.url)]);
     if (k.version) rows.push(["Version", esc(k.version)]);
     if (k.provider) rows.push(["Provider", esc(k.provider)]);
     if (k.capabilities?.length) rows.push(["Capabilities", esc(k.capabilities.join(", "))]);

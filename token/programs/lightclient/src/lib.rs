@@ -495,14 +495,19 @@ pub mod lightclient {
         Ok(())
     }
 
-    /// Mark a canonical header at or below the final floor as final (permanent).
-    pub fn mark_final(ctx: Context<MarkFinal>) -> Result<()> {
+    /// Mark a canonical header at or below the final floor as final (permanent). A header
+    /// that fell out of the canonical ring (more than CANON_LEN below the tip) is final
+    /// when its child is: pass that final child as the one remaining account
+    /// (security pass 2026-10-21, finding L-2: otherwise such headers could never be
+    /// marked or accumulated and the accumulator would stall for good).
+    pub fn mark_final<'info>(ctx: Context<'_, '_, 'info, 'info, MarkFinal<'info>>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         let canon = ctx.accounts.canon.load()?;
         let mut r = ctx.accounts.header.load_mut()?;
         require!(r.status == STATUS_VERIFIED, LcError::NotVerified);
         require!(r.height <= c.final_floor, LcError::NotFinal);
-        require!(is_canonical(&canon, c, &r.hash, r.height), LcError::NotCanonical);
+        let canonical = is_canonical(&canon, c, &r.hash, r.height) || has_final_child(ctx.remaining_accounts, &r.hash, r.height)?;
+        require!(canonical, LcError::NotCanonical);
         r.is_final = 1;
         if r.height > c.final_height {
             c.final_height = r.height;
@@ -563,6 +568,46 @@ pub mod lightclient {
         let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
         w.begin(&rec.hash, proof_len, false, &params, &pj.config)?;
         emit!(JobBound { job_id: pj.job_id, posted_height: block.height, header: rec.hash });
+        Ok(())
+    }
+
+    /// Re-register a job whose `JobCommit` came from a block that is no longer canonical
+    /// (security pass 2026-10-21, finding L-1). The light client checks only proof of work,
+    /// not transactions, so one PoW-valid block carrying a fake PostJob / order BridgeUnlock
+    /// could register `job_id` first with junk commitments, and the real job's blocks would
+    /// then never verify (the light client halts). `witness` is the final or canonical
+    /// header at the old commit's `posted_height` and differs from its `posted_block`;
+    /// `block` (Verified, final or canonical) carries the tx, proved as in `register_job`.
+    pub fn replace_job(ctx: Context<ReplaceJob>, job_id: [u8; 32], tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
+        let c = &ctx.accounts.config;
+        let canon = ctx.accounts.canon.load()?;
+        {
+            let w = ctx.accounts.witness.load()?;
+            let j = &ctx.accounts.job;
+            require!(proves_dead(&canon, c, &w, &j.posted_block, j.posted_height), LcError::NotCanonical);
+        }
+        let block = ctx.accounts.block.load()?;
+        require!(block.status == STATUS_VERIFIED, LcError::NotVerified);
+        require!(block.is_final == 1 || is_canonical(&canon, c, &block.hash, block.height), LcError::NotCanonical);
+        let h = Header(&block.header);
+        let th = pv::chaintx::tx_hash(&tx);
+        pv::chaintx::verify_tx_path(&th, &path, &h.tx_root()).map_err(|e| verr(e))?;
+        let view = pv::chaintx::TxView::new(&tx, c.params.chain_id).map_err(|e| verr(e))?;
+        let jc = pv::chaintx::job_by_id(&view, &job_id, sha256).map_err(|e| verr(e))?;
+        require!(jc.job_id == job_id, LcError::JobMissing);
+        let cfg = pv::config::MiningConfig::from_bytes(&jc.config).map_err(|e| verr(e))?;
+        cfg.check_shape(jc.m, jc.n).map_err(|e| verr(e))?;
+        let j = &mut ctx.accounts.job;
+        j.job_key = pv::verify::job_key(&jc.header76, &jc.config);
+        j.header76 = jc.header76;
+        j.config = jc.config;
+        j.m = jc.m;
+        j.n = jc.n;
+        j.hash_a = jc.hash_a;
+        j.hash_b = jc.hash_b;
+        j.posted_height = block.height;
+        j.posted_block = block.hash;
+        emit!(JobRegistered { job_id, posted_height: block.height });
         Ok(())
     }
 
@@ -669,7 +714,17 @@ pub mod lightclient {
             }
             old_enough
         } else {
-            r.height <= c.final_floor && !(r.status == STATUS_VERIFIED && is_canonical(&canon, c, &r.hash, r.height))
+            // A Verified header that left the canonical ring may still be canonical (not
+            // marked final yet): keep it until the accumulator has passed its height, so a
+            // final-gap can always be closed by `mark_final` with a final child (L-2).
+            let in_ring = r.height <= c.tip_height && c.tip_height - r.height < CANON_LEN as u64;
+            let past_acc = {
+                let acc = ctx.accounts.acc.load()?;
+                r.height < acc.start_height + acc.count
+            };
+            r.height <= c.final_floor
+                && !(r.status == STATUS_VERIFIED && is_canonical(&canon, c, &r.hash, r.height))
+                && (r.status != STATUS_VERIFIED || in_ring || past_acc)
         };
         require!(ok, LcError::CannotClose);
         Ok(())
@@ -720,6 +775,25 @@ fn prove_job(c: &Config, canon: &Canon, block: &HeaderRecord, job_id: &[u8; 32],
 
 fn is_canonical(canon: &Canon, c: &Config, hash: &[u8; 32], height: u64) -> bool {
     height <= c.tip_height && (c.tip_height - height) < CANON_LEN as u64 && canon.hashes[(height as usize) % CANON_LEN] == *hash
+}
+
+/// True when the first remaining account is a final, Verified `HeaderRecord` at
+/// `height + 1` whose parent is `hash`: a final header's parent is canonical forever.
+fn has_final_child<'info>(rem: &'info [AccountInfo<'info>], hash: &[u8; 32], height: u64) -> Result<bool> {
+    let Some(ai) = rem.first() else { return Ok(false) };
+    require_keys_eq!(*ai.owner, crate::ID, LcError::BadPath);
+    let loader = AccountLoader::<HeaderRecord>::try_from(ai)?;
+    let ch = loader.load()?;
+    Ok(ch.is_final == 1 && ch.status == STATUS_VERIFIED && ch.height == height + 1 && Header(&ch.header).prev_hash() == *hash)
+}
+
+/// The HeaderRecord passed as `witness` proves that `old_block` (at `old_height`) is not
+/// canonical: the witness is the final or canonical header at that height and differs.
+fn proves_dead(canon: &Canon, c: &Config, w: &HeaderRecord, old_block: &[u8; 32], old_height: u64) -> bool {
+    w.status == STATUS_VERIFIED
+        && w.height == old_height
+        && w.hash != *old_block
+        && (w.is_final == 1 || is_canonical(canon, c, &w.hash, w.height))
 }
 
 /// Mark a header whose work is verified and whose parent is Verified as Verified; extend
@@ -1103,6 +1177,21 @@ pub struct RegisterJob<'info> {
     #[account(init, payer = payer, space = 8 + JobCommit::INIT_SPACE, seeds = [JOB_SEED, &job_id], bump)]
     pub job: Box<Account<'info, JobCommit>>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(job_id: [u8; 32])]
+pub struct ReplaceJob<'info> {
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [CANON_SEED], bump)]
+    pub canon: AccountLoader<'info, Canon>,
+    pub block: AccountLoader<'info, HeaderRecord>,
+    /// The final or canonical header at the old commit's posted height.
+    pub witness: AccountLoader<'info, HeaderRecord>,
+    #[account(mut, seeds = [JOB_SEED, &job_id], bump = job.bump)]
+    pub job: Box<Account<'info, JobCommit>>,
 }
 
 #[derive(Accounts)]

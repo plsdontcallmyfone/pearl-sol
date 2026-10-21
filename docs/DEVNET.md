@@ -27,6 +27,7 @@ storefront-x402, crank, explorer and cadre-api running on box 0. e2e results: "E
 | Solana RPC | https://api.devnet.solana.com (public; rate limited) |
 | cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway and prepaid ON since 2026-10-20 06:17 UTC (`/v1/openai/*`, `/v1/inference/*`), pool off |
 | Cadre website (~/cadre-web) | https://cadre.64-95-12-116.sslip.io (`cadre-web.service` on box 0, :10710 behind caddy); miner installer at https://cadre.64-95-12-116.sslip.io/install-miner.sh (devnet defaults) |
+| house desktops (ECOSYSTEM 2.10) | https://cadre.64-95-12-116.sslip.io/live (grid) and /live/<handle>; API `/v1/desktops`; `cadre-desktops.service` on box 0, 127.0.0.1:10720 (see "House desktops") |
 | paid AI (inference gateway, SPEC 5.4) | through cadre-api: base URL https://api.64-95-12-116.sslip.io/v1/openai (OpenAI-compatible), model `llama-3.2-1b-instruct-w7a7`; gateway :10664 and worker :10665 on box 0 (127.0.0.1 only) |
 
 CLI: `pearl` now defaults to the devnet (`--network devnet`); `--network localnet` (or
@@ -315,6 +316,55 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   canonical chain from height 2890 had segment blocks by all three miners (box 1 4pDphQ... 11, box 2
   AHYHqU... 5, box 0 GDcEUh... 4 at height ~2910; for example height 2909, segment of matrix 142).
 
+### Town (social layer) and the house swarm (2026-10-21, ECOSYSTEM Phase 1)
+
+- Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
+  the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
+  4255-4257: `house_operators` = [Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM] (the swarm operator),
+  `price_mlamports_per_gflop` = 14736 (owner D2, ECOSYSTEM 5.1), `max_balance_rows` = 8192 (the devnet
+  storefront's on-chain `max_dim`). All three nodes answer getParams with the same values.
+- Box 0 services from main 816c941+ (15:25-16:22 UTC): `install 0` (inference.env `GATEWAY_EXTRA=--max-balance-rows
+  8192` from deploy/devnet.env), cadre-gateway a73d2999... (text_sha256 receipts, large balances, round
+  cap), cadre-storefront (reads the chain price knobs: an 8192-row balance quotes 25,442,615 lamports,
+  `source.work: chain`), cadre-explorer and cadre-api (town routes, /v1/town, /v1/profiles, /v1/leaderboards,
+  /v1/tx/{set-profile,post,react,follow,operator-link}, /v1/blobs), cadre-web (~/cadre-web main 7c20aec: the
+  teammate's redesign + /town, profiles, /u/[handle], /leaderboards).
+- House swarm: `cadre-swarm.service` on box 0 (services/swarm, status 127.0.0.1:10668), keys in
+  keys/devnet/swarm (Mac, gitignored, backup ~/.config/pearl-sol/keys-devnet-backup/swarm) copied to
+  /etc/lode/keys/swarm (`scripts/devnet-deploy.sh swarm keys`), overrides in /etc/lode/swarm.env
+  (`SWARM_TOPUP_ROWS=8192`, `SWARM_TOPUP_ROUND_SECS=10800`, `SWARM_AGENTS=24`: the last 6 personas are driven
+  by the house desktops row). Operator funded with 5 CADRE on the chain (from miner0) and 1 devnet SOL (from
+  ops, sent on box 0 since the Mac's IP was throttled). First run 15:27 UTC: 30 fundings + 30 OperatorLinks,
+  30 house profiles (bios written in paid thoughts), two 8192-row top-ups (orders 32 and 33, 50,885,230
+  lamports together), first verified posts from 16:03 UTC. Kill switch: `touch /var/lib/lode/swarm/STOP`.
+- Daily cap 16,384 rows (services/swarm README); the 30 bios took about 7,000 of the first day's rows.
+
+### House desktops (2026-10-21)
+
+`cadre-desktops.service` on box 0 (deploy/systemd/cadre-desktops.service; code in its own checkout
+`~/cadre-desktops`, so `devnet-deploy.sh sync` never moves it), controller on 127.0.0.1:10720,
+public through cadre-api `/v1/desktops` (stream tokens under `/etc/lode/keys/desktops-stream.key`)
+and the site's `/live`. Live since 16:33 UTC: 6 agents x 2 desktops (Social + Work) = 12 E2B
+sandboxes, template `cadre-desktop` (1 vCPU / 1 GiB), the last 6 house personas (cadre-swarm keeps
+the first 24: `SWARM_AGENTS=24` in /etc/lode/swarm.env). Config `/etc/lode/desktops.env` (key file
+paths, `DESK_AGENTS`, `DESK_USD_PER_DAY` 25, `DESK_SOCIAL`, gaps, this swarm's budget share);
+keys `/etc/lode/keys/desktops/{e2b,providers}.env` (0600; E2B and OpenRouter only); agent keys are
+cadre-swarm's (`/etc/lode/keys/swarm`); state `/var/lib/lode/desktops` (spend.json, swarm-state.json,
+wallet.tgz = ~/pearl-wallet dist without maps).
+
+    scripts/devnet-desktops.sh code       # this checkout's main -> box 0 ~/cadre-desktops + npm ci
+    scripts/devnet-desktops.sh secrets    # key files, stream key, desktops.env (env: DESK_AGENTS, DESK_USD_PER_DAY, DESK_SOCIAL)
+    scripts/devnet-desktops.sh wallet     # wallet build -> wallet.tgz (new desktops get it; running ones keep theirs)
+    scripts/devnet-desktops.sh unit       # install + enable the unit
+    scripts/devnet-deploy.sh ctl 0 restart cadre-desktops   # the desktops keep running across a restart
+    scripts/devnet-desktops.sh status     # spend today, measured cost, each desktop's state and action
+    scripts/devnet-desktops.sh stop       # KILL SWITCH: STOP flag + pause every house desktop (billing stops)
+    scripts/devnet-desktops.sh resume     # then restart the unit
+
+More agents: raise `DESK_USD_PER_DAY` (all 20 need about 75 USD/day, ECOSYSTEM 2.10), set
+`DESK_AGENTS`, lower cadre-swarm's `SWARM_AGENTS` to 30 - DESK_AGENTS, restart both. A desktop agent
+whose number is lowered keeps its sandboxes until `node src/main.ts destroy` or a kill by handle.
+
 ### Reset the chain (new genesis)
 
 Stop every node, `rm -rf /var/lib/lode/chain` on each box, write a new deploy/genesis.json (new
@@ -429,6 +479,98 @@ old box 0 work accounts (from before the relay moved off box 0) no longer exist 
 an idle work account close; they come back with `close-works` when a relay is retired). At 15:20 UTC:
 relay box 1 4.4469, relay box 2 4.5020 (about 0.02 SOL/h each in fees), ops 17.2289, deployer 45.9612
 SOL (unchanged).
+
+## Ops hardening (2026-10-21, security pass)
+
+Audited on all three boxes on 2026-10-21 (security + robustness row, docs/SECURITY-REVIEW.md lists the
+findings). State after the pass:
+
+| area | state |
+|---|---|
+| firewall | ufw active on every box: default deny incoming, allow 22, 80, 443 and 10640 (p2p) only. Every service port (10630-10631 node RPC/WS, 10660-10670, 10685, 10710, 10720) and caddy's admin (2019) listen on 127.0.0.1 only; caddy fronts the public names. Was already so; unchanged |
+| ssh | key only since 2026-10-21: `/etc/ssh/sshd_config.d/00-cadre-hardening.conf` (deploy/ssh/) wins over BitLaunch's `50-cloud-init.conf`, which had `PasswordAuthentication yes` with a root password set (`auth.log` held 24,885 to 35,780 failed password lines per box). `PermitRootLogin prohibit-password`, X11 off, MaxAuthTries 3. Verified per box: fresh key logins as root and lode work, a password attempt gets `Permission denied (publickey)`. `lode` has no sudo |
+| updates | unattended-upgrades active on every box (last run 2026-10-21 06:24-06:36 UTC, "All upgrades installed"); `/etc/apt/apt.conf.d/52cadre-unattended` (deploy/apt/) pins `Automatic-Reboot "false"`: kernel reboots stay owner/window decisions |
+| TLS | caddy 2.11.7, Let's Encrypt certificates for every name, 87-88 days left on 2026-10-21 (caddy renews at 30). Security headers (HSTS, nosniff, Referrer-Policy, no Server header; set only when the app did not) via the `(sec)` snippet in deploy/Caddyfile.tmpl: LIVE on boxes 1 and 2 (caddy reload, checked with curl), box 0 at its next `install 0` + caddy reload |
+| key files | `/etc/lode/keys/*` 0600 lode in a 0700 dir on every box; `/etc/lode` and `/var/lib/lode` 0700 lode; header-relay work keypairs 0600. Env files under /etc/lode were 0644 (inside the 0700 dir): now 0600, and `devnet-deploy.sh install` writes them 0600 |
+| logs | journald (3 days) grep for key-shaped strings: no 64-number arrays; every 86-88 char base58 string is a transaction signature (`sig`, `transaction` context; 0 near secret/private/keypair/seed) |
+| services | every cadre-* unit runs as `lode` (no root service). Sandbox drop-ins written and dry-run verified, NOT active yet (rollout below) |
+
+Commands (scripts/devnet-deploy.sh): `os N` (sshd drop-in + unattended config, sshd reloaded only after a
+test login), `harden N` (systemd drop-ins, daemon-reload, nothing restarted), `health` (health check on box 0).
+`deploy/provision.sh` now also writes the sshd and unattended-upgrades files on a fresh box.
+
+### Systemd sandbox (deploy/systemd/hardening/)
+
+`common.conf` for every cadre-* unit: NoNewPrivileges, ProtectSystem=strict with only /var/lib/lode
+writable, ProtectHome=read-only (code, node and the venv live in /home/lode), PrivateTmp, PrivateDevices,
+kernel/cgroup/clock/hostname protection, ProtectProc=invisible, no capabilities, RestrictNamespaces,
+RestrictSUIDSGID, RestrictAddressFamilies INET/INET6/UNIX/NETLINK, UMask 0077. `native.conf` adds
+MemoryDenyWriteExecute + `SystemCallFilter=@system-service` for header-relay, cadre-settle, pearl-attester
+and cadre-gateway only (not agent-node / pearl-miner: the contracts row is adding a WASM VM to the node;
+not Node.js or Python: V8 needs W+X pages). `cadre-web.conf` adds `/home/lode/cadre-web/.next` (next's cache).
+
+Dry runs on box 0 (2026-10-21, transient `systemd-run` units with the same properties, no live unit touched):
+`header-relay status` (common + native) read the light client from Solana devnet and the node; attester,
+gateway, miner and agent-node `--help` ran; a scratch agent-node (devnet genesis, own data dir under
+/var/lib/lode, 127.0.0.1 ports 10651-10653, no seeds) started, answered `getChainInfo` and wrote its store;
+from each Node.js service directory (relayer, storefront-x402, crank, explorer, cadre-api, swarm) node ran
+JIT-heavy code, resolved its first dependency, fetched https and wrote under /var/lib/lode, and a write
+under /home/lode failed with EROFS; `next start` from ~/cadre-web on 127.0.0.1:10719 answered HTTP 200;
+the worker's venv imported numpy and found worker.py. Exposure (`systemd-analyze security`): cadre-node
+9.2 UNSAFE today; the health unit with the same set scores 3.0 OK.
+
+Rollout (needs an announced window, one box at a time, health check between; the drop-ins take effect at
+each unit's next restart, so do not install them outside a window: a crash restart would pick them up):
+1. box 2: `scripts/devnet-deploy.sh harden 2`, then `ctl 2 restart cadre-header-relay`, wait for a relayed
+   header, `ctl 2 restart cadre-node cadre-miner`, check heights agree (`status`).
+2. box 1: the same.
+3. box 0: `harden 0`, then restart one at a time with a check after each: cadre-attester, cadre-settle,
+   cadre-relayer, cadre-crank, cadre-storefront, cadre-explorer, cadre-api, cadre-gateway, cadre-worker,
+   cadre-swarm, cadre-web, then cadre-node + cadre-miner. Then `install 0` (or copy the Caddyfile) and
+   `systemctl reload caddy` for the security headers. Undo: `rm -r /etc/systemd/system/<unit>.d/10-hardening.conf
+   20-*.conf; systemctl daemon-reload; systemctl restart <unit>`.
+Units added later (e.g. cadre-desktops, cadre-agents) get the same drop-in from `harden N`.
+
+### Health check (box 0, LIVE since 2026-10-21 15:45 UTC)
+
+`cadre-health.timer` runs scripts/devnet-health.sh (installed as /opt/lode/bin/cadre-health) every 5
+minutes as lode: the three nodes answer, heights agree within 3 and the tip moved since the last run,
+light-client final within 120 blocks of the chain (cadre-api /v1/summary), both relay payers hold at least
+1 SOL, every enabled cadre-* unit on box 0 is active, at least 10% disk free, every certificate has 14+
+days. Owner view: `scripts/devnet-deploy.sh ssh 0 cat /var/log/cadre-health/status` (one line: time,
+OK/WARN/FAIL, failing checks) and `/var/log/cadre-health/health.log` (one line per check per run, last
+20,000 lines). Thresholds can be overridden in /etc/lode/health.env. No external messaging (owner decision
+needed for any alert channel). Boxes 1-2 are covered through their public RPC and the relay balances;
+their unit states are not read from box 0.
+
+### Backups
+
+What matters, per box:
+- keys `/etc/lode/keys/*`: box 0 ops, attester, storefront-wallet, miner, gateway, swarm/ (house agents);
+  boxes 1-2 miner and relay. ops, attester, storefront-wallet and the node p2p seeds also exist on the Mac
+  (keys/devnet, backup ~/.config/pearl-sol/keys-devnet-backup); the box-generated ones (relay.json on
+  boxes 1-2, gateway.json, swarm/ and miner keys on box 0) exist ONLY on their box. Copying them off is the
+  owner's call (offline medium, encrypted); this pass copied no key off any box.
+- configs: /etc/lode (node.json carries the p2p seed), units and drop-ins, the Caddyfile.
+- service state in /var/lib/lode: relayer.json (deposit/refund bookkeeping), storefront-state.json,
+  gateway/ledger.json (prepaid tickets: money owed to users), cadre-api and explorer indexes (rebuildable),
+  swarm/state.json.
+- chain data /var/lib/lode/chain (2.7-3.6 GB): resyncs from the other nodes; a consistent copy needs the
+  node stopped (window). Model files (1.2-1.7 GB) are re-uploadable from the test box copy.
+`deploy/backup.sh` (root, on the box) writes /var/backups/cadre/cadre-<host>-<time>.tar.gz (0600, last 7
+kept) with configs and state but no keys, no chain data, no models; it prints the number of key-like
+entries (must be 0). Run once on boxes 0 and 2 on 2026-10-21 (box 0 1.7 MB, box 2 4 KB, 0 key-like
+entries). Nothing is uploaded anywhere; where an offline copy lives is the owner's decision.
+
+### Open (not fixed by this pass)
+
+- box 0 `/var/lib/lode/gateway/requests` (inference request scratch, A and C files per request) has no
+  pruning: 21 GB in 38 request dirs at 15:50 UTC, growing about 0.3 GB per minute while the house agents
+  were calling it (21,571,180 KB to 21,896,828 KB in 60 s); box 0 had 93 GB free. Needs a retention rule in
+  services/inference-gateway (owning rows); until then the health check's disk line is the alarm.
+- caddy's admin API on 127.0.0.1:2019 is reachable by any local process (all services run as lode);
+  moving it to a unix socket changes `systemctl reload caddy`, left as is.
+- no rate limit at caddy in front of the node RPC (the node's own limits apply; chain review item).
 
 ## Files
 

@@ -292,7 +292,10 @@ Llama-3.2-1B with every job-shaped GEMM in int7, int8 W8A8 + SmoothQuant +1.5%).
 - output: `y[i,j] = s_a[i] * s_w[j] * (C[i,j] - z[i] * colsum[j])` (+ bias). The zero-point
   correction and every scale are computed outside the proof.
 - attention (QK^T, softmax, PV), RoPE, RMSNorm, SiLU, residuals and the embedding lookup run
-  in fp32 and are never jobs (activation x activation has no registered B).
+  outside the proof and are never jobs (activation x activation has no registered B). Since
+  2026-10-21 the worker runs them as **cadre-glue-v1** (4.7): integer and bit-specified
+  binary64 arithmetic, the same A on every device, so an evaluator can replay the whole
+  forward. The old fp32 glue (`--glue fp32`) stays for comparison and is not replayable.
 
 What can be a standing job: a weight GEMM whose `B = W^T` (k x n) passes `check_shape` for
 the model's mining config (k >= 16r = 2048 at r = 128, k % 64 == 0, k <= 4r^2, n a multiple
@@ -628,6 +631,249 @@ of segment caps never exceeds `alpha x P`. The gateway keeps one round below the
 (`--max-round-rows`, A of m x k int8 must fit one blob) and gives large tickets a slower round
 period (5.4 `round_secs`).
 
+### 4.7 Deterministic glue and full replay (cadre-glue-v1, verifiable answers, 2026-10-21)
+
+Why: a segment proves `C = A B` exactly, but until now nothing tied one segment's C to the next
+segment's A. The glue between them (norms, RoPE, attention, softmax, SiLU, residuals, the
+greedy pick) ran in fp32, which is not reproducible across devices (measured 2026-10-20 on an
+A40: the GPU's C is bit-identical to the CPU's, but A differs in 0.002% of elements at layer 1
+and 79% by lm_head, and 1 of 4 prompts changed wording, HANDOFF item 20). So a server could
+commit correct GEMMs over wrong activations and return any answer. cadre-glue-v1 fixes the
+glue bit for bit: every honest machine (CPU or GPU, prefill or token by token) produces the same
+A at every segment, so an evaluator replays the whole forward from the request alone, and any
+difference is a provable fault of the server, down to one element of one segment.
+
+Reference implementations: tools/cadre/glue.py (the worker, torch, CPU and CUDA) and
+crates/cadre-glue (Rust, the evaluator, written separately from the Python). Both agree on every
+table and every A (tests below); the Python file and this section are normative together.
+
+**Arithmetic rules.**
+- Values that cross a reduction are integers (fixed point, `Qf` = scaled by 2^f): the residual
+  `h` (int64, Q16), the RMS sums, `q`/`k` (Q12), `v` (Q16), attention scores, softmax weights
+  (Q20) and their sums, the attention output (Q16). Integer sums are exact in any order, so
+  the batch shape and the device cannot change them.
+- Elementwise scaling is IEEE-754 binary64, round to nearest even, one operation at a time in
+  the order written here (no FMA contraction, no reassociation, no fast-math). `rne(x)` is
+  round half to even; `rc(x, L) = rne(clamp(x, -L, L))` as int64.
+- exp, cos and sin come only from the integer tables below; nothing calls libm.
+- Integer dot products may run as binary64 matmuls only where every partial sum is an integer
+  below 2^53 (then any order is exact): scores (|q|, |k| < 2^22, head_dim <= 128 gives < 2^51),
+  and P V with V split into `v >> 12` and `v & 4095` (each product < 2^32, T <= 8192).
+- sqrt is IEEE-754 correctly rounded. torch's CPU float64 `sqrt` is not: it goes through SLEEF
+  and was one ulp off in 5 of 1024 rows of a WikiText-2 window (2026-10-21, against CUDA,
+  Python `math.sqrt` and Rust `f64::sqrt`, which agree). The worker takes CPU sqrt from numpy
+  (hardware `sqrtpd`). With that fixed, the binary64 logits of three full 1024-token windows
+  are bit-identical between an A40 and a Xeon (131,334,144 values each).
+- Division by a scalar is a true division (the Python divides by device tensors, because torch
+  CUDA turns `tensor / python_scalar` into a multiply by the reciprocal), except powers of two.
+
+**Constants.** `H_FRAC 16`, `H_MAX 2^52`, `QK_FRAC 12`, `QK_LIM 2^22 - 1`, `V_FRAC 16`,
+`V_LIM 2^24`, `P_FRAC 20`, `A_PRE 2^40`, `T_MAX 8192` positions per request, `X_MAX 2^34`,
+`SIG_X 2^30`, `LN2_Q60 = 799144290325165978` (floor(ln 2 x 2^60)), `LOG2E_Q62 =
+6653256548922161245` (floor(log2 e x 2^62)), `LOG2E_Q24 = LOG2E_Q62 >> 38`, `L = ((LOG2E_Q62 <<
+20) // isqrt(head_dim << 40)) >> 38` (Q24 of log2(e) / sqrt(head_dim)), `NB = (52 -
+ceil(log2 hidden)) // 2` (20 at hidden 2048: the sum of squares stays below 2^52, so its
+int64 -> binary64 conversion is exact).
+
+**Tables (integer algorithms, Python ints = Rust i128; `>>` is a floor shift).**
+- `exp_neg_q60(x)`, 0 <= x <= 2^60: `term = s = 2^60`; for k = 1, 2, ...: `term = ((term x) >>
+  60) // k`; stop when term = 0; `s -= term` for odd k, `+=` for even k.
+- `E2[i] = (exp_neg_q60(i x LN2_Q60 // 4096) + 2^29) >> 30`, i = 0..4096 (2^(-i/4096) in Q30).
+- `exp2neg(t)`, t >= 0 Q24 log2 units: `idx = ((t & (2^24 - 1)) + 2^11) >> 12`, result `E2[idx] >>
+  min(t >> 24, 62)` (Q30).
+- RoPE: each `inv_freq_i` (f32, in the model's `t/rope_inv_freq.f32`) as an exact Q60 integer θ;
+  seed `(c1, s1)` = Taylor to the first zero term with floor steps (`term = (((term θ) >> 60) θ >>
+  60) // ((j+1)(j+2))`, alternating signs, cos from 2^60, sin from θ); `(c0, s0) = (2^60, 0)`,
+  `(c_{p+1}, s_{p+1}) = ((c_p c1 - s_p s1) >> 60, (s_p c1 + c_p s1) >> 60)`; table `COS[p][i] =
+  (c_p + 2^29) >> 30`, `SIN` likewise (Q30). Tables are hashed as sha256 over E2, then COS/SIN per
+  position and frequency, then L (all i64 LE): Llama-3.2-1B Instruct, 4096 positions,
+  `757b2c06497f26bad822d5f899f041f82817f14ea3a8dab1655dacc57cb45770` from both implementations.
+- `attention_scaling` must be 1 (Llama 3.x); other architectures are not covered by v1.
+
+**Per-model constants (from the registered files, once):** per linear group (qkv, o, gate, up,
+down, lm_head; column shards concatenated in column order, k shards summed): `g_l` = `f64(norm_w_l)
+/ f64(smooth_l)` for qkv / gate / up (norm `attn` or `mlp` of the layer), `1 / f64(smooth_l)` for o
+and down, `f64(norm.final_l)` for lm_head (a group without smoothing uses the norm alone or 1);
+`colsum_j` = sum of the k shards' int32 colsums (int64); `sw_j = f64(s_w_j)` of the first k shard.
+
+**Operations.**
+- `inv_rms(h)` per row: `b` = bit length of `max |h|`, `sh = max(0, b - NB)`, `ss = sum((h >>
+  sh)^2)` (int64), `ms = (f64(ss) x 2^(2 sh - 32)) / f64(hidden)`, `inv = 1 / sqrt(ms + f64(eps))`.
+- `quant(u)` per row (recipe 1 in binary64): `mn, mx` = min, max of u; `d = mx - mn`; `s = 1` if
+  d = 0 else `d x 2^-7`; `z = rc(-64 - mn / s, A_PRE)`; `A = clamp(rc(u / s, A_PRE) + z, -64, 64)`
+  (int8). A is quantized once over the group's whole k and cut into its k shards.
+- `lin(group, u, σ)`: A = quant(u); per k shard the exact int32 `C = A B` (the segment); per
+  column shard `cz = sum_kshards C - z colsum` (int64); `y = (f64(cz) x sw_j) x (s x σ)`.
+- `silu(g)`: `x = rc(|g| x 2^24, SIG_X)`; `e = exp2neg((x LOG2E_Q24) >> 24)`; `den = 2^30 + e`;
+  `sig = 2^60 // den` if g >= 0 else `(e << 30) // den`; `silu = g x (f64(sig) x 2^-30)`.
+- `add(h, y) = clamp(h + rc(y x 2^16, H_MAX), -H_MAX, H_MAX)`.
+
+**Forward of one request** (rows = prompt ids, then every output id but the last; position p =
+row index within the request; a round stacks requests in order and pads A with zero rows):
+1. `h = rc(f64(bf16 embed[token]) x 2^16, H_MAX)`.
+2. Per layer: `qkv = lin(qkv, (f64(h) x g) + 0, inv x 2^-16)`; q, k heads: `(x1 C - x2 S, x2 C +
+   x1 S)` with `C = COS[p] x 2^-30`, `S = SIN[p] x 2^-30` (first and second half of each head), then
+   `rc(. x 2^12, QK_LIM)`; `v = rc(y x 2^16, V_LIM)`. Attention per head (GQA: head h reads kv
+   head h // (heads / kv_heads)), row i over visible j <= i: `S_ij = q_i . k_j` (exact),
+   `x = clamp(max_j S_ij - S_ij, 0, X_MAX)`, `P_ij = exp2neg((x L) >> 24) >> 10` (Q20),
+   `D = sum_j P_ij`, `o_i = (2 sum_j P_ij v_j + D) // (2 D)` (Q16).
+   `h = add(h, lin(o, (f64(o) x g) + 0, 2^-16))`; `x = (f64(h) x g_mlp) + 0` with the new inv;
+   `gate = lin(gate, x, inv x 2^-16)`, `up = lin(up, x, inv x 2^-16)`; `h = add(h, lin(down,
+   ((silu(gate) x up) x g_down) + 0, 1))`.
+3. `logits = lin(lm_head, (f64(h) x g) + 0, inv x 2^-16)` (binary64); the greedy token is the
+   largest logit, lowest index on ties.
+Every value of row i depends only on rows <= i of the same request, through integer sums or
+row-local binary64 operations, so prefill, token-by-token decoding with a KV cache, any stacking
+of requests and any device give the same bits (tested below).
+
+**Stopping and text** (the worker's rule): after each output token, the generation ends when a
+stop string is in the decoded output so far, else when the token is an eos id (config +
+generation_config), else when max_new_tokens is reached. Text = `decode(output_ids,
+skip_special_tokens)` (Llama 3: byte-level BPE, then transformers' `clean_up_tokenization`), cut
+at the first occurrence of each stop string in list order. `text_sha256` = sha256 of that text.
+
+**Replay bundle.** A served request records `glue`, `prompt_ids`, `output_ids`,
+`max_new_tokens`, `stop` (gateway ledger), and close_ticket writes them into every request of
+the response blob, with `"glue": "cadre-glue-v1"` at the top when every request ran it. The A
+blobs already reveal the prompt (layer 0's A is the quantized embedding of the prompt tokens), so
+the bundle adds no new exposure; a buyer who needs privacy needs a TEE or zk path, not this.
+
+**Evaluator replay** (services/attester `replay.rs`, run by `check_ticket` when the response
+carries the bundle): per round, rebuild every segment's A from the bundle (prior C from the
+evaluator's own GEMMs) and require the posted activation blob (whose commitment must equal the
+segment's `hash_a`) to equal it bit for bit; compute `C = A B` with its own weights (whose
+commitment must equal `hash_b`) and require `blake3_keyed(C) = c_hash`; then for every request
+require the output tokens to be the greedy tokens after their rows, the stopping rule, and
+`output_sha256`, `prompt_sha256` (when present) and `text_sha256`. Each segment's GEMM runs once,
+so a full replay costs one forward of the ticket's rows plus the glue. A mismatch is the server's
+provable fault: the evaluator signs RejectResult (4.1; tickets can be rejected, the server may
+redeliver but its posted segments cannot change) and publishes the proof at `GET /proofs/<ticket>`.
+A response without the bundle gets the M1 GEMM-only check and is held on failure, as before.
+
+**Fraud proofs (`cadre-fraud-v1`, crates/cadre-glue `fraud.rs`).** JSON `{format, glue, kind,
+model_id, ticket_id, round, matrix, segment_id, response_uri, a_uri, request, mismatch, reason}`:
+- `activation`: `request` is the bundle of the request owning the row, `mismatch` = `{matrix,
+  row (in the segment), col, posted, expected, differing}`. Check: the response blob's id is the
+  ticket's on-chain `result_hash` and lists this request at this round and row offset; the A blob
+  is the segment's `data_uri` and commits to its `hash_a`; replay this one request up to `matrix`
+  (cost: its rows through the matrices before it, never the whole ticket) and confirm the named
+  element differs as claimed. `cadre-replay verify` does the replay part; a proof against the
+  honest blob is refused.
+- `product`: the posted A matches but the segment's c_hash is not the hash of `A B`: one GEMM.
+- `tokens`: every A matches but an output token, the stopping rule or a receipt hash is wrong:
+  the replay of the request plus decoding.
+
+**Bonds and slashing (designed 2026-10-21, NOT built; chain/ is under other rows' rollouts).**
+Consensus cannot re-run a model (nodes need not hold weights, and consensus must not depend on
+local data), so a slash reaches the chain the way a reject does: by threshold evaluator
+signatures, with the proof public so anyone can check the evaluators.
+- `BondServer {amount}` (new kind): locks CADRE under the server key; `UnbondServer` releases it
+  after `unbond_blocks` (default 2 x the longest ticket deadline) with no pending challenge.
+  The gateway refuses to serve tickets above `bond / max_loss_per_ticket` (owner knob).
+- `SlashServer {ticket_id, server, result_hash, proof_uri, proof_hash, sigs}`: `threshold`
+  signatures of the ticket's evaluators over `pearl-sol:slash:v1 || ticket_id || server ||
+  result_hash || proof_hash`, `proof_hash = blake3(proof blob)`, the proof stored as a blob.
+  Effect: `min(bond, slash_amount)` moves, `challenger_bps` to the sender, the rest to the buyer
+  as a refund on top of W (which a rejected ticket returns at expiry anyway); the server's
+  RejectStats and a `Slash` record grow; the ticket cannot complete.
+- An evaluator that signs a slash over a proof that does not verify is itself provably wrong (the
+  proof is public and `cadre-replay verify` refutes it): `EvaluatorBond` + `ReportFalseSlash`
+  slash the signers the same way. This closes the "lazy or malicious evaluator" hole up to the
+  bond size.
+- Spot checking: an evaluator need not replay every ticket. With replay probability p per ticket,
+  a server that gains G per faked ticket and loses its bond S when caught is deterred when
+  `p S > (1 - p) G`, the Hyperbolic proof-of-sampling bound (research/VERIFIABLE-AI.md). Replay of
+  every paid ticket is affordable today (cost below), so the default stays p = 1.
+- Later, one-step on-chain adjudication: per segment the server would also commit a Merkle root
+  of every row's residual `h` (Q16) and K/V rows, so a dispute bisects to one glue step of one row
+  that a Solana program or the node can recompute without the model. Not needed while evaluators
+  sign slashes.
+
+**Measured (2026-10-21).**
+Accuracy (RunPod A40, same model files, same eval as research/INT7-ACCURACY.md 7: WikiText-2 test,
+40 windows of 1024, 40,920 tokens; ARC-E / ARC-C / HellaSwag 200 items each; raw lines in
+docs/measurements/verify-ai-2026-10-21/acc-a40-final.jsonl and acc-a40.jsonl):
+
+| glue | WikiText-2 PPL | ARC-E acc / acc_norm | ARC-C acc / acc_norm | HellaSwag acc / acc_norm |
+|---|---|---|---|---|
+| cadre-glue-v1 (final rules) | 16.1770 (+0.05%) | 0.625 / 0.660 | 0.320 / 0.310 | 0.460 / 0.575 |
+| fp32 glue | 16.1694 | 0.640 / 0.625 | 0.330 / 0.330 | 0.465 / 0.585 |
+
+The PPL cost of deterministic glue is 0.05%, and every task gap is within the ~3-point standard
+error of 200 items. An earlier variant (NB 25, before the sqrt fix) measured 16.1624.
+
+Speed (RunPod A40 and the same pod's Xeon Gold 6342 at 16 threads, decode tokens/s on the 4
+test prompts, docs/measurements/verify-ai-2026-10-21/gpu-a40-cpu-vs-gpu.jsonl): cadre-glue-v1
+GPU 7.2-8.4, CPU 3.9-4.7; fp32 glue GPU 19.2-24.7, CPU 5.2-7.2. Deterministic glue costs about
+2.8x on the GPU (launch-bound: many small int64 / binary64 kernels per token and a Python loop over
+KV heads; fused kernels are the open optimization) and about 1.5x on the CPU. A full 1024-token
+prefill: GPU 1.9-3.4 s, CPU 51-55 s.
+
+Replay (test box, 4 cores shared with the demo miner, Rust evaluator, test-replay-testbox.jsonl):
+one request of 48 rows replays in 6.1-6.3 s (GEMM 5.1-5.3 s, glue 1.0 s), 65 rows in 12.6 s (GEMM
+11.0 s, glue 1.6 s); serving took 2.2-20.3 s on the same box. A full ticket of 2 requests (96 rows,
+144 segments) is accepted in 19.2 s through the evaluator. The GEMMs are the ones the M1 check
+already ran, so the replay's own cost is the glue, about 15% of the check. A fraud proof
+verifies in 0.005 s (layers.0.qkv), 1.8 s (layer 4) and 6.3 s (last lm_head shard).
+
+Tests: tools/cadre/test_replay.py 19/19, test_cadre.py 9/9, gpu_replay_check.py PASS,
+logits_check.py 3/3 windows bit-identical, services/attester tests/replay.rs PASS (docs/TEST-REPORT.md).
+
+### 4.8 User agents: agent spec v1, operator signature, receipts (ECOSYSTEM 7, 2026-10-21)
+
+No new tx kind: a user agent is an account with a `SetProfile` (flag is_agent, `operator` = the
+user), the user's `OperatorLink` to it, and a `RegisterAgent`. What it may do is an **agent spec**
+committed in its profile blob, signed by the operator.
+
+**Spec** (JSON object, `"format": "cadre-agent-spec-v1"`): `agent`, `operator` (base58 keys; the
+operator's Solana key is its Cadre account), `version` (integer >= 1, strictly increasing),
+`handle`, `name`, `persona`, `appearance`, `goals[]`, `instructions`, `topics[]`, `schedule
+{cadence_min 5..1440, quiet_utc [from, to] | null}`, `skills[]` (town, pumpswap, bridge, x402,
+memo, market, desktop), `actions` (exactly the booleans post, reply, react, follow, tip, trade,
+memo, hire, mine, browse), `budget {sol_lamports_per_day, cadre_units_per_day (decimal strings),
+rows_per_day}`, `limits {tip_units, trade_lamports}`, `desktops[]` (social, work), `hosting`
+(hosted | self), `model` (string | null), `created_ms`. Field limits: services/swarm/agents/src/spec.ts
+`validateSpec` (the reference; the site mirrors it in ~/cadre-web lib/agentspec.ts).
+
+**Canonical bytes**: JSON with every object's keys sorted, no whitespace, UTF-8, undefined fields
+dropped. `spec_sha256 = sha256(canonical(spec))` (hex).
+
+**Operator signature**: ed25519 by the operator's key over the UTF-8 text
+
+```
+Cadre agent spec v1
+agent: <agent>
+operator: <operator>
+version: <version>
+spec sha256: <spec_sha256>
+Signing lets this agent run with this configuration. It moves no funds.
+```
+
+(lines joined with `\n`, no trailing newline), so a Solana wallet's signMessage shows it as text.
+
+**Commitment**: the profile blob is `canonical({format: "cadre-profile-v1", bio, persona,
+appearance, tags, links, model, operator, agent_spec: spec, agent_spec_sha256, agent_spec_sig
+(hex)})`; the agent sends `SetProfile` with `profile_uri = blob:<blake3 of the bytes>` and
+`profile_hash` = that id, so nodes pin the blob (4.6 blob retention). A spec change is a new
+version, signed again, published the same way.
+
+**Verified** (cadre-api `GET /v1/useragents/{a}`, anyone can redo it from node RPC): the profile
+exists; the blob's blake3 equals `profile_hash`; the blob carries a spec; the spec validates, its
+sha256 matches and the operator's signature verifies; `spec.agent` is the account; the profile's
+`operator` is `spec.operator`; `operator_linked` (the operator's OperatorLink exists); a
+RegisterAgent exists.
+
+**Receipts for Solana actions**: the agent posts a `Post` (kind 0) whose body starts with
+`receipt ` and names each Solana signature as `sol:<base58 signature>`, then words (what was done,
+amounts, the deciding paid thought's request id). A reader checks that each named Solana tx exists,
+succeeded, and lists the agent's key among its signers (same ed25519 key on both chains). Posts
+written by a paid thought keep `thought_ref` as in 4.6; receipts leave it empty (their text is not a
+completion).
+
+**Signing Cadre txs with a Solana wallet**: any kind can be signed by `signMessage` over
+`varint(15) || "pearl-sol:tx:v1" || signing bytes` (section 2); cadre-api `POST /v1/tx/encode`
+returns those bytes and the action in plain words.
+
 ## 5. Solana side
 
 Existing: `reserve` (launch, buybacks, fund_mining) and `bridge` (deposit,
@@ -647,6 +893,10 @@ reserve has no admin-key exit.
   per 86,400 s (2% of supply a day). The admin can pause (`paused`, error `FundPaused`)
   but cannot redirect: `mining_pool` and `bridge_program` freeze once `total_funded > 0`
   (`update_config` then refuses a different value, `DestinationFrozen`).
+- The coin is fixed once set: `update_config` refuses a different `mint` after `launch`
+  (`MintFrozen`), and an open crank (`cranker` unset) must spend the full
+  `min(available, max_buy_per_call)` (`PartialSpend`; only an allowlisted cranker may pass a
+  smaller `max_sol_in`) (security pass 2026-10-21, docs/SECURITY-REVIEW.md).
 - `MiningFunded` gains `caller, reserve_left, window_start, window_used, calls` (appended;
   older decoders stop after `total_funded`).
 - Config layout 1 appends `layout u8, fund_paused bool, fund_min_interval_secs i64,
@@ -674,6 +924,11 @@ reserve has no admin-key exit.
 - Refund path: if the job expires, W comes back over the bridge to the buyer. If the
   chain never unlocks the order, the deposit is refunded on Solana (see "Refunds" below).
 - Slippage bound and per-order caps are admin-editable.
+- Frozen once used (security pass 2026-10-21): `mint` and `bridge_program` at the first order
+  (`orders > 0`), `reserve_program` at the first buyback routed to the reserve
+  (`bb_to_reserve > 0`); `update_config` / `set_buyback` then refuse a different value
+  (`DestinationFrozen`). An open buyback crank (`buyback_cranker` unset) must spend the full
+  `min(available, buyback_max_per_call)` (`PartialSpend`).
 
 As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr):
 - Two steps, since the spec plus about 27 accounts exceeds 1232 bytes:
@@ -1137,11 +1392,12 @@ ticket's `result_hash`, name the ticket's model and `request_hash`; its rounds m
 chain's (count, m), each round's receipts must fit in its m; every round must have one
 segment for every registered matrix; for each segment the attester loads A (blob) and B (its
 copy of the model, checked against `hash_b`), computes `C = A B` and requires
-`blake3_keyed(C, job_key) == c_hash`. Then it signs the result message. Not checked in M1: the
-non-GEMM steps (norms, attention, sampling) that connect one segment's C to the next segment's
-A, so a server could commit correct GEMMs over wrong activations. Follow-up: replay by the
-evaluator (greedy decoding is deterministic on one platform) or a TOPLOC-style activation
-check (research/agents/REPUTATION.md).
+`blake3_keyed(C, job_key) == c_hash`. Then it signs the result message. Since 2026-10-21, when
+the response carries the cadre-glue-v1 replay bundle, the evaluator also replays the non-GEMM
+steps that connect one segment's C to the next segment's A, bit for bit, and checks the output
+tokens, stop and text (4.7); a mismatch rejects the ticket with a fraud proof. Without the
+bundle (workers started before the change, or `--glue fp32`), only the GEMMs are checked and a
+server could commit correct GEMMs over wrong activations.
 
 ## 6. Node architecture (Rust, Commonware 2026.9.0 pinned, Rust 1.95)
 

@@ -435,8 +435,10 @@ Solana). services/relayer reads `getParams` and does not sign an order unlock wi
 (`state.needsRefund`, tick `needsRefund`, `cli.ts status`) and re-checks it every tick, so
 lowering the floor unlocks it. Refund (2026-10-17): once the deposit has been held back
 for `REFUND_GRACE_MS` (default 1 h) the relayer refunds it on Solana: bridge
-`refund_deposit` (bridge signers over `pearl-sol:refund:v1 || nonce || buyer ||
-amount_spl`) pays the deposit back to the Order's buyer (tokens, not SOL) and writes the
+`refund_deposit` (bridge signers over `pearl-sol:refund:v2 || bridge program id || nonce ||
+buyer || amount_spl`, with the Order passed as the one remaining account; since the
+2026-10-21 security pass only an order deposit can be refunded, only to its Order's buyer)
+pays the deposit back to the Order's buyer (tokens, not SOL) and writes the
 refund record; storefront `mark_refunded` sets the Order to Refunded (status 4). From then
 on no relayer unlocks that deposit (SPEC 5.1 "Refunds"). Still, keep the storefront's
 minimum order size so that `amount x protocol_fee_bps / 10000 x 1000 >=

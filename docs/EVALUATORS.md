@@ -71,17 +71,44 @@ round has one segment per registered matrix with the right `m`; for every segmen
 times the registered B (checked against `hash_b`) gives a C whose keyed hash is the
 segment's committed `c_hash`.
 
-The reference evaluator **accepts** a ticket when this passes and **holds** otherwise: it
-never rejects a ticket automatically yet. Two reasons: the M1 ticket check does not cover
-the fp32 glue between segments (norms, attention, sampling), so a pass is not a full
-replay of the forward pass; and its failure cases are not yet split into provable ones
-and transient ones (missing blobs). An operator who has checked a failing ticket by hand
-can still sign a reject with the message above. Segments (the standing jobs of a ticket)
-have no delivery and are never evaluated.
+**Full replay (cadre-glue-v1, since 2026-10-21, SPEC 4.7).** When the response blob carries
+`"glue": "cadre-glue-v1"` and every request's replay bundle (`prompt_ids`, `output_ids`,
+`max_new_tokens`, `stop`), the evaluator replays the whole ticket (services/attester
+`replay.rs`). Per round, in matrix order:
+1. rebuild the segment's A from the bundles and the previous segments' C (the deterministic glue:
+   the same bits on any CPU or GPU);
+2. require the posted activation blob to commit to the segment's `hash_a` and to equal the
+   rebuilt A bit for bit;
+3. compute `C = A B` with its own weights (committing to `hash_b`) and require `c_hash`;
+4. at the end, for every request: the output tokens are the model's greedy tokens after its
+   rows, the generation stopped exactly where the stopping rule says, and `output_sha256`,
+   `prompt_sha256` (when present) and `text_sha256` match.
+Each GEMM runs once, so this costs about what the old GEMM-only check cost plus the glue
+(measured: a 2-request, 100-row, 144-segment ticket in 27.2 s on the loaded 4-core test box,
+20.6 s of it GEMMs).
 
-What this does NOT claim: that an accepted ticket's output text is the model's correct
-output. It claims the committed GEMMs are exact. Replay with a mismatch budget is the
-follow-up (REPUTATION 5.3).
+Verdicts:
+- all pass: **accept** (sign the result message, CompleteJob at threshold);
+- a replay mismatch (activation, product or tokens): **reject**. It is the server's provable
+  fault. The evaluator signs RejectResult and publishes the `cadre-fraud-v1` proof at `GET
+  /proofs/<ticket_id hex>`, naming the round, segment, matrix, row, column, posted and expected
+  values and the request. Anyone can check it with `cadre-replay verify` (crates/cadre-glue)
+  and the registered model; the replay is only that request up to that segment;
+- anything else (missing blobs, fetch errors, a response without the bundle failing the
+  GEMM-only check): **hold**, as before. A response without the bundle gets only the GEMM-only
+  check and is accepted on it, which proves the GEMMs, not the answer.
+
+The GEMM-only check (M1, still the first step): the response blob hashes to the ticket's
+`result_hash` and names its model, request and rounds; every round has one segment per
+registered matrix with the right `m`; every segment's C recomputed from its blob and the
+registered B gives its `c_hash`.
+
+What a replay-accepted ticket claims: every served request's output is exactly what the
+registered int7 model produces for the bundle's token ids under cadre-glue-v1 with greedy
+decoding. What it does not claim: that the model is a good copy of the original (accuracy:
+research/VERIFIABLE-AI.md), or that the token ids are the buyer's messages under the chat
+template (the buyer checks that against its own request and the receipt). docs/PROOFS.md row 11
+lists every gap.
 
 ## 5. Running the reference evaluator
 
@@ -104,7 +131,9 @@ pearl-evaluator --keypair my-evaluator.json --rpc https://<node>   # your key; n
   hex>`, and the attester's `POST /result` (sign on request).
 - `--once` runs one pass and prints the verdicts as JSON.
 - Flags: `--unavailable-blocks n` (0 = never reject for missing C), `--freivalds-rounds r`,
-  `--models <dir>` (model store for tickets).
+  `--models <dir>` (model store for tickets; the replay fetches the whole model directory there
+  from the node's blobs when missing and keeps the loaded model in memory, about 1.3 GB for
+  the 1B). `GET /proofs/<ticket_id hex>` serves the fraud proof behind a ticket rejection.
 
 Holding the key file is holding the authority: keep it 0600 and off shared machines.
 
@@ -124,6 +153,8 @@ No rating, stake, or count-only ranking is shown (REPUTATION 5.6).
 - Evaluator fee E paid on CompleteJob (buyer-paid; default is an owner decision).
 - Equivocation reports (one key signing accept and reject, or two result hashes, for one
   job): detectable from published verdicts and txs today, no tx acts on them.
-- Bonds, random second checks, Merkle-structured commitments for entry-level fraud proofs.
+- Bonds and slashing for servers and evaluators (`BondServer`, `SlashServer`, `ReportFalseSlash`:
+  designed in SPEC 4.7, not built), random second checks, per-row residual commitments for
+  one-step on-chain adjudication.
 - Gateway inference tickets: the buyer naming evaluators goes through the gateway's API,
   which is not part of this change.

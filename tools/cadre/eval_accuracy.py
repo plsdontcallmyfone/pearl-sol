@@ -20,9 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 class Int7:
-    def __init__(self, d, device):
+    def __init__(self, d, device, glue="cadre-glue-v1"):
         import worker
-        self.m = worker.Model(d, device)
+        self.m = worker.Model(d, device, glue)
         self.tok = self.m.tokenizer()
         self.name = self.m.man["name"]
 
@@ -98,11 +98,12 @@ def main():
     ap.add_argument("--mc", type=int, default=200)
     ap.add_argument("--tasks", default="arc_easy,arc_challenge,hellaswag")
     ap.add_argument("--out", default="")
+    ap.add_argument("--glue", default="cadre-glue-v1", help="int7 mode: cadre-glue-v1 (deterministic) or fp32")
     a = ap.parse_args()
     t0 = time.time()
-    model = Int7(a.model, a.device) if a.mode == "int7" else FP16(a.model, a.device)
+    model = Int7(a.model, a.device, a.glue) if a.mode == "int7" else FP16(a.model, a.device)
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() and a.device != "cpu" else None
-    base = {"mode": a.mode, "model": model.name, "gpu": gpu, "torch": torch.__version__}
+    base = {"mode": a.mode, "model": model.name, "gpu": gpu, "torch": torch.__version__, "glue": a.glue if a.mode == "int7" else None}
 
     def emit(rec):
         rec = {**base, **rec, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_s": round(time.time() - t0, 1)}

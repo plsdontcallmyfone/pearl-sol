@@ -1,6 +1,8 @@
 // Budget controls (owner decision D1, ECOSYSTEM 2.6): a daily row budget split over the agents
 // by weight, a hard per-agent daily row cap, a daily top-up SOL cap and transfer caps. A thought
-// is admitted only when its upper-bound row estimate fits every cap; the receipt's actual rows
+// is admitted only when its upper-bound row estimate fits the day's cap and the agent's booked rows
+// are still under its share (the upper bound runs about 7x the real rows on devnet, so checking it
+// against the smaller per-agent share refused almost every thought); the receipt's actual rows
 // are booked (an upper bound by construction, see prompt.ts rowsUpperBound). Days are UTC.
 
 export interface BudgetConfig {
@@ -59,7 +61,7 @@ export class Budget {
   /** Reserve `est` rows for `agent`; false (and a refusal count) when any cap would be passed. */
   reserve(agent: string, est: number, now: number): boolean {
     this.roll(now);
-    const why = this.st.rows + this.st.reserved + est > this.cfg.rowsPerDay ? "day_rows" : (this.st.agentRows[agent] ?? 0) + est > this.agentCap(agent) ? "agent_rows" : null;
+    const why = this.st.rows + this.st.reserved + est > this.cfg.rowsPerDay ? "day_rows" : (this.st.agentRows[agent] ?? 0) >= this.agentCap(agent) ? "agent_rows" : null;
     if (why) {
       this.st.refused[why] = (this.st.refused[why] ?? 0) + 1;
       return false;

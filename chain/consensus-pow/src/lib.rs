@@ -5,5 +5,5 @@ pub mod chain;
 pub mod difficulty;
 pub mod verifier;
 
-pub use chain::{tx_accounts, Accept, Chain, ChainError, ChainEvent, Genesis, HeaderAccept, HistoryEntry, JobChoice, LiveNode, Rewards, RouteTxEntry, Template};
+pub use chain::{tx_accounts, Accept, BODY_WINDOW, Chain, ChainError, ChainEvent, Genesis, HeaderAccept, HistoryEntry, JobChoice, LiveNode, Rewards, RouteTxEntry, Template, MAX_ORPHAN_BYTES, TIME_TOO_NEW, is_time_too_new};
 pub use verifier::{MockVerifier, PearlVerifier, PowVerifier};

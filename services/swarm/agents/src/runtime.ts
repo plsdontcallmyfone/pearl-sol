@@ -1,0 +1,321 @@
+// cadre-agents: the hosted runtime for user agents (docs/ECOSYSTEM.md 7). It runs every hosted
+// agent as an AgentRunner (agent.ts, a Swarm subclass: the house swarm's runtime with operator =
+// the user), keeps each agent key encrypted at rest (seal.ts KeyStore), and answers the operator's
+// signed requests: create (upload the sealed key + the signed spec), new spec, pause, resume,
+// withdraw everything to the operator, export the key, delete. Reads are public (they show what
+// the chain already shows, plus the runtime's own log). It never holds an operator's key.
+//
+// Operator auth: the headers of SPEC 5.4 (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature)
+// over "cadre-auth-v1\nMETHOD\nPATH\nTS\nhex(sha256(body))", signed by the operator's Solana
+// wallet (signMessage), within 5 minutes, each signature usable once.
+import { createHash } from "node:crypto";
+import { createServer, type IncomingMessage, type Server } from "node:http";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { b58decode } from "../../src/b58.ts";
+import { authMessage, CadreApi, latestBlockhash, NodeRpc } from "../../src/clients.ts";
+import type { Deps } from "../../src/swarm.ts";
+import { verifySig, walletFromSeed, type Wallet } from "../../src/wallet.ts";
+import { AgentRunner, type RunnerOpts } from "./agent.ts";
+import { ApiClient, isAddress } from "./chain.ts";
+import { GatewayAt } from "./gateway.ts";
+import { KeyStore, open, seal, type Sealed } from "./seal.ts";
+import { type SignedSpec, verifySigned } from "./spec.ts";
+
+export const VERSION = "0.1.0";
+
+export interface RuntimeConfig {
+  stateDir: string;
+  masterKeyFile: string;
+  nodeRpc: string;
+  gatewayUrl: string; // the gateway, or cadre-api's /v1/openai pass-through
+  apiUrl: string; // cadre-api (Solana tx builders, balances, town reads)
+  publicApiUrl: string; // cadre-api as the world sees it (agent card URLs)
+  solRpc?: string;
+  network: string;
+  allowHosts: string[];
+  maxPerOperator: number;
+  maxAgents: number;
+  topupRows: number;
+  minFreeRows: number;
+  tickMs: number;
+  killFile: string;
+}
+
+interface Entry { operator: string; doc: SignedSpec; paused: boolean; created_ms: number; updated_ms: number }
+
+export class HttpError extends Error {
+  status: number;
+  code: string;
+  constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
+}
+
+export const TRUST = "Hosted keys are custodial: this runtime holds the agent key (encrypted at rest under a master key on the same host) and signs for the agent within the operator-signed spec's caps. The operator can export the key and withdraw every balance at any time. Phase 4 mandates will restrict trading keys on chain; until then the caps are enforced by this runtime, not by the chains.";
+
+export class Runtime {
+  store: KeyStore;
+  entries = new Map<string, Entry>();
+  runners = new Map<string, AgentRunner>();
+  seen = new Map<string, number>();
+  stopped = false;
+  api: ApiClient;
+  cfg: RuntimeConfig;
+  private makeDeps: (w: Wallet) => Deps;
+
+  constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
+    this.cfg = cfg;
+    mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
+    this.store = new KeyStore(`${cfg.stateDir}/keys`, cfg.masterKeyFile);
+    this.api = new ApiClient(cfg.apiUrl);
+    this.makeDeps = makeDeps ?? ((w) => ({
+      node: new NodeRpc(cfg.nodeRpc),
+      gateway: new GatewayAt(cfg.gatewayUrl, w),
+      api: new CadreApi(cfg.apiUrl),
+      latestBlockhash,
+      now: () => Date.now(),
+      rand: Math.random,
+      log: (e) => console.log(JSON.stringify(e)),
+    }));
+    const reg = `${cfg.stateDir}/registry.json`;
+    if (existsSync(reg)) {
+      const j = JSON.parse(readFileSync(reg, "utf8"));
+      for (const [a, e] of Object.entries<Entry>(j.agents ?? {})) {
+        this.entries.set(a, e);
+        try { this.start(a); } catch (err) { console.log(JSON.stringify({ event: "start_failed", agent: a, error: String((err as Error).message) })); }
+      }
+    }
+  }
+
+  saveRegistry() {
+    const reg = `${this.cfg.stateDir}/registry.json`;
+    writeFileSync(`${reg}.tmp`, JSON.stringify({ agents: Object.fromEntries(this.entries) }), { mode: 0o600 });
+    renameSync(`${reg}.tmp`, reg);
+  }
+
+  runnerOpts(agent: string): RunnerOpts {
+    return {
+      stateFile: `${this.cfg.stateDir}/agent-${agent}.json`, killFile: this.cfg.killFile, allowHosts: this.cfg.allowHosts, solRpc: this.cfg.solRpc,
+      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
+    };
+  }
+
+  start(agent: string) {
+    const e = this.entries.get(agent)!;
+    const seed = this.store.get(agent);
+    const w = walletFromSeed(seed);
+    seed.fill(0);
+    if (w.address !== agent) throw new Error("stored key does not match the agent address");
+    this.runners.set(agent, new AgentRunner(e.doc, w, this.makeDeps(w), this.api, this.runnerOpts(agent), e.paused));
+  }
+
+  // ---------------------------------------------------------------- operator actions
+
+  checkDoc(doc: SignedSpec, operator: string) {
+    const v = verifySigned(doc);
+    if (!v.ok) throw new HttpError(400, "bad_spec", v.problems.join("; "));
+    if (doc.spec.operator !== operator) throw new HttpError(403, "not_operator", "the spec names another operator than the signer of this request");
+    if (doc.spec.hosting !== "hosted") throw new HttpError(400, "bad_spec", "this spec says hosting: self; the hosted runtime runs only hosting: hosted");
+  }
+
+  create(operator: string, sealed: Sealed, doc: SignedSpec) {
+    this.checkDoc(doc, operator);
+    const agent = doc.spec.agent;
+    if (this.entries.has(agent)) throw new HttpError(409, "exists", "this agent is already hosted here; send a new spec version instead");
+    if ([...this.entries.values()].filter((e) => e.operator === operator).length >= this.cfg.maxPerOperator) throw new HttpError(429, "operator_limit", `at most ${this.cfg.maxPerOperator} hosted agents per operator on this runtime`);
+    if (this.entries.size >= this.cfg.maxAgents) throw new HttpError(503, "runtime_full", `this runtime hosts at most ${this.cfg.maxAgents} agents`);
+    let seed: Buffer;
+    try {
+      seed = open(sealed, this.store.x);
+    } catch {
+      throw new HttpError(400, "bad_seal", "the sealed key does not open with this runtime's key (seal it to GET /v1/hosted seal_pub)");
+    }
+    if (seed.length === 64) seed = seed.subarray(0, 32);
+    if (seed.length !== 32) throw new HttpError(400, "bad_seal", "the sealed key is not a 32-byte seed");
+    const w = walletFromSeed(seed);
+    if (w.address !== agent) { seed.fill(0); throw new HttpError(400, "key_mismatch", "the sealed key is not the spec's agent key"); }
+    this.store.put(agent, seed);
+    seed.fill(0);
+    this.entries.set(agent, { operator, doc, paused: false, created_ms: Date.now(), updated_ms: Date.now() });
+    this.saveRegistry();
+    this.start(agent);
+    return this.status(agent);
+  }
+
+  own(agent: string, operator: string): Entry {
+    const e = this.entries.get(agent);
+    if (!e) throw new HttpError(404, "not_found", "this agent is not hosted here");
+    if (e.operator !== operator) throw new HttpError(403, "not_operator", "only the agent's operator can do this");
+    return e;
+  }
+
+  updateSpec(agent: string, operator: string, doc: SignedSpec) {
+    const e = this.own(agent, operator);
+    this.checkDoc(doc, operator);
+    if (doc.spec.agent !== agent) throw new HttpError(400, "bad_spec", "the spec names another agent");
+    if (doc.spec.version <= e.doc.spec.version) throw new HttpError(409, "old_version", `version must be above ${e.doc.spec.version}`);
+    e.doc = doc;
+    e.updated_ms = Date.now();
+    this.saveRegistry();
+    this.start(agent);
+    return this.status(agent);
+  }
+
+  setPaused(agent: string, operator: string, paused: boolean) {
+    const e = this.own(agent, operator);
+    e.paused = paused;
+    this.saveRegistry();
+    const r = this.runners.get(agent)!;
+    r.paused = paused;
+    r.state = paused ? "paused" : "waiting_funds";
+    return this.status(agent);
+  }
+
+  async withdraw(agent: string, operator: string) {
+    const e = this.own(agent, operator);
+    e.paused = true;
+    this.saveRegistry();
+    const r = this.runners.get(agent)!;
+    while (this.ticking === agent) await new Promise((res) => setTimeout(res, 200));
+    const out = await r.withdraw();
+    return { ...out, status: this.status(agent) };
+  }
+
+  exportKey(agent: string, operator: string, ephPubB64: string): Sealed {
+    this.own(agent, operator);
+    const eph = Buffer.from(String(ephPubB64 ?? ""), "base64");
+    if (eph.length !== 32) throw new HttpError(400, "bad_request", "eph_pub is a 32-byte X25519 public key, base64");
+    const seed = this.store.get(agent);
+    const s = seal(seed, eph);
+    seed.fill(0);
+    return s;
+  }
+
+  remove(agent: string, operator: string) {
+    this.own(agent, operator);
+    this.runners.delete(agent);
+    this.entries.delete(agent);
+    this.store.wipe(agent);
+    this.saveRegistry();
+    return { agent, removed: true };
+  }
+
+  status(agent: string) {
+    const r = this.runners.get(agent);
+    const e = this.entries.get(agent);
+    if (!r || !e) throw new HttpError(404, "not_found", "this agent is not hosted here");
+    return { ...r.statusJson(), hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION } };
+  }
+
+  // ---------------------------------------------------------------- loop
+
+  ticking: string | null = null;
+
+  async loopOnce() {
+    for (const [a, r] of this.runners) {
+      if (this.stopped || existsSync(this.cfg.killFile)) return;
+      if (r.paused || r.state === "withdrawn") continue;
+      this.ticking = a;
+      try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
+      this.ticking = null;
+    }
+  }
+
+  async run() {
+    while (!this.stopped && !existsSync(this.cfg.killFile)) {
+      await this.loopOnce();
+      await new Promise((res) => setTimeout(res, this.cfg.tickMs));
+    }
+  }
+
+  // ---------------------------------------------------------------- auth + HTTP
+
+  verifyAuth(method: string, path: string, h: IncomingMessage["headers"], body: string): string {
+    const w = String(h["x-cadre-wallet"] ?? "");
+    const ts = Number(h["x-cadre-timestamp"] ?? NaN);
+    const sig = String(h["x-cadre-signature"] ?? "");
+    if (!isAddress(w) || !/^[0-9a-f]{128}$/i.test(sig) || !Number.isFinite(ts)) throw new HttpError(401, "unauthorized", "sign this request with the operator's wallet (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature; SPEC 5.4)");
+    if (Math.abs(Date.now() - ts) > 300_000) throw new HttpError(401, "stale_signature", "the signed timestamp is more than 5 minutes off");
+    if (this.seen.has(sig.toLowerCase())) throw new HttpError(401, "replayed", "this signature was already used");
+    if (!verifySig(b58decode(w), authMessage(method, path, ts, body), Buffer.from(sig, "hex"))) throw new HttpError(401, "bad_signature", "the signature does not verify for this wallet, method, path, timestamp and body");
+    const now = Date.now();
+    this.seen.set(sig.toLowerCase(), now);
+    for (const [k, t] of this.seen) if (now - t > 600_000) this.seen.delete(k);
+    return w;
+  }
+
+  info() {
+    return {
+      runtime: "cadre-agents", version: VERSION, network: this.cfg.network, seal_pub: this.store.publicKey,
+      seal: "X25519 + HKDF-SHA256 (salt eph_pub || seal_pub, info cadre-agents:seal:v1) + AES-256-GCM; seal the 32-byte seed",
+      limits: { max_per_operator: this.cfg.maxPerOperator, max_agents: this.cfg.maxAgents },
+      hosted_agents: this.entries.size,
+      auth: "cadre-auth-v1 headers signed by the operator's Solana wallet (SPEC 5.4), over the runtime path /v1/hosted/...",
+      trust: TRUST,
+    };
+  }
+
+  async handle(method: string, url: string, h: IncomingMessage["headers"], body: string): Promise<{ status: number; body: unknown }> {
+    const u = new URL(url, "http://x");
+    const path = u.pathname;
+    const json = () => { try { return body ? JSON.parse(body) : {}; } catch { throw new HttpError(400, "bad_request", "body is not JSON"); } };
+    if (method === "GET" && (path === "/health" || path === "/v1/hosted/health")) return { status: 200, body: { ok: !this.stopped, agents: this.entries.size } };
+    if (method === "GET" && path === "/v1/hosted") return { status: 200, body: this.info() };
+    if (path === "/v1/hosted/agents") {
+      if (method === "GET") {
+        const op = u.searchParams.get("operator");
+        if (op && !isAddress(op)) throw new HttpError(400, "bad_request", "operator is a base58 address");
+        const list = [...this.entries.entries()].filter(([, e]) => !op || e.operator === op).map(([a]) => this.status(a));
+        return { status: 200, body: { total: list.length, agents: list } };
+      }
+      if (method === "POST") {
+        const op = this.verifyAuth(method, path, h, body);
+        const b = json();
+        return { status: 201, body: this.create(op, b.sealed, b.spec) };
+      }
+    }
+    const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
+    if (m) {
+      const [, agent, verb] = m;
+      if (!verb && method === "GET") return { status: 200, body: this.status(agent) };
+      if (verb && method === "POST") {
+        const op = this.verifyAuth(method, path, h, body);
+        const b = json();
+        switch (verb) {
+          case "spec": return { status: 200, body: this.updateSpec(agent, op, b.spec) };
+          case "pause": return { status: 200, body: this.setPaused(agent, op, true) };
+          case "resume": return { status: 200, body: this.setPaused(agent, op, false) };
+          case "withdraw": return { status: 200, body: await this.withdraw(agent, op) };
+          case "export": return { status: 200, body: { agent, sealed: this.exportKey(agent, op, b.eph_pub), format: "32-byte ed25519 seed; the Solana keypair file is seed || public key" } };
+          case "delete": return { status: 200, body: this.remove(agent, op) };
+        }
+      }
+    }
+    throw new HttpError(404, "not_found", `no route ${method} ${path}`);
+  }
+
+  listen(port: number, host = "127.0.0.1"): Server {
+    const s = createServer((req, res) => {
+      let b = "";
+      let n = 0;
+      req.on("data", (c) => {
+        n += c.length;
+        if (n > 256 * 1024) { res.writeHead(413).end(); req.destroy(); return; }
+        b += c;
+      });
+      req.on("end", async () => {
+        let out: { status: number; body: unknown };
+        try {
+          out = await this.handle(req.method ?? "GET", req.url ?? "/", req.headers, b);
+        } catch (e) {
+          const he = e instanceof HttpError ? e : new HttpError(500, "internal", String((e as Error).message).slice(0, 300));
+          out = { status: he.status, body: { error: { code: he.code, message: he.message } } };
+        }
+        res.writeHead(out.status, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify(out.body));
+      });
+    });
+    s.listen(port, host);
+    return s;
+  }
+}
+
+export const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");

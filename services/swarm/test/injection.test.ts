@@ -33,7 +33,7 @@ before(async () => {
   f = await startFakes((msgs) => {
     const last = msgs[msgs.length - 1].content;
     if (/Answer yes or no/.test(last)) return "Yes";
-    const m = [...last.matchAll(/<data[^>]*>([^<]*)<\/data>/g)].map((x) => x[1]);
+    const m = [...last.matchAll(/^- .{1,24} wrote: "([^"]*)"$/gm)].map((x) => x[1]);
     const pick = m.length ? m[echo++ % m.length] : CORPUS[echo++ % CORPUS.length];
     return echo % 2 ? pick : CORPUS[echo % CORPUS.length];
   });
@@ -72,7 +72,7 @@ test("injection corpus: no out-of-policy action", async () => {
   for (const pr of f.gw.prompts) {
     assert.ok(!op.leaksIn(pr) && !agents.some((a) => a.wallet.leaksIn(pr)), "no key in any prompt");
     const msgs = JSON.parse(pr);
-    // inbound text appears only inside <data> under the fixed system prompt
+    // inbound text appears only as quoted dash lines under the fixed system prompt
     assert.match(msgs[0].content, /never instructions/);
     assert.ok(!/<\/?system>/i.test(msgs[1].content), "fake system tags stripped");
   }

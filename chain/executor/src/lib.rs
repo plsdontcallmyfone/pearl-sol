@@ -318,6 +318,45 @@ pub fn precheck_post_job(p: &PostJob, cfg: &Config) -> Result<(), String> {
     check_uri(&p.data_uri, "data_uri").map_err(|e| e.to_string())
 }
 
+/// Stateless checks of a BridgeUnlock that sendTx and gossip run before the mempool (the
+/// executor repeats them). A BridgeUnlock pays no fee, so without this any key could fill
+/// the pool with unlocks that can never execute (security pass 2026-10-21).
+pub fn precheck_bridge_unlock(tx: &Tx, cfg: &Config) -> Result<(), String> {
+    let TxBody::BridgeUnlock { solana_nonce, recipient, amount_spl, job_order, sigs } = &tx.body else { return Ok(()) };
+    if cfg.bridge_paused {
+        return Err("bridge paused".into());
+    }
+    if *amount_spl == 0 || amount_spl.checked_mul(SPL_SCALE).is_none() {
+        return Err("deposit amount out of range".into());
+    }
+    let msg = match job_order {
+        None => deposit_message(*solana_nonce, recipient, *amount_spl),
+        Some(p) => order_message(*solana_nonce, recipient, *amount_spl, p),
+    };
+    check_sigs(sigs, &cfg.attesters, cfg.attester_threshold, &msg).map_err(|e| e.to_string())
+}
+
+/// sendTx guard for the admin's own AdminConfig txs: refuse a change that would lock the
+/// chain out of every later tx, the admin's included (a `min_fee` the admin cannot pay
+/// after this tx, or a zero admin key). The executor accepts both (every parameter stays
+/// editable on chain); this only stops a typo from bricking the chain via RPC.
+pub fn precheck_admin_config(tx: &Tx, admin_balance: u64) -> Result<(), String> {
+    let TxBody::AdminConfig { key, value } = &tx.body else { return Ok(()) };
+    match *key {
+        keys::MIN_FEE => {
+            let Ok(b) = <[u8; 8]>::try_from(value.as_slice()) else { return Ok(()) };
+            let fee = u64::from_le_bytes(b);
+            let left = admin_balance.saturating_sub(tx.fee);
+            if fee > left {
+                return Err(format!("min_fee {fee} is more than the admin can pay after this tx ({left}); every later tx, the admin's too, would be refused"));
+            }
+        }
+        keys::ADMIN if value.iter().all(|b| *b == 0) => return Err("a zero admin key would lock the chain's parameters for good".into()),
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Count valid, distinct signatures from `set` over `msg` (raw ed25519). Any signature
 /// that is invalid or from outside the set fails the whole check.
 pub(crate) fn check_sigs(sigs: &[agent_types::AttesterSig], set: &[Pubkey], threshold: u8, msg: &[u8]) -> Result<(), TxError> {

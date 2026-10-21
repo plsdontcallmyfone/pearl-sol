@@ -141,6 +141,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadre-glue"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "pearl-job",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "cc"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -577,6 +589,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bs58",
+ "cadre-glue",
  "clap",
  "ed25519-dalek",
  "hex",

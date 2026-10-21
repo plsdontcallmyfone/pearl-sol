@@ -293,9 +293,15 @@ test("POST /v1/tx/pump-buy on the curve: buy_exact_quote_in_v3 as pump-sdk build
   assert.equal(data[24], 0);
 
   // explicit min_tokens_out and slippage, input errors, balance
+  // a min_tokens_out far below the quote is refused (security pass V-4: it accepts a sandwiched fill)
   const r2 = await post("/v1/tx/pump-buy", { buyer: OWNER, sol_in: "1000000", min_tokens_out: "5" });
-  assert.equal(r2.body.summary.min_tokens_out_spl, "5");
+  assert.equal(r2.status, 422);
+  assert.equal(r2.body.error.code, "unsafe_min_out");
+  const tight = await post("/v1/tx/pump-buy", { buyer: OWNER, sol_in: "1000000000", min_tokens_out: b.summary.min_tokens_out_spl });
+  assert.equal(tight.body.summary.min_tokens_out_spl, b.summary.min_tokens_out_spl);
   assert.equal((await post("/v1/tx/pump-buy", { buyer: OWNER, sol_in: "1000000", slippage_bps: 9999 })).status, 400);
+  assert.equal((await post("/v1/tx/pump-buy", { buyer: OWNER, sol_in: "1000000", slippage_bps: 5000 })).status, 400, "50% slippage is refused");
+  assert.equal((await post("/v1/tx/pump-buy", { buyer: OWNER, sol_in: "1000000", slippage_bps: 1000 })).status, 200);
   assert.equal((await post("/v1/tx/pump-buy", { buyer: "nope", sol_in: "1" })).status, 400);
   const poor = await post("/v1/tx/pump-buy", { buyer: key("poor"), sol_in: "1000" });
   assert.equal(poor.status, 422);

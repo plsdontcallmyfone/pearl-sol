@@ -17,18 +17,35 @@ use crate::dispatch::RpcError;
 
 pub enum ApiRequest {
     Call { method: String, params: Value, reply: oneshot::Sender<Result<Value, RpcError>> },
-    Subscribe { topics: Vec<String>, tx: mpsc::UnboundedSender<String> },
+    Subscribe { topics: Vec<String>, tx: mpsc::Sender<String> },
 }
 
 pub type Mailbox = mpsc::Sender<ApiRequest>;
 
 pub const TOPICS: &[&str] = &["heads", "finalized", "txs", "withdrawals"];
 
+/// Most calls in one JSON-RPC batch. Every call runs on the node actor, the same task that
+/// takes blocks and txs from peers, so one unbounded batch could stall consensus work
+/// (security pass 2026-10-21). The explorer sends batches of at most 100.
+pub const MAX_BATCH: usize = 256;
+/// Notifications queued per WebSocket subscriber before it is dropped as too slow.
+pub const WS_QUEUE: usize = 1024;
+/// Concurrent WebSocket sessions.
+pub const MAX_WS_SESSIONS: usize = 512;
+
+static WS_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 async fn call(mut mb: Mailbox, method: String, params: Value) -> Result<Value, RpcError> {
     let (tx, rx) = oneshot::channel();
     mb.send(ApiRequest::Call { method, params, reply: tx }).await.map_err(|_| RpcError::server("node is shutting down"))?;
-    rx.await.map_err(|_| RpcError::server("node dropped the request"))?
+    match tokio::time::timeout(CALL_TIMEOUT, rx).await {
+        Ok(r) => r.map_err(|_| RpcError::server("node dropped the request"))?,
+        Err(_) => Err(RpcError::server("node busy: request timed out")),
+    }
 }
+
+/// How long an HTTP or WebSocket call waits for the node actor.
+pub const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One JSON-RPC request object to a response object.
 async fn handle_one(mb: Mailbox, req: Value) -> Value {
@@ -43,17 +60,25 @@ async fn handle_one(mb: Mailbox, req: Value) -> Value {
     }
 }
 
-async fn http_rpc(State(mb): State<Mailbox>, Json(body): Json<Value>) -> Json<Value> {
+/// Answer a JSON-RPC body: one request object or a batch of at most [`MAX_BATCH`].
+pub async fn handle_body(mb: Mailbox, body: Value) -> Value {
     match body {
+        Value::Array(reqs) if reqs.len() > MAX_BATCH => {
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": format!("batch of {} calls, at most {MAX_BATCH}", reqs.len())}})
+        }
         Value::Array(reqs) => {
             let mut out = Vec::with_capacity(reqs.len());
             for r in reqs {
                 out.push(handle_one(mb.clone(), r).await);
             }
-            Json(Value::Array(out))
+            Value::Array(out)
         }
-        r => Json(handle_one(mb, r).await),
+        r => handle_one(mb, r).await,
     }
+}
+
+async fn http_rpc(State(mb): State<Mailbox>, Json(body): Json<Value>) -> Json<Value> {
+    Json(handle_body(mb, body).await)
 }
 
 pub async fn serve_http(addr: SocketAddr, mb: Mailbox) -> std::io::Result<()> {
@@ -69,12 +94,20 @@ pub async fn serve_http(addr: SocketAddr, mb: Mailbox) -> std::io::Result<()> {
     axum::serve(listener, app).await
 }
 
-async fn ws_upgrade(State(mb): State<Mailbox>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_session(socket, mb))
+async fn ws_upgrade(State(mb): State<Mailbox>, ws: WebSocketUpgrade) -> axum::response::Response {
+    use std::sync::atomic::Ordering;
+    if WS_SESSIONS.fetch_add(1, Ordering::SeqCst) >= MAX_WS_SESSIONS {
+        WS_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "too many WebSocket sessions").into_response();
+    }
+    ws.max_message_size(1 << 20).on_upgrade(move |socket| async move {
+        ws_session(socket, mb).await;
+        WS_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+    })
 }
 
 async fn ws_session(mut socket: WebSocket, mb: Mailbox) {
-    let (ntx, mut nrx) = mpsc::unbounded::<String>();
+    let (ntx, mut nrx) = mpsc::channel::<String>(WS_QUEUE);
     let mut subscribed = false;
     loop {
         tokio::select! {
@@ -97,6 +130,9 @@ async fn ws_session(mut socket: WebSocket, mb: Mailbox) {
                         .unwrap_or_else(|| TOPICS.iter().map(|s| s.to_string()).collect());
                     if let Some(bad) = topics.iter().find(|t| !TOPICS.contains(&t.as_str())) {
                         json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("unknown topic {bad}")}})
+                    } else if subscribed {
+                        // one subscription per session (each would add a subscriber on the node)
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32600,"message":"already subscribed on this session"}})
                     } else {
                         let mut m = mb.clone();
                         let ok = m.send(ApiRequest::Subscribe { topics: topics.clone(), tx: ntx.clone() }).await.is_ok();

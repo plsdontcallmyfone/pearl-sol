@@ -509,20 +509,63 @@ fn admin_edits_signers_threshold_and_admin() {
 }
 
 fn refund_msg(nonce: u64, buyer: &Pubkey, amount: u64) -> Vec<u8> {
-    bridge::bridge_message(REFUND_DOMAIN, nonce, buyer, amount)
+    bridge::refund_message(nonce, buyer, amount)
+}
+
+/// Stand-in for token/programs/storefront: the depositing program of an order.
+const SHOP: Pubkey = solana_sdk::pubkey!("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
+
+fn order_pda(nonce: u64) -> Pubkey {
+    Pubkey::find_program_address(&[b"order", &nonce.to_le_bytes()], &SHOP).0
+}
+
+/// An order deposit as the storefront makes one: the bridge Deposit's sender is SHOP's
+/// trader PDA, and SHOP's Order at ["order", nonce] names `buyer` (storefront `layout`).
+/// The tokens really move (a user deposit), then the record's sender is set to the trader
+/// PDA (only SHOP could sign for it).
+fn order_deposit(env: &mut Env, amount: u64, status: u8) -> (u64, Keypair) {
+    let nonce = env.config().deposit_nonce;
+    let buyer = fund_vault(env, amount);
+    let trader = Pubkey::find_program_address(&[b"trader"], &SHOP).0;
+    let mut dep = env.svm.get_account(&deposit_pda(nonce)).unwrap();
+    dep.data[16..48].copy_from_slice(trader.as_ref());
+    env.svm.set_account(deposit_pda(nonce), dep).unwrap();
+    set_order(env, nonce, &buyer.pubkey(), amount, status);
+    (nonce, buyer)
+}
+
+fn set_order(env: &mut Env, nonce: u64, buyer: &Pubkey, tokens: u64, status: u8) {
+    let mut d = vec![0u8; 700];
+    d[..8].copy_from_slice(&solana_sdk::hash::hash(b"account:Order").to_bytes()[..8]);
+    d[8] = 1;
+    d[9] = status;
+    d[12..20].copy_from_slice(&nonce.to_le_bytes());
+    d[52..84].copy_from_slice(buyer.as_ref());
+    d[156..164].copy_from_slice(&tokens.to_le_bytes());
+    let lamports = env.svm.minimum_balance_for_rent_exemption(d.len());
+    env.svm.set_account(order_pda(nonce), Account { lamports, data: d, owner: SHOP, executable: false, rent_epoch: 0 }).unwrap();
+}
+
+impl Env {
+    fn refund_order_ix(&self, nonce: u64, buyer: Pubkey, buyer_token: Pubkey) -> Instruction {
+        let mut ix = self.refund_ix(nonce, buyer, buyer_token);
+        ix.accounts.push(AccountMeta::new_readonly(order_pda(nonce), false));
+        ix
+    }
 }
 
 #[test]
 fn refund_deposit_returns_the_deposit_once_and_writes_the_refund_record() {
     let mut env = setup(1, 1);
-    let user = fund_vault(&mut env, 3_000_000); // deposit 0
+    let (n, user) = order_deposit(&mut env, 3_000_000, 1); // deposit 0
     let uta = ata(&user.pubkey(), &env.mint);
     assert_eq!(env.token_balance(&uta), 0);
     let s0 = env.signers[0].insecure_clone();
-    let msg = refund_msg(0, &user.pubkey(), 3_000_000);
-    assert_eq!(&msg[..19], b"pearl-sol:refund:v1");
-    assert_eq!(msg.len(), 19 + 8 + 32 + 8);
-    let meta = env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_ix(0, user.pubkey(), uta)], &[]).expect("refund");
+    let msg = refund_msg(n, &user.pubkey(), 3_000_000);
+    assert_eq!(&msg[..19], b"pearl-sol:refund:v2");
+    assert_eq!(&msg[19..51], bridge::ID.as_ref());
+    assert_eq!(msg.len(), 19 + 32 + 8 + 32 + 8);
+    let meta = env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).expect("refund");
     println!("refund_deposit: {} CU", meta.compute_units_consumed);
     assert_eq!(env.token_balance(&uta), 3_000_000);
     assert_eq!(env.token_balance(&env.vault()), 0);
@@ -535,7 +578,7 @@ fn refund_deposit_returns_the_deposit_once_and_writes_the_refund_record() {
 
     // a second refund of the same deposit fails on the existing record
     fund_vault(&mut env, 3_000_000); // refill the vault (deposit 1)
-    let e = env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(custom(0)(&e), "second refund must fail on the existing record: {e:?}");
     assert_eq!(env.token_balance(&uta), 3_000_000);
 }
@@ -543,37 +586,34 @@ fn refund_deposit_returns_the_deposit_once_and_writes_the_refund_record() {
 #[test]
 fn refund_deposit_needs_signers_over_the_exact_message() {
     let mut env = setup(3, 2);
-    let user = fund_vault(&mut env, 2_000_000);
+    let (_, user) = order_deposit(&mut env, 2_000_000, 1);
     let uta = ata(&user.pubkey(), &env.mint);
     let [a, b] = [0, 1].map(|i| env.signers[i].insecure_clone());
     let nonsig = custom(err_code(BridgeError::NotEnoughSignatures));
     let good = refund_msg(0, &user.pubkey(), 2_000_000);
     // no signature, one of two, wrong amount, wrong domain (a deposit message)
-    let e = env.send(&[env.refund_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(nonsig(&e), "{e:?}");
-    let e = env.send(&[ed25519_ix(&[(&a, &good)]), env.refund_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&a, &good)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(nonsig(&e), "{e:?}");
     let wrong_amt = refund_msg(0, &user.pubkey(), 1_000_000);
-    let e = env.send(&[ed25519_ix(&[(&a, &wrong_amt), (&b, &wrong_amt)]), env.refund_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&a, &wrong_amt), (&b, &wrong_amt)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(nonsig(&e), "{e:?}");
     let dep = bridge::bridge_message(bridge::DEPOSIT_DOMAIN, 0, &user.pubkey(), 2_000_000);
-    let e = env.send(&[ed25519_ix(&[(&a, &dep), (&b, &dep)]), env.refund_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&a, &dep), (&b, &dep)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(nonsig(&e), "{e:?}");
     // signed for the user, paid to someone else's token account
     let other = Pubkey::new_unique();
     let ota = env.create_ata(&other);
-    let e = env.send(&[ed25519_ix(&[(&a, &good), (&b, &good)]), env.refund_ix(0, user.pubkey(), ota)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&a, &good), (&b, &good)]), env.refund_order_ix(0, user.pubkey(), ota)], &[]).unwrap_err();
     assert!(custom(err_code(BridgeError::WrongRecipient))(&e), "{e:?}");
-    // signed for another buyer (the token account matches that buyer): only with signatures over it
-    let e = env.send(&[ed25519_ix(&[(&a, &good), (&b, &good)]), env.refund_ix(0, other, ota)], &[]).unwrap_err();
-    assert!(nonsig(&e), "{e:?}");
     // a refund of a nonce with no deposit record fails
     let msg1 = refund_msg(1, &user.pubkey(), 2_000_000);
-    let e = env.send(&[ed25519_ix(&[(&a, &msg1), (&b, &msg1)]), env.refund_ix(1, user.pubkey(), uta)], &[]).unwrap_err();
+    let e = env.send(&[ed25519_ix(&[(&a, &msg1), (&b, &msg1)]), env.refund_order_ix(1, user.pubkey(), uta)], &[]).unwrap_err();
     assert!(matches!(e, TransactionError::InstructionError(..)), "{e:?}");
     assert_eq!(env.token_balance(&env.vault()), 2_000_000);
     // 2 of 3: refunded
-    env.send(&[ed25519_ix(&[(&a, &good), (&b, &good)]), env.refund_ix(0, user.pubkey(), uta)], &[]).expect("2-of-3 refund");
+    env.send(&[ed25519_ix(&[(&a, &good), (&b, &good)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).expect("2-of-3 refund");
     assert_eq!(env.token_balance(&uta), 2_000_000);
     assert_eq!(env.token_balance(&env.vault()), 0);
 }
@@ -581,7 +621,7 @@ fn refund_deposit_needs_signers_over_the_exact_message() {
 #[test]
 fn refund_works_with_the_signer_release_path_off() {
     let mut env = setup(1, 1);
-    let user = fund_vault(&mut env, 1_000_000);
+    let (_, user) = order_deposit(&mut env, 1_000_000, 3); // an Expired order
     let uta = ata(&user.pubkey(), &env.mint);
     let admin = env.admin.insecure_clone();
     let ix = Instruction {
@@ -592,6 +632,78 @@ fn refund_works_with_the_signer_release_path_off() {
     env.send(&[ix], &[&admin]).expect("proof only");
     let s0 = env.signers[0].insecure_clone();
     let msg = refund_msg(0, &user.pubkey(), 1_000_000);
-    env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_ix(0, user.pubkey(), uta)], &[]).expect("refund is inbound: always attested");
+    env.send(&[ed25519_ix(&[(&s0, &msg)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).expect("refund is inbound: always attested");
     assert_eq!(env.token_balance(&uta), 1_000_000);
+}
+
+/// B-1 (security pass 2026-10-21): before the fix the signer set (1 of 1 on devnet, the
+/// attester key on box 0) could refund ANY deposit, including the reserve's fund_mining
+/// deposits and plain user deposits that were already unlocked on the agent chain, to ANY
+/// address it signed for, even with release mode proof-only: the whole vault. Now a refund
+/// needs the deposit's own Pending or Expired order and pays only its buyer.
+#[test]
+fn b1_signers_cannot_refund_a_non_order_deposit_or_redirect_a_refund() {
+    let mut env = setup(1, 1);
+    let s0 = env.signers[0].insecure_clone();
+    let thief = Pubkey::new_unique();
+    let tta = env.create_ata(&thief);
+    // a plain user deposit (or the reserve's fund_mining): nonce 0
+    let user = fund_vault(&mut env, 5_000_000);
+    let m = refund_msg(0, &thief, 5_000_000);
+    let e = env.send(&[ed25519_ix(&[(&s0, &m)]), env.refund_ix(0, thief, tta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotAnOrder))(&e), "no order account: {e:?}");
+    // even with a forged "order" at the right address of some program: the deposit's
+    // sender is not that program's trader PDA
+    set_order(&mut env, 0, &thief, 5_000_000, 1);
+    let e = env.send(&[ed25519_ix(&[(&s0, &m)]), env.refund_order_ix(0, thief, tta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotAnOrder))(&e), "{e:?}");
+    let m_user = refund_msg(0, &user.pubkey(), 5_000_000);
+    let uta = ata(&user.pubkey(), &env.mint);
+    let e = env.send(&[ed25519_ix(&[(&s0, &m_user)]), env.refund_order_ix(0, user.pubkey(), uta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotAnOrder))(&e), "{e:?}");
+    // an order deposit (nonce 1): signed and paid to someone other than the order's buyer
+    let (n, buyer) = order_deposit(&mut env, 2_000_000, 1);
+    let m = refund_msg(n, &thief, 2_000_000);
+    let e = env.send(&[ed25519_ix(&[(&s0, &m)]), env.refund_order_ix(n, thief, tta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::WrongRecipient))(&e), "{e:?}");
+    // a Finalized (2) or Refunded (4) order: refused; a wrong amount in the order: refused
+    let bta = ata(&buyer.pubkey(), &env.mint);
+    let mb = refund_msg(n, &buyer.pubkey(), 2_000_000);
+    for status in [2u8, 4] {
+        set_order(&mut env, n, &buyer.pubkey(), 2_000_000, status);
+        let e = env.send(&[ed25519_ix(&[(&s0, &mb)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).unwrap_err();
+        assert!(custom(err_code(BridgeError::NotAnOrder))(&e), "status {status}: {e:?}");
+    }
+    set_order(&mut env, n, &buyer.pubkey(), 1_999_999, 1);
+    let e = env.send(&[ed25519_ix(&[(&s0, &mb)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotAnOrder))(&e), "{e:?}");
+    set_order(&mut env, n, &buyer.pubkey(), 2_000_000, 1);
+    env.send(&[ed25519_ix(&[(&s0, &mb)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).expect("the real refund");
+    assert_eq!(env.token_balance(&bta), 2_000_000);
+    assert_eq!(env.token_balance(&env.vault()), 5_000_000, "the user deposit stays locked");
+    assert_eq!(env.token_balance(&tta), 0);
+}
+
+/// B-2 (security pass 2026-10-21): a refund signed under the old v1 message (no bridge
+/// program id) is not accepted, so signatures made for one deployment do not replay on
+/// another that shares a signer key.
+#[test]
+fn b2_refund_signatures_are_bound_to_this_bridge() {
+    let mut env = setup(1, 1);
+    let (n, buyer) = order_deposit(&mut env, 1_000_000, 1);
+    let bta = ata(&buyer.pubkey(), &env.mint);
+    let s0 = env.signers[0].insecure_clone();
+    let v1 = bridge::bridge_message(REFUND_DOMAIN, n, &buyer.pubkey(), 1_000_000);
+    let e = env.send(&[ed25519_ix(&[(&s0, &v1)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotEnoughSignatures))(&e), "{e:?}");
+    // the same fields bound to another bridge program id
+    let mut other = bridge::REFUND_DOMAIN_V2.to_vec();
+    other.extend_from_slice(Pubkey::new_unique().as_ref());
+    other.extend_from_slice(&n.to_le_bytes());
+    other.extend_from_slice(buyer.pubkey().as_ref());
+    other.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let e = env.send(&[ed25519_ix(&[(&s0, &other)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).unwrap_err();
+    assert!(custom(err_code(BridgeError::NotEnoughSignatures))(&e), "{e:?}");
+    let good = refund_msg(n, &buyer.pubkey(), 1_000_000);
+    env.send(&[ed25519_ix(&[(&s0, &good)]), env.refund_order_ix(n, buyer.pubkey(), bta)], &[]).expect("v2 refund");
 }

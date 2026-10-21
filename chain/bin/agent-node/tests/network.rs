@@ -374,6 +374,8 @@ fn withdrawal_becomes_final_with_proof() {
         let fund = Tx::signed(&seed(200), CHAIN, 0, 0, TxBody::BridgeUnlock { solana_nonce: 9, recipient: pk(2), amount_spl: 5000, job_order: None, sigs: vec![sig] });
         net.apis[0].call("sendTx", json!({"tx": b64(&fund)})).await;
         net.apis[0].mine(3).await;
+        // node 1 must have the funding block: mempools refuse txs the sender cannot pay for
+        wait_tips_equal(&ctx, &net.apis, 20).await;
         let lock = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::BridgeLock { solana_recipient: [9; 32], amount: 2_000_000 });
         net.apis[1].call("sendTx", json!({"tx": b64(&lock)})).await;
         ctx.sleep(Duration::from_millis(500)).await;

@@ -31,4 +31,5 @@ tiny_http.workspace = true
 pearl-job.workspace = true
 pearl-chain.workspace = true
 pearl-node.workspace = true
+cadre-glue.workspace = true
 ureq.workspace = true
