@@ -955,6 +955,23 @@ CLAUDE.md "Who is working on what".
      and redone). header-relay rollout: see DEVNET.md "Header relay build".
    - Open for an 8B: the GPU worker (item 20), an upload node with >= 10 GB blob quota and a faster put rate,
      raising the storefront max_blocks_cap for long-lived 8B balances, the node rollout with the template fix.
+28. SECURITY + ROBUSTNESS PASS BEFORE MAINNET (owner 2026-10-21, "security + robustness pass" row): DONE. Write-up in
+   docs/SECURITY-REVIEW.md (all areas, open items by category; exploit details only in gitignored docs/security-private/).
+   - Programs: reserve/storefront R-1, R-2/S-3, S-1, S-2 (d60c9d4); bridge B-1, B-2 (b4ce4db, relayer must roll out with
+     the bridge upgrade); lightclient L-1, L-2 (22c739f) + header-relay fill_final_gap / replace_dead_job (5deedec).
+   - Chain: property tests (0ecf5bf) + C-1..C-12 (9277119, merge 060dfd5); need a cadre-node rollout to take effect.
+   - Services: V-1..V-6 (e23ca64, 9cd45aa, e976e3f, 88ad2de, 52247dd, ec2c80f), V-2b/V-8/V-9/V-10 (9bae779); deps:
+     bn.js 5.2.5 (6ed714e), pearl-cli rustls-webpki/webpki-roots (a69323a). Wallet W-1..W-10 in pearl-wallet d3b3f05d0.
+     Ops: d8bf302.
+   - Redeployed 2026-10-21 (owner "Yes, allow deploy restarts", run by the orchestrator): test box cadre-api; box 0
+     synced to 154a819, cadre-gateway + pearl-attester installed and restarted, pearl-miner rebuilt (sha256 295bfca2...)
+     and restarted, cadre-explorer + cadre-api restarted (public API 200); boxes 1-2 the same pearl-miner (.prev kept),
+     cadre-miner restarted.
+   - OPEN: V-7 gateway connection cap / read timeout / 413 (main.rs; the serve-8B row finished without it); V-9 clients
+     still sign cadre-auth-v1 (cadre-proxy, swarm, swarm/agents, cadre-web, pearl-wallet, devnet-e2e, demo), then set
+     CADRE_AUTH_REQUIRE_AUDIENCE=1 on gateways; chain C-1..C-12 wait for the next cadre-node rollout; crates/Cargo.lock
+     webpki bumps; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
+     multisig + timelock before mainnet; attester/evaluator messages carry no chain_id (fresh mainnet keys).
 
 ## M1 components (SPEC v2, all DONE)
 
