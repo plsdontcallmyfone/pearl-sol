@@ -4,7 +4,8 @@
 #                                          stdin, never printed); the stream token secret (made on the box);
 #                                          /etc/lode/desktops.env with the paths and the knobs below
 #   scripts/devnet-desktops.sh wallet      pack ~/pearl-wallet/dist (built from dev, no source maps) -> /var/lib/lode/desktops/wallet.tgz
-#   scripts/devnet-desktops.sh deps        npm ci in ~/pearl-sol/services/swarm/desktop on the box (after `devnet-deploy.sh sync`)
+#   scripts/devnet-desktops.sh code        this checkout's committed main -> box 0 ~/cadre-desktops (its own clone, not
+#                                          ~/pearl-sol), then npm ci in services/swarm/desktop
 #   scripts/devnet-desktops.sh unit        install + enable cadre-desktops.service (not started)
 #   scripts/devnet-desktops.sh status      the controller's /status (spend, measured cost, desktops)
 #   scripts/devnet-desktops.sh stop        KILL SWITCH: STOP flag + pause every house desktop (billing stops)
@@ -50,13 +51,18 @@ ENV
     sshb lode 'cat > /var/lib/lode/desktops/wallet.tgz' < "$tmp/wallet.tgz"
     echo "box 0: wallet.tgz $(wc -c < "$tmp/wallet.tgz" | tr -d ' ') bytes (from $(git -C "$dist/.." log --oneline -1 2>/dev/null || echo "$dist"))"
     ;;
-  deps) sshb lode 'cd ~/pearl-sol/services/swarm/desktop && PATH=$HOME/.local/node/bin:$PATH npm ci --silent && echo deps ok' ;;
+  code)
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    git -C "$ROOT" bundle create "$tmp/desk.bundle" main 2>/dev/null
+    sshb lode 'cat > ~/desk.bundle' < "$tmp/desk.bundle"
+    sshb lode 'set -e; if [ -d ~/cadre-desktops/.git ]; then cd ~/cadre-desktops && git pull -q --ff-only ~/desk.bundle main; else git clone -q -b main ~/desk.bundle ~/cadre-desktops; fi
+      cd ~/cadre-desktops && git log --oneline -1 && cd services/swarm/desktop && PATH=$HOME/.local/node/bin:$PATH npm ci --silent && echo deps ok' ;;
   unit)
     sshb root 'cat > /etc/systemd/system/cadre-desktops.service && systemctl daemon-reload && systemctl enable cadre-desktops' < "$ROOT/deploy/systemd/cadre-desktops.service"
     echo "box 0: cadre-desktops.service installed and enabled (not started)"
     ;;
   status) sshb lode 'curl -s 127.0.0.1:10720/status' | python3 -c 'import json,sys; d=json.load(sys.stdin); d["agents"]=[{k:a[k] for k in ("handle","desktops","spend_today")} for a in d["agents"]]; print(json.dumps(d, indent=1))' ;;
-  stop) sshb lode 'cd ~/pearl-sol/services/swarm/desktop && set -a && . /etc/lode/desktops.env && set +a && CADRE_AGENTS_ENV=/etc/lode/desktops.env DESK_KILL_FILE=/var/lib/lode/desktops/STOP ~/.local/node/bin/node src/main.ts stop' ;;
+  stop) sshb lode 'cd ~/cadre-desktops/services/swarm/desktop && set -a && . /etc/lode/desktops.env && set +a && CADRE_AGENTS_ENV=/etc/lode/desktops.env DESK_KILL_FILE=/var/lib/lode/desktops/STOP ~/.local/node/bin/node src/main.ts stop' ;;
   resume) sshb lode 'rm -f /var/lib/lode/desktops/STOP && echo "STOP flag removed"' ;;
   *) sed -n 2,16p "$0"; exit 1 ;;
 esac

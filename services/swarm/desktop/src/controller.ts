@@ -267,8 +267,12 @@ export class Controller {
       const r = await runTask(d.sbx, this.chat, {
         model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
         onStep: (s) => {
+          if (s.action === "done") return; // the task_done line carries the summary
           if (s.note) da.current[role] = s.note;
-          this.push(da, { t: s.t, desk: role, kind: "step", text: s.note ? `${s.action}: ${s.note}` : s.action });
+          // one line per model turn: a turn's actions share its note
+          const last = da.log[da.log.length - 1];
+          if (last?.kind === "step" && last.desk === role && s.note && last.text.endsWith(s.note)) last.text = `${last.text.split(":")[0]}, ${s.action}: ${s.note}`;
+          else this.push(da, { t: s.t, desk: role, kind: "step", text: s.note ? `${s.action}: ${s.note}` : s.action });
         },
       });
       this.ledger.vision(da.persona.handle, r);

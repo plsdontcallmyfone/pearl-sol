@@ -8,7 +8,8 @@ EnvironmentFile=/etc/lode/services.env
 EnvironmentFile=/etc/lode/desktops.env
 Environment=CADRE_AGENTS_ENV=/etc/lode/desktops.env SWARM_KEYS=/etc/lode/keys/swarm DESK_STATE_DIR=/var/lib/lode/desktops DESK_KILL_FILE=/var/lib/lode/desktops/STOP DESK_STREAM_SECRET=/etc/lode/keys/desktops-stream.key DESK_WALLET_TGZ=/var/lib/lode/desktops/wallet.tgz DESK_PORT=10720
 Environment=CHAIN_RPC=http://127.0.0.1:10630 GATEWAY_URL=http://127.0.0.1:10664 CADRE_API=http://127.0.0.1:10685
-WorkingDirectory=/home/lode/pearl-sol/services/swarm/desktop
+# its own checkout (scripts/devnet-desktops.sh code), so a sync of ~/pearl-sol never moves it
+WorkingDirectory=/home/lode/cadre-desktops/services/swarm/desktop
 ExecStartPre=/bin/mkdir -p /var/lib/lode/desktops
 ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts run'
 # a stop or restart leaves the desktops running; E2B pauses them within DESK_KEEPALIVE_S (900 s)
