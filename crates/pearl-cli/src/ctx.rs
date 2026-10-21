@@ -101,7 +101,7 @@ impl Ctx {
         };
         let me = match (&key, &opts.address) {
             (Some(k), _) => Some(k.verifying_key().to_bytes()),
-            (None, Some(a)) => Some(pearl_job::spec::parse_key32(a)?),
+            (None, Some(a)) => Some(crate::fmt::parse_chain_addr(a)?),
             (None, None) => None,
         };
         let sol_me = sol_key.as_ref().map(|k| k.verifying_key().to_bytes()).or(if key.is_none() { me } else { None });

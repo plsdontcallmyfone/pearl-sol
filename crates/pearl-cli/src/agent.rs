@@ -91,7 +91,7 @@ pub fn profile_view(p: &Value) -> (Vec<Block>, String) {
     let line = format!(
         "{} {}: P behind completed work {}, storefront SOL {}, {} payers, accepted {} by P",
         name,
-        short(acct),
+        crate::fmt::short_addr(acct),
         tok(&h["p_behind_completed_work"]),
         sol(units(&h["storefront_sol_behind_completed_work"])),
         n(&sv["distinct_payers"]),
@@ -102,14 +102,14 @@ pub fn profile_view(p: &Value) -> (Vec<Block>, String) {
     let rej = &sv["rejected"];
     let tally = &rej["chain_tally"];
     let mut rec = Panel::new("Agent record")
-        .kv("Account", acct)
+        .kv("Account", crate::fmt::cx_str(acct))
         .kv("Name", name)
         .section("Behind completed work")
         .kt("P (protocol fees)", tok(&h["p_behind_completed_work"]), Tone::Plain)
         .kt("SOL via storefront", format!("{} SOL ({} finalized order{})", sol(units(&h["storefront_sol_behind_completed_work"])), n(&h["storefront_orders"]), if h["storefront_orders"].as_u64() == Some(1) { "" } else { "s" }), Tone::Plain)
         .kv("Work pay W earned", format!("{} over {}", tok(&h["w_earned"]), jobs(&h["completed_jobs"])))
         .kv("Distinct payers", n(&sv["distinct_payers"]))
-        .kv("Top payer share of P", if top.is_null() { "none".into() } else { format!("{} ({})", pct(&top["share_ppm"]), short(top["payer"].as_str().unwrap_or(""))) })
+        .kv("Top payer share of P", if top.is_null() { "none".into() } else { format!("{} ({})", pct(&top["share_ppm"]), crate::fmt::short_addr(top["payer"].as_str().unwrap_or(""))) })
         .kv("Self-dealing excluded", format!("{} over {}, {} of completed P", tok(&sd["protocol_fees"]), jobs(&sd["jobs"]), pct(&sd["share_ppm_of_completed_p"])))
         .section("Failures and acceptance")
         .kv("Rejected by evaluators", format!("{} over {}{}", tok(&rej["protocol_fees"]), jobs(&rej["jobs"]), if tally.is_null() { String::new() } else { format!(" (chain tally {})", n(&tally["rejected"])) }))
@@ -165,7 +165,7 @@ pub fn profile_view(p: &Value) -> (Vec<Block>, String) {
                 .map(|k| {
                     let k = k.as_str().unwrap_or("");
                     let role = if Some(k) == j["poster"].as_str() { " (buyer)" } else if k == acct { " (seller)" } else { "" };
-                    format!("{}{role}", short(k))
+                    format!("{}{role}", crate::fmt::short_addr(k))
                 })
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -173,7 +173,7 @@ pub fn profile_view(p: &Value) -> (Vec<Block>, String) {
         let excluded = !j["self_dealt"].is_null();
         t.rows.push(vec![
             (format!("{}{}", short(j["job_id"].as_str().unwrap_or("")), if excluded { " excluded" } else { "" }), if excluded { Tone::Warn } else { Tone::Plain }),
-            (short(j["poster"].as_str().unwrap_or("")), Tone::Plain),
+            (crate::fmt::short_addr(j["poster"].as_str().unwrap_or("")), Tone::Plain),
             (tokens(units(&j["protocol_fee"])), Tone::Plain),
             (signers, if j["signed_by_third_party"].as_bool() == Some(true) { Tone::Good } else { Tone::Warn }),
         ]);

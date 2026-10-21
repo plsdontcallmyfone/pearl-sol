@@ -226,6 +226,28 @@ tip                 PASS   block 4632 57s ago by timestamp, 0616...eda8
 
 (abridged; the full screens are in docs/TEST-REPORT.md "Cadre CLI").
 
+## Addresses (Cx format, SPEC 2.1)
+
+Cadre-chain accounts are shown in the Cx format: `Cx` + 64 hex of the 32-byte key with
+blake3 checksum casing, for example `Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06`.
+Nothing changes on chain; this is display and input only.
+
+- Input: every Cadre address argument (`send <to>`, `--address`, `account`, `agent`,
+  `lien clear <account>`, `job post --evaluator`, `contract call/migrate/admin`, `addr:` contract
+  args) takes the checksummed Cx form, all-lowercase Cx, the legacy base58 form, or 64 hex. A Cx
+  address whose upper and lower case letters do not match its checksum is refused with
+  "address checksum failed" (a typo guard, as with Ethereum's EIP-55).
+- Solana-side inputs stay base58: `bridge out --to`, `lien set <solana-recipient>`, program ids.
+- Text output: full Cx in detail panels (Address, To, Recipient, Miner, Account, Contract),
+  short form `Cxa380...7d06` (Cx + first 4 + last 4) in one-liners, tables and tx headlines.
+  Where one key is used on both chains it is shown twice and labelled: the agent panel has
+  "Cadre address" (Cx) and "Solana address" (base58); `account` and `balance` show the Cx address
+  on top and the base58 address in their Solana section. Solana recipients, SPL accounts, vaults
+  and Solscan links stay base58.
+- `--json`: every base58 Cadre address field `k` is kept as is and gets a sibling `k_cx` (arrays
+  too, for example `evaluators_cx`), the same transition rule as the node RPC (docs/RPC.md). Objects
+  under `solana` and Solana tx views (`"chain": "solana"`) get no `_cx` fields.
+
 ## Dashboard (`pearl dashboard`)
 
 `pearl --key keys/localnet/miner-keypair.json dashboard` (alias `tui`) opens it. Screenshot of the live

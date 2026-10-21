@@ -90,6 +90,7 @@ fn run(cli: Cli, style: term::Style) -> (anyhow::Result<i32>, bool) {
         };
         if json {
             let mut j = out.json;
+            fmt::add_cx_fields(&mut j);
             if let Some(o) = j.as_object_mut() {
                 // false exactly when the command exits non-zero (status / ping / verify)
                 o.insert("ok".into(), serde_json::json!(out.code == 0));
