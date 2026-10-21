@@ -59,6 +59,24 @@ pub enum Msg {
     DmQuote(String, Result<DmQuote, String>),
     /// (handle, sent line, or the error)
     DmSent(String, Result<String, String>),
+    /// The poller started (true) or finished (false) a read.
+    Loading(super::poll::Source, bool),
+    /// A new read of the chain, the wallet and the Solana side.
+    Snap(Box<crate::snapshot::Snapshot>),
+    /// Town posts and trades.
+    Feed(Box<super::poll::Feed>),
+    /// `/v1/dm/params`.
+    DmParams(Result<Value, String>),
+    /// `/v1/inbox/{me}`.
+    Inbox(Result<Value, String>),
+    /// Health checks of everything.
+    Status(Box<crate::health::Report>),
+    /// (request number, a command's result) for the Lookup view.
+    CmdDone(u64, Result<crate::commands::Out, String>),
+    /// (peer account, `/v1/threads/{me}/{peer}`) for the Inbox view.
+    Thread(String, Result<Value, String>),
+    /// The Send tab's transfer finished.
+    Sent(Result<String, String>),
 }
 
 #[derive(Debug, Clone)]

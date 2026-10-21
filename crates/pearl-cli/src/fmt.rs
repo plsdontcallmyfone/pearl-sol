@@ -99,20 +99,6 @@ pub fn short_n(s: &str, n: usize) -> String {
     format!("{}...{}", c[..n].iter().collect::<String>(), c[c.len() - n..].iter().collect::<String>())
 }
 
-/// Dotted leader: `label ......value`, exactly `width` columns when it fits. The
-/// value is kept whole; the label is cut first.
-pub fn leader(label: &str, value: &str, width: usize) -> String {
-    let vl = value.chars().count();
-    let ll = label.chars().count();
-    if vl + 2 >= width {
-        return value.chars().take(width).collect();
-    }
-    let room = width - vl;
-    let label: String = if ll + 2 > room { label.chars().take(room.saturating_sub(2)).collect() } else { label.to_string() };
-    let dots = room - label.chars().count() - 1;
-    format!("{label} {}{value}", ".".repeat(dots))
-}
-
 /// Split a shell line into words; single or double quotes group words.
 pub fn split_words(line: &str) -> Result<Vec<String>> {
     let mut out = vec![];
@@ -275,11 +261,6 @@ mod tests {
     fn layout() {
         assert_eq!(short("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"), "7xKX...gAsU");
         assert_eq!(short("abc"), "abc");
-        let l = leader("supply locked", "23.4%", 24);
-        assert_eq!(l, "supply locked .....23.4%");
-        assert_eq!(l.chars().count(), 24);
-        assert_eq!(leader("a very long label indeed", "OK", 10), "a very .OK");
-        assert_eq!(leader("x", "12345678901", 8), "12345678");
     }
 
     #[test]

@@ -75,6 +75,8 @@ pub struct Snapshot {
     /// "not connected" | "reachable" | "unreachable: ..."
     pub credit: String,
     pub miner_pid: Option<u32>,
+    /// The Solana side was read in this pass (not carried over; `gather_next`).
+    pub sol_read: bool,
 }
 
 /// u64 from a JSON field (number or decimal string), 0 if absent.
@@ -224,10 +226,50 @@ pub fn gather(ctx: &Ctx) -> Snapshot {
         Err(e) => err(&mut sn, "agent chain", e),
     }
     if sn.chain_ok() {
-        gather_chain(ctx, &mut sn, &mut err);
+        gather_chain(ctx, &mut sn, &mut err, None);
     }
     gather_solana(ctx, &mut sn);
+    sn.sol_read = true;
+    gather_services(ctx, &mut sn);
+    sn
+}
 
+/// The next read for a live view (the Cadre app's poller): like [`gather`], but blocks
+/// already read in `prev` are kept (their `final` flag recomputed from the new finalized
+/// height; the newest 3 are read again in case of a reorg), and the Solana side is
+/// carried over from `prev` unless `sol_due` or the withdrawal count changed (a new
+/// withdrawal needs its release state for the invariant).
+pub fn gather_next(ctx: &Ctx, prev: Option<&Snapshot>, sol_due: bool) -> Snapshot {
+    let Some(prev) = prev else { return gather(ctx) };
+    let mut sn = Snapshot {
+        taken_ms: now_ms(),
+        me: ctx.me.as_ref().map(b58),
+        sol_me: ctx.sol_me.as_ref().map(b58),
+        miner_pid: ctx.miner_pid(),
+        ..Default::default()
+    };
+    let mut err = |sn: &mut Snapshot, what: &str, e: anyhow::Error| sn.errors.push(format!("{what}: {e}"));
+    match ctx.call("getChainInfo", json!({})) {
+        Ok(v) => sn.info = v,
+        Err(e) => err(&mut sn, "agent chain", e),
+    }
+    if sn.chain_ok() {
+        gather_chain(ctx, &mut sn, &mut err, Some(prev));
+    }
+    if sol_due || prev.withdrawal_count != sn.withdrawal_count || !prev.sol_read && prev.sol.vault_spl.is_none() {
+        gather_solana(ctx, &mut sn);
+        sn.sol_read = true;
+    } else {
+        sn.sol = prev.sol.clone();
+        if let Some(e) = &sn.sol.error {
+            sn.errors.push(format!("solana: {e}"));
+        }
+    }
+    gather_services(ctx, &mut sn);
+    sn
+}
+
+fn gather_services(ctx: &Ctx, sn: &mut Snapshot) {
     // pool (optional service)
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(800)).build();
     let get = |path: &str| -> Option<Value> {
@@ -247,10 +289,9 @@ pub fn gather(ctx: &Ctx) -> Snapshot {
             Err(e) => format!("unreachable: {e}"),
         },
     };
-    sn
 }
 
-fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot, &str, anyhow::Error)) {
+fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot, &str, anyhow::Error), prev: Option<&Snapshot>) {
     for (m, slot) in [("getParams", 0), ("getEscrow", 1)] {
         match ctx.call(m, json!({})) {
             Ok(v) if slot == 0 => sn.params = v,
@@ -293,8 +334,22 @@ fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot
         Err(e) => err(sn, "listJobs", e),
     }
     let tip = sn.height();
+    let fin = u(&sn.info, "finalized_height");
     let win = BLOCK_WINDOW.max(sn.finality_k() + 1).min(64);
+    let kept = |h: u64| -> Option<Value> {
+        if h + 3 > tip {
+            return None;
+        }
+        let b = prev?.blocks.iter().find(|b| u(&b["header_fields"], "height") == h)?;
+        let mut b = b.clone();
+        b["final"] = json!(h <= fin);
+        Some(b)
+    };
     for h in (tip.saturating_sub(win - 1)..=tip).rev() {
+        if let Some(b) = kept(h) {
+            sn.blocks.push(b);
+            continue;
+        }
         match ctx.call("getBlock", json!({"height": h})) {
             Ok(v) if v.is_object() => sn.blocks.push(v),
             Ok(_) => {}
@@ -467,6 +522,7 @@ pub mod sample {
             pool_miner: None,
             credit: "not connected".into(),
             miner_pid: None,
+            sol_read: true,
             errors: vec![],
         }
     }

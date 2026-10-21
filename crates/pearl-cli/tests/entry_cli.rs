@@ -1,6 +1,6 @@
-//! The entry screen opens only for `cadre` alone on a terminal. Everything else must be
-//! exactly as before: a pipe, `--json`, `cadre status`, and `pearl` with no command. The
-//! endpoints point at a closed local port so every run is fast and offline.
+//! The Cadre app opens only for `cadre` alone (or `dashboard`) on a terminal. Everything
+//! else must be exactly as before: a pipe, `--json`, `cadre status`, and `pearl` with no
+//! command. The endpoints point at a closed local port so every run is fast and offline.
 
 use std::process::{Command, Stdio};
 
@@ -46,6 +46,28 @@ fn pearl_alone_keeps_its_overview() {
     let (out, _) = run(env!("CARGO_BIN_EXE_pearl"), &[]);
     assert!(!out.contains(ALT_ON));
     assert!(out.contains("overview ]"), "{out}");
+}
+
+#[test]
+fn dashboard_on_a_pipe_fails_fast_and_snapshot_draws_the_new_style() {
+    // no terminal: an error and exit 1, not a hang and not a half-drawn screen
+    let t0 = std::time::Instant::now();
+    let (out, code) = run(env!("CARGO_BIN_EXE_pearl"), &["dashboard"]);
+    assert_eq!(code, 1);
+    assert!(!out.contains(ALT_ON));
+    assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+    // `snapshot` renders the app's Dashboard view (offline here: every card says what is missing)
+    let dir = std::env::temp_dir().join(format!("cadre-snap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let html = dir.join("d.html");
+    let (_, code) = run(env!("CARGO_BIN_EXE_cadre"), &["snapshot", html.to_str().unwrap(), "--width", "120", "--height", "40"]);
+    assert_eq!(code, 0);
+    let h = std::fs::read_to_string(&html).unwrap();
+    let t = std::fs::read_to_string(dir.join("d.txt")).unwrap();
+    assert!(h.contains("#0a0a0a") && !h.contains("#0000aa"));
+    assert!(t.contains("dashboard") && t.contains("chain offline") && t.contains("Wallet"), "{t}");
+    assert!(!t.contains("beta version") && !t.contains("$$$"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// On a real terminal (a pty from `script`), `cadre` opens the alternate screen, and

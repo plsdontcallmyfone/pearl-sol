@@ -22,7 +22,7 @@ use crate::term::{status_tone, Block, Panel, Table, Tone, View};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Cmd {
-    /// Open the full-screen dashboard.
+    /// Open the Cadre app on its Dashboard view (the same app as `cadre` alone).
     #[command(alias = "tui")]
     Dashboard,
     /// Health of everything (chain nodes, Solana programs, light client, relays, services,
@@ -310,6 +310,7 @@ pub fn parse_line(line: &str) -> Result<Cmd> {
 }
 
 
+#[derive(Debug, Clone)]
 pub struct Out {
     pub json: Value,
     /// One-line form (the dashboard's shell strip).
@@ -739,8 +740,9 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Tx { hash } => crate::inspect::tx(ctx, hash),
         Cmd::Snapshot { out, width, height, tab } => {
             let sn = snapshot::gather(ctx);
-            let tab = crate::ui::Tab::parse(tab)?;
-            let (html, text) = crate::html::render_snapshot(&sn, *width, *height, tab)?;
+            let tab = crate::entry::dash::Tab::parse(tab)?;
+            let net = format!("{:?}", ctx.opts.network).to_lowercase();
+            let (html, text) = crate::html::render_snapshot(&sn, &net, *width, *height, tab)?;
             std::fs::write(out, html).with_context(|| format!("write {}", out.display()))?;
             let txt = out.with_extension("txt");
             std::fs::write(&txt, text)?;

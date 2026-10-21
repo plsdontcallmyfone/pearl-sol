@@ -1,7 +1,8 @@
 //! `pearl` / `cadre` (the same program under the product name): one command in text mode
 //! (steps + an info box) or `--json`; with no command `pearl` prints the overview box and
-//! `cadre` runs `status` (health of everything); `dashboard` opens the full-screen
-//! dashboard. All run the same `commands::exec`. See docs/CLI.md. The two binaries
+//! `cadre` runs `status` (health of everything); on a terminal `cadre` alone and
+//! `dashboard` open the Cadre app (src/entry/). All run the same `commands::exec`.
+//! See docs/CLI.md. The two binaries
 //! (src/main.rs, src/bin/cadre.rs) call [`main`]; the name they run as picks the default.
 
 mod agent;
@@ -26,7 +27,6 @@ mod mock;
 mod stub;
 mod term;
 mod trades;
-mod ui;
 
 use clap::Parser;
 
@@ -52,8 +52,11 @@ pub fn main() {
     let mut cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
     // `cadre` alone on an interactive terminal: the entry screen (src/entry/); anywhere
     // else (a pipe, --json, TERM=dumb) exactly as before
-    if entry::should_open_here(bin, cli.cmd.is_some(), cli.opts.json) {
-        let launch = entry::Launch { opts: cli.opts, forward: std::env::args_os().skip(1).collect(), commands: palette() };
+    // `pearl dashboard` / `cadre dashboard`: the same app, opened on its Dashboard view
+    let dashboard = matches!(cli.cmd, Some(commands::Cmd::Dashboard));
+    if entry::should_open_here(bin, cli.cmd.is_some(), cli.opts.json) || dashboard {
+        let start = if dashboard { entry::ViewId::Dashboard } else { entry::ViewId::Home };
+        let launch = entry::Launch { opts: cli.opts, forward: std::env::args_os().skip(1).collect(), commands: palette(), start };
         let code = entry::run(launch).unwrap_or_else(|e| {
             eprintln!("{}", term::Style::detect().step_line(false, &format!("error: {e:#}")));
             1
@@ -110,9 +113,6 @@ fn run(cli: Cli, style: term::Style) -> (anyhow::Result<i32>, bool) {
         Ok(c) => c,
         Err(e) => return (Err(e), false),
     };
-    if matches!(cli.cmd, Some(commands::Cmd::Dashboard)) {
-        return (ui::run(ctx).map(|_| 0), false);
-    }
     if !json {
         ctx.ui = term::Ui::plain(style);
     }

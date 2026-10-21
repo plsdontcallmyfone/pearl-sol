@@ -1,14 +1,12 @@
-//! Render the dashboard into a ratatui TestBackend and write the cell grid as a
+//! Render the Cadre app's Dashboard view into a buffer and write the cell grid as a
 //! colored HTML page (and plain text), for screenshots with a headless browser.
 
 use anyhow::Result;
-use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
-use ratatui::Terminal;
 
+use crate::entry::dash::Tab;
 use crate::snapshot::Snapshot;
-use crate::ui::{self, App, Tab};
 
 fn hex(c: Color, default: &str) -> String {
     match c {
@@ -47,8 +45,8 @@ pub fn buffer_html(b: &Buffer, title: &str) -> String {
             }
             body.push_str(&format!(
                 "<span style=\"color:{};background:{}{}\">{}</span>",
-                hex(fg, "#ffffff"),
-                hex(bg, "#0000aa"),
+                hex(fg, "#d0d0d0"),
+                hex(bg, "#0a0a0a"),
                 if bold { ";font-weight:bold" } else { "" },
                 esc(&run)
             ));
@@ -57,7 +55,7 @@ pub fn buffer_html(b: &Buffer, title: &str) -> String {
     }
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>\
-         html,body{{margin:0;background:#0000aa}}\
+         html,body{{margin:0;background:#0a0a0a}}\
          pre{{margin:0;padding:12px;font-family:Menlo,Monaco,'Courier New',monospace;font-size:14px;line-height:17px;\
          letter-spacing:0;white-space:pre;display:inline-block}}\
          pre span{{display:inline-block;height:17px;vertical-align:top}}\
@@ -67,17 +65,9 @@ pub fn buffer_html(b: &Buffer, title: &str) -> String {
     )
 }
 
-pub fn render_app(app: &App, w: u16, h: u16) -> Result<Buffer> {
-    let mut t = Terminal::new(TestBackend::new(w, h))?;
-    t.draw(|f| ui::render(f, app))?;
-    Ok(t.backend().buffer().clone())
-}
-
-pub fn render_snapshot(sn: &Snapshot, w: u16, h: u16, tab: Tab) -> Result<(String, String)> {
-    let mut app = App::new(sn.clone(), sn.me.is_some());
-    app.set_tab(tab);
-    app.log.push((false, format!("snapshot of the live stack, {} errors", sn.errors.len())));
-    let b = render_app(&app, w, h)?;
+/// The Cadre app's Dashboard view of `sn` (entry/dash.rs) as HTML and plain text.
+pub fn render_snapshot(sn: &Snapshot, network: &str, w: u16, h: u16, tab: Tab) -> Result<(String, String)> {
+    let b = crate::entry::dashboard_buffer(sn, network, w, h, tab);
     Ok((buffer_html(&b, &format!("{} dashboard", crate::brand::NAME)), buffer_text(&b)))
 }
 
@@ -88,20 +78,21 @@ mod tests {
 
     #[test]
     fn html_has_colors_and_escapes() {
-        let (html, text) = render_snapshot(&sample::snapshot(), 140, 46, Tab::Jobs).unwrap();
-        assert!(html.contains("background:#0000aa"));
-        assert!(html.contains("background:#55ff55"), "selected row");
-        assert!(html.contains("color:#ffff55"), "yellow titles");
-        assert!(html.contains(&esc(&crate::brand::bracket_mark())));
-        assert_eq!(text.lines().count(), 46);
-        assert!(text.contains("/Wallet Balance"));
+        let (html, text) = render_snapshot(&sample::snapshot(), "devnet", 140, 46, Tab::Jobs).unwrap();
+        assert!(html.contains("background:#0a0a0a"), "the terminal background");
+        assert!(html.contains("background:#1e1e1e"), "cards and the selected row");
+        assert!(html.contains("color:#5c9cf5"), "the blue bar");
+        assert!(!html.contains("#0000aa"), "no blue screen");
+        assert_eq!(text.split('\n').count(), 46);
+        assert!(text.contains("Wallet") && text.contains("40.74 CADRE"));
+        assert!(!text.contains("beta version"));
     }
 
     /// `PEARL_SAMPLE_OUT=dir cargo test sample_out` writes the sample screen (HTML + text).
     #[test]
     fn sample_out() {
         let Ok(dir) = std::env::var("PEARL_SAMPLE_OUT") else { return };
-        let (html, text) = render_snapshot(&sample::snapshot(), 140, 46, Tab::Jobs).unwrap();
+        let (html, text) = render_snapshot(&sample::snapshot(), "devnet", 140, 46, Tab::Jobs).unwrap();
         std::fs::write(format!("{dir}/sample.html"), html).unwrap();
         std::fs::write(format!("{dir}/sample.txt"), text).unwrap();
     }

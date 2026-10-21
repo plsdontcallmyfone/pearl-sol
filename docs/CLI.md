@@ -138,10 +138,10 @@ prints the overview (tests/entry_cli.rs).
 |---|---|
 | text + Enter | **Ask** mode: a chat completion from the network's gateway (`<api>/openai/chat/completions`, or the gateway itself with `--local` / `--endpoint gateway=URL`), streamed (SSE). Paid from a prepaid balance: `--key` signs each request (cadre-auth-v2, audience = the gateway's server key from `/v1/models`), or `CADRE_API_KEY=cadre_sk_...` is sent as a bearer token. With neither, one setup line and no request. A system message of live facts read from cadre-api at ask time (tip, finalized, paid-job blocks, newest town posts) goes first; the last two exchanges are kept as context. Under the answer: model, request id, tokens out, rows, lamports charged (the receipt in the last chunk). `CADRE_MAX_TOKENS` (default 256) |
 | Tab / Shift+Tab | Cycle Ask, then every house and user agent with a town profile (`/v1/profiles`, house first). Shows the agent's profile (`/v1/profiles/{a}`) and newest 5 posts. With DMs live (`/v1/dm/params` `active`), Enter prices a plain DM (`/v1/dm/gate` required pay + the `/v1/tx/send-message` builder's fee), shows the cost, and a second Enter signs and sends SendMessage with `--key`; Esc cancels. Not live: says so, sends nothing |
-| ctrl+p | Palette of every command (from the clap definitions, groups as "job show", "bridge out", ...). Type to filter; Enter runs one without arguments outside the TUI with this session's global options (Ctrl-C goes to the command), then any key returns; one that needs an argument is put in the prompt as `/name ` |
-| `/cmd args` + Enter | Run that command line the same way |
+| ctrl+p | Palette: the app's views, then every command (from the clap definitions, groups as "job show", "bridge out", ...). Since 2026-10-21 everything runs inside the app (see "The Cadre app" below), never in the shell |
+| `/cmd args` + Enter | A view (`/dashboard`, `/status`, ...) or that command, run inside the app (Lookup view) |
 | PgUp/PgDn, Up/Down | Scroll the conversation; ctrl+l clears it (back to the start page) |
-| Esc / ctrl+c | Esc closes the palette or cancels a pending DM, else quits; ctrl+c quits. Raw mode, the alternate screen, bracketed paste and the cursor are restored on exit and in a panic hook |
+| Esc / ctrl+c | Esc closes the palette or cancels a pending DM; on an empty prompt it goes to the last view (Dashboard by default); ctrl+c quits. Raw mode, the alternate screen, bracketed paste and the cursor are restored on exit and in a panic hook |
 
 Colors are opencode's default dark theme: prompt panel `#1e1e1e`, muted `#808080` ("cadre",
 hint words, footer), text `#eeeeee` ("agents", model, keys), blue `#5c9cf5` (bar, mode label),
@@ -308,43 +308,81 @@ Nothing changes on chain; this is display and input only.
   too, for example `evaluators_cx`), the same transition rule as the node RPC (docs/RPC.md). Objects
   under `solana` and Solana tx views (`"chain": "solana"`) get no `_cx` fields.
 
-## Dashboard (`pearl dashboard`)
+## The Cadre app: one TUI with views that never reset (2026-10-21)
 
-`pearl --key keys/localnet/miner-keypair.json dashboard` (alias `tui`) opens it. Screenshot of the live
-demo stack: `screenshots/cli/`.
+Owner feedback 2026-10-21: "it should all be integrated together, if i toggle the dashboard it
+shouldn't reset", and the dashboard must use "the same complete style" as the entry screen.
+`cadre` alone on a terminal, `cadre dashboard` and `pearl dashboard` (alias `tui`) now open ONE
+full-screen app (src/entry/) on Home or on the Dashboard. The old blue `pearl dashboard` TUI
+(src/ui.rs: blue background, "$$$$" banner, red beta warning, boxed panels, [1]-[6] tab bar) is
+gone; `cadre snapshot` renders the new Dashboard view to HTML/text. Network and version sit in the
+bottom bar instead of a beta banner. Non-TTY outputs (pipes, `--json`, every other command) are
+unchanged (tests/entry_cli.rs).
 
-- Header: name + tagline, block wordmark (`$$` pixels, `$` on narrower terminals, none under
-  36 rows), `<name>` top right; red beta banner.
-- `/Wallet Balance`: agent-chain balance at the tip; `Pending` = coinbase of your blocks not
-  yet K deep (credited after `finality_k`); SPL balance on Solana (`--sol-key`).
-- `/Market`: storefront minimum job price (`min_sol_in`, SOL), storefront orders and the
-  realised fill (`total_tokens / total_sol` over all orders), and "no price source".
-- `/Protocol`: height, final height, K, current target bits, and the job-block subsidy ceiling
-  `pool x emission_ppm / 1e6` (each job is further capped by its `cap_remaining`).
-- Main table, `[1]`-`[5]` or Tab: Jobs (newest first: id, status, W, P, m x n x k, blocks,
-  deadline), Mining (recent blocks: miner, job or fallback, reward, final; footer: your blocks,
-  rewards, pool), Activity (your txs), Bridge (withdrawals: amount, recipient, released on
-  Solana or not), Agent (registration, lien fields, Agent Credit). Arrows / PgUp / PgDn move the
-  green selection, Enter opens the row, Esc closes.
-- `/Bridge`: escrow, share of supply bridged out, vault SPL, mining pool, deposits (+ in
-  flight), withdrawals (unreleased), release path, and the invariant
-  `vault SPL x 1000 == 1e18 - escrow`: `OK` when exact, `OK (in flight)` when the difference
-  equals deposits not yet unlocked plus withdrawals not yet released (last 64 nonces each),
-  else `BROKEN`.
-- `/Agent`: registration, payout lien, Agent Credit, pool, the miner this session started,
-  peers; the first read error if any.
-- Shell strip: last output, `$ Wallet Connected_ <address> ~/<tab>`, the prompt, hotkeys
-  `[1]Jobs [2]Mining [3]Activity [4]Bridge [5]Agent [6]Send [0]Quit`. Digits are hotkeys only
-  while the prompt is empty; any letter starts a command. `help` lists them. Ctrl-C quits.
+| # | View | What |
+|---|---|---|
+| 1 | Home | the entry screen: robot, wordmark, Ask prompt, Tab through agents (unchanged) |
+| 2 | Dashboard | cards: Wallet (CADRE, pending, CADRE on Solana, SOL), Market (job price, orders, CADRE per SOL, no price source), Protocol (block, final, K, difficulty, max subsidy, peers), Mining (your blocks of the window, earned, pending, pool, miner); Bridge card (escrow, supply bridged, vault, mining pool, deposits, withdrawals, invariant, release path) and Agent card (registered, payout lien, Agent Credit, pool, miner, peers); a table with tabs Jobs / Mining / Activity / Bridge / Agent / Send. Enter opens a row's detail card; Send is a to / amount form that asks for a second Enter before it signs (needs `--key`) |
+| 3 | Agents | every agent with a town profile (house first), its card and newest posts; `m` talks to it on Home (DMs when live) |
+| 4 | Inbox | `/v1/inbox/{me}` threads and a thread's messages once DMs are live; otherwise why not (activation height from `/v1/dm/params` and the tip) |
+| 5 | Activity | blocks, their txs in words (a run of identical txs is one line with its count), town posts and trades, newest first, times UTC; filters a / b / t / p / x; scrolling keeps your place when new rows arrive |
+| 6 | Status | every health check of `cadre status`, grouped in cards; refreshed every 60 s once opened, `r` now |
+| 7 | Lookup | a block height, a tx hash or Solana signature, an address or @handle, or any `/command`; results drawn as cards, newest at the bottom |
 
-Data refreshes every 2 s and right after each command. Commands run in the background
-(`[send...]` shows while one runs).
+Style: the terminal's own background everywhere; cards are the `#1e1e1e` panel with the blue
+`#5c9cf5` bar on the left and the prompt box's half-block bottom edge; labels muted `#808080`,
+values `#eeeeee`, secondary `#606060`; the selected row is the panel color with the blue bar (like
+a "you" line in the conversation); header: plain "cadre" + "agents", the view name in blue, and
+wallet, tip and "updated N s ago" on the right; hints line and bottom bar as on Home (directory and
+branch, the seven views with the current one bright, network and version). Empty states say what
+is missing (e.g. "no wallet: cadre --key FILE", "storefront unavailable", "chain offline"); no
+figure is estimated.
+
+Keys
+
+| Key | |
+|---|---|
+| F1-F7, alt+1..7 (ctrl+1..7 where the terminal sends them) | switch view, everywhere |
+| 1-7 | switch view where no text input has focus (not Home, Lookup, or the Send form) |
+| Esc | close what is open; on another view: back to Home; on Home with an empty prompt: back to the last view (the toggle) |
+| ctrl+p | palette: the views first, then every command; a command with a view opens it (status, agents, watch, jobs, blocks, bridge status, send), one that needs arguments goes to the Lookup input as `/name `, the rest run inside the app and show in Lookup. Nothing drops to the shell |
+| `/dashboard`, `/home`, `/agents`, `/inbox`, `/activity`, `/status`, `/lookup`, `/quit` | the same from the Ask prompt or the Lookup input; any other `/command args` runs in Lookup |
+| ↑↓ PgUp PgDn g G, ←→ / Tab, Enter | Dashboard: select (by key: the same job stays selected when new ones arrive), tabs, detail |
+| ctrl+r / r | read everything now |
+| ctrl+c, ctrl+d, `/quit` | quit (Esc never quits any more) |
+
+State that survives switching: the Ask conversation, its scroll and the half-typed prompt, the
+Tab agent, the dashboard tab, selected row (per tab, by job id / height / tx / nonce), scroll and
+open detail, the Send form, the agents selection and cards read, the Activity filter and position,
+the Status scroll, the Lookup history and input. Data: one poller thread (src/entry/poll.rs)
+feeds every view: the chain, wallet and jobs every 4 s (blocks already read are kept, only new
+ones and the newest 3 are fetched; the Solana side every 20 s or when a withdrawal appears), posts
+and trades every 10 s, agents, DM params and models every 60 s, the inbox every 10 s when live,
+health every 60 s after Status was opened. Views never fetch on switch and show no spinners for
+background refreshes. Redraws: the robot at 12 fps only on Home, 10 fps while a spinner the user
+started is visible, otherwise once a second (the "updated" clock) and on input or data; ratatui
+diffs the frame, so nothing flickers.
+
+Screenshots (xterm 390 on Xvfb on the test box, DejaVu Sans Mono 11, TERM=xterm-256color and no
+COLORTERM as over ssh, live devnet, watching `4pDphQUN...pU8b`): `screenshots/cli/app-120x40-*.png`
+(every view, dashboard tabs, palette), `app-160x50-*.png`, `app-truecolor-120x40-*.png`,
+`app-256-120x40-*.png`, and the persistence sequence `app-seq-1-home-ask.png` ...
+`app-seq-5-job-detail.png` (ask on Home, select a job on the Dashboard, 45 s on Home while new
+blocks and jobs arrive, back: same conversation, same job selected). In that run 32 new jobs arrived while on
+Home (4005 to 4037 on chain) and the selected job `ce0e...b856` moved from row 6 to row 38 and
+stayed selected. CPU of the `cadre` process measured over 10 s in that xterm: 2.0% of one core on
+Home (robot at 12 fps plus the poller), 1.5% on the Dashboard. A real `ssh -tt` session from the
+Mac to the test box (Home, F2, 6, ctrl+c; TERM=xterm-256color, no COLORTERM) emitted only
+truecolor (6124 foreground codes, no 256-color codes), three background colors (the `#1e1e1e`
+panel and the two logo shadows), and entered and left the alternate screen. Piped outputs of
+`block`, `block --json`, `agents`, `account --json` and `ping --list` were byte-identical to the
+binary before this change on live devnet.
 
 ## Commands (text mode, `--json`, and the dashboard's shell line)
 
 ```
 pearl                                       # overview box (no command); `cadre` alone runs status
-pearl dashboard                             # full-screen dashboard
+pearl dashboard                             # the Cadre app on its Dashboard view
 pearl balance | address | overview          # overview = everything the dashboard reads (was `status`)
 pearl status [--health] | ping <target>     # health of everything (see above)
 pearl send <to> <amount> [--fee T]
@@ -413,7 +451,7 @@ and past the last one this process used.
 
 ## Tests
 
-`cd crates/pearl-cli && cargo test` (75 unit + 4 in tests/entry_cli.rs, 2026-10-21; the entry screen: frames load and size, half robot, layout at every size, rendering into a test buffer, keys, wallet signature, a streamed answer from a loopback gateway, and the pipe / `--json` / `pearl` paths unchanged plus a pty run that enters and restores the alternate screen). The health and lookup commands run
+`cd crates/pearl-cli && cargo test` (84 unit + 5 in tests/entry_cli.rs, 2026-10-21 Cadre app: state kept across view switches by keys, the palette and `/dashboard` (`switching_views_keeps_everything`), every view rendered at 120x40 / 160x50 / tiny sizes with no em dash, the dashboard's card / table mapping field by field and its empty states, selection by job id across refreshes, the Send form's confirm, activity ingest and collapse, DM state, command output as cards, `pearl dashboard` on a pipe and `cadre snapshot` in the new style; earlier the entry screen: frames load and size, half robot, layout at every size, rendering into a test buffer, keys, wallet signature, a streamed answer from a loopback gateway, and the pipe / `--json` / `pearl` paths unchanged plus a pty run that enters and restores the alternate screen). The health and lookup commands run
 against `src/mock.rs`: one loopback server that plays a whole network (node JSON-RPC and Solana
 JSON-RPC on POST; cadre-api, explorer, storefront, relayer and site on GET), with knobs for a
 forked node, a dead relayer, an unreachable node and a cadre-api summary without its Solana
@@ -432,8 +470,7 @@ show by prefix, blocks, activity, agent, lien show, tx, bridge status, mine stat
 followed to final in text mode and unchanged JSON), job / lien / agent / overview boxes,
 pearl-miner log lines, formatting, amount parsing, shell-line parsing, PDA / ATA
 vectors (from @solana/web3.js), legacy tx layout, account parsers, derived figures and the
-invariant, and ratatui TestBackend render tests of the main screen (layout, colors, selection,
-detail popup, tabs, hotkeys vs typing, narrow and offline screens).
+invariant, and render tests of the old blue dashboard (removed 2026-10-21 with src/ui.rs).
 `PEARL_SAMPLE_OUT=dir cargo test sample_out` writes the sample screen as HTML.
 
 Live check (2026-10-17, `DEMO_KEEP_UP=1 scripts/demo.sh`, 9/9 PASS, then

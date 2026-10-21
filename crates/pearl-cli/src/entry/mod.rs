@@ -1,21 +1,40 @@
-//! `cadre` with no command on an interactive terminal: the entry screen, modeled on
-//! opencode's start screen (owner, 2026-10-21): the owner's spinning ASCII robot, the
-//! two-tone block wordmark "cadre" + "agents", a prompt box that asks the Cadre AI
-//! (paid, streamed from the gateway), Tab to switch to a house or user agent (profile,
-//! posts, a DM when DMs are live, with its cost said first), ctrl+p for every CLI
-//! command, and a bottom bar with the directory, git branch, network and version.
+//! The Cadre app: `cadre` with no command on an interactive terminal (and `pearl
+//! dashboard` / `cadre dashboard`) opens ONE full-screen app in the entry screen's style
+//! (opencode's start screen, owner 2026-10-21) with views that keep their state while you
+//! switch between them (owner 2026-10-21: "if i toggle the dashboard it shouldn't reset"):
 //!
-//! Not opened (everything exactly as before) when stdin or stdout is not a terminal, with
-//! `--json`, with TERM=dumb, or with any command. See [`should_open`] and docs/CLI.md.
+//! 1 Home       the robot, the "cadre agents" wordmark, the Ask prompt (paid, streamed
+//!              from the gateway), Tab through house and user agents (profile, posts, DMs)
+//! 2 Dashboard  wallet, market, protocol, mining, bridge and agent cards, the jobs /
+//!              blocks / activity / withdrawals / agent / send table (dash.rs)
+//! 3 Agents     every agent with a town profile, its card and posts
+//! 4 Inbox      DM conversations once DMs are live
+//! 5 Activity   blocks, txs, town posts and trades as they happen
+//! 6 Status     every health check (what `cadre status` prints)
+//! 7 Lookup     a tx, block, account or @handle, or any command, drawn as cards
+//!
+//! One poller (poll.rs) feeds every view; switching views never refetches or resets the
+//! conversation, a selection, a scroll position, a filter or a half-typed input. Palette
+//! commands (ctrl+p) and `/command` lines run inside the app. Not opened (everything
+//! exactly as before) when stdin or stdout is not a terminal, with `--json`, with
+//! TERM=dumb, or with any other command. See docs/CLI.md.
 
+pub mod dash;
+pub mod draw;
+pub mod home;
 pub mod logo;
 pub mod net;
+pub mod poll;
 pub mod robot;
 pub mod theme;
+pub mod views;
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -27,12 +46,15 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::Terminal;
 use serde_json::{json, Value};
-use unicode_width::UnicodeWidthChar;
 
-use crate::ctx::{Network, Opts};
+use crate::ctx::{Ctx, Network, Opts};
+use crate::snapshot::Snapshot;
+use draw::{clip, fill, put, put_right, str_w, Pen};
+use home::{plan_home, RobotSize};
 use net::{AgentEntry, DmQuote, Model, Msg, Net};
+use poll::Source;
 use robot::Robot;
-use theme::{Mode, BG, BLUE, DIM, GREEN, MUTED, PANEL, PRIMARY, RED, TEXT};
+use theme::{Mode, BG, BLUE, DIM, MUTED, PANEL, PRIMARY, TEXT};
 
 /// One command for the ctrl+p palette (from the clap definitions in lib.rs).
 #[derive(Debug, Clone)]
@@ -40,11 +62,12 @@ pub struct PaletteCmd {
     /// Words after `cadre`, e.g. "job show".
     pub name: String,
     pub about: String,
-    /// It takes a required positional argument: the palette puts `/name ` in the prompt.
+    /// It takes a required positional argument: the palette puts `/name ` in the Lookup input.
     pub needs_args: bool,
 }
 
-/// Open the entry screen? Only for `cadre` alone, not `--json`, on a real terminal.
+/// Open the app? Only for `cadre` alone (or the dashboard command), not `--json`, on a
+/// real terminal.
 pub fn should_open(bin: &str, has_cmd: bool, json: bool, stdin_tty: bool, stdout_tty: bool, term: Option<&str>) -> bool {
     bin == "cadre" && !has_cmd && !json && stdin_tty && stdout_tty && term != Some("dumb")
 }
@@ -56,147 +79,75 @@ pub fn should_open_here(bin: &str, has_cmd: bool, json: bool) -> bool {
 }
 
 // ---------------------------------------------------------------------------------------
-// layout
+// views
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RobotSize {
-    Full,
-    Half,
-    None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewId {
+    Home,
+    Dashboard,
+    Agents,
+    Inbox,
+    Activity,
+    Status,
+    Lookup,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogoKind {
-    /// "cadre" and "agents" side by side (54 cells).
-    Wide,
-    /// "cadre" over "agents" (29 cells, 8 rows).
-    Stacked,
-    /// plain words, for very narrow terminals.
-    Text,
-}
+impl ViewId {
+    pub const ALL: [ViewId; 7] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup];
 
-/// Where everything goes on the start screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Plan {
-    pub robot: RobotSize,
-    pub robot_y: u16,
-    pub logo: LogoKind,
-    pub logo_y: u16,
-    pub box_x: u16,
-    pub box_w: u16,
-    pub box_y: u16,
-    pub hints_y: u16,
-    /// Bottom bar row (None when the terminal is too short for it).
-    pub footer_y: Option<u16>,
-}
-
-pub const BOX_ROWS: u16 = 5;
-const MAX_BOX_W: u16 = 75;
-
-fn footer_rows(h: u16) -> u16 {
-    if h >= 16 {
-        3
-    } else if h >= 10 {
-        1
-    } else {
-        0
-    }
-}
-
-fn box_geom(w: u16) -> (u16, u16) {
-    let margin = if w < 44 { 1 } else { 2 };
-    let bw = w.saturating_sub(2 * margin).min(MAX_BOX_W).max(1).min(w);
-    (w.saturating_sub(bw) / 2, bw)
-}
-
-/// The start screen: robot (full 44 x 24, half 22 x 12, or none), wordmark, prompt box,
-/// hints, bottom bar; centered vertically in what the bottom bar leaves.
-pub fn plan_home(w: u16, h: u16) -> Plan {
-    let foot = footer_rows(h);
-    let avail = h.saturating_sub(foot);
-    let logo_h = |k: LogoKind| -> u16 {
-        match k {
-            LogoKind::Wide => 4,
-            LogoKind::Stacked => 8,
-            LogoKind::Text => 1,
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewId::Home => "home",
+            ViewId::Dashboard => "dashboard",
+            ViewId::Agents => "agents",
+            ViewId::Inbox => "inbox",
+            ViewId::Activity => "activity",
+            ViewId::Status => "status",
+            ViewId::Lookup => "lookup",
         }
-    };
-    let mut logo = if w >= 58 {
-        LogoKind::Wide
-    } else if w >= 31 {
-        LogoKind::Stacked
-    } else {
-        LogoKind::Text
-    };
-    // a short terminal keeps the prompt: the block wordmark gives way to plain words
-    if logo_h(logo) + 1 + BOX_ROWS + 1 > avail {
-        logo = LogoKind::Text;
     }
-    let logo_h = logo_h(logo);
-    let rest = logo_h + 1 + BOX_ROWS + 1;
-    let robot = if w >= 44 && 24 + 1 + rest <= avail {
-        RobotSize::Full
-    } else if w >= 24 && 12 + 1 + rest <= avail {
-        RobotSize::Half
-    } else {
-        RobotSize::None
-    };
-    let rh = match robot {
-        RobotSize::Full => 25,
-        RobotSize::Half => 13,
-        RobotSize::None => 0,
-    };
-    let content = rh + rest;
-    let top = avail.saturating_sub(content) / 2;
-    let (box_x, box_w) = box_geom(w);
-    let logo_y = top + rh;
-    let box_y = logo_y + logo_h + 1;
-    Plan {
-        robot,
-        robot_y: top,
-        logo,
-        logo_y,
-        box_x,
-        box_w,
-        box_y,
-        hints_y: box_y + BOX_ROWS,
-        footer_y: match foot {
-            3 => Some(h - 2),
-            1 => Some(h - 1),
-            _ => None,
-        },
-    }
-}
 
-/// The conversation view: transcript on top, the prompt box at the bottom.
-fn plan_chat(w: u16, h: u16) -> (Rect, Plan) {
-    let foot = footer_rows(h);
-    let (box_x, box_w) = box_geom(w);
-    let box_y = h.saturating_sub(foot + BOX_ROWS + 1);
-    let plan = Plan {
-        robot: RobotSize::None,
-        robot_y: 0,
-        logo: LogoKind::Text,
-        logo_y: 0,
-        box_x,
-        box_w,
-        box_y,
-        hints_y: box_y + BOX_ROWS,
-        footer_y: match foot {
-            3 => Some(h - 2),
-            1 => Some(h - 1),
-            _ => None,
-        },
-    };
-    let top = if h >= 20 { 1 } else { 0 };
-    (Rect::new(box_x, top, box_w, box_y.saturating_sub(top + 1)), plan)
+    pub fn about(self) -> &'static str {
+        match self {
+            ViewId::Home => "The start screen: ask the Cadre AI, talk to agents",
+            ViewId::Dashboard => "Wallet, market, protocol, bridge, jobs, mining, agent, send",
+            ViewId::Agents => "Every agent with a town profile, its card and posts",
+            ViewId::Inbox => "DM conversations (once DMs are live)",
+            ViewId::Activity => "Live blocks, txs, posts and trades",
+            ViewId::Status => "Health of every component",
+            ViewId::Lookup => "A tx, block, account or @handle, or any command",
+        }
+    }
+
+    /// 1-based number of the view (its key).
+    pub fn num(self) -> usize {
+        ViewId::ALL.iter().position(|v| *v == self).unwrap() + 1
+    }
+
+    pub fn from_num(n: usize) -> Option<ViewId> {
+        ViewId::ALL.get(n.checked_sub(1)?).copied()
+    }
+
+    pub fn parse(s: &str) -> Option<ViewId> {
+        let s = s.trim_start_matches('/').to_ascii_lowercase();
+        Some(match s.as_str() {
+            "home" | "ask" => ViewId::Home,
+            "dashboard" | "dash" | "tui" | "overview" | "wallet" => ViewId::Dashboard,
+            "agents" => ViewId::Agents,
+            "inbox" | "dms" => ViewId::Inbox,
+            "activity" | "watch" | "feed" => ViewId::Activity,
+            "status" | "health" => ViewId::Status,
+            "lookup" | "find" => ViewId::Lookup,
+            _ => return None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------
 // state
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     You,
     Answer,
     Note,
@@ -205,7 +156,7 @@ enum Kind {
 }
 
 #[derive(Debug, Clone)]
-struct Entry {
+pub(crate) struct Entry {
     kind: Kind,
     /// Mode label for You (Ask or @handle).
     label: String,
@@ -222,6 +173,27 @@ impl Entry {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Item {
+    View(ViewId),
+    Cmd(PaletteCmd),
+}
+
+impl Item {
+    fn name(&self) -> String {
+        match self {
+            Item::View(v) => v.name().to_string(),
+            Item::Cmd(c) => c.name.clone(),
+        }
+    }
+    fn about(&self) -> String {
+        match self {
+            Item::View(v) => format!("view {}: {}", v.num(), v.about()),
+            Item::Cmd(c) => c.about.clone(),
+        }
+    }
+}
+
 struct Palette {
     filter: String,
     sel: usize,
@@ -229,30 +201,46 @@ struct Palette {
 
 pub struct Launch {
     pub opts: Opts,
-    /// The global options this process got (forwarded to commands run from the palette).
+    /// The global options this process got (kept for the docs; commands run in-process).
     pub forward: Vec<OsString>,
     pub commands: Vec<PaletteCmd>,
+    /// The view to open on (`pearl dashboard` opens the Dashboard).
+    pub start: ViewId,
 }
 
-struct App {
+pub(crate) struct App {
+    ctx: Arc<Ctx>,
     net: Net,
-    opts: Opts,
-    forward: Vec<OsString>,
     commands: Vec<PaletteCmd>,
     network: &'static str,
     me: Option<String>,
+    has_key: bool,
     color: Mode,
     robot: Robot,
     robot_half: Robot,
     start: Instant,
     cwd: String,
-    /// 0 = Ask, i = agents[i - 1].
-    mode: usize,
+    // ---- which view
+    view: ViewId,
+    /// The last view other than Home (Esc on an empty Home prompt goes back to it).
+    last_view: ViewId,
+    poll: Option<poll::Handle>,
+    loading: HashSet<Source>,
+    updated: HashMap<Source, Instant>,
+    // ---- data from the poller
+    snap: Option<Snapshot>,
     agents: Vec<AgentEntry>,
     agents_err: Option<String>,
     model: Option<Model>,
     model_err: Option<String>,
+    dm_params: Option<std::result::Result<Value, String>>,
     dm_live: Option<bool>,
+    inbox: Option<std::result::Result<Value, String>>,
+    report: Option<crate::health::Report>,
+    feed_errors: Vec<String>,
+    // ---- Home
+    /// 0 = Ask, i = agents[i - 1].
+    mode: usize,
     input: Vec<char>,
     cur: usize,
     transcript: Vec<Entry>,
@@ -262,12 +250,21 @@ struct App {
     next_id: u64,
     quote: Option<(String, DmQuote)>,
     quoting: bool,
+    // ---- other views
+    dash: dash::DashState,
+    agents_v: views::AgentsState,
+    inbox_v: views::InboxState,
+    activity: views::Activity,
+    status_scroll: u16,
+    lookup_input: Vec<char>,
+    lookup_cur: usize,
+    lookups: Vec<views::Lookup>,
+    /// Lines scrolled from where the newest lookup starts (negative = up).
+    lookup_off: i32,
     palette: Option<Palette>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     quit: bool,
-    /// a command to run outside the TUI, set by the palette or a `/` line
-    run: Option<Vec<String>>,
 }
 
 fn network_name(n: Network) -> &'static str {
@@ -316,32 +313,47 @@ pub fn git_branch(dir: &std::path::Path) -> Option<String> {
     None
 }
 
+/// Where the gateway is and who pays (from the session's options).
+fn net_of(ctx: &Ctx) -> Net {
+    let gateway = ctx.eps.get("gateway").filter(|_| ctx.opts.local || ctx.opts.endpoint.iter().any(|e| e.starts_with("gateway="))).map(String::from);
+    let api_key = std::env::var("CADRE_API_KEY").ok().filter(|k| !k.trim().is_empty()).map(|k| k.trim().to_string());
+    Net { api: ctx.eps.get("api").map(String::from), gateway, key: ctx.key().ok().cloned(), api_key }
+}
+
 impl App {
-    fn new(l: Launch, ctx: &crate::ctx::Ctx) -> App {
+    fn new(l: Launch, ctx: Arc<Ctx>, net: Net) -> App {
         let (tx, rx) = channel();
-        let gateway = ctx.eps.get("gateway").filter(|_| ctx.opts.local || ctx.opts.endpoint.iter().any(|e| e.starts_with("gateway="))).map(String::from);
-        let api_key = std::env::var("CADRE_API_KEY").ok().filter(|k| !k.trim().is_empty()).map(|k| k.trim().to_string());
-        let net = Net { api: ctx.eps.get("api").map(String::from), gateway, key: ctx.key().ok().cloned(), api_key };
         let robot = Robot::embedded();
         let robot_half = robot.half();
+        let start = l.start;
         App {
-            net,
             network: network_name(ctx.opts.network),
             me: ctx.me.as_ref().map(crate::solana::b58),
-            opts: l.opts,
-            forward: l.forward,
+            has_key: ctx.has_key(),
+            ctx,
+            net,
             commands: l.commands,
             color: Mode::detect(),
             robot,
             robot_half,
             start: Instant::now(),
             cwd: cwd_line(),
-            mode: 0,
+            view: start,
+            last_view: if start == ViewId::Home { ViewId::Dashboard } else { start },
+            poll: None,
+            loading: HashSet::new(),
+            updated: HashMap::new(),
+            snap: None,
             agents: vec![],
             agents_err: None,
             model: None,
             model_err: None,
+            dm_params: None,
             dm_live: None,
+            inbox: None,
+            report: None,
+            feed_errors: vec![],
+            mode: 0,
             input: vec![],
             cur: 0,
             transcript: vec![],
@@ -351,28 +363,26 @@ impl App {
             next_id: 1,
             quote: None,
             quoting: false,
+            dash: dash::DashState::default(),
+            agents_v: views::AgentsState::default(),
+            inbox_v: views::InboxState::default(),
+            activity: views::Activity::default(),
+            status_scroll: 0,
+            lookup_input: vec![],
+            lookup_cur: 0,
+            lookups: vec![],
+            lookup_off: 0,
             palette: None,
             tx,
             rx,
             quit: false,
-            run: None,
         }
     }
 
-    /// Background reads at start: the model, the agents, whether DMs are live.
-    fn load(&self) {
-        let (n, t) = (self.net.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let _ = t.send(Msg::Models(n.models().map_err(|e| format!("{e:#}"))));
-        });
-        let (n, t) = (self.net.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let _ = t.send(Msg::Agents(n.agents().map_err(|e| format!("{e:#}"))));
-        });
-        let (n, t) = (self.net.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let _ = t.send(Msg::DmLive(n.dm_live()));
-        });
+    fn kick(&self, k: poll::Kick) {
+        if let Some(p) = &self.poll {
+            let _ = p.kick.send(k);
+        }
     }
 
     fn agent(&self) -> Option<&AgentEntry> {
@@ -398,20 +408,79 @@ impl App {
         }
     }
 
+    fn handles(&self) -> HashMap<String, String> {
+        self.agents.iter().map(|a| (a.account.clone(), a.handle.clone())).collect()
+    }
+
+    fn tip(&self) -> Option<u64> {
+        self.snap.as_ref().filter(|s| s.chain_ok()).map(|s| s.height())
+    }
+
+    fn dm_status(&self) -> (bool, String) {
+        views::dm_state(self.dm_params.as_ref(), self.tip(), self.network)
+    }
+
+    // ---- view switching -------------------------------------------------------------
+
+    fn go(&mut self, v: ViewId) {
+        if v != ViewId::Home {
+            self.last_view = v;
+        }
+        self.view = v;
+        self.palette = None;
+        match v {
+            ViewId::Status => {
+                if let Some(p) = &self.poll {
+                    if !p.wants.status.swap(true, Ordering::Relaxed) {
+                        let _ = p.kick.send(poll::Kick::One(Source::Status));
+                    }
+                }
+            }
+            ViewId::Agents => self.load_card(),
+            _ => {}
+        }
+    }
+
+    /// Text goes to an input in this view (so digits and letters are not view keys).
+    fn typing(&self) -> bool {
+        match self.view {
+            ViewId::Home | ViewId::Lookup => true,
+            ViewId::Dashboard => self.dash.tab == dash::Tab::Send && self.has_key && self.dash.detail.is_none(),
+            _ => false,
+        }
+    }
+
+    // ---- Home -----------------------------------------------------------------------
+
     fn cycle(&mut self, back: bool) {
         let n = self.agents.len() + 1;
         self.mode = if back { (self.mode + n - 1) % n } else { (self.mode + 1) % n };
         self.quote = None;
         if let Some(a) = self.agent().cloned() {
-            let mut e = Entry::new(Kind::Card, format!("@{}", a.handle));
-            e.lines = vec![(format!("loading @{}...", a.handle), 2)];
-            self.transcript.push(e);
-            self.scroll = 0;
-            let (n, t) = (self.net.clone(), self.tx.clone());
-            std::thread::spawn(move || {
-                let _ = t.send(Msg::Profile(a.handle.clone(), n.profile(&a).map_err(|e| format!("{e:#}"))));
-            });
+            self.show_agent_card(&a);
         }
+    }
+
+    /// The agent's card in the Home conversation (cached from the Agents view if read).
+    fn show_agent_card(&mut self, a: &AgentEntry) {
+        let mut e = Entry::new(Kind::Card, format!("@{}", a.handle));
+        e.lines = match self.agents_v.cards.get(&a.account) {
+            Some(Ok(l)) => l.clone(),
+            _ => vec![(format!("loading @{}...", a.handle), 2)],
+        };
+        let need = !matches!(self.agents_v.cards.get(&a.account), Some(Ok(_)));
+        self.transcript.push(e);
+        self.scroll = 0;
+        if need {
+            self.fetch_profile(a.clone());
+        }
+    }
+
+    fn fetch_profile(&self, a: AgentEntry) {
+        let (n, t) = (self.net.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let _ = t.send(Msg::Profile(a.account.clone(), n.profile(&a).map_err(|e| format!("{e:#}"))));
+        });
     }
 
     fn note(&mut self, kind: Kind, s: impl Into<String>) {
@@ -434,11 +503,11 @@ impl App {
         }
         if let Some(cmd) = text.strip_prefix('/') {
             let words = split_words(cmd);
-            if !words.is_empty() {
-                self.run = Some(words);
-            }
             self.input.clear();
             self.cur = 0;
+            if !words.is_empty() {
+                self.run_words(words);
+            }
             return;
         }
         match self.agent().cloned() {
@@ -513,10 +582,9 @@ impl App {
 
     fn send_dm(&mut self, handle: String, q: DmQuote) {
         self.note(Kind::Note, format!("sending to @{handle}..."));
-        let (opts, t) = (self.opts.clone(), self.tx.clone());
+        let (ctx, t) = (self.ctx.clone(), self.tx.clone());
         std::thread::spawn(move || {
             let r = (|| -> Result<String> {
-                let ctx = crate::ctx::Ctx::new(opts)?;
                 let to = crate::solana::pk(&q.to);
                 let body = agent_types::tx::TxBody::SendMessage(agent_types::dm::SendMessage { to, mode: 0, pay: q.pay, body: q.body.as_bytes().to_vec(), ..Default::default() });
                 let sent = crate::commands::send_body(&ctx, "SendMessage", body, Some(q.fee), None, false)?;
@@ -527,19 +595,175 @@ impl App {
             })();
             let _ = t.send(Msg::DmSent(handle, r.map_err(|e| format!("{e:#}"))));
         });
+        self.kick(poll::Kick::Now);
     }
+
+    // ---- commands inside the app ------------------------------------------------------
+
+    /// A `/command` line or a palette command: a view when there is one for it, else the
+    /// command runs here and its result shows in the Lookup view.
+    fn run_words(&mut self, words: Vec<String>) {
+        let w0 = words[0].to_ascii_lowercase();
+        let w1 = words.get(1).map(|s| s.to_ascii_lowercase());
+        if words.len() == 1 {
+            if let Some(v) = ViewId::parse(&w0) {
+                if v == ViewId::Status {
+                    self.kick(poll::Kick::One(Source::Status));
+                }
+                self.go(v);
+                return;
+            }
+        }
+        let tab = match (w0.as_str(), w1.as_deref(), words.len()) {
+            ("jobs", _, 1) => Some(dash::Tab::Jobs),
+            ("blocks", _, 1) | ("mine", Some("status"), 2) => Some(dash::Tab::Mining),
+            ("bridge", Some("status"), 2) => Some(dash::Tab::Bridge),
+            ("lien", Some("show"), 2) | ("agent", None, 1) => Some(dash::Tab::Agent),
+            ("send", None, 1) => Some(dash::Tab::Send),
+            ("balance", None, 1) => Some(self.dash.tab),
+            _ => None,
+        };
+        if let Some(t) = tab {
+            self.dash.tab = t;
+            self.go(ViewId::Dashboard);
+            return;
+        }
+        match w0.as_str() {
+            "quit" | "exit" | "q" => {
+                self.quit = true;
+                return;
+            }
+            "watch" => {
+                self.go(ViewId::Activity);
+                return;
+            }
+            _ => {}
+        }
+        self.go(ViewId::Lookup);
+        self.run_lookup(words.join(" "), true);
+    }
+
+    /// Run a lookup or command line in the background; the result lands in the Lookup view.
+    fn run_lookup(&mut self, line: String, is_cmd: bool) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let shown = if is_cmd { format!("/{line}") } else { line.clone() };
+        self.lookups.push(views::Lookup { id, query: shown, out: None });
+        self.lookup_off = 0;
+        let (ctx, t) = (self.ctx.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let r = run_line(&ctx, &line, is_cmd);
+            let _ = t.send(Msg::CmdDone(id, r.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    fn send_transfer(&mut self) {
+        let f = &mut self.dash.send;
+        let to: String = f.to.iter().collect::<String>().trim().to_string();
+        let amount: String = f.amount.iter().collect::<String>().trim().to_string();
+        f.confirm = false;
+        f.busy = true;
+        f.result = None;
+        let (ctx, t) = (self.ctx.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let cmd = crate::commands::Cmd::Send { to, amount, fee: None };
+            let r = crate::commands::exec(&ctx, &cmd, true).map(|o| o.text);
+            let _ = t.send(Msg::Sent(r.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    // ---- data -------------------------------------------------------------------------
 
     fn apply(&mut self, m: Msg) {
         match m {
             Msg::Models(r) => match r {
-                Ok(m) => self.model = Some(m),
+                Ok(m) => {
+                    self.model = Some(m);
+                    self.model_err = None;
+                    if let Some(p) = &self.poll {
+                        p.wants.have_model.store(true, Ordering::Relaxed);
+                    }
+                }
                 Err(e) => self.model_err = Some(e),
             },
             Msg::Agents(r) => match r {
-                Ok(a) => self.agents = a,
+                Ok(a) => {
+                    // keep Home's agent mode on the same agent when the list changes
+                    let cur = self.agent().map(|a| a.account.clone());
+                    self.agents = a;
+                    self.agents_err = None;
+                    if let Some(c) = cur {
+                        self.mode = self.agents.iter().position(|a| a.account == c).map(|i| i + 1).unwrap_or(0);
+                    }
+                    if self.view == ViewId::Agents {
+                        self.load_card();
+                    }
+                }
                 Err(e) => self.agents_err = Some(e),
             },
             Msg::DmLive(b) => self.dm_live = Some(b),
+            Msg::DmParams(r) => {
+                let live = r.as_ref().map(|v| v["active"] == true).unwrap_or(false);
+                self.dm_live = Some(live);
+                self.dm_params = Some(r);
+                if let Some(p) = &self.poll {
+                    let was = p.wants.inbox.swap(live && self.me.is_some(), Ordering::Relaxed);
+                    if live && !was && self.me.is_some() {
+                        let _ = p.kick.send(poll::Kick::One(Source::Inbox));
+                    }
+                }
+            }
+            Msg::Inbox(r) => self.inbox = Some(r),
+            Msg::Thread(peer, r) => {
+                self.inbox_v.threads.insert(peer, r);
+            }
+            Msg::Loading(s, on) => {
+                if on {
+                    self.loading.insert(s);
+                } else {
+                    self.loading.remove(&s);
+                    self.updated.insert(s, Instant::now());
+                }
+            }
+            Msg::Snap(sn) => {
+                let handles = self.handles();
+                let ev = views::chain_events(&sn, &handles);
+                self.activity.ingest(ev);
+                self.snap = Some(*sn);
+            }
+            Msg::Feed(f) => {
+                let handles = self.handles();
+                let block_ms: HashMap<u64, u64> = self.snap.iter().flat_map(|s| s.blocks.iter()).map(|b| (crate::snapshot::u(&b["header_fields"], "height"), crate::snapshot::u(&b["header_fields"], "timestamp_ms"))).collect();
+                self.feed_errors.clear();
+                match &f.posts {
+                    Ok(p) => {
+                        self.activity.ingest(views::post_events(p));
+                    }
+                    Err(e) => self.feed_errors.push(format!("posts: {e}")),
+                }
+                match &f.trades {
+                    Ok(t) => {
+                        self.activity.ingest(views::trade_events(t, &handles, &block_ms));
+                    }
+                    Err(e) => self.feed_errors.push(format!("trades: {e}")),
+                }
+            }
+            Msg::Status(r) => self.report = Some(*r),
+            Msg::CmdDone(id, r) => {
+                if let Some(l) = self.lookups.iter_mut().find(|l| l.id == id) {
+                    l.out = Some(r);
+                }
+                self.lookup_off = 0;
+            }
+            Msg::Sent(r) => {
+                let f = &mut self.dash.send;
+                f.busy = false;
+                if r.is_ok() {
+                    f.amount.clear();
+                }
+                f.result = Some(r);
+                self.kick(poll::Kick::Now);
+            }
             Msg::Chunk(id, s) => {
                 if self.busy == Some(id) {
                     if let Some(e) = self.transcript.iter_mut().rev().find(|e| e.kind == Kind::Answer) {
@@ -572,13 +796,15 @@ impl App {
                     }
                 }
             }
-            Msg::Profile(h, r) => {
-                if let Some(e) = self.transcript.iter_mut().rev().find(|e| e.kind == Kind::Card && e.text == format!("@{h}")) {
-                    e.lines = match r {
-                        Ok(l) => l,
+            Msg::Profile(account, r) => {
+                let handle = self.agents.iter().find(|a| a.account == account).map(|a| a.handle.clone()).unwrap_or_default();
+                if let Some(e) = self.transcript.iter_mut().rev().find(|e| e.kind == Kind::Card && e.text == format!("@{handle}")) {
+                    e.lines = match &r {
+                        Ok(l) => l.clone(),
                         Err(err) => vec![(format!("profile unavailable: {err}"), 2)],
                     };
                 }
+                self.agents_v.cards.insert(account, r);
             }
             Msg::DmQuote(h, r) => {
                 self.quoting = false;
@@ -603,126 +829,532 @@ impl App {
         }
     }
 
-    fn palette_items(&self) -> Vec<&PaletteCmd> {
-        let f = self.palette.as_ref().map(|p| p.filter.to_lowercase()).unwrap_or_default();
-        self.commands.iter().filter(|c| f.is_empty() || c.name.contains(&f) || c.about.to_lowercase().contains(&f)).collect()
+    /// Read the selected agent's card once (the Agents view).
+    fn load_card(&mut self) {
+        let i = self.agents_v.index(&self.agents);
+        if let Some(a) = self.agents.get(i).cloned() {
+            if self.agents_v.sel.is_none() {
+                self.agents_v.sel = Some(a.account.clone());
+            }
+            if !self.agents_v.cards.contains_key(&a.account) {
+                self.agents_v.cards.insert(a.account.clone(), Ok(vec![(format!("reading @{}", a.handle), 2)]));
+                self.fetch_profile(a);
+            }
+        }
     }
+
+    // ---- palette ----------------------------------------------------------------------
+
+    fn palette_items(&self) -> Vec<Item> {
+        let f = self.palette.as_ref().map(|p| p.filter.to_lowercase()).unwrap_or_default();
+        let mut all: Vec<Item> = ViewId::ALL.iter().map(|v| Item::View(*v)).collect();
+        // commands that are a view are listed once, as the view
+        all.extend(self.commands.iter().filter(|c| !matches!(c.name.as_str(), "dashboard" | "status" | "agents" | "watch")).cloned().map(Item::Cmd));
+        // names that start with the filter first, then names that contain it, then abouts
+        let rank = |i: &Item| -> u8 {
+            let n = i.name();
+            if f.is_empty() || n.starts_with(&f) {
+                0
+            } else if n.contains(&f) {
+                1
+            } else if i.about().to_lowercase().contains(&f) {
+                2
+            } else {
+                3
+            }
+        };
+        let mut out: Vec<(u8, Item)> = all.into_iter().map(|i| (rank(&i), i)).filter(|(r, _)| *r < 3).collect();
+        out.sort_by_key(|(r, _)| *r);
+        out.into_iter().map(|(_, i)| i).collect()
+    }
+
+    // ---- keys -------------------------------------------------------------------------
 
     fn key(&mut self, k: KeyEvent) {
         if k.kind == KeyEventKind::Release {
             return;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
         if ctrl && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('d')) {
             self.quit = true;
             return;
         }
-        if let Some(p) = &mut self.palette {
-            match k.code {
-                KeyCode::Esc => self.palette = None,
-                KeyCode::Char('p') if ctrl => self.palette = None,
-                KeyCode::Up => p.sel = p.sel.saturating_sub(1),
-                KeyCode::Down | KeyCode::Tab => p.sel += 1,
-                KeyCode::Backspace => {
-                    p.filter.pop();
-                    p.sel = 0;
-                }
-                KeyCode::Enter => {
-                    let items = self.palette_items();
-                    if let Some(c) = items.get(self.palette.as_ref().unwrap().sel.min(items.len().saturating_sub(1))).map(|c| (*c).clone()) {
-                        self.palette = None;
-                        if c.needs_args {
-                            self.input = format!("/{} ", c.name).chars().collect();
-                            self.cur = self.input.len();
-                        } else {
-                            self.run = Some(c.name.split(' ').map(String::from).collect());
-                        }
-                    }
-                }
-                KeyCode::Char(c) if !ctrl => {
-                    p.filter.push(c);
-                    p.sel = 0;
-                }
-                _ => {}
-            }
-            let n = self.palette_items().len();
-            if let Some(p) = &mut self.palette {
-                p.sel = p.sel.min(n.saturating_sub(1));
-            }
+        if self.palette.is_some() {
+            self.palette_key(k, ctrl);
             return;
         }
+        // view keys that work everywhere: F1..F7, alt+1..7, ctrl+1..7 (where the terminal sends them)
+        let num = match k.code {
+            KeyCode::F(n) if (1..=7).contains(&n) => Some(n as usize),
+            KeyCode::Char(c @ '1'..='7') if ctrl || alt => Some(c as usize - '0' as usize),
+            KeyCode::Char(c @ '1'..='7') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
+            _ => None,
+        };
+        if let Some(v) = num.and_then(ViewId::from_num) {
+            self.go(v);
+            return;
+        }
+        match k.code {
+            KeyCode::Char('p') if ctrl => {
+                self.palette = Some(Palette { filter: String::new(), sel: 0 });
+                return;
+            }
+            KeyCode::Char('r') if ctrl => {
+                self.kick(poll::Kick::Now);
+                return;
+            }
+            _ => {}
+        }
+        match self.view {
+            ViewId::Home => self.home_key(k, ctrl),
+            ViewId::Dashboard => self.dash_key(k, ctrl),
+            ViewId::Agents => self.agents_key(k),
+            ViewId::Inbox => self.inbox_key(k),
+            ViewId::Activity => self.activity_key(k),
+            ViewId::Status => self.status_key(k),
+            ViewId::Lookup => self.lookup_key(k, ctrl),
+        }
+    }
+
+    fn palette_key(&mut self, k: KeyEvent, ctrl: bool) {
+        let Some(p) = &mut self.palette else { return };
+        match k.code {
+            KeyCode::Esc => self.palette = None,
+            KeyCode::Char('p') if ctrl => self.palette = None,
+            KeyCode::Up => p.sel = p.sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => p.sel += 1,
+            KeyCode::Backspace => {
+                p.filter.pop();
+                p.sel = 0;
+            }
+            KeyCode::Enter => {
+                let items = self.palette_items();
+                let sel = self.palette.as_ref().unwrap().sel.min(items.len().saturating_sub(1));
+                if let Some(it) = items.get(sel).cloned() {
+                    self.palette = None;
+                    match it {
+                        Item::View(v) => self.go(v),
+                        Item::Cmd(c) if c.needs_args => {
+                            self.go(ViewId::Lookup);
+                            self.lookup_input = format!("/{} ", c.name).chars().collect();
+                            self.lookup_cur = self.lookup_input.len();
+                        }
+                        Item::Cmd(c) => self.run_words(c.name.split(' ').map(String::from).collect()),
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                p.filter.push(c);
+                p.sel = 0;
+            }
+            _ => {}
+        }
+        let n = self.palette_items().len();
+        if let Some(p) = &mut self.palette {
+            p.sel = p.sel.min(n.saturating_sub(1));
+        }
+    }
+
+    fn edit(input: &mut Vec<char>, cur: &mut usize, k: KeyEvent, ctrl: bool) -> bool {
+        match k.code {
+            KeyCode::Char('u') if ctrl => {
+                input.drain(..*cur);
+                *cur = 0;
+            }
+            KeyCode::Char('a') if ctrl => *cur = 0,
+            KeyCode::Char('e') if ctrl => *cur = input.len(),
+            KeyCode::Char('w') if ctrl => {
+                let mut i = *cur;
+                while i > 0 && input[i - 1] == ' ' {
+                    i -= 1;
+                }
+                while i > 0 && input[i - 1] != ' ' {
+                    i -= 1;
+                }
+                input.drain(i..*cur);
+                *cur = i;
+            }
+            KeyCode::Backspace => {
+                if *cur > 0 {
+                    *cur -= 1;
+                    input.remove(*cur);
+                }
+            }
+            KeyCode::Delete => {
+                if *cur < input.len() {
+                    input.remove(*cur);
+                }
+            }
+            KeyCode::Left => *cur = cur.saturating_sub(1),
+            KeyCode::Right => *cur = (*cur + 1).min(input.len()),
+            KeyCode::Home => *cur = 0,
+            KeyCode::End => *cur = input.len(),
+            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                input.insert(*cur, c);
+                *cur += 1;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn home_key(&mut self, k: KeyEvent, ctrl: bool) {
         match k.code {
             KeyCode::Esc => {
                 if self.quote.take().is_some() {
                     self.note(Kind::Note, "cancelled; nothing was sent");
-                } else {
-                    self.quit = true;
+                } else if self.input.is_empty() {
+                    // the toggle: back to the last view, exactly as it was
+                    self.go(self.last_view);
                 }
             }
-            KeyCode::Char('p') if ctrl => self.palette = Some(Palette { filter: String::new(), sel: 0 }),
             KeyCode::Char('l') if ctrl => {
                 self.transcript.clear();
                 self.history.clear();
                 self.quote = None;
                 self.scroll = 0;
             }
-            KeyCode::Char('u') if ctrl => {
-                self.input.drain(..self.cur);
-                self.cur = 0;
-            }
-            KeyCode::Char('a') if ctrl => self.cur = 0,
-            KeyCode::Char('e') if ctrl => self.cur = self.input.len(),
-            KeyCode::Char('w') if ctrl => {
-                let mut i = self.cur;
-                while i > 0 && self.input[i - 1] == ' ' {
-                    i -= 1;
-                }
-                while i > 0 && self.input[i - 1] != ' ' {
-                    i -= 1;
-                }
-                self.input.drain(i..self.cur);
-                self.cur = i;
-            }
             KeyCode::Tab => self.cycle(false),
             KeyCode::BackTab => self.cycle(true),
             KeyCode::Enter => self.submit(),
-            KeyCode::Backspace => {
-                if self.cur > 0 {
-                    self.cur -= 1;
-                    self.input.remove(self.cur);
-                }
-            }
-            KeyCode::Delete => {
-                if self.cur < self.input.len() {
-                    self.input.remove(self.cur);
-                }
-            }
-            KeyCode::Left => self.cur = self.cur.saturating_sub(1),
-            KeyCode::Right => self.cur = (self.cur + 1).min(self.input.len()),
-            KeyCode::Home => self.cur = 0,
-            KeyCode::End => self.cur = self.input.len(),
             KeyCode::PageUp => self.scroll += 10,
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Up if !self.transcript.is_empty() => self.scroll += 1,
             KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Char(c) if !ctrl => {
-                self.input.insert(self.cur, c);
-                self.cur += 1;
+            _ => {
+                Self::edit(&mut self.input, &mut self.cur, k, ctrl);
+            }
+        }
+    }
+
+    fn dash_key(&mut self, k: KeyEvent, ctrl: bool) {
+        if self.dash.detail.is_some() {
+            match k.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Backspace => self.dash.detail = None,
+                KeyCode::Down => self.dash.detail.as_mut().unwrap().2 += 1,
+                KeyCode::Up => {
+                    let d = self.dash.detail.as_mut().unwrap();
+                    d.2 = d.2.saturating_sub(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+        // tabs: left / right, tab / shift+tab (also on the Send form)
+        match k.code {
+            KeyCode::Tab | KeyCode::BackTab if !(self.dash.tab == dash::Tab::Send && self.typing() && k.code == KeyCode::Tab && self.dash.send.field == 0) => {
+                self.dash.tab = self.dash.tab.next(k.code == KeyCode::BackTab);
+                return;
+            }
+            KeyCode::Esc if !(self.dash.tab == dash::Tab::Send && (self.dash.send.confirm || self.dash.send.field == 1)) => {
+                self.go(ViewId::Home);
+                return;
+            }
+            _ => {}
+        }
+        if self.dash.tab == dash::Tab::Send {
+            if !self.has_key {
+                if let KeyCode::Left | KeyCode::Right = k.code {
+                    self.dash.tab = self.dash.tab.next(k.code == KeyCode::Left);
+                }
+                return;
+            }
+            let f = &mut self.dash.send;
+            if f.busy {
+                return;
+            }
+            match k.code {
+                KeyCode::Esc => {
+                    if f.confirm {
+                        f.confirm = false;
+                    } else {
+                        f.field = 0;
+                    }
+                }
+                KeyCode::Tab | KeyCode::Down if !f.confirm => f.field = 1,
+                KeyCode::Up if !f.confirm => f.field = 0,
+                KeyCode::Enter => {
+                    if f.confirm {
+                        self.send_transfer();
+                    } else if f.field == 0 {
+                        f.field = 1;
+                    } else if !f.to.is_empty() && !f.amount.is_empty() {
+                        f.confirm = true;
+                        f.result = None;
+                    }
+                }
+                _ if !f.confirm => {
+                    let mut cur = f.cur().len();
+                    let field = f.cur();
+                    if k.code == KeyCode::Left && cur == 0 {
+                        return;
+                    }
+                    Self::edit(field, &mut cur, k, ctrl);
+                }
+                _ => {}
+            }
+            return;
+        }
+        let Some(sn) = &self.snap else {
+            if let KeyCode::Left | KeyCode::Right = k.code {
+                self.dash.tab = self.dash.tab.next(k.code == KeyCode::Left);
+            }
+            return;
+        };
+        let t = dash::table(sn, self.dash.tab);
+        let page = self.dash.visible.get().max(1) as isize;
+        match k.code {
+            KeyCode::Left => self.dash.tab = self.dash.tab.next(true),
+            KeyCode::Right => self.dash.tab = self.dash.tab.next(false),
+            KeyCode::Up | KeyCode::Char('k') => self.dash.move_sel(&t, -1),
+            KeyCode::Down | KeyCode::Char('j') => self.dash.move_sel(&t, 1),
+            KeyCode::PageUp => self.dash.move_sel(&t, -page),
+            KeyCode::PageDown => self.dash.move_sel(&t, page),
+            KeyCode::Home | KeyCode::Char('g') => self.dash.move_sel(&t, -(t.keys.len() as isize)),
+            KeyCode::End | KeyCode::Char('G') => self.dash.move_sel(&t, t.keys.len() as isize),
+            KeyCode::Enter => self.dash.open_detail(&t),
+            KeyCode::Char('r') => self.kick(poll::Kick::Now),
+            KeyCode::Char('s') => self.dash.tab = dash::Tab::Send,
+            _ => {}
+        }
+    }
+
+    fn agents_key(&mut self, k: KeyEvent) {
+        let n = self.agents.len();
+        if n == 0 {
+            if k.code == KeyCode::Esc {
+                self.go(ViewId::Home);
+            }
+            return;
+        }
+        let i = self.agents_v.index(&self.agents);
+        let mv = |d: isize| (i as isize + d).clamp(0, n as isize - 1) as usize;
+        let j = match k.code {
+            KeyCode::Up | KeyCode::Char('k') => mv(-1),
+            KeyCode::Down | KeyCode::Char('j') => mv(1),
+            KeyCode::PageUp => mv(-10),
+            KeyCode::PageDown => mv(10),
+            KeyCode::Home | KeyCode::Char('g') => 0,
+            KeyCode::End | KeyCode::Char('G') => n - 1,
+            KeyCode::Char(']') => {
+                self.agents_v.card_scroll += 3;
+                return;
+            }
+            KeyCode::Char('[') => {
+                self.agents_v.card_scroll = self.agents_v.card_scroll.saturating_sub(3);
+                return;
+            }
+            KeyCode::Char('r') | KeyCode::Enter => {
+                // read the card again
+                let a = self.agents[i].clone();
+                self.agents_v.cards.remove(&a.account);
+                self.load_card();
+                return;
+            }
+            KeyCode::Char('m') => {
+                // talk to this agent on Home (Ask's Tab mode)
+                self.mode = i + 1;
+                self.quote = None;
+                let a = self.agents[i].clone();
+                self.show_agent_card(&a);
+                self.go(ViewId::Home);
+                return;
+            }
+            KeyCode::Esc => {
+                self.go(ViewId::Home);
+                return;
+            }
+            _ => return,
+        };
+        self.agents_v.sel = Some(self.agents[j].account.clone());
+        self.agents_v.card_scroll = 0;
+        self.load_card();
+    }
+
+    fn inbox_key(&mut self, k: KeyEvent) {
+        let threads: Vec<Value> = self.inbox.as_ref().and_then(|r| r.as_ref().ok()).and_then(|v| v["threads"].as_array().cloned()).unwrap_or_default();
+        let peer = |t: &Value| crate::snapshot::s(&t["peer"], "account").to_string();
+        let i = self.inbox_v.sel.as_ref().and_then(|p| threads.iter().position(|t| &peer(t) == p)).unwrap_or(0);
+        match k.code {
+            KeyCode::Esc => self.go(ViewId::Home),
+            KeyCode::Up | KeyCode::Char('k') if i > 0 => self.inbox_v.sel = Some(peer(&threads[i - 1])),
+            KeyCode::Down | KeyCode::Char('j') if i + 1 < threads.len() => self.inbox_v.sel = Some(peer(&threads[i + 1])),
+            KeyCode::Enter | KeyCode::Char('r') if !threads.is_empty() => {
+                let (Some(api), Some(me)) = (self.net.api.clone(), self.me.clone()) else { return };
+                let p = peer(&threads[i]);
+                self.inbox_v.sel = Some(p.clone());
+                let t = self.tx.clone();
+                std::thread::spawn(move || {
+                    let r = net::get(&format!("{api}/threads/{me}/{p}?limit=50")).map_err(|e| format!("{e:#}"));
+                    let _ = t.send(Msg::Thread(p, r));
+                });
+            }
+            KeyCode::Char('m') if !threads.is_empty() => {
+                let p = &threads[i]["peer"];
+                let acct = peer(&threads[i]);
+                let a = match self.agents.iter().position(|a| a.account == acct) {
+                    Some(j) => {
+                        self.mode = j + 1;
+                        self.agents[j].clone()
+                    }
+                    None => {
+                        let a = AgentEntry { account: acct.clone(), handle: p["handle"].as_str().unwrap_or(&crate::fmt::short(&acct)).to_string(), name: p["name"].as_str().unwrap_or("").to_string(), house: p["house"] == true };
+                        self.agents.push(a.clone());
+                        self.mode = self.agents.len();
+                        a
+                    }
+                };
+                self.show_agent_card(&a);
+                self.go(ViewId::Home);
             }
             _ => {}
         }
     }
 
+    fn activity_key(&mut self, k: KeyEvent) {
+        let a = &mut self.activity;
+        let n = a.visible().len();
+        match k.code {
+            KeyCode::Esc => self.go(ViewId::Home),
+            KeyCode::Up | KeyCode::Char('k') => a.scroll = a.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => a.scroll = (a.scroll + 1).min(n.saturating_sub(1)),
+            KeyCode::PageUp => a.scroll = a.scroll.saturating_sub(15),
+            KeyCode::PageDown => a.scroll = (a.scroll + 15).min(n.saturating_sub(1)),
+            KeyCode::Home | KeyCode::Char('g') => a.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => a.scroll = n.saturating_sub(1),
+            KeyCode::Char('r') => self.kick(poll::Kick::Now),
+            KeyCode::Char(c) => {
+                if let Some(f) = views::Filter::ALL.into_iter().find(|f| f.key() == c) {
+                    if a.filter != f {
+                        a.filter = f;
+                        a.scroll = 0;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn status_key(&mut self, k: KeyEvent) {
+        match k.code {
+            KeyCode::Esc => self.go(ViewId::Home),
+            KeyCode::Up | KeyCode::Char('k') => self.status_scroll = self.status_scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.status_scroll += 1,
+            KeyCode::PageUp => self.status_scroll = self.status_scroll.saturating_sub(15),
+            KeyCode::PageDown => self.status_scroll += 15,
+            KeyCode::Home | KeyCode::Char('g') => self.status_scroll = 0,
+            KeyCode::Char('r') => self.kick(poll::Kick::One(Source::Status)),
+            _ => {}
+        }
+    }
+
+    fn lookup_key(&mut self, k: KeyEvent, ctrl: bool) {
+        match k.code {
+            KeyCode::Esc => {
+                if self.lookup_input.is_empty() {
+                    self.go(ViewId::Home);
+                } else {
+                    self.lookup_input.clear();
+                    self.lookup_cur = 0;
+                }
+            }
+            KeyCode::Enter => {
+                let line: String = self.lookup_input.iter().collect::<String>().trim().to_string();
+                if line.is_empty() {
+                    return;
+                }
+                self.lookup_input.clear();
+                self.lookup_cur = 0;
+                match line.strip_prefix('/') {
+                    Some(c) => {
+                        let w = split_words(c);
+                        if !w.is_empty() {
+                            self.run_words(w);
+                        }
+                    }
+                    None => self.run_lookup(line, false),
+                }
+            }
+            KeyCode::PageUp => self.lookup_off -= 10,
+            KeyCode::PageDown => self.lookup_off += 10,
+            KeyCode::Up => self.lookup_off -= 1,
+            KeyCode::Down => self.lookup_off += 1,
+            KeyCode::Char('l') if ctrl => {
+                self.lookups.clear();
+                self.lookup_off = 0;
+            }
+            _ => {
+                Self::edit(&mut self.lookup_input, &mut self.lookup_cur, k, ctrl);
+            }
+        }
+    }
+
     fn paste(&mut self, s: &str) {
-        for c in s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()) {
-            self.input.insert(self.cur, c);
-            self.cur += 1;
+        let clean: Vec<char> = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).collect();
+        let (input, cur) = match self.view {
+            ViewId::Home => (&mut self.input, &mut self.cur),
+            ViewId::Lookup => (&mut self.lookup_input, &mut self.lookup_cur),
+            ViewId::Dashboard if self.typing() => {
+                let f = &mut self.dash.send;
+                let field = if f.field == 0 { &mut f.to } else { &mut f.amount };
+                field.extend(clean);
+                return;
+            }
+            _ => return,
+        };
+        for c in clean {
+            input.insert(*cur, c);
+            *cur += 1;
         }
     }
 
     /// The robot is on screen (so the loop redraws at its frame rate).
     fn animating(&self, w: u16, h: u16) -> bool {
-        self.transcript.is_empty() && self.palette.is_none() && plan_home(w, h).robot != RobotSize::None
+        self.view == ViewId::Home && self.transcript.is_empty() && self.palette.is_none() && plan_home(w, h).robot != RobotSize::None
+    }
+
+    /// Something the user started is running (a spinner is on screen).
+    fn spinning(&self) -> bool {
+        self.busy.is_some()
+            || self.quoting
+            || self.dash.send.busy
+            || self.lookups.iter().any(|l| l.out.is_none())
+            || (self.view != ViewId::Home && self.snap.is_none())
+            || (self.view == ViewId::Status && self.report.is_none())
+            || (self.view == ViewId::Agents && (self.agents.is_empty() && self.agents_err.is_none()))
+    }
+}
+
+/// A Lookup line: a block height, a tx hash or Solana signature, an address or @handle,
+/// else a command line.
+fn run_line(ctx: &Ctx, line: &str, is_cmd: bool) -> Result<crate::commands::Out> {
+    use crate::commands::{exec, parse_line, Cmd};
+    let q = line.trim();
+    if !is_cmd && !q.contains(' ') {
+        let hex = q.strip_prefix("0x").unwrap_or(q);
+        if q.chars().all(|c| c.is_ascii_digit()) {
+            return exec(ctx, &Cmd::Block { id: q.into() }, true);
+        }
+        if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            // a tx hash, else a block hash
+            return match exec(ctx, &Cmd::Tx { hash: q.into() }, true) {
+                Ok(o) => Ok(o),
+                Err(e) => exec(ctx, &Cmd::Block { id: q.into() }, true).map_err(|_| e),
+            };
+        }
+        if q.len() >= 80 && bs58::decode(q).into_vec().is_ok_and(|v| v.len() == 64) {
+            return exec(ctx, &Cmd::Tx { hash: q.into() }, true);
+        }
+        if q.starts_with('@') || (q.len() >= 32 && q.len() <= 48) {
+            return exec(ctx, &Cmd::Account { address: q.into() }, true);
+        }
+    }
+    let cmd = parse_line(q)?;
+    match cmd {
+        Cmd::Watch { .. } => anyhow::bail!("watch is the Activity view (5)"),
+        Cmd::Dashboard => anyhow::bail!("the dashboard is view 2"),
+        c => exec(ctx, &c, true),
     }
 }
 
@@ -751,343 +1383,129 @@ pub fn split_words(s: &str) -> Vec<String> {
     out
 }
 
-// ---------------------------------------------------------------------------------------
-// drawing
-
-struct Pen {
-    mode: Mode,
-}
-
-impl Pen {
-    fn fg(&self, c: u32) -> Style {
-        match self.mode {
-            Mode::NoColor if c == MUTED || c == DIM || c == theme::ROBOT[2] || c == theme::ROBOT[3] => Style::default().add_modifier(Modifier::DIM),
-            Mode::NoColor => Style::default(),
-            m => Style::default().fg(m.color(c)),
-        }
-    }
-    fn on(&self, fg: u32, bg: u32) -> Style {
-        match self.mode {
-            Mode::NoColor => self.fg(fg),
-            m => self.fg(fg).bg(m.color(bg)),
-        }
-    }
-    fn bg(&self, bg: u32) -> Style {
-        match self.mode {
-            Mode::NoColor => Style::default(),
-            m => Style::default().bg(m.color(bg)),
-        }
-    }
-}
-
-/// Write `s` at (x, y), clipped to `max_x`; returns the x after it.
-fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style, max_x: u16) -> u16 {
-    let area = buf.area;
-    if y >= area.bottom() {
-        return x;
-    }
-    let mut x = x;
-    for ch in s.chars() {
-        let w = ch.width().unwrap_or(0) as u16;
-        if w == 0 {
-            continue;
-        }
-        if x + w > max_x.min(area.right()) {
-            break;
-        }
-        if let Some(c) = buf.cell_mut(Position::new(x, y)) {
-            c.reset();
-            c.set_char(ch).set_style(st);
-        }
-        x += w;
-    }
-    x
-}
-
-fn fill(buf: &mut Buffer, r: Rect, st: Style) {
-    let r = r.intersection(buf.area);
-    for y in r.top()..r.bottom() {
-        for x in r.left()..r.right() {
-            if let Some(c) = buf.cell_mut(Position::new(x, y)) {
-                c.reset();
-                c.set_char(' ').set_style(st);
-            }
-        }
-    }
-}
-
-fn str_w(s: &str) -> u16 {
-    s.chars().map(|c| c.width().unwrap_or(0) as u16).sum()
-}
-
 /// Word wrap to `w` cells (long words are cut).
 pub fn wrap(s: &str, w: usize) -> Vec<String> {
-    let w = w.max(1);
-    let mut out = vec![];
-    for para in s.split('\n') {
-        let mut line = String::new();
-        let mut lw = 0usize;
-        for word in para.split(' ') {
-            let ww: usize = word.chars().map(|c| c.width().unwrap_or(0)).sum();
-            if lw > 0 && lw + 1 + ww > w {
-                out.push(std::mem::take(&mut line));
-                lw = 0;
-            }
-            if lw > 0 {
-                line.push(' ');
-                lw += 1;
-            }
-            for c in word.chars() {
-                let cw = c.width().unwrap_or(0);
-                if lw + cw > w {
-                    out.push(std::mem::take(&mut line));
-                    lw = 0;
-                }
-                line.push(c);
-                lw += cw;
-            }
-        }
-        out.push(line);
-    }
-    out
+    draw::wrap(s, w)
 }
 
-fn draw_robot(buf: &mut Buffer, pen: &Pen, r: &Robot, elapsed: Duration, y: u16, w: u16) {
-    let x0 = w.saturating_sub(r.cols as u16) / 2;
-    for (i, line) in r.frame_at(elapsed).iter().enumerate() {
-        let yy = y + i as u16;
-        for (j, ch) in line.chars().enumerate() {
-            if ch == ' ' {
-                continue;
-            }
-            let st = pen.fg(theme::ROBOT[robot::shade(ch) as usize]);
-            put(buf, x0 + j as u16, yy, &ch.to_string(), st, w);
-        }
-    }
-}
+// ---------------------------------------------------------------------------------------
+// drawing: the frame every view shares
 
-fn draw_word(buf: &mut Buffer, pen: &Pen, rows: &[String], x: u16, y: u16, ink: u32, bold: bool, w: u16) {
-    let shadow = theme::tint(BG, ink, 0.25);
-    for (i, row) in rows.iter().enumerate() {
-        for (j, m) in row.chars().enumerate() {
-            let (ch, ink_fg, on_shadow) = logo::cell(m);
-            if ch == ' ' && !on_shadow {
-                continue;
-            }
-            let mut st = if on_shadow { pen.on(ink, shadow) } else { pen.fg(if ink_fg { ink } else { shadow }) };
-            if pen.mode == Mode::NoColor && !ink_fg {
-                st = Style::default().add_modifier(Modifier::DIM);
-            }
-            if bold {
-                st = st.add_modifier(Modifier::BOLD);
-            }
-            put(buf, x + j as u16, y + i as u16, &ch.to_string(), st, w);
-        }
-    }
-}
-
-fn draw_logo(buf: &mut Buffer, pen: &Pen, kind: LogoKind, y: u16, w: u16) {
-    match kind {
-        LogoKind::Wide => {
-            let x = w.saturating_sub(logo::width("cadre", "agents") as u16) / 2;
-            draw_word(buf, pen, &logo::word("cadre"), x, y, MUTED, false, w);
-            draw_word(buf, pen, &logo::word("agents"), x + 25, y, TEXT, true, w);
-        }
-        LogoKind::Stacked => {
-            let l = logo::word("cadre");
-            let x = w.saturating_sub(29) / 2;
-            draw_word(buf, pen, &l, x + 2, y, MUTED, false, w);
-            draw_word(buf, pen, &logo::word("agents"), x, y + 4, TEXT, true, w);
-        }
-        LogoKind::Text => {
-            let x = w.saturating_sub(12) / 2;
-            let x = put(buf, x, y, "cadre", pen.fg(MUTED), w);
-            put(buf, x, y, "agents", pen.fg(TEXT).add_modifier(Modifier::BOLD), w);
-        }
-    }
-}
-
-/// The prompt box: blue bar, panel, input or placeholder, the mode line, the half-block
-/// bottom edge. Returns the cursor position.
-fn draw_box(buf: &mut Buffer, pen: &Pen, app: &App, p: &Plan) -> Option<Position> {
-    let (x, y, bw) = (p.box_x, p.box_y, p.box_w);
-    let right = x + bw;
-    let bar = pen.fg(BLUE);
-    for i in 0..4 {
-        put(buf, x, y + i, "┃", bar, right);
-    }
-    put(buf, x, y + 4, "╹", bar, right);
-    fill(buf, Rect::new(x + 1, y, bw.saturating_sub(1), 4), pen.bg(PANEL));
-    if pen.mode != Mode::NoColor {
-        for xx in x + 1..right {
-            put(buf, xx, y + 4, "▀", pen.fg(PANEL), right);
-        }
-    }
-    let pad = if buf.area.width < 44 { 1 } else { 2 };
-    let tx = x + 1 + pad;
-    let inner = right.saturating_sub(tx + pad);
-    // input (scrolled to keep the cursor in view) or placeholder
-    let cursor = if app.input.is_empty() {
-        put(buf, tx, y + 1, &app.placeholder(), pen.on(DIM, PANEL), tx + inner);
-        Some(Position::new(tx, y + 1))
-    } else {
-        let widths: Vec<u16> = app.input.iter().map(|c| c.width().unwrap_or(0) as u16).collect();
-        let mut start = 0;
-        while widths[start..app.cur].iter().sum::<u16>() >= inner && start < app.cur {
-            start += 1;
-        }
-        let shown: String = app.input[start..].iter().collect();
-        put(buf, tx, y + 1, &shown, pen.on(TEXT, PANEL), tx + inner);
-        Some(Position::new(tx + widths[start..app.cur].iter().sum::<u16>(), y + 1))
+/// Rows of the frame at height `h`: (hints row, footer row).
+fn frame_rows(h: u16) -> (u16, Option<u16>) {
+    let f = home::footer_y(h);
+    let hints = match home::footer_rows(h) {
+        3 => h.saturating_sub(4),
+        1 => h.saturating_sub(2),
+        _ => h.saturating_sub(1),
     };
-    // mode line: label (blue), model or agent name (text), network or kind (muted)
-    let label = app.label();
-    let mut xx = put(buf, tx, y + 3, &label, pen.on(BLUE, PANEL), tx + inner);
-    xx += 2;
-    match app.agent() {
-        None => {
-            let (m, mt) = match (&app.model, &app.model_err) {
-                (Some(m), _) => (m.id.clone(), TEXT),
-                (None, Some(_)) => ("no model (gateway unavailable)".to_string(), MUTED),
-                (None, None) => ("reading models...".to_string(), MUTED),
-            };
-            xx = put(buf, xx, y + 3, &m, pen.on(mt, PANEL), tx + inner);
-            put(buf, xx + 1, y + 3, &format!("Cadre {}", app.network), pen.on(MUTED, PANEL), tx + inner);
-        }
-        Some(a) => {
-            xx = put(buf, xx, y + 3, &a.name, pen.on(TEXT, PANEL), tx + inner);
-            put(buf, xx + 1, y + 3, if a.house { "house agent" } else { "user agent" }, pen.on(MUTED, PANEL), tx + inner);
-        }
-    }
-    cursor
+    (hints, f)
 }
 
-fn draw_hints(buf: &mut Buffer, pen: &Pen, app: &App, p: &Plan) {
-    let right = p.box_x + p.box_w;
-    let y = p.hints_y;
-    let parts: Vec<(&str, u32)> = if app.quote.is_some() {
-        vec![("enter", TEXT), (" send DM", MUTED), ("  ", MUTED), ("esc", TEXT), (" cancel", MUTED)]
-    } else {
-        vec![("tab", TEXT), (" switch agent", MUTED), ("  ", MUTED), ("ctrl+p", TEXT), (" commands", MUTED)]
-    };
-    let w: u16 = parts.iter().map(|(s, _)| str_w(s)).sum();
-    let mut x = right.saturating_sub(w);
-    for (s, c) in &parts {
-        x = put(buf, x, y, s, pen.fg(*c), right);
+/// The body of a view other than Home.
+fn body_rect(w: u16, h: u16) -> Rect {
+    let (hints, _) = frame_rows(h);
+    let top = if h >= 20 { 3 } else { 2 };
+    Rect::new(2.min(w), top.min(h), w.saturating_sub(4), hints.saturating_sub(top + 1))
+}
+
+/// Small header: the plain wordmark, the view's name, and a live line on the right.
+fn draw_header(buf: &mut Buffer, pen: &Pen, app: &App, w: u16) {
+    let y = if buf.area.height >= 20 { 1 } else { 0 };
+    let x = put(buf, 2, y, "cadre", pen.fg(MUTED), w);
+    let x = put(buf, x, y, "agents", pen.fg(TEXT).add_modifier(Modifier::BOLD), w);
+    let x = put(buf, x + 3, y, app.view.name(), pen.fg(BLUE).add_modifier(Modifier::BOLD), w);
+    let mut parts: Vec<(String, u32)> = vec![];
+    match &app.me {
+        Some(a) => parts.push((format!("{} {}", if app.has_key { "wallet" } else { "watching" }, crate::fmt::short_addr(a)), MUTED)),
+        None => parts.push(("no wallet".into(), DIM)),
     }
-    // left side: what is running
-    let spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let i = (app.start.elapsed().as_millis() / 80) as usize % spin.len();
-    let status = if app.busy.is_some() {
-        Some(format!("{} answering", spin[i]))
-    } else if app.quoting {
-        Some(format!("{} pricing the DM", spin[i]))
-    } else {
-        None
+    if let Some(t) = app.tip() {
+        parts.push((format!("block {t}"), TEXT));
+    } else if app.snap.as_ref().is_some_and(|s| !s.chain_ok()) {
+        parts.push(("chain offline".into(), theme::RED));
+    }
+    let src = match app.view {
+        ViewId::Status => Source::Status,
+        ViewId::Activity => Source::Feed,
+        ViewId::Agents => Source::Agents,
+        ViewId::Inbox => Source::Inbox,
+        _ => Source::Chain,
     };
-    if let Some(s) = status {
-        put(buf, p.box_x + 1, y, &s, pen.fg(BLUE), right.saturating_sub(w + 1));
+    if app.loading.contains(&src) && app.updated.get(&src).is_none() {
+        parts.push((format!("{} reading", draw::spinner(app.start.elapsed().as_millis())), MUTED));
+    } else if let Some(t) = app.updated.get(&src) {
+        parts.push((format!("updated {}", draw::ago(t.elapsed().as_millis() as u64)), DIM));
+    }
+    let total: u16 = parts.iter().map(|(s, _)| str_w(s)).sum::<u16>() + 3 * parts.len().saturating_sub(1) as u16;
+    let mut rx = w.saturating_sub(2 + total);
+    if rx < x + 2 {
+        return;
+    }
+    for (i, (s, c)) in parts.iter().enumerate() {
+        if i > 0 {
+            rx = put(buf, rx, y, " · ", pen.fg(DIM), w);
+        }
+        rx = put(buf, rx, y, s, pen.fg(*c), w);
     }
 }
 
+/// The hints row of a view: key (text) + what (muted) pairs, right-aligned.
+fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
+    let mut parts: Vec<(&str, &str)> = match app.view {
+        ViewId::Dashboard if app.dash.detail.is_some() => vec![("↑↓", "scroll"), ("esc", "close")],
+        ViewId::Dashboard if app.dash.tab == dash::Tab::Send && app.dash.send.confirm => vec![("enter", "sign and send"), ("esc", "edit")],
+        ViewId::Dashboard if app.dash.tab == dash::Tab::Send => vec![("enter", "next"), ("tab", "tabs"), ("f1-f7", "views")],
+        ViewId::Dashboard => vec![("↑↓", "select"), ("enter", "open"), ("←→", "tab"), ("1-7", "views"), ("esc", "home")],
+        ViewId::Agents => vec![("↑↓", "select"), ("enter", "reload"), ("[ ]", "scroll card"), ("m", "message"), ("esc", "home")],
+        ViewId::Inbox => vec![("↑↓", "select"), ("enter", "open"), ("m", "reply on home"), ("esc", "home")],
+        ViewId::Activity => vec![("a b t p x", "filter"), ("↑↓", "scroll"), ("g", "newest"), ("esc", "home")],
+        ViewId::Status => vec![("↑↓", "scroll"), ("r", "check again"), ("esc", "home")],
+        ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f7", "views"), ("esc", "home")],
+        ViewId::Home => vec![],
+    };
+    parts.push(("ctrl+p", "commands"));
+    let total: u16 = parts.iter().map(|(k, d)| str_w(k) + 1 + str_w(d)).sum::<u16>() + 2 * parts.len().saturating_sub(1) as u16;
+    let mut x = w.saturating_sub(2 + total).max(2);
+    for (i, (k, d)) in parts.iter().enumerate() {
+        if i > 0 {
+            x += 2;
+        }
+        x = put(buf, x, y, k, pen.fg(TEXT), w);
+        x = put(buf, x + 1, y, d, pen.fg(MUTED), w);
+    }
+}
+
+/// The bottom bar: directory and branch, the views (current one bright), network and version.
 fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
     let right_s = format!("{} · {}", app.network, env!("CARGO_PKG_VERSION"));
     let rw = str_w(&right_s);
     let rx = w.saturating_sub(2 + rw);
-    put(buf, 2, y, &app.cwd, pen.fg(MUTED), rx.saturating_sub(2));
+    let cx = put(buf, 2, y, &clip(&app.cwd, rx.saturating_sub(4) as usize / 2), pen.fg(MUTED), rx.saturating_sub(2));
     put(buf, rx, y, &right_s, pen.fg(MUTED), w);
-}
-
-/// Transcript lines: (text, fg, bar color for a "you" line).
-fn transcript_lines(app: &App, w: u16) -> Vec<(String, u32, Option<u32>)> {
-    let tw = w.saturating_sub(3) as usize;
-    let mut out = vec![];
-    for e in &app.transcript {
-        if !out.is_empty() {
-            out.push((String::new(), TEXT, None));
-        }
-        match e.kind {
-            Kind::You => {
-                out.push((String::new(), TEXT, Some(BLUE)));
-                for l in wrap(&e.text, tw) {
-                    out.push((l, TEXT, Some(BLUE)));
-                }
-                out.push((e.label.clone(), BLUE, Some(BLUE)));
-                out.push((String::new(), TEXT, Some(BLUE)));
-            }
-            Kind::Answer => {
-                let t = if e.text.is_empty() { "...".to_string() } else { e.text.trim_start().to_string() };
-                for l in wrap(&t, tw) {
-                    out.push((l, TEXT, None));
-                }
-                if !e.foot.is_empty() {
-                    for l in wrap(&e.foot, tw) {
-                        out.push((l, DIM, None));
-                    }
-                }
-            }
-            Kind::Note => {
-                for l in wrap(&e.text, tw) {
-                    out.push((l, MUTED, None));
-                }
-            }
-            Kind::Error => {
-                for l in wrap(&e.text, tw) {
-                    out.push((l, RED, None));
-                }
-            }
-            Kind::Card => {
-                for (s, tone) in &e.lines {
-                    let c = match tone {
-                        0 => TEXT,
-                        1 => MUTED,
-                        _ => DIM,
-                    };
-                    for l in wrap(s, tw) {
-                        out.push((l, c, None));
-                    }
-                }
-            }
-        }
+    // the view strip, centered between the two when it fits
+    let strip: Vec<(String, bool)> = ViewId::ALL.iter().map(|v| (v.name().to_string(), *v == app.view)).collect();
+    let sw: u16 = strip.iter().map(|(s, _)| str_w(s) + 2).sum::<u16>() + 2 * (strip.len() as u16 - 1);
+    let room_l = cx + 3;
+    let room_r = rx.saturating_sub(3);
+    if room_r <= room_l || room_r - room_l < sw {
+        return;
     }
-    if out.last().is_some_and(|l| l.0.starts_with("sent:") || l.0.contains(": sent:")) {
-        if let Some(l) = out.last_mut() {
-            l.1 = GREEN;
+    let mut x = room_l + (room_r - room_l - sw) / 2;
+    for (i, (s, on)) in strip.iter().enumerate() {
+        if i > 0 {
+            x += 2;
         }
-    }
-    out
-}
-
-fn draw_transcript(buf: &mut Buffer, pen: &Pen, app: &App, area: Rect) {
-    let lines = transcript_lines(app, area.width);
-    let h = area.height as usize;
-    let max_scroll = lines.len().saturating_sub(h);
-    let scroll = app.scroll.min(max_scroll);
-    let end = lines.len() - scroll;
-    let start = end.saturating_sub(h);
-    // short transcripts sit just above the prompt, as in a chat
-    let top = area.y + h.saturating_sub(end - start) as u16;
-    let right = area.right();
-    for (i, (s, c, bar)) in lines[start..end].iter().enumerate() {
-        let y = top + i as u16;
-        match bar {
-            Some(b) => {
-                put(buf, area.x, y, "┃", pen.fg(*b), right);
-                fill(buf, Rect::new(area.x + 1, y, area.width.saturating_sub(1), 1), pen.bg(PANEL));
-                put(buf, area.x + 3, y, s, pen.on(*c, PANEL), right);
-            }
-            None => {
-                put(buf, area.x + 1, y, s, pen.fg(*c), right);
-            }
-        }
+        x = put(buf, x, y, &(i + 1).to_string(), pen.fg(if *on { BLUE } else { DIM }), w);
+        x = put(buf, x + 1, y, s, if *on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
     }
 }
 
 fn draw_palette(buf: &mut Buffer, pen: &Pen, app: &App) {
     let a = buf.area;
-    let w = a.width.saturating_sub(4).min(64);
+    let w = a.width.saturating_sub(4).min(72);
     let items = app.palette_items();
-    let h = a.height.saturating_sub(4).min(items.len() as u16 + 5).clamp(6, 24);
+    let h = a.height.saturating_sub(4).min(items.len() as u16 + 5).clamp(6.min(a.height), 24);
     let x = (a.width - w) / 2;
     let y = (a.height.saturating_sub(h)) / 3;
     let r = Rect::new(x, y, w, h);
@@ -1115,9 +1533,11 @@ fn draw_palette(buf: &mut Buffer, pen: &Pen, app: &App) {
         if on && pen.mode == Mode::NoColor {
             st = st.add_modifier(Modifier::REVERSED);
         }
-        let nx = put(buf, x + 2, yy, &c.name, st, right);
-        let about = c.about.split(['.', ':']).next().unwrap_or("").trim();
-        put(buf, (x + 2 + 18).max(nx + 2), yy, about, pen.on(fg2, bg), right.saturating_sub(1));
+        let nx = put(buf, x + 2, yy, &c.name(), st, right);
+        let about = c.about();
+        let about = about.split(['.', ':']).next().unwrap_or("").trim().to_string();
+        let about = if let Item::View(v) = c { format!("view {}  {}", v.num(), v.about()) } else { about };
+        put(buf, (x + 2 + 18).max(nx + 2), yy, &about, pen.on(fg2, bg), right.saturating_sub(1));
     }
     if items.is_empty() {
         put(buf, x + 2, y + 3, "no command matches", pen.on(MUTED, PANEL), right);
@@ -1129,32 +1549,46 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let (w, h) = (area.width, area.height);
     let pen = Pen { mode: app.color };
     let buf = f.buffer_mut();
-    // the terminal's own background everywhere; only the prompt panel and the palette paint one
+    // the terminal's own background everywhere; only cards, selected rows, the prompt and the palette paint one
     fill(buf, area, Style::default().bg(ratatui::style::Color::Reset));
+    let ms = app.start.elapsed().as_millis();
     let mut cursor = None;
-    if app.transcript.is_empty() {
-        let p = plan_home(w, h);
-        match p.robot {
-            RobotSize::Full => draw_robot(buf, &pen, &app.robot, app.start.elapsed(), p.robot_y, w),
-            RobotSize::Half => draw_robot(buf, &pen, &app.robot_half, app.start.elapsed(), p.robot_y, w),
-            RobotSize::None => {}
-        }
-        draw_logo(buf, &pen, p.logo, p.logo_y, w);
-        if p.box_y + BOX_ROWS <= h {
-            cursor = draw_box(buf, &pen, app, &p);
-            draw_hints(buf, &pen, app, &p);
-        }
-        if let Some(fy) = p.footer_y {
-            draw_footer(buf, &pen, app, fy, w);
-        }
+    if app.view == ViewId::Home {
+        cursor = home::draw(buf, &pen, app, w, h);
     } else {
-        let (t, p) = plan_chat(w, h);
-        draw_transcript(buf, &pen, app, t);
-        cursor = draw_box(buf, &pen, app, &p);
-        draw_hints(buf, &pen, app, &p);
-        if let Some(fy) = p.footer_y {
-            draw_footer(buf, &pen, app, fy, w);
+        draw_header(buf, &pen, app, w);
+        let body = body_rect(w, h);
+        let (hints_y, _) = frame_rows(h);
+        match app.view {
+            ViewId::Dashboard => {
+                let cx = dash::Ctx { snap: app.snap.as_ref(), has_key: app.has_key, min_fee: app.snap.as_ref().filter(|s| s.params.is_object()).map(|s| crate::snapshot::u(&s.params, "min_fee")), ms };
+                dash::draw(buf, &pen, body, &app.dash, &cx);
+                if let Some(d) = &app.dash.detail {
+                    dash::draw_detail(buf, &pen, area, d);
+                } else if app.dash.tab == dash::Tab::Send && app.typing() {
+                    cursor = send_cursor(app, body);
+                }
+            }
+            ViewId::Agents => views::draw_agents(buf, &pen, body, &app.agents, app.agents_err.as_ref(), &app.agents_v, &app.dm_status(), ms),
+            ViewId::Inbox => views::draw_inbox(buf, &pen, body, app.me.as_deref(), &app.dm_status(), app.inbox.as_ref(), &app.inbox_v, ms),
+            ViewId::Activity => {
+                let mut errs: Vec<String> = app.feed_errors.clone();
+                if let Some(e) = app.snap.as_ref().and_then(|s| s.errors.first()) {
+                    errs.push(e.clone());
+                }
+                let loading = app.loading.contains(&Source::Chain) || app.loading.contains(&Source::Feed);
+                views::draw_activity(buf, &pen, body, &app.activity, &errs, ms, loading);
+            }
+            ViewId::Status => draw_status(buf, &pen, app, body, ms),
+            ViewId::Lookup => cursor = draw_lookup(buf, &pen, app, body, ms),
+            ViewId::Home => {}
         }
+        if hints_y > body.y {
+            draw_view_hints(buf, &pen, app, hints_y, w);
+        }
+    }
+    if let (_, Some(fy)) = frame_rows(h) {
+        draw_footer(f.buffer_mut(), &pen, app, fy, w);
     }
     if app.palette.is_some() {
         draw_palette(f.buffer_mut(), &pen, app);
@@ -1163,6 +1597,91 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     if let Some(c) = cursor {
         f.set_cursor_position(c);
     }
+}
+
+fn send_cursor(app: &App, body: Rect) -> Option<Position> {
+    let f = &app.dash.send;
+    if f.confirm || f.busy {
+        return None;
+    }
+    // the table area starts under the cards (dash::draw) and the tab bar
+    let ch = dash::card_height(body.height);
+    let y0 = body.y + ch + 1 + 2;
+    let x = body.x + 2 + 10 + 2;
+    let v = if f.field == 0 { &f.to } else { &f.amount };
+    Some(Position::new(x + str_w(&v.iter().collect::<String>()), y0 + 2 * f.field as u16))
+}
+
+fn draw_status(buf: &mut Buffer, pen: &Pen, app: &App, r: Rect, ms: u128) {
+    let Some(rep) = &app.report else {
+        put(buf, r.x + 2, r.y, &format!("{} checking every component (nodes, Solana, light client, relays, services, agents, economy)", draw::spinner(ms)), pen.fg(MUTED), r.right());
+        return;
+    };
+    let mut x = r.x;
+    for (s, c) in views::status_summary(rep) {
+        x = put(buf, x, r.y, &s, pen.fg(c), r.right());
+    }
+    if app.loading.contains(&Source::Status) {
+        put_right(buf, r.right(), r.y, &format!("{} checking again", draw::spinner(ms)), pen.fg(MUTED), x + 2);
+    }
+    let body = Rect::new(r.x, r.y + 2, r.width, r.height.saturating_sub(2));
+    let c = views::status_canvas(pen, body.width, rep);
+    let top = app.status_scroll.min(views::max_scroll(c.area.height, body.height));
+    views::blit(&c, buf, body, top);
+}
+
+fn draw_lookup(buf: &mut Buffer, pen: &Pen, app: &App, r: Rect, ms: u128) -> Option<Position> {
+    // the prompt at the bottom, results above it (newest at the bottom, like Home)
+    let by = r.bottom().saturating_sub(home::BOX_ROWS);
+    let mode = vec![("Lookup".to_string(), BLUE), ("tx · block · account · @handle · /command".to_string(), MUTED)];
+    let ph = "a tx hash, a block height or hash, an address or @handle, or /command";
+    let cursor = home::prompt_box(buf, pen, r.x, by, r.width, &app.lookup_input, app.lookup_cur, ph, &mode);
+    let area = Rect::new(r.x, r.y, r.width, by.saturating_sub(r.y + 1));
+    if app.lookups.is_empty() {
+        let lines = [
+            "Type what to look up and press enter:",
+            "  4768                 a block by height",
+            "  9f2c...e1 (64 hex)    a Cadre tx, else a block by hash",
+            "  5Kx...  (signature)   a Solana tx, decoded in words",
+            "  @tape_reader          an account or agent (or its address)",
+            "  /job show 66f8        any cadre command, drawn here",
+        ];
+        for (i, l) in lines.iter().enumerate() {
+            put(buf, area.x + 2, area.y + i as u16, l, pen.fg(if i == 0 { TEXT } else { MUTED }), area.right());
+        }
+        return cursor;
+    }
+    let (c, last) = views::lookup_canvas(pen, area.width, &app.lookups, ms);
+    let ch = c.area.height;
+    // the newest result from its first line (or the bottom, when it all fits), moved by the scroll
+    let auto = last.min(ch.saturating_sub(area.height));
+    let top = (auto as i32 + app.lookup_off).clamp(0, ch.saturating_sub(area.height) as i32) as u16;
+    let shown = Rect::new(area.x, area.y + area.height.saturating_sub(ch), area.width, area.height.min(ch));
+    views::blit(&c, buf, shown, top);
+    cursor
+}
+
+/// The Dashboard of `sn` rendered once into a buffer `w` x `h` with `tab` open, for
+/// `cadre snapshot` (an HTML / text picture of the live dashboard; no terminal needed).
+pub fn dashboard_buffer(sn: &Snapshot, network: &str, w: u16, h: u16, tab: dash::Tab) -> Buffer {
+    let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+    let pen = Pen { mode: Mode::TrueColor };
+    let y = if h >= 20 { 1 } else { 0 };
+    let x = put(&mut buf, 2, y, "cadre", pen.fg(MUTED), w);
+    let x = put(&mut buf, x, y, "agents", pen.fg(TEXT).add_modifier(Modifier::BOLD), w);
+    put(&mut buf, x + 3, y, "dashboard", pen.fg(BLUE).add_modifier(Modifier::BOLD), w);
+    let who = match &sn.me {
+        Some(a) => format!("{} · block {}", crate::fmt::short_addr(a), sn.height()),
+        None => format!("no wallet · block {}", sn.height()),
+    };
+    put_right(&mut buf, w.saturating_sub(2), y, &who, pen.fg(MUTED), x + 14);
+    let st = dash::DashState { tab, ..Default::default() };
+    let cx = dash::Ctx { snap: Some(sn), has_key: false, min_fee: sn.params.is_object().then(|| crate::snapshot::u(&sn.params, "min_fee")), ms: 0 };
+    dash::draw(&mut buf, &pen, body_rect(w, h), &st, &cx);
+    if let (_, Some(fy)) = frame_rows(h) {
+        put_right(&mut buf, w.saturating_sub(2), fy, &format!("{network} · {}", env!("CARGO_PKG_VERSION")), pen.fg(MUTED), 2);
+    }
+    buf
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1186,49 +1705,15 @@ impl Drop for Guard {
     }
 }
 
-/// Run `cadre <words>` outside the TUI with this session's global options, then wait for
-/// a key. Ctrl-C goes to the command (this process ignores it meanwhile).
-fn run_outside(app: &App, words: &[String]) -> Result<()> {
-    restore();
-    let mut out = std::io::stdout();
-    let shown = words.join(" ");
-    writeln!(out, "$ cadre {shown}")?;
-    let exe = std::env::current_exe()?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(&app.forward).args(words);
-    let status = match cmd.spawn() {
-        Ok(mut child) => {
-            #[cfg(unix)]
-            let old = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-            let st = child.wait();
-            #[cfg(unix)]
-            unsafe {
-                libc::signal(libc::SIGINT, old);
-            }
-            st.map(|s| s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())).unwrap_or_else(|e| e.to_string())
-        }
-        Err(e) => format!("could not start: {e}"),
-    };
-    write!(out, "\n[exit {status}] press any key to return to cadre ")?;
-    out.flush()?;
-    terminal::enable_raw_mode()?;
-    loop {
-        if let Event::Key(k) = event::read()? {
-            if k.kind != KeyEventKind::Release {
-                break;
-            }
-        }
-    }
-    enter()?;
-    Ok(())
-}
-
-/// The entry screen; returns the exit code.
+/// The app; returns the exit code.
 pub fn run(l: Launch) -> Result<i32> {
-    let ctx = crate::ctx::Ctx::new(l.opts.clone())?;
-    let mut app = App::new(l, &ctx);
-    drop(ctx);
-    app.load();
+    let ctx = Arc::new(Ctx::new(l.opts.clone())?);
+    let net = net_of(&ctx);
+    let mut app = App::new(l, ctx.clone(), net.clone());
+    app.poll = Some(poll::start(ctx, net, app.me.clone(), app.tx.clone()));
+    if app.view == ViewId::Status {
+        app.go(ViewId::Status);
+    }
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
@@ -1239,17 +1724,26 @@ pub fn run(l: Launch) -> Result<i32> {
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
     term.clear()?;
     let frame = Duration::from_millis(1000 / app.robot.fps.max(1) as u64);
-    let mut last = Instant::now() - frame;
+    let spin = Duration::from_millis(100);
+    let tick = Duration::from_secs(1);
+    let mut last = Instant::now() - tick;
     let mut dirty = true;
     while !app.quit {
         let size = term.size()?;
-        let anim = app.animating(size.width, size.height) || app.busy.is_some() || app.quoting;
-        if dirty || (anim && last.elapsed() >= frame) {
+        // the robot at its frame rate, spinners at 10 fps, the "updated N s ago" clock at 1 Hz
+        let period = if app.animating(size.width, size.height) {
+            frame
+        } else if app.spinning() {
+            spin
+        } else {
+            tick
+        };
+        if dirty || last.elapsed() >= period {
             term.draw(|f| draw(f, &app))?;
             last = Instant::now();
             dirty = false;
         }
-        let wait = if anim { frame.saturating_sub(last.elapsed()) } else { Duration::from_millis(500) };
+        let wait = period.saturating_sub(last.elapsed()).min(Duration::from_millis(250));
         if event::poll(wait)? {
             loop {
                 match event::read()? {
@@ -1268,11 +1762,6 @@ pub fn run(l: Launch) -> Result<i32> {
             app.apply(m);
             dirty = true;
         }
-        if let Some(words) = app.run.take() {
-            run_outside(&app, &words)?;
-            term.clear()?;
-            dirty = true;
-        }
     }
     Ok(0)
 }
@@ -1280,6 +1769,8 @@ pub fn run(l: Launch) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snapshot::sample;
+    use home::{plan_chat, LogoKind, BOX_ROWS};
 
     #[test]
     fn opens_only_for_cadre_alone_on_a_terminal() {
@@ -1302,25 +1793,21 @@ mod tests {
         assert_eq!(p.logo_y, p.robot_y + 25);
         assert_eq!(p.box_y, p.logo_y + 5);
         assert!(p.hints_y < 37);
-        // 80 x 30: too short for the full robot, the half one fits
         let p = plan_home(80, 30);
         assert_eq!((p.robot, p.logo), (RobotSize::Half, LogoKind::Wide));
         assert!(p.hints_y < 28);
-        // narrow: under 44 columns no full robot; the wordmark stacks
         let p = plan_home(40, 40);
         assert_eq!((p.robot, p.logo), (RobotSize::Half, LogoKind::Stacked));
-        // tiny: no robot, words only, the prompt still fits
         let p = plan_home(28, 14);
         assert_eq!((p.robot, p.logo), (RobotSize::None, LogoKind::Text));
         assert!(p.hints_y < 14);
-        // a pty that reports 0 x 0 (or any tiny size) never panics
         for w in 0..20 {
             for h in 0..20 {
                 let _ = plan_home(w, h);
                 let _ = plan_chat(w, h);
+                let _ = body_rect(w, h);
             }
         }
-        // everything stays inside the screen at every size
         for w in 20..200 {
             for h in 12..80 {
                 let p = plan_home(w, h);
@@ -1340,7 +1827,6 @@ mod tests {
         assert_eq!(split_words(r#"tx  abc "two words" ''"#), vec!["tx", "abc", "two words", ""]);
         assert_eq!(split_words("status"), vec!["status"]);
         assert_eq!(wrap("aaa bbb ccc", 7), vec!["aaa bbb", "ccc"]);
-        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(wrap("a\nb", 10), vec!["a", "b"]);
     }
 
@@ -1360,17 +1846,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The whole screen renders into a buffer at the reference sizes without panics, and
-    /// the wordmark, prompt and hints are where the plan says.
+    fn render(app: &App, w: u16, h: u16) -> Buffer {
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| draw(f, app)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    fn rows(b: &Buffer) -> Vec<String> {
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    /// The whole Home screen renders into a buffer at the reference sizes without panics,
+    /// and the wordmark, prompt and hints are where the plan says.
     #[test]
     fn renders_home_screen_into_a_buffer() {
-        use ratatui::backend::TestBackend;
         for (w, h) in [(120u16, 40u16), (80, 30), (40, 20), (24, 12), (10, 5), (1, 1)] {
-            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
             let app = test_app();
-            t.draw(|f| draw(f, &app)).unwrap();
-            let b = t.backend().buffer().clone();
-            let row = |y: u16| (0..w).map(|x| b[(x, y)].symbol().to_string()).collect::<String>();
+            let b = render(&app, w, h);
+            let row = |y: u16| rows(&b)[y as usize].clone();
             let p = plan_home(w, h);
             if p.box_y + BOX_ROWS <= h {
                 assert!(row(p.box_y + 1).contains("Ask anything"), "{w}x{h}: {}", row(p.box_y + 1));
@@ -1386,42 +1880,138 @@ mod tests {
         }
     }
 
-    pub(crate) fn test_app() -> App {
-        let (tx, rx) = channel();
-        let robot = Robot::embedded();
-        App {
-            net: Net { api: None, gateway: None, key: None, api_key: None },
-            opts: <crate::ctx::Opts as clap::FromArgMatches>::from_arg_matches(&<crate::ctx::Opts as clap::Args>::augment_args(clap::Command::new("t")).get_matches_from(["t"])).unwrap(),
-            forward: vec![],
-            commands: vec![PaletteCmd { name: "status".into(), about: "Health of everything".into(), needs_args: false }, PaletteCmd { name: "tx".into(), about: "A tx".into(), needs_args: true }],
-            network: "devnet",
-            me: None,
-            color: Mode::TrueColor,
-            robot_half: robot.half(),
-            robot,
-            start: Instant::now(),
-            cwd: "~/pearl-sol:main".into(),
-            mode: 0,
-            agents: vec![AgentEntry { account: "A".into(), handle: "tide".into(), name: "Tide Clerk".into(), house: false }],
-            agents_err: None,
-            model: Some(Model { id: "llama-3.2-1b-instruct-w7a7".into(), server: "S".into() }),
-            model_err: None,
-            dm_live: Some(false),
-            input: vec![],
-            cur: 0,
-            transcript: vec![],
-            scroll: 0,
-            history: vec![],
-            busy: None,
-            next_id: 1,
-            quote: None,
-            quoting: false,
-            palette: None,
-            tx,
-            rx,
-            quit: false,
-            run: None,
+    /// Every view renders at the proof sizes (and tiny ones) without panics, with no
+    /// painted background outside cards, selected rows, prompts and the palette, and no
+    /// em dash anywhere.
+    #[test]
+    fn every_view_renders() {
+        let mut app = test_app();
+        app.snap = Some(sample::snapshot());
+        app.apply(Msg::Snap(Box::new(sample::snapshot())));
+        for v in ViewId::ALL {
+            app.go(v);
+            for (w, h) in [(120u16, 40u16), (160, 50), (80, 30), (30, 10), (5, 3)] {
+                let b = render(&app, w, h);
+                let all = rows(&b).join("\n");
+                assert!(!all.contains('\u{2014}'), "{v:?} {w}x{h}");
+                if w >= 80 && h >= 20 {
+                    assert!(all.contains(env!("CARGO_PKG_VERSION")), "{v:?} footer {w}x{h}");
+                    if v != ViewId::Home {
+                        assert!(all.contains(v.name()), "{v:?} header {w}x{h}");
+                    }
+                }
+            }
         }
+        // the dashboard shows the sample's figures, and no beta banner
+        app.go(ViewId::Dashboard);
+        let all = rows(&render(&app, 120, 40)).join("\n");
+        for want in ["40.74 CADRE", "8.69M CADRE", "job from 0.01 SOL", "block 260", "OK (in flight)", "demo-agent", "bbbb...bbbb", "open", "devnet · "] {
+            assert!(all.contains(want), "{want} missing:\n{all}");
+        }
+        assert!(!all.contains("beta version"));
+        assert!(!all.contains("$$$"));
+    }
+
+    /// The dashboard's palette: the blue bar on cards, the selected row on the panel color
+    /// with the bar, the rest on the terminal's own background.
+    #[test]
+    fn dashboard_style() {
+        let mut app = test_app();
+        app.apply(Msg::Snap(Box::new(sample::snapshot())));
+        app.go(ViewId::Dashboard);
+        let b = render(&app, 120, 40);
+        let r = rows(&b);
+        let panel = Mode::TrueColor.color(PANEL);
+        let blue = Mode::TrueColor.color(BLUE);
+        // a card: bar + panel
+        let (y, _) = r.iter().enumerate().find(|(_, l)| l.contains("Wallet")).unwrap();
+        assert_eq!(b[(2, y as u16)].symbol(), "┃");
+        assert_eq!(b[(2, y as u16)].fg, blue);
+        assert_eq!(b[(10, y as u16)].bg, panel);
+        // the selected row: the first job
+        let (y, l) = r.iter().enumerate().find(|(_, l)| l.contains("bbbb...bbbb")).unwrap();
+        let x = l.chars().position(|c| c == 'b').unwrap() as u16;
+        assert_eq!(b[(x, y as u16)].bg, panel);
+        let (y2, l2) = r.iter().enumerate().find(|(_, l)| l.contains("aaaa...aaaa")).unwrap();
+        let x2 = l2.chars().position(|c| c == 'a').unwrap() as u16;
+        assert_eq!(b[(x2, y2 as u16)].bg, ratatui::style::Color::Reset, "unselected rows sit on the terminal background");
+        // the header row and the space between cards are never painted
+        for x in 0..120 {
+            assert_eq!(b[(x, 0)].bg, ratatui::style::Color::Reset);
+        }
+    }
+
+    /// Owner 2026-10-21: "if i toggle the dashboard it shouldn't reset". Ask something on
+    /// Home, go to the Dashboard and select a job, go Home and back: the conversation, its
+    /// scroll, the input being typed, the tab, the selected job (also after new jobs
+    /// arrive), and the Activity filter are all still there.
+    #[test]
+    fn switching_views_keeps_everything() {
+        let k = |c: KeyCode, m: KeyModifiers| KeyEvent::new(c, m);
+        let mut a = test_app();
+        a.apply(Msg::Snap(Box::new(sample::snapshot())));
+        // a conversation on Home, scrolled up a line, with a half-typed question
+        a.transcript.push(Entry::new(Kind::Note, "first answer"));
+        let mut you = Entry::new(Kind::You, "what is the tip?");
+        you.label = "Ask".into();
+        a.transcript.push(you);
+        a.transcript.push(Entry::new(Kind::Answer, "block 260"));
+        a.scroll = 1;
+        for c in "and the fin".chars() {
+            a.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        // Dashboard by F2: scroll down to the second job
+        a.key(k(KeyCode::F(2), KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Dashboard);
+        a.key(k(KeyCode::Down, KeyModifiers::NONE));
+        let job = "aa".repeat(32);
+        assert_eq!(a.dash.selected_key(), Some(&job));
+        // a filter on Activity, then Home by Esc
+        a.key(k(KeyCode::Char('5'), KeyModifiers::NONE));
+        a.key(k(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(a.activity.filter, views::Filter::Posts);
+        a.key(k(KeyCode::Char('2'), KeyModifiers::NONE));
+        a.key(k(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Home);
+        // Home: everything as it was
+        assert_eq!(a.transcript.len(), 3);
+        assert_eq!(a.scroll, 1);
+        assert_eq!(a.input.iter().collect::<String>(), "and the fin");
+        // new data arrives while on Home: a new job is posted
+        let mut sn = sample::snapshot();
+        sn.jobs.push(json!({"job_id": "cc".repeat(32), "status": "open", "m": 8, "n": 8, "k": 2048}));
+        sn.jobs_total = 3;
+        a.apply(Msg::Snap(Box::new(sn)));
+        // back to the Dashboard: Esc on an empty prompt toggles, so clear the input first
+        a.key(k(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        a.key(k(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Dashboard);
+        assert_eq!(a.dash.tab, dash::Tab::Jobs);
+        assert_eq!(a.dash.selected_key(), Some(&job), "the same job, not the same row number");
+        let all = rows(&render(&a, 120, 40)).join("\n");
+        let line = all.lines().find(|l| l.contains("aaaa...aaaa")).unwrap().to_string();
+        let b = render(&a, 120, 40);
+        let y = rows(&b).iter().position(|l| *l == line).unwrap() as u16;
+        let x = line.chars().position(|c| c == 'a').unwrap() as u16;
+        assert_eq!(b[(x, y)].bg, Mode::TrueColor.color(PANEL), "drawn selected");
+        // Activity kept its filter; Home kept the conversation
+        a.key(k(KeyCode::Char('5'), KeyModifiers::NONE));
+        assert_eq!(a.activity.filter, views::Filter::Posts);
+        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!((a.transcript.len(), a.scroll), (3, 1));
+        // the same through the palette and a /command
+        a.palette = Some(Palette { filter: "dashboard".into(), sel: 0 });
+        a.key(k(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Dashboard);
+        assert_eq!(a.dash.selected_key(), Some(&job));
+        a.key(k(KeyCode::Char('1'), KeyModifiers::NONE));
+        for c in "/dashboard".chars() {
+            a.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.key(k(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Dashboard);
+        assert_eq!(a.dash.selected_key(), Some(&job));
+        assert_eq!(a.transcript.len(), 3, "a /command does not add to the conversation");
     }
 
     #[test]
@@ -1433,27 +2023,40 @@ mod tests {
         assert_eq!(a.label(), "@tide");
         a.key(k(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(a.label(), "Ask");
-        // ctrl+p opens the palette; typing filters; enter on a command with args fills the prompt
+        // digits type on Home; they switch views elsewhere
+        a.key(k(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert_eq!((a.view, a.input.iter().collect::<String>()), (ViewId::Home, "2".to_string()));
+        a.key(k(KeyCode::Backspace, KeyModifiers::NONE));
+        a.key(k(KeyCode::Char('3'), KeyModifiers::ALT));
+        assert_eq!(a.view, ViewId::Agents);
+        a.key(k(KeyCode::Char('6'), KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Status);
+        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Home);
+        // ctrl+p: views first, then commands; a command with args opens the Lookup input
         a.key(k(KeyCode::Char('p'), KeyModifiers::CONTROL));
         assert!(a.palette.is_some());
+        assert_eq!(a.palette_items()[0].name(), "home");
         a.key(k(KeyCode::Char('t'), KeyModifiers::NONE));
         a.key(k(KeyCode::Char('x'), KeyModifiers::NONE));
         a.key(k(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.palette.is_none());
-        assert_eq!(a.input.iter().collect::<String>(), "/tx ");
-        // a command without args runs at once
-        a.input.clear();
-        a.cur = 0;
-        a.key(k(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(a.view, ViewId::Lookup);
+        assert_eq!(a.lookup_input.iter().collect::<String>(), "/tx ");
+        // the status command opens the Status view (inside the app, never the shell)
+        a.palette = Some(Palette { filter: "status".into(), sel: 0 });
         a.key(k(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(a.run.take(), Some(vec!["status".to_string()]));
-        // a / line runs a command
+        assert_eq!(a.view, ViewId::Status);
+        // a /line on Home that is not a view runs in the Lookup view
+        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
         for c in "/block 12".chars() {
             a.key(k(KeyCode::Char(c), KeyModifiers::NONE));
         }
         a.key(k(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(a.run.take(), Some(vec!["block".to_string(), "12".to_string()]));
+        assert_eq!(a.view, ViewId::Lookup);
+        assert_eq!(a.lookups.last().unwrap().query, "/block 12");
         // asking with no wallet and no API key: the setup line, never an answer
+        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
         for c in "hi".chars() {
             a.key(k(KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -1467,11 +2070,70 @@ mod tests {
         }
         a.key(k(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.transcript.last().unwrap().text.contains("not live"));
-        // esc closes nothing open -> quits; ctrl+c always quits
+        // Esc never quits (it toggles views); ctrl+c and /quit do
         a.key(k(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(a.quit);
+        assert!(!a.quit);
         let mut b = test_app();
         b.key(k(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(b.quit);
+        let mut c = test_app();
+        for ch in "/quit".chars() {
+            c.key(k(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        c.key(k(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(c.quit);
+    }
+
+    #[test]
+    fn dashboard_send_form_needs_a_key_and_a_confirm() {
+        let k = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+        let mut a = test_app();
+        a.apply(Msg::Snap(Box::new(sample::snapshot())));
+        a.go(ViewId::Dashboard);
+        a.dash.tab = dash::Tab::Send;
+        // no key: the form says so and digits switch views as usual
+        let all = rows(&render(&a, 120, 40)).join("\n");
+        assert!(all.contains(dash::NO_WALLET));
+        assert!(!a.typing());
+        a.has_key = true;
+        assert!(a.typing());
+        for c in "7xKX".chars() {
+            a.key(k(KeyCode::Char(c)));
+        }
+        a.key(k(KeyCode::Enter));
+        for c in "1.5".chars() {
+            a.key(k(KeyCode::Char(c)));
+        }
+        assert_eq!(a.dash.send.amount.iter().collect::<String>(), "1.5");
+        a.key(k(KeyCode::Enter));
+        assert!(a.dash.send.confirm, "the first enter only asks");
+        assert!(!a.dash.send.busy);
+        a.key(k(KeyCode::Esc));
+        assert!(!a.dash.send.confirm);
+        // the half-typed form survives a trip to Home
+        a.key(k(KeyCode::F(1)));
+        a.key(k(KeyCode::F(2)));
+        assert_eq!(a.dash.send.to.iter().collect::<String>(), "7xKX");
+        assert_eq!(a.dash.send.amount.iter().collect::<String>(), "1.5");
+    }
+
+    pub(crate) fn test_app() -> App {
+        let m = <Opts as clap::Args>::augment_args(clap::Command::new("t")).get_matches_from(["t", "--network", "localnet", "--rpc", "http://127.0.0.1:9", "--sol-rpc", "http://127.0.0.1:9", "--pool", "http://127.0.0.1:9"]);
+        let opts = <Opts as clap::FromArgMatches>::from_arg_matches(&m).unwrap();
+        let ctx = Arc::new(Ctx::new(opts.clone()).unwrap());
+        let l = Launch {
+            opts,
+            forward: vec![],
+            commands: vec![PaletteCmd { name: "status".into(), about: "Health of everything".into(), needs_args: false }, PaletteCmd { name: "tx".into(), about: "A tx".into(), needs_args: true }, PaletteCmd { name: "block".into(), about: "A block".into(), needs_args: true }],
+            start: ViewId::Home,
+        };
+        let mut a = App::new(l, ctx, Net { api: None, gateway: None, key: None, api_key: None });
+        a.network = "devnet";
+        a.color = Mode::TrueColor;
+        a.cwd = "~/pearl-sol:main".into();
+        a.agents = vec![AgentEntry { account: "A".into(), handle: "tide".into(), name: "Tide Clerk".into(), house: false }];
+        a.model = Some(Model { id: "llama-3.2-1b-instruct-w7a7".into(), server: "S".into() });
+        a.dm_live = Some(false);
+        a
     }
 }

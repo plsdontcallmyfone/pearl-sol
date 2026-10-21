@@ -25,6 +25,8 @@ pub const ROBOT: [u32; 4] = [0xeeeeee, 0x808080, 0x606060, 0x484848];
 /// Errors (darkRed) and success (darkGreen), for answers and DM results.
 pub const RED: u32 = 0xe06c75;
 pub const GREEN: u32 = 0x7fd88f;
+/// Pending / in flight (darkYellow).
+pub const YELLOW: u32 = 0xe5c07b;
 /// Selected row in the command palette (darkStep9, primary).
 pub const PRIMARY: u32 = 0xfab283;
 
