@@ -850,7 +850,17 @@ CLAUDE.md "Who is working on what".
      three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
      clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
    - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
-     Rollout status is in DEVNET.md "binaries" and the CLAUDE.md row.
+     Rollout PAUSED 2026-10-21: box 1 cadre-node ran the fix (agent-node 91cb50d7..., public main 2ccfba4)
+     17:16-17:24 UTC with tip and finalized hash equal to boxes 0 and 2, then went back to 7ce3d9a1... (all
+     three boxes run 7ce3d9a1... again). Reason: on the test box a fixed follower stopped taking new blocks at
+     4442 after about 25 min (resumed on restart, then followed within 1 block for 16 min). A pre-fix main
+     (6cf43b92...) started on a copy of the same synced data took NO block at all in 13 min (0% CPU, listed
+     as a peer by all three boxes; also with the fixed node stopped), so the follow stall is older than this
+     fix and not the same-IP limit. Open: why a test-box follower stops receiving gossip and tips (box
+     journals show nothing). Both binaries report `peers` 0 for minutes after a restart (the count is only
+     refreshed in the tip-timer branch of a biased select). agent-node.aa5 (the fix) is staged in
+     /opt/lode/bin on boxes 0-2, not running; to resume: rename it over agent-node and restart cadre-node,
+     box 1, 2, 0, in a posted window.
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
