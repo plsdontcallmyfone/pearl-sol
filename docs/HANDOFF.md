@@ -880,6 +880,9 @@ CLAUDE.md "Who is working on what".
      around 19:05 UTC, agent-node.pre-fix3 kept on each box; after each, equal tip and finalized hash
      (4599 149d4ca0681f, 4 peers); RSS about 1 min after restart 153 / 196 / 171 MB. Rollback:
      `cp -p agent-node.pre-fix3 agent-node.new && mv -f agent-node.new agent-node`, restart cadre-node.
+     The contracts row then rolled main bc4a6ef (contracts + this fix + the full-store check) over it
+     19:32-19:41 UTC. Soak: two fixed followers on the test box held the tip 19:14-20:15 UTC with 0
+     dropped frames; devnet agent-node RSS 178-244 MB and flat through 20:13 (TEST-REPORT).
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 

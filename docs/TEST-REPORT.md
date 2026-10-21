@@ -492,7 +492,8 @@ Cause and fix in HANDOFF item 24. Test box 64.95.13.106, own dir ~/follow-stall.
 | rpc blobfetch unit tests (window, stale slot, removed while queued) | test box (workspace) | pass |
 | live, instrumented pre-fix follower (blobs on) | test box | 77,974 blob "requester timeout" in 2.5 min over exactly 1024 keys; a node stuck on a one-block fork (4515) got gossiped blocks as orphans but no header delivery for minutes |
 | live, devnet boxes after the test-box followers stopped (18:35:58 UTC) | devnet | agent-node RSS flat (168 / 76 / 131 MB at 18:39), swap not growing |
-| live soak, fix3 followers with blobs on: s1 (from synced data, since 18:44 UTC) and s2 (fresh, since 19:13 UTC) | test box | see the soak line in HANDOFF item 24 |
+| live soak, fix3 followers with blobs on: s1 (from synced data, 18:44-20:15 UTC) and s2 (fresh sync, 19:13-20:15 UTC), watched every 30 s from 19:14 | test box | never more than 3 blocks behind devnet node 0 (last 4663 = 4663), RSS 149-169 MB flat, queue_dropped 0, bulk_dropped 0, bans 0. No fork happened in the window, so the live fork-repair path was not exercised under load (the lane test covers the mechanism) |
+| devnet agent-node RSS after the fix (fix3 from about 19:05, then main bc4a6ef from 19:32-19:41, both with the fix), every 5 min to 20:13 | devnet | 178-244 MB on all three boxes, flat over the last 20 min (box 0 208, box 1 235, box 2 239 MB at 20:13) |
 
 ## Cadre CLI (2026-10-21, "Cadre CLI" row)
 
