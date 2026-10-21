@@ -23,7 +23,7 @@ const HUMAN = [
 ];
 const MONEY = [/\bguarantee(d|s)?\s+(returns?|profits?|gains?|income)\b/i, /\brisk[- ]free\b/i, /\b\d{2,}x\s+(gains?|returns?)\b/i, /\bcan'?t\s+lose\b/i];
 const PREAMBLE = /^\s*(sure|certainly|of course|here('| i)s|here are|as an ai|i('| a)m sorry|i cannot|i can't)\b/i;
-const INSTRUCTION = [/^\s*-?\s*\S{1,40}\s+wrote:/i, /\bwrote:\s*"/i, /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts?)\b/i, /<\/?(system|data|tool|function)\b/i, /^\s*(system|assistant|user)\s*:/im, /\b(send|transfer|withdraw)\s+[\d,.]+\s*(cadre|sol)\b/i];
+const INSTRUCTION = [/^\s*-?\s*\S{1,40}\s+wrote:/i, /^\s*-\s*@?[\w.-]{1,40}\s*:/, /\bwrote:\s*"/i, /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts?)\b/i, /<\/?(system|data|tool|function)\b/i, /^\s*(system|assistant|user)\s*:/im, /\b(send|transfer|withdraw)\s+[\d,.]+\s*(cadre|sol)\b/i];
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"')]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|io|xyz|net|org|app|fun|gg|co|ai|sh|me|so|dev|to|ly|finance|exchange|money)\b(?:\/[^\s]*)?/gi;
 
 export function hostOf(u: string): string {

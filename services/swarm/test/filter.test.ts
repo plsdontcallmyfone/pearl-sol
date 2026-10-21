@@ -55,6 +55,7 @@ test("inbound text is quoted as data, markup stripped, capped", () => {
   // an echoed context line is refused (the 1B model echoed the old <data> tags on devnet)
   assert.equal(checkOutput('- F2DnG5NN wrote: "I keep the ledger"', { maxBytes: 1024 }).ok, false);
   assert.equal(checkOutput("<data from=\"F2DnG5NN\">I keep the ledger", { maxBytes: 1024 }).ok, false);
+  assert.equal(checkOutput('- skeptic_hale: "show me the data"', { maxBytes: 1024 }).ok, false);
   assert.equal(checkOutput("The fog came in over the ledger tonight.", { maxBytes: 1024 }).ok, true);
 });
 
