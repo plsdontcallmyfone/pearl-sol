@@ -25,8 +25,64 @@ pub enum Cmd {
     /// Open the full-screen dashboard.
     #[command(alias = "tui")]
     Dashboard,
-    /// Everything the dashboard reads, as one object.
-    Status,
+    /// Health of everything (chain nodes, Solana programs, light client, relays, services,
+    /// agents, economy): PASS / WARN / FAIL per check; exit 1 on a failure (cron, CI).
+    /// `cadre` with no command runs this.
+    Status {
+        /// One line per check, `OK|WARN|FAIL cli:<check> <detail>` (box 0 health log shape).
+        #[arg(long)]
+        health: bool,
+    },
+    /// Everything the dashboard reads, as one object (what `status` printed before 2026-10-21).
+    #[command(alias = "wallet")]
+    Overview,
+    /// One component with its latency: `ping api`, `ping node0`, `ping https://...`.
+    Ping {
+        /// nodes, node0.., solana, programs, lightclient, api, explorer, storefront, relayer,
+        /// gateway, settle, replay, site, docs, pool, swarm, desktops, agents, bridge, mining, box, or a URL
+        target: Option<String>,
+        /// Ping this many times and show min / avg / max latency.
+        #[arg(long, short = 'c', default_value_t = 1)]
+        count: u32,
+        /// List the endpoints this network uses.
+        #[arg(long)]
+        list: bool,
+    },
+    /// An account on both chains: balance, nonce, lien, profile, Solana SOL + CADRE, recent txs.
+    Account {
+        /// Address or @handle (positional id differs from the global --address).
+        #[arg(id = "who", value_name = "ADDRESS|@HANDLE")]
+        address: String,
+    },
+    /// One block by height or hash, every tx in words.
+    Block { id: String },
+    /// House and user agents with their health.
+    Agents {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Live tail of new blocks and their txs (posts in words); Ctrl-C stops.
+    Watch {
+        /// Stop after this many blocks.
+        #[arg(long)]
+        count: Option<u64>,
+        /// Start at this height (default: the next block).
+        #[arg(long)]
+        from: Option<u64>,
+        /// Also show txs as they enter the node's mempool.
+        #[arg(long)]
+        pending: bool,
+    },
+    /// The verifiable-AI verdict of an inference ticket: fetched from the chain and the
+    /// services, or `--run` to replay it here (cadre-glue-v1; downloads the model once).
+    Verify {
+        ticket: String,
+        #[arg(long)]
+        run: bool,
+        /// Model store for --run (default ~/.cadre/models).
+        #[arg(long)]
+        models: Option<PathBuf>,
+    },
     /// Agent-chain balance (tip) and pending rewards; SPL and SOL on Solana.
     Balance,
     /// The connected addresses.
@@ -70,9 +126,12 @@ pub enum Cmd {
         #[arg(default_value = "")]
         uri: String,
     },
-    /// Agent registration, payout lien and record (from the explorer's indexer,
-    /// `<explorer>/api/agent/<address>`) of an address (default: connected).
+    /// An agent by address or @handle (default: connected): registration, payout lien, town
+    /// profile and operator link, balances on both chains, recent posts with thought
+    /// receipts, desktops, hosting, and its record from the explorer (jobs, money behind work).
     Agent {
+        /// Address or @handle (default: connected).
+        #[arg(id = "who", value_name = "ADDRESS|@HANDLE")]
         address: Option<String>,
         /// Explorer base URL for the record (default: the network's public explorer).
         #[arg(long, env = "PEARL_EXPLORER")]
@@ -86,15 +145,17 @@ pub enum Cmd {
     },
     #[command(subcommand)]
     Mine(MineCmd),
-    /// Model registry (SPEC 4.5): ls | show | register | fetch.
-    #[command(subcommand)]
-    Model(crate::model::ModelCmd),
+    /// Model registry (SPEC 4.5): ls | show | register | fetch (no subcommand = ls).
+    Model {
+        #[command(subcommand)]
+        cmd: Option<crate::model::ModelCmd>,
+    },
     /// Smart contracts (docs/CONTRACTS.md): build | deploy | instantiate | new | call | query | show | ls | events | receipt | migrate | admin.
     #[command(subcommand)]
     Contract(crate::contract::ContractCmd),
-    /// An inference ticket and its standing jobs (segments).
+    /// An inference ticket, its standing jobs (segments) and the replay verdict.
     Ticket { id: String },
-    /// Look up a transaction by hash.
+    /// A Cadre tx (64 hex) or a Solana signature, decoded in plain words.
     Tx { hash: String },
     /// Render the dashboard from a live read into an HTML (and .txt) file.
     Snapshot {
@@ -119,6 +180,9 @@ pub enum Cmd {
 pub enum JobCmd {
     /// One job by id (hex).
     Show { id: String },
+    /// `job <id>`: the same as `job show <id>`.
+    #[command(external_subcommand)]
+    Id(Vec<String>),
     /// Post a matmul job: random int7 data (or --data PSD1 blob) put to the node's
     /// blob store, commitments computed here, PostJob signed and sent.
     Post {
@@ -237,14 +301,18 @@ pub struct Out {
     pub text: String,
     /// Text mode: the info box(es) the command ends in. None = print `text`.
     pub view: Option<View>,
+    /// Process exit code (`status`, `ping`, `verify`: 1 on a failure).
+    pub code: i32,
+    /// Print `text` as is, also in text mode (`status --health`).
+    pub raw: bool,
 }
 
 impl Out {
-    fn new(json: Value, text: impl Into<String>) -> Self {
-        Self { json, text: text.into(), view: None }
+    pub fn new(json: Value, text: impl Into<String>) -> Self {
+        Self { json, text: text.into(), view: None, code: 0, raw: false }
     }
 
-    fn view(mut self, v: View) -> Self {
+    pub fn view(mut self, v: View) -> Self {
         self.view = Some(v);
         self
     }
@@ -262,11 +330,13 @@ blocks [n] | activity          recent blocks | your transactions
 lien set <sol-recipient> <bps> [--until H --cap X --release-key ADDR]
 lien clear --release-key-file F [--account A] | lien show
 register <name> [uri]          RegisterAgent
-agent [address]                registration + lien
+agent [address|@handle]        profile, lien, balances, posts, desktops, jobs
+agents | account <a> | block <n|hash> | job <id> | ticket <id> | verify <ticket> [--run]
+status [--health] | ping <target> [-c N] | watch [--count N --pending] | overview
 buyback [--limit 10]           storefront buyback: share, vault, totals, latest buys
 mine start [--threads 2] | mine stop | mine status
 model ls | model show <id> | model register <dir> | model fetch <id> <dir> | ticket <id>
-balance | address | status | tx <hash> | dashboard | quit";
+balance | address | tx <hash or Solana signature> | dashboard | quit";
 
 /// Common commands, shown under the no-command overview.
 pub const OVERVIEW_HINT: &str = "\
@@ -477,7 +547,27 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             let p = Panel::new("Address").kv("Agent chain", s(&j, "address")).kv("Solana", s(&j, "solana_address")).kv("Key", if ctx.has_key() { "loaded (never printed)" } else { "none (watching)" });
             Ok(Out::new(j, t).view(View::panel(p)))
         }
-        Cmd::Status => {
+        Cmd::Status { health } => {
+            let r = crate::health::run_all(ctx);
+            let net = format!("{:?}", ctx.opts.network).to_lowercase();
+            let mut j = r.json(&net, &ctx.eps.to_json());
+            j["ok"] = json!(r.worst() != crate::health::Level::Fail);
+            let mut o = if *health { Out::new(j, r.health_lines()) } else { Out::new(j, r.summary_line(&net)).view(r.view(ctx.ui.style().width, &net)) };
+            o.raw = *health;
+            o.code = r.code(ctx.opts.strict);
+            Ok(o)
+        }
+        Cmd::Ping { target, count, list } => ping(ctx, target.as_deref(), *count, *list),
+        Cmd::Account { address } => crate::inspect::account(ctx, address),
+        Cmd::Block { id } => crate::inspect::block(ctx, id),
+        Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
+        Cmd::Watch { count, from, pending } => crate::inspect::watch(ctx, *count, *from, *pending),
+        Cmd::Verify { ticket, run, models } => crate::inspect::verify(ctx, ticket, *run, models),
+        Cmd::Job(JobCmd::Id(words)) => {
+            let id = words.first().ok_or_else(|| anyhow!("job <id> | job show <id> | job post ..."))?;
+            exec(ctx, &Cmd::Job(JobCmd::Show { id: id.clone() }), shell)
+        }
+        Cmd::Overview => {
             let sn = snapshot::gather(ctx);
             let j = sn.to_json();
             let inv = sn.invariant();
@@ -602,39 +692,10 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             }
             Ok(Out::new(sent_json(&s), sent_text(&format!("register {name:?}"), &s)).view(view))
         }
-        Cmd::Agent { address, explorer } => {
-            let a = match address {
-                Some(a) => b58(&key32(a)?),
-                None => me(ctx)?,
-            };
-            let agent = ctx.call("getAgent", json!({"account": a}))?;
-            let route = ctx.call("getRoute", json!({"account": a}))?;
-            let t = format!(
-                "{}: {}\nlien: {}",
-                short(&a),
-                if agent.is_null() { "not registered".into() } else { format!("{} ({}) since height {}", s(&agent, "name"), s(&agent, "uri"), u(&agent, "registered_height")) },
-                route_text(&route)
-            );
-            let mut view = View::panel(agent_panel(&a, &agent, &route, true));
-            // the record (owner decision 2026-10-18): from the explorer's indexer, best effort
-            let base = crate::agent::explorer_url(ctx, explorer);
-            let (profile, perr) = match crate::agent::fetch_profile(&base, &a) {
-                Ok(p) => (p, None),
-                Err(e) => (Value::Null, Some(format!("{e:#}"))),
-            };
-            let mut t = t;
-            if profile.is_object() {
-                let (blocks, line) = crate::agent::profile_view(&profile);
-                view.0.extend(blocks);
-                t = format!("{t}\n{line}");
-            } else if let Some(e) = &perr {
-                view = view.hint(format!("record unavailable: {e} (set --explorer or PEARL_EXPLORER)"));
-            }
-            Ok(Out::new(json!({"account": a, "agent": agent, "route": route, "explorer": base, "profile": profile, "profile_error": perr}), t).view(view))
-        }
+        Cmd::Agent { address, explorer } => crate::inspect::agent(ctx, address.as_deref(), explorer),
         Cmd::Mine(m) => mine(ctx, m, shell),
-        Cmd::Model(m) => {
-            let o = crate::model::exec(ctx, m)?;
+        Cmd::Model { cmd } => {
+            let o = crate::model::exec(ctx, cmd.as_ref().unwrap_or(&crate::model::ModelCmd::Ls))?;
             Ok(Out::new(o.json, o.text).view(o.view))
         }
         Cmd::Contract(c) => {
@@ -643,24 +704,17 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         }
         Cmd::Ticket { id } => {
             let o = crate::model::ticket(ctx, id)?;
-            Ok(Out::new(o.json, o.text).view(o.view))
+            let (mut j, mut view) = (o.json, o.view);
+            match crate::inspect::verdict(ctx, &id.to_ascii_lowercase()) {
+                Ok(v) => {
+                    view = view.with(Block::Panel(crate::inspect::verdict_panel(&v)));
+                    j["verdict"] = v;
+                }
+                Err(e) => j["verdict_error"] = json!(format!("{e:#}")),
+            }
+            Ok(Out::new(j, o.text).view(view))
         }
-        Cmd::Tx { hash } => {
-            let v = ctx.call("getTx", json!({"tx_hash": hash}))?;
-            ensure!(!v.is_null(), "no tx {hash}");
-            let t = format!("{} {} from {} fee {}  {} {}", s(&v, "kind"), short(hash), short(s(&v, "from")), tok(u(&v, "fee")), s(&v, "status"), v.get("height").map(|h| format!("at {h}")).unwrap_or_default());
-            let fin = ctx.call("getChainInfo", json!({})).map(|i| v.get("height").is_some() && u(&i, "finalized_height") >= u(&v, "height")).unwrap_or(false);
-            let p = Panel::new("Transaction")
-                .kv("Hash", hash.as_str())
-                .kv("Kind", s(&v, "kind"))
-                .kv("From", s(&v, "from"))
-                .kv("Nonce", u(&v, "nonce").to_string())
-                .kv("Fee", tok_exact(u(&v, "fee")))
-                .kv("Block", v.get("height").map(|h| h.to_string()).unwrap_or("-".into()))
-                .kv("Confirmations", v.get("confirmations").map(|h| h.to_string()).unwrap_or("-".into()))
-                .state("State", if fin { "final" } else { s(&v, "status") });
-            Ok(Out::new(v, t).view(View::panel(p)))
-        }
+        Cmd::Tx { hash } => crate::inspect::tx(ctx, hash),
         Cmd::Snapshot { out, width, height, tab } => {
             let sn = snapshot::gather(ctx);
             let tab = crate::ui::Tab::parse(tab)?;
@@ -673,6 +727,58 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             Ok(Out::new(json!({"html": out, "text": txt, "errors": sn.errors}), msg).view(v))
         }
     }
+}
+
+fn ping(ctx: &Ctx, target: Option<&str>, count: u32, list: bool) -> Result<Out> {
+    if list || target.is_none() {
+        let e = &ctx.eps;
+        let mut p = Panel::new("Endpoints").kv("Network", format!("{:?}", ctx.opts.network).to_lowercase());
+        for (i, nd) in e.nodes.iter().enumerate() {
+            p = p.kv(&format!("node{i}"), nd.as_str());
+        }
+        p = p.kv("solana", e.solana.as_str());
+        for (k, _) in crate::endpoints::NAMES.iter().filter(|(k, _)| *k != "nodes" && *k != "solana") {
+            p = p.kt(k, e.get(k).unwrap_or("not set"), if e.get(k).is_some() { Tone::Plain } else { Tone::Dim });
+        }
+        let v = View::panel(p).hint(format!("targets: {}
+override: --endpoint NAME=URL or CADRE_<NAME>", crate::health::PING_TARGETS));
+        return Ok(Out::new(e.to_json(), "endpoints").view(v));
+    }
+    let target = target.unwrap();
+    let mut rounds: Vec<Vec<crate::health::Check>> = vec![];
+    for i in 0..count.max(1) {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        rounds.push(crate::health::ping_once(ctx, target)?);
+    }
+    ensure!(rounds[0].iter().len() > 0, "nothing to check for {target:?} on this network");
+    let last = rounds.last().unwrap().clone();
+    let mut checks = last.clone();
+    let mut stats = vec![];
+    for (i, c) in checks.iter_mut().enumerate() {
+        let ms: Vec<u64> = rounds.iter().filter_map(|r| r.get(i).and_then(|x| x.ms)).collect();
+        if ms.len() > 1 {
+            let (mn, mx) = (*ms.iter().min().unwrap(), *ms.iter().max().unwrap());
+            let avg = ms.iter().sum::<u64>() / ms.len() as u64;
+            c.detail = format!("{}; latency min {mn} avg {avg} max {mx} ms over {}", c.detail, ms.len());
+            stats.push(json!({"name": c.name, "min_ms": mn, "avg_ms": avg, "max_ms": mx, "n": ms.len()}));
+        }
+        // the worst level seen over the rounds
+        c.level = rounds.iter().filter_map(|r| r.get(i).map(|x| x.level)).max().unwrap_or(c.level);
+    }
+    let r = crate::health::Report { checks, elapsed_ms: 0 };
+    let net = format!("{:?}", ctx.opts.network).to_lowercase();
+    let mut j = r.json(&net, &Value::Null);
+    j["target"] = json!(target);
+    j["latency"] = json!(stats);
+    j["ok"] = json!(r.worst() != crate::health::Level::Fail);
+    let text = r.checks.iter().map(|c| format!("{} {} {}{}", c.level.word(), c.name, c.detail, c.ms.map(|m| format!(" ({m} ms)")).unwrap_or_default())).collect::<Vec<_>>().join("\n");
+    let mut v = r.view(ctx.ui.style().width, &net);
+    v.0.pop(); // the status summary hint
+    let mut o = Out::new(j, text).view(v);
+    o.code = r.code(ctx.opts.strict);
+    Ok(o)
 }
 
 /// `pearl` with no command: the overview box and a hint line of common commands.
@@ -1875,14 +1981,16 @@ mod tests {
         let cases: Vec<(String, &str)> = vec![
             ("balance".into(), "Balance"),
             ("address".into(), "Address"),
-            ("status".into(), "overview"),
+            ("overview".into(), "overview"),
+            ("status".into(), "Chain"),
+            (format!("job {id12}"), "Job info"),
             ("jobs".into(), "Jobs"),
             (format!("job show {id12}"), "Job info"),
             ("blocks 3".into(), "Blocks"),
             ("activity".into(), "Activity"),
             ("agent".into(), "Agent"),
             ("lien show".into(), "Payout lien"),
-            (format!("tx {}", "ef".repeat(32)), "Transaction"),
+            (format!("tx {}", "ef".repeat(32)), "Transaction: Transfer"),
             ("bridge status".into(), "Bridge status"),
             ("mine status".into(), "Mining"),
             (format!("send {} 1.5", crate::stub::OTHER), "Transfer"),

@@ -21,6 +21,10 @@ pub type Pubkey = [u8; 32];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Network {
     Devnet,
+    /// The demo stack on the test box (localnet program ids, node on 127.0.0.1; only its
+    /// cadre-api is public). Run the CLI on that box.
+    Testbox,
+    #[value(alias = "local")]
     Localnet,
 }
 
@@ -58,7 +62,7 @@ impl Network {
     pub fn profile(self) -> &'static Profile {
         match self {
             Network::Devnet => &DEVNET,
-            Network::Localnet => &LOCALNET,
+            Network::Testbox | Network::Localnet => &LOCALNET,
         }
     }
 }
@@ -85,6 +89,7 @@ pub fn storefront_program() -> Pubkey {
 }
 
 /// token/programs/reserve `declare_id!` of the active network.
+#[allow(dead_code)]
 pub fn reserve_program() -> Pubkey {
     pk(profile().reserve)
 }

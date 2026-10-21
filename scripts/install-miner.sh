@@ -18,6 +18,8 @@
 #   --no-linger      do not enable lingering (CADRE_NO_LINGER=1); by default the service keeps
 #                    running after logout when `sudo -n` works (root or passwordless sudo),
 #                    otherwise the command is printed
+#   --cli            also build the Cadre CLI (CADRE_CLI=1): bin/cadre (and bin/pearl, the same
+#                    program), `cadre` = health of every component, `cadre --help` for the rest
 #   --dry-run        show every step and command, change nothing (CADRE_DRY_RUN=1)
 #   -h, --help
 # Source (one of):
@@ -45,6 +47,7 @@ main() {
   DRY="${CADRE_DRY_RUN:-0}"
   NO_SERVICE="${CADRE_NO_SERVICE:-0}"
   NO_LINGER="${CADRE_NO_LINGER:-0}"
+  WITH_CLI="${CADRE_CLI:-0}"
   local opt_rpc="${CADRE_RPC:-}" opt_pool="${CADRE_POOL:-}" opt_threads="${CADRE_THREADS:-}" opt_solo=0
 
   while [[ $# -gt 0 ]]; do
@@ -58,6 +61,7 @@ main() {
       --threads=*) opt_threads="${1#*=}"; shift ;;
       --no-service) NO_SERVICE=1; shift ;;
       --no-linger) NO_LINGER=1; shift ;;
+      --cli) WITH_CLI=1; shift ;;
       --dry-run) DRY=1; shift ;;
       -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//' || true; [[ -f "${BASH_SOURCE[0]:-}" ]] || echo "see the header of install-miner.sh"; exit 0 ;;
       *) die "unknown option: $1" "run with --help for the list" ;;
@@ -72,6 +76,7 @@ main() {
   KEY="$CADRE_HOME/miner-key.json"; RUNNER="$BIN/cadre-miner"
   TARGET="${CARGO_TARGET_DIR:-$CADRE_HOME/target}"
   T0=$(date +%s); STEP=0; NSTEPS=8
+  [[ $WITH_CLI == 1 ]] && NSTEPS=$((NSTEPS + 1))
   [[ $DRY == 1 ]] && echo "Dry run: nothing will be changed."
 
   step "Checking the system"
@@ -88,6 +93,11 @@ main() {
 
   step "Building pearl-miner (release; first build takes a few minutes)"
   build_miner
+
+  if [[ $WITH_CLI == 1 ]]; then
+    step "Building the Cadre CLI (cadre)"
+    build_cli
+  fi
 
   step "Payout key"
   make_key
@@ -260,6 +270,22 @@ build_miner() {
   cp "$TARGET/release/pearl-miner" "$BIN/.pearl-miner.new" && chmod 755 "$BIN/.pearl-miner.new" && mv -f "$BIN/.pearl-miner.new" "$BIN/pearl-miner"
   ok "built in $(( $(date +%s) - bt0 )) s: $BIN/pearl-miner"
   "$BIN/pearl-miner" --help >/dev/null || die "the built binary does not run" "remove $TARGET and run again"
+}
+
+# The CLI is its own Cargo workspace (crates/pearl-cli, Rust $TOOLCHAIN, its own Cargo.lock).
+build_cli() {
+  local bt0; bt0=$(date +%s)
+  info "cargo +$TOOLCHAIN build --release --bins in crates/pearl-cli (target dir $TARGET/cli)"
+  if [[ $DRY == 1 ]]; then run "install $TARGET/cli/release/cadre and pearl to $BIN"; return; fi
+  (cd "$SRC/crates/pearl-cli" && CARGO_TARGET_DIR="$TARGET/cli" cargo +"$TOOLCHAIN" build --release --locked -q --bins) \
+    || die "the CLI build failed (errors above)" "the miner is installed; retry with --cli later, or set CARGO_BUILD_JOBS=1 on a small box"
+  mkdir -p "$BIN"
+  local b
+  for b in cadre pearl; do
+    cp "$TARGET/cli/release/$b" "$BIN/.$b.new" && chmod 755 "$BIN/.$b.new" && mv -f "$BIN/.$b.new" "$BIN/$b"
+  done
+  ok "built in $(( $(date +%s) - bt0 )) s: $BIN/cadre (try: $BIN/cadre, $BIN/cadre ping api)"
+  "$BIN/cadre" --version >/dev/null || die "the built CLI does not run" "remove $TARGET/cli and run again"
 }
 
 # ---------- 6. key ----------
