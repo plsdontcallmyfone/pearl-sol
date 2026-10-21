@@ -1,5 +1,6 @@
 // The house swarm (docs/ECOSYSTEM.md 2.6, M1.4). One tick at a time:
 //   kill switch -> budget day roll -> bootstrap step (fund, link, profile) -> backoff checks
+//   -> DMs (src/dms.ts: paid DMs with an open escrow > other DMs; before anything below)
 //   -> prepaid balance top-up when low -> pick a due agent -> its action (reply to a mention >
 //   original post > react / follow), every action preceded by a paid inference call (a
 //   "thought", wallet-signed by the operator key) -> filter -> chain tx.
@@ -13,6 +14,7 @@ import { b58encode, key32 } from "./b58.ts";
 import { Budget, type BudgetConfig, type BudgetState } from "./budget.ts";
 import { type Body, FLAG, feeFor, REACTION, signTx } from "./chaintx.ts";
 import { type CadreApi, type Gateway, type NodeRpc, RpcError } from "./clients.ts";
+import { type DmConfig, Dms } from "./dms.ts";
 import { checkOutput, isYes } from "./filter.ts";
 import { paymentHeader, type Requirement } from "./pay.ts";
 import { isQuiet, type Persona } from "./personas.ts";
@@ -37,6 +39,7 @@ export interface SwarmConfig {
   followShare: number; // share that are follows
   replyShare: number; // share that join a conversation (reply to someone else's post)
   solRpc?: string;
+  dm?: DmConfig; // DM answering (src/dms.ts); absent = off
 }
 
 export interface Agent { persona: Persona; wallet: Wallet }
@@ -56,6 +59,7 @@ interface AgentState {
   reacted: string[];
   followed: string[];
   counters: Record<string, number>;
+  dm?: unknown; // src/dms.ts per-agent DM state
 }
 
 interface State {
@@ -63,6 +67,7 @@ interface State {
   agents: Record<string, AgentState>;
   backoffUntil?: number;
   backoffMs?: number;
+  dm?: unknown; // src/dms.ts swarm-wide DM state
 }
 
 export interface Deps {
@@ -103,6 +108,7 @@ export class Swarm {
   rowsFree = -1;
   stopped = false;
   lastError: string | null = null;
+  dms: Dms | null = null;
 
   constructor(cfg: SwarmConfig, deps: Deps, operator: Wallet, agents: Agent[]) {
     this.cfg = cfg;
@@ -114,6 +120,12 @@ export class Swarm {
     for (const a of agents) this.st.agents[a.persona.handle] ??= { memory: [], answered: [], reacted: [], followed: [], counters: {} };
     const weights = Object.fromEntries(agents.map((a) => [a.persona.handle, 1 / Math.max(1, a.persona.cadenceMin)]));
     this.budget = new Budget(cfg.budget, weights, this.st.budget, deps.now());
+    if (cfg.dm) this.dms = new Dms(this, cfg.dm);
+  }
+
+  /** May this agent answer DMs? (user agents: their spec's actions.reply) */
+  dmAllowed(_a: Agent): boolean {
+    return !!this.cfg.dm?.enabled;
   }
 
   ag(a: Agent): AgentState {
@@ -417,6 +429,13 @@ export class Swarm {
         this.backoff(`mempool ${mp.size} > ${this.cfg.mempoolMax}`);
         return "backoff";
       }
+      if (this.dms) {
+        const r = await this.dms.step();
+        if (r) {
+          this.st.backoffMs = 15_000;
+          return r;
+        }
+      }
       const due = this.dueAgents(now);
       if (!due.length) return ready ? "idle" : "bootstrap";
       if (!(await this.ensureBalance())) return "no_balance";
@@ -543,6 +562,7 @@ export class Swarm {
         topup_lamports: this.budget.st.topupLamports, topup_lamports_per_day: this.cfg.budget.topupLamportsPerDay.toString(),
         transfer_units: this.budget.st.transferUnits, refused: this.budget.st.refused,
       },
+      dms: this.dms?.status() ?? null,
       agents: this.agents.map((a) => {
         const s = this.ag(a);
         return { handle: a.persona.handle, account: a.wallet.address, ready: !!s.profileDone, rows_today: this.budget.st.agentRows[a.persona.handle] ?? 0, rows_cap: this.budget.agentCap(a.persona.handle), next_at: s.nextAt ?? null, counters: s.counters };

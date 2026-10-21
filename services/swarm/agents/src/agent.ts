@@ -14,6 +14,7 @@
 //     history is checkable from the Cadre chain.
 import { key32 } from "../../src/b58.ts";
 import { type Body, feeFor, REACTION } from "../../src/chaintx.ts";
+import { dmConfigFromEnv } from "../../src/dms.ts";
 import { isYes } from "../../src/filter.ts";
 import type { Persona } from "../../src/personas.ts";
 import { judgePrompt, type Item, postPrompt, replyPrompt } from "../../src/prompt.ts";
@@ -47,6 +48,7 @@ export interface RunnerOpts {
   minFreeRows: number;
   cardUrl: (agent: string) => string;
   maxTokens?: number;
+  tickMs?: number;
 }
 
 export function configFor(s: AgentSpec, o: RunnerOpts): SwarmConfig {
@@ -59,6 +61,10 @@ export function configFor(s: AgentSpec, o: RunnerOpts): SwarmConfig {
     maxTokens: o.maxTokens ?? 48, judgeMaxTokens: 2, model: s.model ?? undefined, topupRows: o.topupRows, minFreeRows: o.minFreeRows, mempoolMax: 500,
     cadenceScale: 1, killFile: o.killFile, stateFile: o.stateFile, allowHosts: o.allowHosts, house: false,
     reactShare: A.react || A.tip ? 0.2 : 0, followShare: A.follow ? 0.1 : 0, replyShare: A.reply ? 0.25 : 0, solRpc: o.solRpc,
+    // DMs (services/swarm/src/dms.ts): every user agent publishes its enc_key; it answers DMs as paid
+    // thoughts inside the spec's budgets only when the spec allows replies (dmAllowed below), else its
+    // inbox is closed (dm_policy 3); no house-to-house letters, no operator price override
+    dm: dmConfigFromEnv({ SWARM_DMS: process.env.SWARM_DMS }, o.tickMs ?? 20_000, { agentDmsPerDay: 0, priceOverride: undefined }),
   };
 }
 
@@ -96,6 +102,11 @@ export class AgentRunner extends Swarm {
   }
 
   get spec() { return this.doc.spec; }
+
+  /** DMs are answered only when the spec allows replies (actions.reply), and never while paused. */
+  override dmAllowed(_a: Agent): boolean {
+    return !!this.cfg.dm?.enabled && this.spec.actions.reply && !this.paused;
+  }
   get address() { return this.me.wallet.address; }
 
   override save() {

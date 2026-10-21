@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { CadreApi, Gateway, latestBlockhash, NodeRpc } from "./clients.ts";
+import { dmConfigFromEnv } from "./dms.ts";
 import { PERSONAS } from "./personas.ts";
 import { type Agent, Swarm, type SwarmConfig } from "./swarm.ts";
 import { createKeyFile, loadWallet } from "./wallet.ts";
@@ -43,6 +44,7 @@ export function configFromEnv(): SwarmConfig {
     followShare: num("SWARM_FOLLOW_SHARE", 0.1),
     replyShare: num("SWARM_REPLY_SHARE", 0.25),
     solRpc: env.SOLANA_RPC,
+    dm: dmConfigFromEnv(env, num("SWARM_TICK_MS", 20_000)),
   };
 }
 
