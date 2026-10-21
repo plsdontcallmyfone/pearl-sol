@@ -1,6 +1,6 @@
 //! Request authentication (SPEC 5.4): wallet-signed headers or a wallet-bound API key.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use anyhow::{anyhow, bail, ensure, Result};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -32,13 +32,31 @@ pub struct ApiKey {
     pub last_used_ms: Option<u64>,
 }
 
+/// When this process loaded its keys (unix ms). The replay guard lives in memory only, so a
+/// signed request is accepted only if it was signed after the gateway started: a request
+/// captured before a restart cannot be replayed into the fresh guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootMs(pub u64);
+
+impl Default for BootMs {
+    fn default() -> Self {
+        BootMs(crate::now_ms())
+    }
+}
+
 /// API keys (stored as sha256 of the key) and the replay guard for signatures.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Keys {
     /// sha256(api key) hex -> key record.
     pub keys: BTreeMap<String, ApiKey>,
+    /// Signatures seen in the last 2 x MAX_SKEW_MS, oldest first (expiry order) ...
     #[serde(skip)]
     pub seen: VecDeque<(u64, String)>,
+    /// ... and the same signatures as a set (constant-time replay lookups).
+    #[serde(skip)]
+    pub seen_set: HashSet<String>,
+    #[serde(skip)]
+    pub boot_ms: BootMs,
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -83,14 +101,18 @@ impl Keys {
         let wallet = parse_wallet(w)?;
         let ts: u64 = ts.trim().parse().map_err(|_| anyhow!("X-Cadre-Timestamp must be unix milliseconds"))?;
         ensure!(ts.abs_diff(now_ms) <= MAX_SKEW_MS, "X-Cadre-Timestamp is more than 120 s from the gateway clock");
+        ensure!(ts >= self.boot_ms.0, "X-Cadre-Timestamp is before the gateway started; sign the request again");
         let sig: [u8; 64] = hex::decode(sig.trim()).ok().and_then(|v| v.try_into().ok()).ok_or_else(|| anyhow!("X-Cadre-Signature must be 64 bytes hex"))?;
         let vk = VerifyingKey::from_bytes(&wallet).map_err(|_| anyhow!("X-Cadre-Wallet is not an ed25519 key"))?;
         vk.verify_strict(&auth_message(method, path, ts, body), &Signature::from_bytes(&sig)).map_err(|_| anyhow!("bad X-Cadre-Signature"))?;
         let sh = hex::encode(sig);
         while self.seen.front().is_some_and(|(t, _)| *t + 2 * MAX_SKEW_MS < now_ms) {
-            self.seen.pop_front();
+            if let Some((_, old)) = self.seen.pop_front() {
+                self.seen_set.remove(&old);
+            }
         }
-        ensure!(!self.seen.iter().any(|(_, s)| *s == sh), "this signature was already used");
+        ensure!(!self.seen_set.contains(&sh), "this signature was already used");
+        self.seen_set.insert(sh.clone());
         self.seen.push_back((now_ms, sh));
         Ok(Auth::Wallet(wallet))
     }
