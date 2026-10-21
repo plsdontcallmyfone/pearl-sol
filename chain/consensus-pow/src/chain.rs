@@ -132,6 +132,10 @@ pub struct Template {
 const MTP_SPAN: usize = 11;
 const MAX_ORPHANS: usize = 4096;
 const MAX_HEADERS_ONLY: usize = 16384;
+/// Newest jobs an auto-choice block template looks at (node policy, not consensus). It must
+/// exceed the open jobs of the busiest moment: one 8B round alone is 640 segment jobs, and at
+/// 512 the oldest segments of a round were never offered (scripts/serve8b run, 2026-10-21).
+pub const TEMPLATE_JOB_SCAN: u64 = 4096;
 
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
@@ -1129,7 +1133,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 Some(j)
             }
             JobChoice::Auto => {
-                let mut jobs = self.mineable_jobs_at(&parent, 512).await?;
+                let mut jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
                 jobs.retain(|j| available(j));
                 jobs.sort_by(|a, b| b.cap_remaining.cmp(&a.cap_remaining).then(a.index.cmp(&b.index)));
                 jobs.into_iter().next()

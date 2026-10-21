@@ -731,3 +731,33 @@ fn finality_jump_then_build_on_top() {
         extend(&mut c, tip, 3, 9, &mut now).await;
     });
 }
+
+/// An 8B round posts 640 segment jobs at once (SPEC 4.5). An auto-choice template looks at the
+/// newest TEMPLATE_JOB_SCAN jobs; at 512 the oldest jobs of a 700-job backlog were never offered
+/// (scripts/serve8b run, 2026-10-21: 83 of 640 segments sat unmined while the miner mined
+/// fallback blocks). Here job 0 of 700 is the only one with data: it is offered.
+#[test]
+fn template_offers_the_oldest_of_700_open_jobs() {
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(5), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let b = mine_on(&c, g, 9, &[unlock(200, 0, 1, pk(2), 10_000_000)], now).await;
+        add(&mut c, b, now).await;
+        let uri = format!("blob:{}", "ab".repeat(32));
+        for chunk in 0..7u64 {
+            now += 1000;
+            let txs: Vec<Tx> = (chunk * 100..chunk * 100 + 100)
+                .map(|n| Tx::signed(&seed(2), CHAIN, n, 10, TxBody::PostJob(mock_job_body(uri.as_bytes(), 5_000_000))))
+                .collect();
+            let b = mine_on(&c, c.tip().hash, 9, &txs, now).await;
+            add(&mut c, b, now).await;
+        }
+        now += 1000;
+        let oldest = schema::job_id_for_post(&pk(2), 0);
+        let only_oldest = move |j: &schema::JobRecord| j.job_id == oldest;
+        assert!(consensus_pow::chain::TEMPLATE_JOB_SCAN >= 700);
+        let t = c.build_template_filtered(c.tip().hash, pk(9), JobChoice::Auto, &[], now, &only_oldest).await.unwrap();
+        assert_eq!(t.header.job_id, oldest, "the oldest open job is offered");
+    });
+}

@@ -446,6 +446,11 @@ ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_
   lamports fee, 90.9k-103.6k CU, 973-1,006 bytes) plus a 313-byte JobCommit account (2,240,280
   lamports rent, never closed): 0.0022 SOL per segment, 0.32 SOL per 1B round of 144 and 1.44
   SOL per 8B round of 640, all of it whether or not the segment was ever mined.
+- Block templates offer a segment only if the node's auto choice sees it: the template scans
+  the newest `TEMPLATE_JOB_SCAN = 4096` jobs (node policy in chain/consensus-pow, not consensus;
+  was 512). At 512 the oldest segments of an 8B round were never offered once 640 newer-or-equal
+  jobs were open (found in the scripts/serve8b run: 83 of 640 stayed unmined until the nodes
+  ran 4096). Nodes that serve an 8B need this build; a lower value only delays those segments.
 - Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
   The server serves requests off chain against the ticket's row budget R and posts their GEMMs
   in rounds: round r stacks the rows of every request served in that period (each request's
@@ -966,6 +971,12 @@ relay services/header-relay):
   latest deadline of the jobs they posted (getJob `deadline_height`; one header record, 0.0042
   SOL refundable, per posting block, not per job), and a posting header closed anyway (by an
   older relay) is restored from the accumulator (`restore_header`) before the bind.
+  End to end (2026-10-21, scripts/serve8b on the test box, a synthetic model in the Llama-3.1-8B
+  shape: 640 matrices at the real k = 2048, n = 8 instead of the real 2,048-8,016, so B is 10.5
+  MB, not 7.5 GB): one paid round of 640 segments posted, mined and settled, the Order finalized
+  by proof; the light client verified all 641 job blocks of the run with `begin_verify_job`
+  (87.8k CU average), no register_job and no JobCommit account, 0 failed txs, relay lag at most
+  21 blocks (TEST-REPORT "Serve the 8B").
 - `bridge.release_proof`: Commonware MMR proof of the withdrawal entry against
   withdraw_root of a final header; `set_release_modes` = signers, proof or both.
 - `storefront.finalize_order_proof` / `expire_order_proof`: inclusion of the
