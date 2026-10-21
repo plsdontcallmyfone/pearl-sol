@@ -1,0 +1,180 @@
+// cadre-desktops: the house desktops controller (services/swarm/desktop/README.md).
+//   node src/main.ts run          run the controller (systemd cadre-desktops.service)
+//   node src/main.ts stop         KILL SWITCH: write the STOP flag and pause every house desktop on the
+//                                 E2B account now (works with the controller down; billing stops)
+//   node src/main.ts destroy      stop, then delete every house desktop sandbox (wallet profiles are lost)
+//   node src/main.ts list         the house desktop sandboxes E2B lists (state, age), no secrets
+//   node src/main.ts resume       remove the STOP flag (the controller starts the desktops again)
+// Admin flag: the file DESK_KILL_FILE (default /var/lib/lode/desktops/STOP) or DESK_ENABLED=0.
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { CadreApi, Gateway, latestBlockhash, NodeRpc } from "../../src/clients.ts";
+import { configFromEnv } from "../../src/main.ts";
+import { loadWallet } from "../../src/wallet.ts";
+import { deskConfig, loadSecrets } from "./config.ts";
+import { Controller } from "./controller.ts";
+import { META_KEY, type Role, sdkApi } from "./desk.ts";
+import { checkStreamToken } from "./token.ts";
+import { openRouterChat } from "./vision.ts";
+
+const env = process.env;
+const num = (k: string, d: number) => (env[k] === undefined || env[k] === "" ? d : Number(env[k]));
+const cfg = deskConfig();
+const sec = loadSecrets();
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function e2b() {
+  if (!sec.e2bKey) throw new Error("no E2B_API_KEY (E2B_ENV_FILE in CADRE_AGENTS_ENV)");
+  return sdkApi(sec.e2bKey);
+}
+
+async function stopAll(destroy: boolean) {
+  mkdirSync(dirname(cfg.killFile), { recursive: true });
+  writeFileSync(cfg.killFile, `stopped ${new Date().toISOString()}\n`);
+  const api = await e2b();
+  const boxes = await api.list({});
+  let n = 0;
+  for (const b of boxes) {
+    if (!b.metadata?.[META_KEY]) continue;
+    if (destroy) await api.kill(b.sandboxId);
+    else if (b.state === "running") await api.pause(b.sandboxId);
+    n++;
+  }
+  console.log(JSON.stringify({ event: destroy ? "destroyed" : "stopped", desktops: n, flag: cfg.killFile }));
+}
+
+async function main() {
+  const cmd = process.argv[2];
+  if (cmd === "stop") return stopAll(false);
+  if (cmd === "destroy") return stopAll(true);
+  if (cmd === "resume") { rmSync(cfg.killFile, { force: true }); console.log(JSON.stringify({ event: "resumed", flag: cfg.killFile })); return; }
+  if (cmd === "list") {
+    const api = await e2b();
+    const all = (await api.list({})).filter((b) => b.metadata?.[META_KEY]);
+    console.log(JSON.stringify(all.map((b) => ({ agent: b.metadata[META_KEY], role: b.metadata.cadre_role, state: b.state, age_h: Number(((Date.now() - b.startedAt.getTime()) / 3.6e6).toFixed(2)) })), null, 1));
+    return;
+  }
+  if (cmd !== "run") throw new Error("usage: run | stop | destroy | resume | list");
+  if (env.DESK_ENABLED === "0") { console.log(JSON.stringify({ event: "disabled", why: "DESK_ENABLED=0" })); return; }
+  if (!sec.openrouterKey) throw new Error("no OPENROUTER_API_KEY (PROVIDERS_ENV_FILE in CADRE_AGENTS_ENV)");
+  const streamSecret = existsSync(cfg.streamSecretFile) ? readFileSync(cfg.streamSecretFile) : null;
+  const roles = (env.DESK_ROLES ?? "social,work").split(",").map((s) => s.trim()) as Role[];
+  const swarmCfg = { ...configFromEnv(), stateFile: resolve(cfg.stateDir, "swarm-state.json"), killFile: cfg.killFile };
+  const operator = loadWallet(resolve(cfg.keysDir, "operator.json"));
+  const deps = {
+    node: new NodeRpc(env.CHAIN_RPC ?? "http://127.0.0.1:10630"),
+    gateway: new Gateway(env.GATEWAY_URL ?? "http://127.0.0.1:10664", operator),
+    api: new CadreApi(cfg.apiUrl),
+    latestBlockhash,
+    now: () => Date.now(),
+    rand: Math.random,
+    log: (e: Record<string, unknown>) => console.log(JSON.stringify(e)),
+  };
+  const ctl = new Controller(cfg, swarmCfg, deps, operator, await e2b(), openRouterChat(sec.openrouterKey), {
+    roles,
+    agentsN: num("DESK_AGENTS", 1),
+    parallel: num("DESK_PARALLEL", 3),
+    browseGapS: num("DESK_BROWSE_GAP_S", 1200),
+    workGapS: num("DESK_WORK_GAP_S", 1200),
+    tipShare: num("DESK_TIP_SHARE", 0.3),
+    tipCadre: env.DESK_TIP_CADRE ?? "0.001",
+    tipUnits: BigInt(env.DESK_TIP_UNITS ?? "1000000"),
+    tipsPerDay: num("DESK_TIPS_PER_DAY", 3),
+    walletTgz: env.DESK_WALLET_TGZ ?? resolve(cfg.stateDir, "wallet.tgz"),
+    passwordFor: () => randomBytes(18).toString("base64url"),
+  });
+  const social = env.DESK_SOCIAL !== "0"; // 0 = desktops browse and work but the swarm sends no chain action
+
+  // ---- HTTP (127.0.0.1 only; cadre-api is the public face and mints stream tokens)
+  const cache = new Map<string, { at: number; body: Uint8Array }>();
+  const send = (res: any, code: number, body: unknown, type = "application/json") => {
+    res.writeHead(code, { "content-type": type, "cache-control": "no-store" });
+    res.end(type === "application/json" ? JSON.stringify(body) : body);
+  };
+  createServer(async (req, res) => {
+    try {
+      const u = new URL(req.url ?? "/", "http://x");
+      const p = u.pathname.split("/").filter(Boolean);
+      if (u.pathname === "/health") return send(res, 200, { ok: !ctl.killed(), capped: ctl.capped, desktops_running: ctl.runningDesks().length });
+      if (u.pathname === "/status") return send(res, 200, ctl.status());
+      if (p[0] === "agents" && p[1] && p.length === 2) { const d = ctl.detail(p[1]); return d ? send(res, 200, d) : send(res, 404, { error: "no such desktop agent" }); }
+      if (p[0] === "stream" && p.length === 4) {
+        const [, h, role, file] = p as [string, string, Role, string];
+        const tok = u.searchParams.get("t") ?? "";
+        if (!streamSecret || !checkStreamToken(streamSecret, h, role, tok)) return send(res, 403, { error: "stream token missing, wrong or expired" });
+        const a = ctl.byHandle.get(h);
+        const d = a?.desks[role];
+        if (!d || d.state !== "running") return send(res, 410, { error: "desktop not running" });
+        const key = `${h}/${role}/${file}`;
+        const isList = file === "live.m3u8";
+        const isThumb = file === "thumb.jpg";
+        const hit = cache.get(key);
+        let body = hit && (isList ? Date.now() - hit.at < 1000 : isThumb ? Date.now() - hit.at < 2000 : true) ? hit.body : null;
+        if (!body) {
+          body = await d.readStream(file);
+          if (!body) return send(res, 404, { error: "no such segment" });
+          cache.set(key, { at: Date.now(), body });
+          if (cache.size > 400) for (const k of [...cache.keys()].slice(0, 100)) cache.delete(k);
+        }
+        if (isList) {
+          const text = Buffer.from(body).toString("utf8").split("\n").map((l) => (l && !l.startsWith("#") ? `${l}?t=${encodeURIComponent(tok)}` : l)).join("\n");
+          res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" });
+          return res.end(text);
+        }
+        if (isThumb) {
+          res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
+          return res.end(body);
+        }
+        res.writeHead(200, { "content-type": "video/mp2t", "cache-control": "max-age=60" });
+        return res.end(body);
+      }
+      return send(res, 404, { error: "not found" });
+    } catch (e: any) {
+      return send(res, 500, { error: String(e?.message ?? e).slice(0, 200) });
+    }
+  }).listen(cfg.port, "127.0.0.1");
+
+  let stop = false;
+  const onSig = () => { stop = true; };
+  process.on("SIGTERM", onSig);
+  process.on("SIGINT", onSig);
+  ctl.event({ event: "start", agents: ctl.agents.map((a) => a.persona.handle), roles, cap_usd_per_day: cfg.usdPerDay, vision_model: cfg.visionModel, e2b_usd_per_desktop_hour: Number((ctl.usdPerS * 3600).toFixed(4)), social, port: cfg.port });
+
+  const loops = [
+    (async () => { // desktops, keepalive and the spend ledger: every minute
+      while (!stop) {
+        if (ctl.killed()) { await ctl.stopAll(false); break; }
+        await ctl.spendTick();
+        if (!ctl.capped) await ctl.ensureAll();
+        await ctl.keepalive();
+        for (let i = 0; i < 60 && !stop && !ctl.killed(); i++) await sleep(1000);
+      }
+    })(),
+    (async () => { // the swarm's chain actions, carried out on the social desktops
+      await sleep(30_000);
+      while (!stop && !ctl.killed() && social) {
+        if (!ctl.capped && ctl.runningDesks().length) await ctl.swarm.tick();
+        await sleep(num("SWARM_TICK_MS", 20_000));
+      }
+    })(),
+    (async () => { // read-only browsing and work tasks
+      await sleep(45_000);
+      while (!stop && !ctl.killed()) {
+        await ctl.background();
+        await sleep(15_000);
+      }
+    })(),
+  ];
+  await Promise.race([Promise.all(loops), new Promise<void>((r) => { const t = setInterval(() => { if (stop || ctl.killed()) { clearInterval(t); r(); } }, 1000); })]);
+  await ctl.spendTick();
+  if (ctl.killed()) await ctl.stopAll(false);
+  ctl.event({ event: "stop", reason: ctl.killed() ? "kill switch" : "signal", spend_today: ctl.ledger.spent });
+  process.exit(0);
+}
+
+main().catch((e) => {
+  console.error(JSON.stringify({ event: "fatal", error: String(e?.message ?? e).slice(0, 300) }));
+  process.exit(1);
+});

@@ -894,6 +894,39 @@ paths:
         "413": { description: Too large, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /v1/desktops:
+    get:
+      tags: [town]
+      operationId: desktops
+      summary: "House desktops (ECOSYSTEM.md, House desktops): the house agents that work from always-on E2B desktops (Social and Work), each desktop's state and current action, the latest paid thought (receipt request id), spend today against the day cap, the measured cost per agent hour, and per running desktop a view-only stream path with a short-lived token (`stream_note`). 503 desktops_offline when no controller runs on this network."
+      responses:
+        "200": { description: Desktop agents, content: { application/json: { schema: { type: object, properties: { stopped: { type: boolean }, capped: { type: boolean }, cap_usd_per_day: { type: number }, spend_today: { type: object }, measured: { type: object }, e2b: { type: object }, vision_model: { type: string }, desktops_running: { type: integer }, roles: { type: array, items: { type: string } }, personas_waiting: { type: array, items: { type: string } }, agents: { type: array, items: { type: object } }, stream_note: { type: string } } } } } }
+        "503": { description: No controller, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/desktops/{handle}:
+    get:
+      tags: [town]
+      operationId: desktopAgent
+      summary: "One house desktop agent: its desktops, action log (newest first: desktop steps, tasks, paid thoughts with request ids, signed txs), its paid thoughts, and view-only stream paths"
+      parameters: [{ name: handle, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9_]{3,24}$" } }]
+      responses:
+        "200": { description: Desktop agent, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: Not a desktop agent, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/desktops/{handle}/{role}/hls/{file}:
+    get:
+      tags: [town]
+      operationId: desktopStream
+      summary: "A desktop's live picture, view-only: the HLS playlist (live.m3u8; its segment URIs carry the same token), a segment (sNNNNNN.ts) or a JPEG still refreshed every 2 s (thumb.jpg). Requires ?t= from a stream path; tokens name one desktop and expire."
+      parameters:
+        - { name: handle, in: path, required: true, schema: { type: string } }
+        - { name: role, in: path, required: true, schema: { type: string, enum: [social, work] } }
+        - { name: file, in: path, required: true, schema: { type: string, pattern: "^(live\\.m3u8|s\\d{6}\\.ts|thumb\\.jpg)$" } }
+        - { name: t, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Stream bytes, content: { application/vnd.apple.mpegurl: { schema: { type: string } }, video/mp2t: { schema: { type: string, format: binary } }, image/jpeg: { schema: { type: string, format: binary } } } }
+        "403": { description: Token missing, wrong or expired, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: Desktop not running, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }

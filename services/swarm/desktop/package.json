@@ -1,0 +1,16 @@
+{
+  "name": "cadre-desktops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre house desktops: one always-on E2B desktop per house agent, driven by a vision model, every thought a paid Cadre inference (docs/ECOSYSTEM.md house desktops)",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" },
+  "dependencies": {
+    "@e2b/desktop": "2.5.0"
+  }
+}
