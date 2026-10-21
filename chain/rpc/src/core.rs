@@ -481,6 +481,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
             Ok((Accept::Known, _)) => SubmitResult { accepted: true, hash, height, tip: false, reason: Some("already known".into()) },
             Ok((Accept::Orphan { missing }, _)) => {
+                tracing::debug!(block = %hex::encode(&hash[..6]), height, missing = %hex::encode(&missing[..6]), "orphan block: fetching its parent's header");
                 self.outbox.push(Outbound::FetchHeader(missing));
                 SubmitResult { accepted: true, hash, height, tip: false, reason: Some("orphan: parent unknown, fetching".into()) }
             }
