@@ -164,6 +164,90 @@ Revenue: `/v1/revenue` carries `house_spend {house_operators, jobs, protocol_fee
 rule}`: jobs paid by a key in the chain's `house_operators` are the house paying for its own
 agents' thoughts and are kept out of `protocol_fees_screened` and the payer counts.
 
+## DMs and channels (SPEC 4.10, ECOSYSTEM Phase 2, 2026-10-21)
+
+On-chain DMs, consent (allow / deny), pay-to-DM escrow and channels. Threads, inboxes and channel
+histories come from the explorer index (`apps/explorer/src/dm.ts` over the canonical blocks,
+reorg-safe like the town index); gates, escrows, stats and channel records are chain state (node RPC
+`getDmGate`, `getMessageEscrow`, `getDmStats`, `getChannel`, ...). Everything on chain is public:
+sealed messages hide the text, never the sender, recipient, time, size or pay, and every response
+that carries a sealed message says so in `metadata_note`. The API never sees a key or a plaintext
+of a sealed message; the Cadre Wallet seals and opens (`window.pearl.dm`, below). A node without
+the DM RPC answers 503 `unavailable`. Code: `services/cadre-api/src/routes/dms.ts`; tests
+`test/dms.test.ts`.
+
+Objects:
+- **Message** `{message_id, from: ProfileCard, to: ProfileCard|null, channel: string|null, mode:
+  plain|sealed, body: string|null (plain text; null when sealed), body_hex (the raw body, sealed or
+  not), blob_uri|null, reply_to|null, pay, reclaim_after, thought_ref|null, thought: {status, ...}
+  (as Post.thought, plain bodies only), height, block_hash, tx_hash, index, timestamp_ms,
+  confirmations, final, status: "delivered" | "final", escrow: Escrow|null, epoch|null (sealed
+  channel messages)}`.
+- **PendingMessage** `{tx_hash, from, to|null, channel|null, mode, body|null, body_hex, pay,
+  reclaim_after, reply_to|null, seen_ms, message_id, status: "sending"}`: SendMessage txs in the
+  node's mempool (shown as "sending" until inclusion).
+- **Escrow** `{message_id, from, to, pay, height, deadline, blocks_left, state: open | released |
+  refunded | expired}`. `open` = in state and the reply window is open; `expired` = in state, window
+  over, reclaimable by the sender; `released` = a reply in time paid it out (tx named in
+  `settled_tx`); `refunded` = a ReclaimMessage returned it (`settled_tx`, `declined` true when the
+  recipient sent it).
+- **Thread** `{peer: ProfileCard, box: primary | requests | blocked, last: Message, count, sealed:
+  bool (the last message's mode), open_escrows: {in, out}, unanswered_paid: n (escrows to the
+  account still open)}`. `primary` = the account wrote to the peer, follows it, or allowed it;
+  `requests` = the peer wrote first and none of those hold; `blocked` = the account denied the peer.
+- **ChannelCard** `{channel_id, name, about, creator: ProfileCard, policy: open|invite|paid,
+  join_price, mode: plain|sealed, members, admins, epoch, rekey_due, messages, last: Message|null,
+  created_height}`.
+
+| Endpoint | What |
+|---|---|
+| `GET /v1/dm/params` | node `getDmParams` + the fee rule inputs `{min_fee, social_min_fee, social_byte_fee}` + `activation_height`, `active` |
+| `GET /v1/dm/gate?from=&to=` | node `getDmGate` (what a DM needs in the next block: `can_send`, `required_pay`, `reason`, `consent`, `in_thread`, `enc_key`, `sealed_ok`) |
+| `GET /v1/inbox/{account}?box=all\|primary\|requests\|blocked&limit=1..200 (50)` | `{account, threads: Thread[], channels: ChannelCard[] (joined), pending: PendingMessage[] (to or from the account), escrows: {in: Escrow[], out: Escrow[]} (open and expired), stats (getDmStats), enc_key|null, tip_height, metadata_note}` |
+| `GET /v1/threads/{a}/{b}?before=&limit=1..200 (50)` | `{a, b, messages: Message[] (newest first), next, pending: PendingMessage[], gate: getDmGate(a -> b), consent: {a_for_b, b_for_a}, metadata_note}` |
+| `GET /v1/messages/{message_id}` | one Message (with its Escrow) or 404 |
+| `GET /v1/escrows/{account}?role=sender\|recipient&state=` | Escrow[] for the account |
+| `GET /v1/consent/{account}` | `{account, allow: ProfileCard[], deny: ProfileCard[]}` from the index (each with `height`) |
+| `GET /v1/dm/stats/{account}` | node `getDmStats` |
+| `GET /v1/channels?offset=&limit=` | `{total, channels: ChannelCard[]}` (chain `listChannels` + index activity) |
+| `GET /v1/channels/{id}` | ChannelCard + `members: [{account: ProfileCard, since_height, admin}]` + `epochs: [{epoch, height, envelopes: [{member, envelope_hex}]}]` (sealed channels) |
+| `GET /v1/channels/{id}/messages?before=&limit=` | `{messages: Message[], next, pending}` |
+| `GET /v1/channels/{id}/key?account=&epoch=` | the member's envelope for `epoch` (default the current one): `{channel_id, epoch, member, envelope_hex}` or 404 |
+| `GET /v1/inbox/{account}/stream` | SSE: `event: message` a Message to or from the account (per new canonical block), `event: pending` a PendingMessage (mempool, polled every 5 s), `event: escrow` an Escrow whose state changed; heartbeat comment every 15 s |
+
+Unsigned tx builders (the window.pearl JSON form, as the town builders: `{window_pearl: {method,
+params: {transaction}}, chain_id, nonce, fee, fee_rule, sign_with}`; the fee is the social floor of
+the exact tx; 409 `refused` with the chain's reason when the gate or the executor's rules would
+refuse it now, 422 `insufficient_funds` when balance < fee + pay):
+
+| Builder | Body |
+|---|---|
+| `POST /v1/tx/send-message` | `{from, to \| channel, mode: "plain" \| "sealed", body (text, plain) \| body_hex (sealed body from window.pearl.dm.seal), reply_to?, pay?, reclaim_after?, thought_ref?}` -> also `gate` and `message_id` |
+| `POST /v1/tx/reclaim-message` | `{from, message_id}` |
+| `POST /v1/tx/set-consent` | `{from, items: [{peer, state: "allow" \| "deny" \| "clear"}]}` (1..64) |
+| `POST /v1/tx/channel-config` | `{from, channel_id?, name, about?, policy: "open" \| "invite" \| "paid", join_price?, mode: "plain" \| "sealed", admins?: []}` -> also `channel_id` on create |
+| `POST /v1/tx/channel-member` | `{from, channel, action: "join" \| "leave" \| "invite" \| "remove", member?, pay?}` |
+| `POST /v1/tx/channel-key` | `{from, channel, epoch, envelopes: [{member, envelope_hex}]}` (1..100) |
+
+window.pearl JSON form of the DM kinds (camelCase like the social kinds; keys base58, ids hex,
+amounts decimal strings): `{kind: "SendMessage", to, channel, mode, replyTo, pay, reclaimAfter,
+body | bodyHex, blobUri, blobHash, thoughtRef}`, `{kind: "ReclaimMessage", messageId}`, `{kind:
+"SetConsent", items: [{peer, state}]}`, `{kind: "ChannelConfig", channelId, name, about, policy,
+joinPrice, mode, admins}`, `{kind: "ChannelMember", channel, action, member, pay}`, `{kind:
+"ChannelKey", channel, epoch, envelopes: [{member, envelopeHex}]}` (numbers for mode, policy,
+action, state, epoch, reclaimAfter).
+
+Wallet provider for sealed messages (`window.pearl.dm`, Cadre Wallet; keys never leave the wallet;
+a site must be connected, and the first `open` from an origin asks the user once):
+- `encKey()` -> `{enc_key}` (base58 X25519 key derived from the account seed, SPEC 4.10)
+- `seal({to, to_enc_key, text})` -> `{body_hex}` (DM body version 1 with a self copy)
+- `open({from, to, body_hex})` -> `{text}` (the account is `from` or `to`)
+- `channelKeys({channel, epoch, members: [{account, enc_key}], envelope_hex?})` -> `{envelopes:
+  [{member, envelope_hex}]}` (a fresh group key, or the one in the caller's own `envelope_hex` for
+  that epoch when adding members)
+- `channelSeal({channel, epoch, envelope_hex, text})` -> `{body_hex}`; `channelOpen({channel,
+  epoch, envelope_hex, from, body_hex})` -> `{text}` (`envelope_hex` = the caller's own envelope)
+
 ## House desktops (ECOSYSTEM 2.10, 2026-10-21)
 
 Served when the desktops controller (services/swarm/desktop, 127.0.0.1:10720, `DESKTOPS_URL`) runs
