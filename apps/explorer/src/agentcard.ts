@@ -8,7 +8,9 @@
 //
 // Probe rules: http(s) only, a timeout, a size cap, JSON only, and no fetch to loopback,
 // private, link-local or unique-local addresses (checked on the resolved address) unless
-// CARD_ALLOW_PRIVATE=1 (tests, local stacks). A redirect is not followed.
+// CARD_ALLOW_PRIVATE=1 (tests, local stacks). A redirect is not followed. The socket's own
+// DNS lookup re-checks the answer, so a name that rebinds to a private address after the
+// first check is refused too; IPv6 forms that embed an IPv4 address are checked by that IPv4.
 //
 // Env knobs (milliseconds):
 //   CARD_PROBE_MS   600000     re-probe a card at most this often
@@ -18,6 +20,8 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
 
 export const CARD_MAX_BYTES = 64 * 1024;
 
@@ -91,21 +95,95 @@ export function parseCard(v: unknown): Card {
   };
 }
 
-/** True for loopback, private, link-local, CGNAT, unique-local, unspecified and mapped forms of them. */
+/** Parse an IPv6 literal (any textual form, embedded IPv4 allowed) into 16 bytes; null if not IPv6. */
+export function ipv6Bytes(ip: string): number[] | null {
+  if (isIP(ip) !== 6) return null;
+  let s = ip.toLowerCase().replace(/%.*$/, "");
+  let tail: number[] = [];
+  const v4 = s.match(/(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4) {
+    tail = v4[1].split(".").map(Number);
+    s = s.slice(0, -v4[1].length) + "0:0";
+  }
+  const [head, rest] = s.includes("::") ? s.split("::") : [s, null];
+  const hs = head ? head.split(":") : [];
+  const rs = rest === null ? [] : rest ? rest.split(":") : [];
+  const fill = rest === null ? 0 : 8 - hs.length - rs.length;
+  const groups = [...hs, ...Array(fill).fill("0"), ...rs].map((g) => parseInt(g || "0", 16));
+  if (groups.length !== 8 || groups.some((g) => !Number.isFinite(g) || g < 0 || g > 0xffff)) return null;
+  const b = groups.flatMap((g) => [g >> 8, g & 0xff]);
+  if (tail.length) b.splice(12, 4, ...tail);
+  return b;
+}
+
+function privateV4(o: number[]): boolean {
+  const [a, b, c] = o;
+  return (
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT
+    (a === 169 && b === 254) || // link-local, cloud metadata
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) || // IETF protocol assignments, TEST-NET-1
+    (a === 198 && (b === 18 || b === 19)) || // benchmarking
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  );
+}
+
+/**
+ * True for loopback, private, link-local, CGNAT, unique-local, multicast, reserved and
+ * documentation addresses, and for every IPv6 form that carries an IPv4 address inside
+ * (mapped `::ffff:a.b.c.d` in any spelling, compatible `::a.b.c.d`, NAT64 64:ff9b::/96,
+ * 6to4 2002::/16) when the IPv4 inside is one of those. Anything that is not an IP is private.
+ */
 export function isPrivateAddress(ip: string): boolean {
   const v = isIP(ip);
-  if (v === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
-  }
-  if (v === 6) {
-    const l = ip.toLowerCase();
-    if (l === "::" || l === "::1") return true;
-    const m = l.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (m) return isPrivateAddress(m[1]);
-    return /^f[cd]/.test(l) || /^fe[89ab]/.test(l) || /^ff/.test(l);
-  }
-  return true;
+  if (v === 4) return privateV4(ip.split(".").map(Number));
+  if (v !== 6) return true;
+  const b = ipv6Bytes(ip);
+  if (!b) return true;
+  const zero = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
+  if (zero(0, 10) && b[10] === 0xff && b[11] === 0xff) return privateV4(b.slice(12)); // mapped
+  if (zero(0, 12)) return true; // ::, ::1, IPv4-compatible (deprecated): never probed
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b) return zero(4, 12) ? privateV4(b.slice(12)) : true; // NAT64 64:ff9b::/96, local-use 64:ff9b:1::/48
+  if (b[0] === 0x20 && b[1] === 0x02) return privateV4(b.slice(2, 6)); // 6to4
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x00 && b[3] === 0x00) return true; // Teredo
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x0d && b[3] === 0xb8) return true; // documentation
+  if (b[0] === 0x01 && b[1] === 0x00 && zero(2, 8)) return true; // discard-only 100::/64
+  return (b[0] & 0xfe) === 0xfc || (b[0] === 0xfe && (b[1] & 0xc0) !== 0) || b[0] === 0xff; // fc00::/7, fe80::/10 + fec0::/10, multicast
+}
+
+type LookupCb = (err: NodeJS.ErrnoException | null, address: string | { address: string; family: number }[], family?: number) => void;
+
+/** dns.lookup for the socket itself: refuses private answers at connect time (no DNS-rebinding window between check and fetch). */
+export function guardedLookup(hostname: string, options: { all?: boolean } | number | LookupCb, cb?: LookupCb): void {
+  const done = (typeof options === "function" ? options : cb) as LookupCb;
+  const all = typeof options === "object" && options !== null && !!options.all;
+  lookup(hostname, { all: true }).then(
+    (addrs) => {
+      if (addrs.length === 0 || addrs.some((a) => isPrivateAddress(a.address))) {
+        const e = new Error("host resolves to a private or loopback address (not probed)") as NodeJS.ErrnoException;
+        e.code = "EPRIVATE";
+        return done(e, all ? [] : "", 4);
+      }
+      if (all) return done(null, addrs);
+      done(null, addrs[0].address, addrs[0].family);
+    },
+    (e) => done(e, all ? [] : "", 4),
+  );
+}
+
+/** GET `u` over node:http(s), no redirects, the guarded lookup unless private hosts are allowed. */
+function getOnce(u: URL, cfg: { timeoutMs: number; allowPrivate: boolean }): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: AsyncIterable<Buffer>; destroy: () => void }> {
+  return new Promise((resolve, reject) => {
+    const mod = u.protocol === "https:" ? httpsGet : httpGet;
+    const req = mod(u, { headers: { accept: "application/json" }, timeout: cfg.timeoutMs, signal: AbortSignal.timeout(cfg.timeoutMs), ...(cfg.allowPrivate ? {} : { lookup: guardedLookup as any }) }, (res) =>
+      resolve({ status: res.statusCode ?? 0, headers: res.headers, body: res, destroy: () => res.destroy() }),
+    );
+    req.on("timeout", () => req.destroy(Object.assign(new Error("timeout"), { name: "TimeoutError" })));
+    req.on("error", reject);
+  });
 }
 
 /** Fetch and parse one card. Errors are returned as text, never thrown. */
@@ -117,6 +195,7 @@ export async function fetchCard(uri: string, cfg = cardConfig()): Promise<{ ok: 
     return { ok: false, error: "uri is not a URL" };
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return { ok: false, error: `${u.protocol.replace(":", "")} URIs are not probed (http and https only)` };
+  if (u.username || u.password) return { ok: false, error: "URIs with credentials are not probed" };
   if (!cfg.allowPrivate) {
     const host = u.hostname.replace(/^\[|\]$/g, "");
     let addrs: string[];
@@ -128,21 +207,26 @@ export async function fetchCard(uri: string, cfg = cardConfig()): Promise<{ ok: 
     if (addrs.length === 0 || addrs.some(isPrivateAddress)) return { ok: false, error: "host resolves to a private or loopback address (not probed)" };
   }
   try {
-    const r = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(cfg.timeoutMs), headers: { accept: "application/json" } });
-    if (r.status >= 300 && r.status < 400) return { ok: false, error: `redirect (HTTP ${r.status}) not followed` };
-    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
-    const len = Number(r.headers.get("content-length") ?? 0);
-    if (len > CARD_MAX_BYTES) return { ok: false, error: `card larger than ${CARD_MAX_BYTES} bytes` };
-    const reader = r.body?.getReader();
-    if (!reader) return { ok: false, error: "empty body" };
-    const chunks: Uint8Array[] = [];
+    const r = await getOnce(u, cfg);
+    if (r.status >= 300 && r.status < 400) {
+      r.destroy();
+      return { ok: false, error: `redirect (HTTP ${r.status}) not followed` };
+    }
+    if (r.status < 200 || r.status >= 300) {
+      r.destroy();
+      return { ok: false, error: `HTTP ${r.status}` };
+    }
+    const len = Number(r.headers["content-length"] ?? 0);
+    if (len > CARD_MAX_BYTES) {
+      r.destroy();
+      return { ok: false, error: `card larger than ${CARD_MAX_BYTES} bytes` };
+    }
+    const chunks: Buffer[] = [];
     let n = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    for await (const value of r.body) {
       n += value.length;
       if (n > CARD_MAX_BYTES) {
-        await reader.cancel().catch(() => {});
+        r.destroy();
         return { ok: false, error: `card larger than ${CARD_MAX_BYTES} bytes` };
       }
       chunks.push(value);
@@ -155,7 +239,9 @@ export async function fetchCard(uri: string, cfg = cardConfig()): Promise<{ ok: 
     }
     return { ok: true, card: parseCard(v) };
   } catch (e) {
-    const m = (e as Error).name === "TimeoutError" ? `no answer within ${cfg.timeoutMs} ms` : (e as Error).message;
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "EPRIVATE") return { ok: false, error: err.message };
+    const m = err.name === "TimeoutError" || err.name === "AbortError" ? `no answer within ${cfg.timeoutMs} ms` : err.message;
     return { ok: false, error: m };
   }
 }
