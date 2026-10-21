@@ -78,4 +78,13 @@ mod tests {
         assert!(v["txs"][0].get("to_cx").is_none(), "not a 32-byte key");
         assert_eq!(v["evaluators_cx"], json!([cx, cx]));
     }
+    #[test]
+    fn rpc_params_take_cx_lowercase_base58_and_refuse_bad_checksum() {
+        let k = crate::dispatch::parse32("C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7").unwrap();
+        assert_eq!(crate::dispatch::parse32("Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06").unwrap(), k);
+        assert_eq!(crate::dispatch::parse32("Cxa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06").unwrap(), k);
+        let e = crate::dispatch::parse32("CxA38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06").unwrap_err();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("checksum failed"), "{}", e.message);
+    }
 }

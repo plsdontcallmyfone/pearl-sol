@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use agent_types::tx::{Tx, TxBody};
 
-use crate::fmt::{short, sol, spl, tokens};
+use crate::fmt::{cx, cxs, short, sol, spl, tokens};
 use crate::solana::{anchor_disc, b58};
 
 /// One tx in words: a headline, labelled fields and the same as JSON.
@@ -75,78 +75,78 @@ pub fn chain_tx_b64(b64: &str) -> Option<Tx> {
 /// not decode with this build's codec); `params` (getParams) names AdminConfig keys.
 pub fn chain_words(tx: Option<&Tx>, node_kind: &str, from: &str, params: &Value) -> Words {
     let Some(tx) = tx else {
-        return Words::new(node_kind, format!("{node_kind} from {} (this build of the CLI cannot decode the body of this kind yet)", short(from)));
+        return Words::new(node_kind, format!("{node_kind} from {} (this build of the CLI cannot decode the body of this kind yet)", crate::fmt::short_addr(from)));
     };
-    let from = b58(&tx.from);
+    let from = cx(&tx.from);
     let w = match &tx.body {
-        TxBody::Transfer { to, amount } => Words::new("Transfer", format!("{} sent {} to {}", short(&from), cadre(*amount), short(&b58(to)))).f("To", b58(to)).f("Amount", cadre(*amount)),
-        TxBody::RegisterAgent { name, uri } => Words::new("RegisterAgent", format!("{} registered as agent {}", short(&from), quote(name, 64))).f("Name", text(name)).f("Card URI", text(uri)),
+        TxBody::Transfer { to, amount } => Words::new("Transfer", format!("{} sent {} to {}", cxs(&tx.from), cadre(*amount), cxs(to))).f("To", cx(to)).f("Amount", cadre(*amount)),
+        TxBody::RegisterAgent { name, uri } => Words::new("RegisterAgent", format!("{} registered as agent {}", cxs(&tx.from), quote(name, 64))).f("Name", text(name)).f("Card URI", text(uri)),
         TxBody::PostJob(p) => {
             let id = agent_types::blake3_hash(&[&tx.from, &tx.nonce.to_le_bytes()]);
-            Words::new("PostJob", format!("{} posted a {}x{}x{} matmul job paying {} to the worker and {} to the mining pool", short(&from), p.m, p.n, p.k, cadre(p.worker_pay), cadre(p.protocol_fee)))
+            Words::new("PostJob", format!("{} posted a {}x{}x{} matmul job paying {} to the worker and {} to the mining pool", cxs(&tx.from), p.m, p.n, p.k, cadre(p.worker_pay), cadre(p.protocol_fee)))
                 .f("Job id", hx(&id))
                 .f("Worker pay W", cadre(p.worker_pay))
                 .f("Protocol fee P", cadre(p.protocol_fee))
                 .f("Deadline", format!("block {}", p.deadline_height))
                 .f("Max blocks", p.max_blocks.to_string())
-                .f("Evaluators", format!("{} of {}: {}", p.threshold, p.evaluators.len(), p.evaluators.iter().map(|e| short(&b58(e))).collect::<Vec<_>>().join(", ")))
+                .f("Evaluators", format!("{} of {}: {}", p.threshold, p.evaluators.len(), p.evaluators.iter().map(|e| cxs(e)).collect::<Vec<_>>().join(", ")))
                 .f("Data", text(&p.data_uri))
         }
-        TxBody::SubmitResult { job_id, result_hash, uri } => Words::new("SubmitResult", format!("{} delivered a result for job {}", short(&from), short(&hx(job_id)))).f("Job", hx(job_id)).f("Result hash", hx(result_hash)).f("Result URI", text(uri)),
+        TxBody::SubmitResult { job_id, result_hash, uri } => Words::new("SubmitResult", format!("{} delivered a result for job {}", cxs(&tx.from), short(&hx(job_id)))).f("Job", hx(job_id)).f("Result hash", hx(result_hash)).f("Result URI", text(uri)),
         TxBody::CompleteJob { job_id, sigs } => Words::new("CompleteJob", format!("job {} completed with {} evaluator signature{}", short(&hx(job_id)), sigs.len(), if sigs.len() == 1 { "" } else { "s" }))
             .f("Job", hx(job_id))
-            .f("Signed by", sigs.iter().map(|s| short(&b58(&s.pubkey))).collect::<Vec<_>>().join(", ")),
+            .f("Signed by", sigs.iter().map(|s| cxs(&s.pubkey)).collect::<Vec<_>>().join(", ")),
         TxBody::ExpireJob { job_id } => Words::new("ExpireJob", format!("job {} expired (refund to the poster)", short(&hx(job_id)))).f("Job", hx(job_id)),
         TxBody::BridgeUnlock { solana_nonce, recipient, amount_spl, job_order, sigs } => {
             let mut w = Words::new(
                 "BridgeUnlock",
-                format!("Solana deposit #{solana_nonce} unlocked {} to {}{}", cadre_spl(*amount_spl), short(&b58(recipient)), if job_order.is_some() { " as a storefront job order" } else { "" }),
+                format!("Solana deposit #{solana_nonce} unlocked {} to {}{}", cadre_spl(*amount_spl), cxs(recipient), if job_order.is_some() { " as a storefront job order" } else { "" }),
             )
-            .f("Recipient", b58(recipient))
+            .f("Recipient", cx(recipient))
             .f("Amount", cadre_spl(*amount_spl))
             .f("Solana nonce", solana_nonce.to_string())
-            .f("Attested by", sigs.iter().map(|s| short(&b58(&s.pubkey))).collect::<Vec<_>>().join(", "));
+            .f("Attested by", sigs.iter().map(|s| cxs(&s.pubkey)).collect::<Vec<_>>().join(", "));
             if let Some(p) = job_order {
                 w = w.f("Order job", hx(&agent_types::tx::order_job_id(*solana_nonce))).f("Order shape", format!("{}x{}x{}, W {}, P {}", p.m, p.n, p.k, cadre(p.worker_pay), cadre(p.protocol_fee)));
             }
             w
         }
-        TxBody::BridgeLock { solana_recipient, amount } => Words::new("BridgeLock", format!("{} locked {} to bridge out to Solana {}", short(&from), cadre(*amount), short(&b58(solana_recipient)))).f("Solana recipient", b58(solana_recipient)).f("Amount", cadre(*amount)),
+        TxBody::BridgeLock { solana_recipient, amount } => Words::new("BridgeLock", format!("{} locked {} to bridge out to Solana {}", cxs(&tx.from), cadre(*amount), short(&b58(solana_recipient)))).f("Solana recipient", b58(solana_recipient)).f("Amount", cadre(*amount)),
         TxBody::AdminConfig { key, value } => {
             let name = config_key_name(params, *key);
             Words::new("AdminConfig", format!("admin set {name} ({} bytes)", value.len())).f("Key", format!("{name} ({key})")).f("Value", if value.len() <= 64 { hex::encode(value) } else { format!("{}... ({} bytes)", hex::encode(&value[..32]), value.len()) })
         }
-        TxBody::SetRoute { solana_recipient, route_bps, until_height, cap, release_key } => Words::new("SetRoute", format!("{} set a payout lien: {}% of income to Solana {} until block {}", short(&from), *route_bps as f64 / 100.0, short(&b58(solana_recipient)), until_height))
+        TxBody::SetRoute { solana_recipient, route_bps, until_height, cap, release_key } => Words::new("SetRoute", format!("{} set a payout lien: {}% of income to Solana {} until block {}", cxs(&tx.from), *route_bps as f64 / 100.0, short(&b58(solana_recipient)), until_height))
             .f("Recipient", b58(solana_recipient))
             .f("Share", format!("{route_bps} bps"))
             .f("Until", format!("block {until_height}"))
             .f("Cap", cadre(*cap))
-            .f("Release key", if is_zero(release_key) { "none (cannot be cleared early)".into() } else { b58(release_key) }),
-        TxBody::ClearRoute { account, route_nonce, .. } => Words::new("ClearRoute", format!("payout lien of {} cleared by its release key", short(&b58(account)))).f("Account", b58(account)).f("Route nonce", route_nonce.to_string()),
-        TxBody::RegisterModel(m) => Words::new("RegisterModel", format!("{} registered model {} with {} weight matrices", short(&from), quote(&m.name, 48), m.matrices.len())).f("Name", text(&m.name)).f("Manifest", text(&m.manifest_uri)).f("Matrices", m.matrices.len().to_string()).f("Rank", m.rank.to_string()),
+            .f("Release key", if is_zero(release_key) { "none (cannot be cleared early)".into() } else { cx(release_key) }),
+        TxBody::ClearRoute { account, route_nonce, .. } => Words::new("ClearRoute", format!("payout lien of {} cleared by its release key", cxs(account))).f("Account", cx(account)).f("Route nonce", route_nonce.to_string()),
+        TxBody::RegisterModel(m) => Words::new("RegisterModel", format!("{} registered model {} with {} weight matrices", cxs(&tx.from), quote(&m.name, 48), m.matrices.len())).f("Name", text(&m.name)).f("Manifest", text(&m.manifest_uri)).f("Matrices", m.matrices.len().to_string()).f("Rank", m.rank.to_string()),
         TxBody::PostSegments { ticket_id, round, model_id, segments, .. } => Words::new("PostSegments", format!("ticket {} round {}: {} standing segments posted for mining", short(&hx(ticket_id)), round, segments.len()))
             .f("Ticket", hx(ticket_id))
             .f("Model", hx(model_id))
             .f("Segments", format!("{} (matrices {}..{})", segments.len(), segments.first().map(|s| s.matrix).unwrap_or(0), segments.last().map(|s| s.matrix).unwrap_or(0)))
             .f("Rows (m)", segments.first().map(|s| s.m.to_string()).unwrap_or_default()),
-        TxBody::RejectResult { job_id, deliverer, sigs, .. } => Words::new("RejectResult", format!("evaluators rejected {}'s delivery for job {} (job reopened)", short(&b58(deliverer)), short(&hx(job_id))))
+        TxBody::RejectResult { job_id, deliverer, sigs, .. } => Words::new("RejectResult", format!("evaluators rejected {}'s delivery for job {} (job reopened)", cxs(deliverer), short(&hx(job_id))))
             .f("Job", hx(job_id))
-            .f("Deliverer", b58(deliverer))
-            .f("Signed by", sigs.iter().map(|s| short(&b58(&s.pubkey))).collect::<Vec<_>>().join(", ")),
+            .f("Deliverer", cx(deliverer))
+            .f("Signed by", sigs.iter().map(|s| cxs(&s.pubkey)).collect::<Vec<_>>().join(", ")),
         TxBody::SetProfile(p) => {
             let flags: Vec<&str> = [(1, "agent"), (2, "house"), (4, "accepts hires"), (8, "trades")].iter().filter(|(b, _)| p.flags & b != 0).map(|(_, n)| *n).collect();
-            Words::new("SetProfile", format!("{} set profile @{} ({})", short(&from), text(&p.handle), if text(&p.name).is_empty() { "no name".into() } else { text(&p.name) }))
+            Words::new("SetProfile", format!("{} set profile @{} ({})", cxs(&tx.from), text(&p.handle), if text(&p.name).is_empty() { "no name".into() } else { text(&p.name) }))
                 .f("Handle", format!("@{}", text(&p.handle)))
                 .f("Name", text(&p.name))
                 .f("Flags", if flags.is_empty() { "none".into() } else { flags.join(", ") })
-                .f("Operator", if is_zero(&p.operator) { "none".into() } else { b58(&p.operator) })
+                .f("Operator", if is_zero(&p.operator) { "none".into() } else { cx(&p.operator) })
                 .f("Profile", text(&p.profile_uri))
         }
-        TxBody::OperatorLink { agent, add } => Words::new("OperatorLink", format!("{} {} agent {} as its operator", short(&from), if *add { "linked" } else { "unlinked" }, short(&b58(agent)))).f("Agent", b58(agent)).f("Link", if *add { "add" } else { "remove" }),
+        TxBody::OperatorLink { agent, add } => Words::new("OperatorLink", format!("{} {} agent {} as its operator", cxs(&tx.from), if *add { "linked" } else { "unlinked" }, cxs(agent))).f("Agent", cx(agent)).f("Link", if *add { "add" } else { "remove" }),
         TxBody::Post(p) => {
             let kind = ["post", "reply", "repost", "quote"].get(p.kind as usize).copied().unwrap_or("post");
             let id = agent_types::social::post_id(&tx.from, tx.nonce);
-            let mut w = Words::new("Post", format!("{} {}: {}", short(&from), if kind == "post" { "posted".to_string() } else { format!("sent a {kind}") }, quote(&p.body, 90))).f("Post id", hx(&id)).f("Kind", kind).f("Body", text(&p.body));
+            let mut w = Words::new("Post", format!("{} {}: {}", cxs(&tx.from), if kind == "post" { "posted".to_string() } else { format!("sent a {kind}") }, quote(&p.body, 90))).f("Post id", hx(&id)).f("Kind", kind).f("Body", text(&p.body));
             if !is_zero(&p.parent) {
                 w = w.f("Parent", hx(&p.parent));
             }
@@ -158,19 +158,19 @@ pub fn chain_words(tx: Option<&Tx>, node_kind: &str, from: &str, params: &Value)
         TxBody::React { items } => {
             let names = agent_types::social::REACTION_NAMES;
             let tips: u64 = items.iter().map(|r| r.tip).sum();
-            Words::new("React", format!("{} reacted to {} post{}{}", short(&from), items.len(), if items.len() == 1 { "" } else { "s" }, if tips > 0 { format!(", tipping {}", cadre(tips)) } else { String::new() }))
+            Words::new("React", format!("{} reacted to {} post{}{}", cxs(&tx.from), items.len(), if items.len() == 1 { "" } else { "s" }, if tips > 0 { format!(", tipping {}", cadre(tips)) } else { String::new() }))
                 .f("Reactions", items.iter().map(|r| format!("{} {}", names.get(r.reaction as usize).unwrap_or(&"?"), short(&hx(&r.post_id)))).collect::<Vec<_>>().join(", "))
         }
-        TxBody::Follow { items } => Words::new("Follow", format!("{} changed {} follow{}", short(&from), items.len(), if items.len() == 1 { "" } else { "s" }))
-            .f("Edges", items.iter().map(|e| format!("{} {}", if e.on { "follow" } else { "unfollow" }, short(&b58(&e.target)))).collect::<Vec<_>>().join(", ")),
+        TxBody::Follow { items } => Words::new("Follow", format!("{} changed {} follow{}", cxs(&tx.from), items.len(), if items.len() == 1 { "" } else { "s" }))
+            .f("Edges", items.iter().map(|e| format!("{} {}", if e.on { "follow" } else { "unfollow" }, cxs(&e.target))).collect::<Vec<_>>().join(", ")),
         TxBody::SendMessage(m) => {
             use agent_types::dm::MODE_SEALED;
             let sealed = m.mode == MODE_SEALED;
             let to_channel = !is_zero(&m.channel);
             let what = if sealed { format!("a sealed message ({} bytes, end-to-end encrypted)", m.body.len()) } else { format!("{}", quote(&m.body, 80)) };
-            let target = if to_channel { format!("channel {}", short(&hx(&m.channel))) } else { short(&b58(&m.to)) };
-            let mut w = Words::new("SendMessage", format!("{} sent {target} {what}{}", short(&from), if m.pay > 0 { format!(", paying {}", cadre(m.pay)) } else { String::new() }));
-            w = w.f("Message id", hx(&agent_types::dm::message_id(&tx.from, tx.nonce))).f(if to_channel { "Channel" } else { "To" }, if to_channel { hx(&m.channel) } else { b58(&m.to) }).f("Mode", if sealed { "sealed" } else { "plain" });
+            let target = if to_channel { format!("channel {}", short(&hx(&m.channel))) } else { cxs(&m.to) };
+            let mut w = Words::new("SendMessage", format!("{} sent {target} {what}{}", cxs(&tx.from), if m.pay > 0 { format!(", paying {}", cadre(m.pay)) } else { String::new() }));
+            w = w.f("Message id", hx(&agent_types::dm::message_id(&tx.from, tx.nonce))).f(if to_channel { "Channel" } else { "To" }, if to_channel { hx(&m.channel) } else { cx(&m.to) }).f("Mode", if sealed { "sealed" } else { "plain" });
             if !sealed {
                 w = w.f("Body", text(&m.body));
             }
@@ -185,47 +185,47 @@ pub fn chain_words(tx: Option<&Tx>, node_kind: &str, from: &str, params: &Value)
             }
             w
         }
-        TxBody::ReclaimMessage { message_id } => Words::new("ReclaimMessage", format!("{} reclaimed or declined the pay of message {}", short(&from), short(&hx(message_id)))).f("Message", hx(message_id)),
+        TxBody::ReclaimMessage { message_id } => Words::new("ReclaimMessage", format!("{} reclaimed or declined the pay of message {}", cxs(&tx.from), short(&hx(message_id)))).f("Message", hx(message_id)),
         TxBody::SetConsent { items } => {
             let word = |s: u8| match s {
                 agent_types::dm::CONSENT_ALLOW => "allow",
                 agent_types::dm::CONSENT_DENY => "deny",
                 _ => "clear",
             };
-            Words::new("SetConsent", format!("{} set message consent for {} account{}", short(&from), items.len(), if items.len() == 1 { "" } else { "s" }))
-                .f("Consent", items.iter().map(|c| format!("{} {}", word(c.state), short(&b58(&c.peer)))).collect::<Vec<_>>().join(", "))
+            Words::new("SetConsent", format!("{} set message consent for {} account{}", cxs(&tx.from), items.len(), if items.len() == 1 { "" } else { "s" }))
+                .f("Consent", items.iter().map(|c| format!("{} {}", word(c.state), cxs(&c.peer))).collect::<Vec<_>>().join(", "))
         }
         TxBody::ChannelConfig(c) => {
             let policy = ["open", "invite only", "paid"].get(c.policy as usize).copied().unwrap_or("?");
-            Words::new("ChannelConfig", format!("{} configured channel {} ({policy})", short(&from), quote(&c.name, 48)))
+            Words::new("ChannelConfig", format!("{} configured channel {} ({policy})", cxs(&tx.from), quote(&c.name, 48)))
                 .f("Channel", hx(&c.channel_id))
                 .f("Name", text(&c.name))
                 .f("Policy", if c.policy == agent_types::dm::CHANNEL_PAID { format!("{policy}, join price {}", cadre(c.join_price)) } else { policy.into() })
-                .f("Admins", c.admins.iter().map(|a| short(&b58(a))).collect::<Vec<_>>().join(", "))
+                .f("Admins", c.admins.iter().map(|a| cxs(a)).collect::<Vec<_>>().join(", "))
         }
         TxBody::ChannelMember { channel, action, member, pay } => {
             let act = agent_types::dm::MEMBER_ACTION_NAMES.get(*action as usize).copied().unwrap_or("?");
-            Words::new("ChannelMember", format!("{} {act} {} in channel {}{}", short(&from), short(&b58(member)), short(&hx(channel)), if *pay > 0 { format!(", paying {}", cadre(*pay)) } else { String::new() }))
+            Words::new("ChannelMember", format!("{} {act} {} in channel {}{}", cxs(&tx.from), cxs(member), short(&hx(channel)), if *pay > 0 { format!(", paying {}", cadre(*pay)) } else { String::new() }))
                 .f("Channel", hx(channel))
-                .f("Member", b58(member))
+                .f("Member", cx(member))
                 .f("Action", act)
         }
-        TxBody::ChannelKey { channel, epoch, envelopes } => Words::new("ChannelKey", format!("{} shared channel {}'s key epoch {} with {} members (sealed envelopes)", short(&from), short(&hx(channel)), epoch, envelopes.len())).f("Channel", hx(channel)).f("Epoch", epoch.to_string()),
-        TxBody::DeployCode(d) => Words::new("DeployCode", format!("{} uploaded {} bytes of contract code", short(&from), d.code.len())).f("Code hash", hx(&agent_types::contracts::code_hash(&d.code))).f("Size", format!("{} bytes", d.code.len())).f("Gas limit", d.gas_limit.to_string()),
-        TxBody::Instantiate(i) => Words::new("Instantiate", format!("{} created contract {} from code {}", short(&from), short(&b58(&agent_types::contracts::contract_address(&tx.from, tx.nonce))), short(&hx(&i.code_hash))))
-            .f("Contract", b58(&agent_types::contracts::contract_address(&tx.from, tx.nonce)))
+        TxBody::ChannelKey { channel, epoch, envelopes } => Words::new("ChannelKey", format!("{} shared channel {}'s key epoch {} with {} members (sealed envelopes)", cxs(&tx.from), short(&hx(channel)), epoch, envelopes.len())).f("Channel", hx(channel)).f("Epoch", epoch.to_string()),
+        TxBody::DeployCode(d) => Words::new("DeployCode", format!("{} uploaded {} bytes of contract code", cxs(&tx.from), d.code.len())).f("Code hash", hx(&agent_types::contracts::code_hash(&d.code))).f("Size", format!("{} bytes", d.code.len())).f("Gas limit", d.gas_limit.to_string()),
+        TxBody::Instantiate(i) => Words::new("Instantiate", format!("{} created contract {} from code {}", cxs(&tx.from), cxs(&agent_types::contracts::contract_address(&tx.from, tx.nonce)), short(&hx(&i.code_hash))))
+            .f("Contract", cx(&agent_types::contracts::contract_address(&tx.from, tx.nonce)))
             .f("Code", hx(&i.code_hash))
             .f("Label", text(&i.label))
-            .f("Admin", if is_zero(&i.admin) { "none (never migratable)".into() } else { b58(&i.admin) })
+            .f("Admin", if is_zero(&i.admin) { "none (never migratable)".into() } else { cx(&i.admin) })
             .f("Value", cadre(i.value)),
-        TxBody::Call(c) => Words::new("Call", format!("{} called contract {}{}", short(&from), short(&b58(&c.contract)), if c.value > 0 { format!(" sending {}", cadre(c.value)) } else { String::new() }))
-            .f("Contract", b58(&c.contract))
+        TxBody::Call(c) => Words::new("Call", format!("{} called contract {}{}", cxs(&tx.from), cxs(&c.contract), if c.value > 0 { format!(" sending {}", cadre(c.value)) } else { String::new() }))
+            .f("Contract", cx(&c.contract))
             .f("Args", format!("{} bytes", c.args.len()))
             .f("Gas limit", c.gas_limit.to_string()),
-        TxBody::Migrate(m) => Words::new("Migrate", format!("{} moved contract {} to code {}", short(&from), short(&b58(&m.contract)), short(&hx(&m.code_hash)))).f("Contract", b58(&m.contract)).f("New code", hx(&m.code_hash)),
-        TxBody::SetContractAdmin { contract, admin } => Words::new("SetContractAdmin", format!("admin of contract {} set to {}", short(&b58(contract)), if is_zero(admin) { "none".into() } else { short(&b58(admin)) })).f("Contract", b58(contract)).f("Admin", b58(admin)),
+        TxBody::Migrate(m) => Words::new("Migrate", format!("{} moved contract {} to code {}", cxs(&tx.from), cxs(&m.contract), short(&hx(&m.code_hash)))).f("Contract", cx(&m.contract)).f("New code", hx(&m.code_hash)),
+        TxBody::SetContractAdmin { contract, admin } => Words::new("SetContractAdmin", format!("admin of contract {} set to {}", cxs(contract), if is_zero(admin) { "none".into() } else { cxs(admin) })).f("Contract", cx(contract)).f("Admin", cx(admin)),
         #[allow(unreachable_patterns)]
-        _ => Words::new(node_kind, format!("{} from {} (described by kind name only in this build)", tx.body.kind().name(), short(&from))),
+        _ => Words::new(node_kind, format!("{} from {} (described by kind name only in this build)", tx.body.kind().name(), cxs(&tx.from))),
     };
     w.f("From", from).f("Nonce", tx.nonce.to_string()).f("Fee", format!("{} CADRE", crate::fmt::amount(tx.fee as u128, crate::fmt::CHAIN_DP, crate::fmt::CHAIN_DP)))
 }
@@ -258,7 +258,7 @@ fn le64(d: &[u8], at: usize) -> Option<u64> {
 }
 fn key_at(d: &[u8], at: usize) -> Option<String> {
     let k: [u8; 32] = d.get(at..at + 32)?.try_into().ok()?;
-    Some(b58(&k))
+    Some(cx(&k))
 }
 
 /// One Solana instruction in words (outer or inner).
@@ -311,7 +311,7 @@ pub fn sol_ix_words(ix: &Value) -> String {
     };
     let a = &data[8.min(data.len())..];
     let args = match (prog_name, name) {
-        ("bridge", "deposit") => le64(a, 0).zip(key_at(a, 8)).map(|(amt, r)| format!(": locked {} in the bridge vault for chain account {}", cadre_spl(amt), short(&r))),
+        ("bridge", "deposit") => le64(a, 0).zip(key_at(a, 8)).map(|(amt, r)| format!(": locked {} in the bridge vault for chain account {}", cadre_spl(amt), crate::fmt::short_addr(&r))),
         ("bridge", "release") => le64(a, 0).zip(le64(a, 40)).map(|(n, amt)| format!(": released withdrawal #{n}, {}", cadre_spl(amt))),
         ("bridge", "release_proof") => le64(a, 0).map(|n| format!(": released withdrawal #{n} by light-client proof")),
         ("bridge", "refund_deposit") => le64(a, 0).map(|n| format!(": refunded deposit #{n}")),
