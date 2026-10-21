@@ -10,6 +10,7 @@
 //!   since a client could then describe a fake job with an easy target.
 
 pub mod evaluator;
+pub mod judge;
 pub mod replay;
 
 use std::time::Instant;
