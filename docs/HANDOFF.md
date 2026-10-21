@@ -1115,8 +1115,14 @@ CLAUDE.md "Who is working on what".
    - Test box: podman + slirp4netns + passt installed (apt), image localhost/cadre-desktop-selfhost kept (2 GB) for
      reruns, /root/desk-density; slice removed, every container removed; `podman build` left netavark iptables chains
      for podman's own bridge subnet (no published ports).
-   - Deploy (box 0: desktops.env, swarm.env, cadre-swarm + cadre-desktops + cadre-api restarts, health script, site):
-     commands handed to the orchestrator (the permission check blocks agent restarts).
+   - Deployed by the orchestrator 2026-10-21 ~21:40 UTC (36/36 desktops). Follow-up the same evening (906e238 + the
+     health age guard): two Work desktops' streams had been frozen for hours because the OOM killer took ffmpeg and
+     every restart then refused to overwrite thumb.jpg (now `ffmpeg -y`, one loop per desktop); the rollout's own kill
+     commands matched their shell, so old 4 fps encoders and old browser hosts survived (fixed: bracketed patterns,
+     SIGKILL); heal now also restarts a frozen stream and the browser (dead, stuck, or under 60 MB free, never while
+     busy), skipping a browser host younger than 180 s; Work desktops open 2 tabs + the console (Work memory free went
+     from 65-77 MB to 144-160 MB). After the 21:56 UTC restart: all 36 at 15 fps, one encoder each, 36/36 streams alive.
+     1.5 GiB Work desktops were not used: +1.17 USD/day would cross the 64 cap.
 
 ## M1 components (SPEC v2, all DONE)
 

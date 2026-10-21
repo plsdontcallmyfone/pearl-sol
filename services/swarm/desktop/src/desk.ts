@@ -282,23 +282,26 @@ export class Desk {
     if (!this.sbx || this.state !== "running") return null;
     const r = await this.sh(
       `now=$(date +%s); t=$(stat -c %Y /tmp/stream/thumb.jpg 2>/dev/null || echo -1); s=$(stat -c %Y ${HOME}/state.json 2>/dev/null || echo -1); ` +
-        `e=$(pgrep -x ffmpeg >/dev/null && echo 1 || echo 0); h=$(pgrep -f "[d]eskhost.mjs" >/dev/null && echo 1 || echo 0); ` +
+        `e=$(pgrep -x ffmpeg >/dev/null && echo 1 || echo 0); hp=$(pgrep -o -f "[d]eskhost.mjs"); h=$([ -n "$hp" ] && ps -o etimes= -p $hp | tr -d " " || echo -1); ` +
         `m=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print int(t/1024), int(a/1024)}' /proc/meminfo); l=$(cut -d' ' -f1 /proc/loadavg); ` +
         `echo "$now $t $s $e $h $m $l"`,
       15_000,
     );
     const f = r.stdout.trim().split(/\s+/).map(Number);
     if (f.length < 8 || !Number.isFinite(f[0]!)) return null;
+    // host: the browser host's age in seconds (-1: not running)
     const [now, thumb, st, enc, host, total, avail, load] = f as [number, number, number, number, number, number, number, number];
     const age = thumb > 0 ? Math.max(0, now - thumb) : null;
-    const extState = host ? await this.hostState().catch(() => null) : null;
+    const extState = host >= 0 ? await this.hostState().catch(() => null) : null;
     if (extState?.ext) this.extId = String(extState.ext);
     this.health = {
       checked_at: new Date().toISOString(),
       stream_alive: !!enc && age !== null && age < 10,
       stream_age_s: age,
       encoder: !!enc,
-      browser_host: !!host && st > 0 && now - st < 30,
+      // alive: running and its state is fresh, or running and still starting (a Work desktop's browser
+      // took about 60 s to come up after a restart on 2026-10-21; health must not restart it again)
+      browser_host: host >= 0 && ((st > 0 && now - st < 30) || host < 180),
       mem_total_mb: total || null,
       mem_avail_mb: Number.isFinite(avail) ? avail : null,
       load1: Number.isFinite(load) ? load : null,
