@@ -6,6 +6,7 @@ import { b58, fromHex, hex, key32 } from "../src/core/bytes";
 import { pubkeyOf, sha256, signRaw, blake3 } from "../src/core/crypto";
 import { KIND, PostJobBody, TxBody, decodeTx, encodePostJob, framedMessage, signTx, signingBytes, txHash, verifyTx } from "../src/chain/tx";
 import { socialBodyFromJson, summarizeSocial } from "../src/chain/social";
+import { blocksInWords, channelId, dmBodyFromJson, messageId, summarizeDm } from "../src/chain/dm";
 import { RESERVED, postId, decodeCoinbase, depositMessage, depositOrderMessage, jobIdForPost, orderJobId, rejectMessage, resultMessage, routeClearMessage } from "../src/chain/messages";
 
 const dir = resolve(__dirname, "../../chain/agent-types/vectors");
@@ -13,7 +14,9 @@ const dir = resolve(__dirname, "../../chain/agent-types/vectors");
 const rejv = JSON.parse(readFileSync(resolve(dir, "reject.json"), "utf8"));
 // social kinds (SPEC 4.6) in social.json
 const socv = JSON.parse(readFileSync(resolve(dir, "social.json"), "utf8"));
-const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs, ...socv.txs];
+// DM and channel kinds (SPEC 4.10) in dm.json
+const dmv = JSON.parse(readFileSync(resolve(dir, "dm.json"), "utf8"));
+const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs, ...socv.txs, ...dmv.txs];
 const msgv = JSON.parse(readFileSync(resolve(dir, "messages.json"), "utf8"));
 
 function postJob(j: any): PostJobBody {
@@ -45,6 +48,12 @@ function body(v: any): TxBody {
     case "Post": return { kind: "Post", postKind: b.kind, parent: fromHex(b.parent), channel: fromHex(b.channel), body: b.body, blobUri: b.blob_uri, blobHash: fromHex(b.blob_hash), thoughtRef: b.thought_ref };
     case "React": return { kind: "React", items: b.items.map((x: any) => ({ postId: fromHex(x.post_id), reaction: x.reaction, tip: BigInt(x.tip) })) };
     case "Follow": return { kind: "Follow", items: b.items.map((x: any) => ({ target: key32(x.target), on: x.on })) };
+    case "SendMessage": return { kind: "SendMessage", to: key32(b.to), channel: fromHex(b.channel), mode: b.mode, replyTo: fromHex(b.reply_to), pay: BigInt(b.pay), reclaimAfter: b.reclaim_after, body: fromHex(b.body_hex), blobUri: b.blob_uri, blobHash: fromHex(b.blob_hash), thoughtRef: b.thought_ref };
+    case "ReclaimMessage": return { kind: "ReclaimMessage", messageId: fromHex(b.message_id) };
+    case "SetConsent": return { kind: "SetConsent", items: b.items.map((x: any) => ({ peer: key32(x.peer), state: x.state })) };
+    case "ChannelConfig": return { kind: "ChannelConfig", channelId: fromHex(b.channel_id), name: b.name, about: b.about, policy: b.policy, joinPrice: BigInt(b.join_price), mode: b.mode, admins: b.admins.map(key32) };
+    case "ChannelMember": return { kind: "ChannelMember", channel: fromHex(b.channel), action: b.action, member: key32(b.member), pay: BigInt(b.pay) };
+    case "ChannelKey": return { kind: "ChannelKey", channel: fromHex(b.channel), epoch: b.epoch, envelopes: b.envelopes.map((x: any) => ({ member: key32(x.member), envelope: fromHex(x.envelope) })) };
   }
   throw new Error(`unhandled ${v.kind_name}`);
 }
@@ -181,5 +190,62 @@ describe("social kinds (SPEC 4.6)", () => {
     const sm = summarizeSocial({ kind: "React", items: [{ postId: new Uint8Array(32), reaction: 4, tip: 250n }] }, (x) => `${x} CADRE`)!;
     expect(sm.headline).toContain("250 CADRE");
     expect(sm.warnings.join(" ")).toContain("not refundable");
+  });
+});
+
+describe("DM and channel kinds (SPEC 4.10)", () => {
+  it("message and channel ids", () => {
+    for (const m of dmv.message_ids) expect(hex(messageId(key32(m.from), BigInt(m.nonce)))).toBe(m.message_id);
+    for (const c of dmv.channel_ids) expect(hex(channelId(key32(c.creator), BigInt(c.nonce)))).toBe(c.channel_id);
+  });
+
+  // window.pearl JSON form (docs/API.md "DMs and channels") builds the same bodies as the vectors
+  const zero = "11111111111111111111111111111111";
+  const camel = (v: any) => {
+    const b = v.body;
+    switch (v.kind_name) {
+      case "SendMessage": {
+        const plain = b.mode === 0 ? { body: Buffer.from(b.body_hex, "hex").toString("utf8") } : { bodyHex: b.body_hex };
+        return { kind: "SendMessage", to: b.to === zero ? "" : b.to, channel: b.channel, mode: b.mode, replyTo: b.reply_to, pay: b.pay, reclaimAfter: b.reclaim_after, ...plain, blobUri: b.blob_uri, blobHash: b.blob_hash, thoughtRef: b.thought_ref };
+      }
+      case "ReclaimMessage": return { kind: "ReclaimMessage", messageId: b.message_id };
+      case "SetConsent": return { kind: "SetConsent", items: b.items };
+      case "ChannelConfig": return { kind: "ChannelConfig", channelId: b.channel_id, name: b.name, about: b.about, policy: b.policy, joinPrice: b.join_price, mode: b.mode, admins: b.admins };
+      case "ChannelMember": return { kind: "ChannelMember", channel: b.channel, action: b.action, member: b.member === zero ? "" : b.member, pay: b.pay };
+      case "ChannelKey": return { kind: "ChannelKey", channel: b.channel, epoch: b.epoch, envelopes: b.envelopes.map((x: any) => ({ member: x.member, envelopeHex: x.envelope })) };
+    }
+  };
+  for (const v of dmv.txs) {
+    it(`${v.name}: JSON form encodes to the vector and has wording`, () => {
+      const t = { chainId: v.chain_id, from: key32(v.from), nonce: BigInt(v.nonce), fee: BigInt(v.fee), body: dmBodyFromJson(camel(v)) };
+      expect(hex(signingBytes(t))).toBe(v.signing_bytes);
+      const sm = summarizeDm(t.body as any, (x) => `${x} units`, { from: t.from });
+      expect(sm.headline.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("escrow wording names the refund window in blocks and time", () => {
+    const v = dmv.txs.find((t: any) => t.name === "dm_plain_escrow");
+    const sm = summarizeDm(body(v) as any, (x) => `${x} units`);
+    const all = sm.warnings.join(" ");
+    expect(all).toContain("Refund to you after 360 blocks, about 6 hours (360 minutes) at the chain's target block time of 60 s, if no reply");
+    expect(sm.headline).toContain("5000000 units");
+    expect(blocksInWords(10)).toBe("about 10 minutes at the chain's target block time of 60 s");
+  });
+
+  it("consent and sealed wording", () => {
+    const c = summarizeDm(body(dmv.txs.find((t: any) => t.name === "set_consent")) as any, String);
+    expect(c.rows.map((r) => r.label)).toEqual(["Allow", "Block", "Clear the choice for"]);
+    const s = summarizeDm(body(dmv.txs.find((t: any) => t.name === "dm_sealed")) as any, String);
+    expect(s.headline).toMatch(/^Send a sealed message to /);
+    expect(s.warnings.join(" ")).toContain("stay public");
+  });
+
+  it("refuses bad JSON", () => {
+    expect(() => dmBodyFromJson({ kind: "SetConsent", items: [] })).toThrow(/1\.\.64/);
+    expect(() => dmBodyFromJson({ kind: "SetConsent", items: [{ peer: zero, state: 3 }] })).toThrow(/state/);
+    expect(() => dmBodyFromJson({ kind: "SendMessage", to: zero, body: "a", bodyHex: "00" })).toThrow(/not both/);
+    expect(() => dmBodyFromJson({ kind: "ChannelKey", channel: "00".repeat(32), epoch: 1, envelopes: [{ member: zero, envelopeHex: "00" }] })).toThrow(/104/);
+    expect(() => dmBodyFromJson({ kind: "ReclaimMessage" })).toThrow(/messageId/);
   });
 });

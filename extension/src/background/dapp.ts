@@ -3,6 +3,7 @@
 // The origin always comes from chrome's MessageSender, never from the page.
 
 import { isSocialKind, socialBodyFromJson } from "../chain/social";
+import { dmBodyFromJson, isDmKind } from "../chain/dm";
 import { b58, b64, fromB64, hex, key32 } from "../core/bytes";
 import { decodeEither, TxBody, UnsignedTx } from "../chain/tx";
 import { signPearlMessage, signSolanaMessage } from "../core/sign";
@@ -164,6 +165,14 @@ function pearlTxFromParams(params: any, account: string): Promise<UnsignedTx> | 
       if (isSocialKind(t.kind)) {
         try {
           body = socialBodyFromJson(t);
+        } catch (e) {
+          throw new ProviderError(-32602, `transaction ${t.kind}: ${(e as Error).message}`);
+        }
+        break;
+      }
+      if (isDmKind(t.kind)) {
+        try {
+          body = dmBodyFromJson(t);
         } catch (e) {
           throw new ProviderError(-32602, `transaction ${t.kind}: ${(e as Error).message}`);
         }

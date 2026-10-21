@@ -6,6 +6,7 @@
 
 import { Reader, concat, fromUtf8, u16, u32, u64, u8, utf8 } from "../core/bytes";
 import { TX_NAMESPACE, blake3, signFramed, verifyRaw, frame } from "../core/crypto";
+import { DM_KINDS, DmBody, encodeDmBody, readDmBody } from "./dm";
 
 export const TX_VERSION = 1;
 
@@ -24,6 +25,12 @@ export const KIND = {
   RejectResult: 13,
   SetProfile: 14,
   OperatorLink: 15,
+  SendMessage: 16,
+  ReclaimMessage: 17,
+  SetConsent: 18,
+  ChannelConfig: 19,
+  ChannelMember: 20,
+  ChannelKey: 21,
   Post: 22,
   React: 23,
   Follow: 24,
@@ -75,7 +82,9 @@ export type TxBody =
   | { kind: "OperatorLink"; agent: Uint8Array; add: boolean }
   | ({ kind: "Post" } & PostBody)
   | { kind: "React"; items: ReactionItem[] }
-  | { kind: "Follow"; items: FollowItem[] };
+  | { kind: "Follow"; items: FollowItem[] }
+  // DM and channel kinds (SPEC 4.10): codec, JSON form and wording in ./dm.
+  | DmBody;
 
 export interface SetProfileBody {
   handle: string; // "" or 3..=24 of [a-z0-9_]
@@ -213,6 +222,8 @@ export function encodeBody(b: TxBody): Uint8Array {
     case "Follow":
       batch(b.items.length, "follows");
       return concat(u8(b.items.length), ...b.items.flatMap((x) => [fixed(x.target, 32, "target"), u8(x.on ? 1 : 0)]));
+    default:
+      return encodeDmBody(b);
   }
 }
 
@@ -346,8 +357,11 @@ function readBody(kind: number, r: Reader): TxBody {
         }),
       };
     }
-    default:
+    default: {
+      const name = KIND_NAME[kind];
+      if (name && (DM_KINDS as readonly string[]).includes(name)) return readDmBody(name as DmBody["kind"], r);
       throw new Error(`unknown tx kind ${kind}`);
+    }
   }
 }
 
