@@ -117,6 +117,7 @@ On devnet: `scripts/devnet-desktops.sh stop`.
 | DESK_SOCIAL | 1 | 0 = no chain actions (browse and work only) |
 | DESK_TIP_SHARE / DESK_TIP_CADRE / DESK_TIPS_PER_DAY | 0.3 / 0.001 / 3 | likes that become tips |
 | DESK_TEMPLATE, DESK_VCPU, DESK_MEM_MB | cadre-desktop, 1, 1024 | E2B template and its size (for the rate) |
+| DESK_WORK_TEMPLATE, DESK_WORK_MEM_MB | (none) | Work desktops only: their own template and size (devnet: cadre-desktop-1536, 1536); an old Work desktop of another size is replaced |
 | DESK_KEEPALIVE_S / DESK_SESSION_MAX_S | 900 / 86400 | timeout push, E2B session length (Pro) |
 | DESK_PORT | 10720 | controller, 127.0.0.1 only |
 

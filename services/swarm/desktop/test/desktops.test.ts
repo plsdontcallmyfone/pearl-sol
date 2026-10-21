@@ -28,6 +28,7 @@ class FakeSbx implements SandboxLike {
   cmds: string[] = [];
   seeded = false;
   healthLine: string | null = null;
+  front: string | null = null;
   sandboxId: string;
   constructor(id: string) { this.sandboxId = id; }
   commands = {
@@ -42,6 +43,7 @@ class FakeSbx implements SandboxLike {
       if (cmd.startsWith("cat /home/user/.cadre/stream.sh")) out = this.files_.get("/home/user/.cadre/stream.sh") ?? "";
       if (cmd.startsWith("cat /home/user/.cadre/deskhost.mjs")) out = this.files_.get("/home/user/.cadre/deskhost.mjs") ?? "";
       if (cmd.startsWith("touch /home/user/.cadre/console")) this.files_.set("/home/user/.cadre/console", "");
+      if (cmd.startsWith("cat /home/user/.cadre/front")) out = this.front ?? "work";
       if (cmd.startsWith("rm -f /home/user/.cadre/console")) this.files_.delete("/home/user/.cadre/console");
       if (cmd.includes("/proc/meminfo")) { const n = Math.floor(Date.now() / 1000); out = this.healthLine ?? `${n} ${n - 1} ${n - 3} 1 1 1024 300 0.42`; }
       if (cmd.startsWith("cat /home/user/.cadre/state.json")) out = JSON.stringify({ ext: "extid0000", tabs: [] });
@@ -425,4 +427,47 @@ test("self-hosted host: podman run with per-desktop limits and labels, list by l
   const c2 = containerSandbox("n", run);
   await c2.commands.run("echo hi", { background: true });
   assert.ok(calls.some((c) => c.args[0] === "exec" && c.args[1] === "-d"));
+});
+
+test("vision loop: a model error is retried, a refusal (4xx) is not", async () => {
+  let n = 0;
+  const flaky: Chat = async () => (++n < 3 ? { status: 503, json: null } : { status: 200, json: { choices: [{ message: { content: "", tool_calls: [{ id: "d", type: "function", function: { name: "done", arguments: '{"success":true,"summary":"ok"}' } }] } }], usage: { cost: 0.001 } } });
+  const r = await runTask(new FakeSbx("s"), flaky, { model: "m", system: "s", task: "t", maxSteps: 3, maxUsd: 1 });
+  assert.equal(r.ok, true);
+  assert.equal(n, 3);
+  let m = 0;
+  const bad: Chat = async () => { m++; return { status: 400, json: { error: "bad" } }; };
+  const b = await runTask(new FakeSbx("s"), bad, { model: "m", system: "s", task: "t", maxSteps: 3, maxUsd: 1 });
+  assert.equal(b.ok, false);
+  assert.equal(m, 1);
+});
+
+test("Work desktops at their own size: an old 1 GiB Work desktop is replaced, Social desktops are kept, the ledger books each at its own rate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-size-"));
+  const keys = join(dir, "keys");
+  createKeyFile(join(keys, "operator.json"));
+  const op = loadWallet(join(keys, "operator.json"));
+  createKeyFile(join(keys, "agent-ferry_nan.json"));
+  const e2b = new FakeE2B();
+  // the old desktops, made before the change (no cadre_size)
+  await e2b.create("cadre-desktop", { metadata: { cadre_desktop: "ferry_nan", cadre_role: "social" }, timeoutMs: 1 });
+  await e2b.create("cadre-desktop", { metadata: { cadre_desktop: "ferry_nan", cadre_role: "work" }, timeoutMs: 1 });
+  const created: string[] = [];
+  const orig = e2b.create.bind(e2b);
+  e2b.create = async (t: string, o: any) => { created.push(`${t}:${o.metadata.cadre_role}:${o.metadata.cadre_size ?? "-"}`); return orig(t, o); };
+  const cfg = { ...deskConfig({ DESK_WORK_TEMPLATE: "cadre-desktop-1536", DESK_WORK_MEM_MB: "1536" }), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles: ["ferry_nan"], siteUrl: SITE };
+  const ctl = new Controller(cfg, swarmCfg(dir), { node: {} as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, async () => ({ status: 500, json: null }),
+    { roles: ["social", "work"], agentsN: 1, parallel: 1, browseGapS: 600, workGapS: 600, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+  await ctl.ensureAll();
+  assert.deepEqual(created, ["cadre-desktop-1536:work:1536"], "only the Work desktop is replaced, from the 1.5 GiB template");
+  assert.ok(e2b.log.includes("kill sbx2") && !e2b.log.includes("kill sbx1"));
+  const da = ctl.byHandle.get("ferry_nan")!;
+  assert.equal(Number((ctl.rateOf(da.desks.work) * 3600).toFixed(4)), Number(((0.000014 + 1.5 * 0.0000045) * 3600).toFixed(4)));
+  assert.equal(Number((ctl.rateOf(da.desks.social) * 3600).toFixed(4)), 0.0666);
+  // a restart finds the new one and keeps it
+  const again = new Controller(cfg, swarmCfg(dir), { node: {} as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, async () => ({ status: 500, json: null }),
+    { roles: ["social", "work"], agentsN: 1, parallel: 1, browseGapS: 600, workGapS: 600, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+  await again.ensureAll();
+  assert.equal(created.length, 1, "no further replacement");
+  rmSync(dir, { recursive: true, force: true });
 });

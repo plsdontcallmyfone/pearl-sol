@@ -124,25 +124,32 @@ const isConsole = p => !!consoleUrl && p.url().startsWith(consoleUrl);
 let front = null; // the console page while it is in front
 let lastWork = null; // the tab the vision model worked in last
 let wasBusy = false;
+// ~/.cadre/front says what is in front: "console" or "work". The controller waits for "work" before a
+// vision task types anything (2026-10-21: a task typed its URL while this host was switching tabs, so
+// half a URL went into the console tab or a Google search).
+let frontFile = '';
+function writeFront(v) { if (v !== frontFile) { writeFileSync(`${HOME}/front`, v); frontFile = v; } }
+async function consoleAway() {
+  const back = lastWork && !lastWork.isClosed() && !isConsole(lastWork) ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
+  if (back) await back.bringToFront().catch(() => {});
+  else { const p = await ctx.newPage(); await p.goto(mode === 'work' ? explorer : `${site}/town`).catch(() => {}); }
+  front = null;
+}
 async function consoleTick() {
-  if (!consoleUrl) return;
+  if (!consoleUrl) { writeFront('work'); return; }
   const want = existsSync(`${HOME}/console`);
   const busy = existsSync(`${HOME}/busy`);
-  if (busy && !wasBusy && front) {
-    // a vision task is starting: put its tab back in front (it types into the focused tab)
-    const back = lastWork && !lastWork.isClosed() ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
-    if (back) await back.bringToFront().catch(() => {});
-    else await (await ctx.newPage()).goto(mode === 'work' ? explorer : `${site}/town`).catch(() => {});
-    front = null;
-  }
+  // a vision task is starting, or the console is no longer wanted (Social mode): its working tab goes back in front
+  if (front && (busy || !want)) await consoleAway();
   wasBusy = busy;
-  if (!want || busy) return;
+  if (!want || busy) { writeFront('work'); return; }
   if (front && !front.isClosed() && isConsole(front)) return;
   lastWork = ctx.pages().filter(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')).pop() ?? lastWork;
   let c = ctx.pages().find(isConsole);
   if (!c) { c = await ctx.newPage(); await c.goto(consoleUrl).catch(() => {}); }
   await c.bringToFront().catch(() => {});
   front = c;
+  writeFront('console');
 }
 for (let n = 0; ; n++) {
   await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));

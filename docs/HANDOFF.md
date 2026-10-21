@@ -1122,7 +1122,12 @@ CLAUDE.md "Who is working on what".
      SIGKILL); heal now also restarts a frozen stream and the browser (dead, stuck, or under 60 MB free, never while
      busy), skipping a browser host younger than 180 s; Work desktops open 2 tabs + the console (Work memory free went
      from 65-77 MB to 144-160 MB). After the 21:56 UTC restart: all 36 at 15 fps, one encoder each, 36/36 streams alive.
-     1.5 GiB Work desktops were not used: +1.17 USD/day would cross the 64 cap.
+     Measured 22:00-23:00 UTC: 0.0713 USD per desktop-hour (61.2 USD/day at 36), 36/36 streams alive.
+     Then (orchestrator go-ahead): Work desktops at 1.5 GiB from their own E2B template `cadre-desktop-1536`
+     (`DESK_WORK_TEMPLATE`, `DESK_WORK_MEM_MB=1536`; the 6 old Work sandboxes are replaced, Social ones kept; ledger books
+     each desktop at its own rate, +1.17 USD/day, about 62.4 at 36); the browser host now reports what is in front
+     (`~/.cadre/front`) and a vision task waits for its working tab (tasks had typed half a URL into the activity console
+     or a Google search while the host switched tabs: most read_profile failures); model errors retried twice.
 
 31. CX ADDRESS FORMAT (owner 2026-10-21: "Cx" + hex, EIP-55 style checksum, option A: the full
    address stays the 32-byte key; "Cx address format" row): DONE in code, docs and the site; node
