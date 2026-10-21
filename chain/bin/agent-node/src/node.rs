@@ -92,10 +92,12 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                     let _ = self.txs.send(Recipients::All, IoBuf::from(b), false);
                 }
                 Outbound::FetchHeader(h) => {
-                    let _ = self.headers.fetch(sync::key(&h));
+                    let fb = self.headers.fetch(sync::key(&h));
+                    debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
                 }
                 Outbound::FetchBody(h) => {
-                    let _ = self.bodies.fetch(sync::key(&h));
+                    let fb = self.bodies.fetch(sync::key(&h));
+                    debug!(key = %hex::encode(&h[..6]), ?fb, "fetch body");
                 }
                 Outbound::Blob(b) => {
                     let _ = self.blobs.send(Recipients::All, IoBuf::from(b), false);
@@ -253,6 +255,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
 async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(core: &mut Core<CE, V>, ev: SyncEvent, now: u64) {
     match ev {
         SyncEvent::Delivered { kind: Kind::Header, key, value, verdict } => {
+            debug!(key = %hex::encode(&key[..6]), "header delivered");
             let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
                 Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
                     Ok(HeaderAccept::Stored { need_parent }) => {
@@ -277,6 +280,7 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             let ok = match Block::decode(&value) {
                 Ok(b) if b.hash() == key => {
                     let r = core.add_block(b, now, true).await;
+                    debug!(key = %hex::encode(&key[..6]), accepted = r.accepted, reason = ?r.reason, "body delivered");
                     // same rule as gossip: a future timestamp is not the serving peer's fault
                     r.accepted || !ban_worthy(r.reason.as_deref().unwrap_or(""))
                 }
