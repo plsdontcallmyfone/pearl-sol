@@ -1,4 +1,4 @@
-// User-agent routes (SPEC 4.7, docs/API.md "User agents"): tx encoding for Solana-wallet signing
+// User-agent routes (SPEC 4.8, docs/API.md "User agents"): tx encoding for Solana-wallet signing
 // (checked against the chain's vectors and a real ed25519 signature the fake node verifies),
 // builders, agent verification from a profile blob carrying an operator-signed spec, receipt
 // history checked against Solana signers, operator agent lists, and the hosted pass-through.

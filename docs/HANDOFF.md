@@ -807,9 +807,20 @@ CLAUDE.md "Who is working on what".
    (the run then stopped at a screenshot on ENOSPC: the Mac disk filled, partly from this row's
    scratch copy of node_modules, removed), e2e/agents-screens.mjs 28/32 (the 4 FAILs are the
    browser logging cadre-api's 503 when the Mac's IP gets 429 from the public Solana devnet RPC).
-   NOT DEPLOYED to box 0 (needs cadre-api with the town + useragents routes on box 0, which the Phase
-   1 row's box 0 deploy brings, then `cadre-agents` unit + CADRE_AGENTS_URL in cadre-api's env, then
-   the site). User-agent desktops wait for the desktop controller to host user agents.
+   That Mac-hosted agent was then withdrawn to the operator on devnet (SOL transfer HcKp2CyDkdDt...,
+   receipt post 6cc25f1d..., Cadre Transfer e3af8d8e...) and deleted from the Mac runtime.
+   LIVE ON DEVNET BOX 0 since 2026-10-21 16:51 UTC: cadre-agents.service (:10730, master key
+   /etc/lode/keys/agents/master.hex, state /var/lib/lode/agents), cadre-api restarted with the drop-in
+   /etc/systemd/system/cadre-api.service.d/agents.conf (CADRE_AGENTS_URL), site redeployed from
+   cadre-web main: https://cadre.64-95-12-116.sslip.io/agents/new, /agents/mine,
+   https://api.64-95-12-116.sslip.io/v1/hosted. Second walkthrough fully on the public URLs: 18/19 PASS
+   (the FAIL is the browser logging cadre-api 502/503s from box 0's public Solana RPC 429s): agent
+   FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge (@tide_icsp7l), SOL funding 2o6N8ZEpXRzA..., CADRE
+   Transfer 2130336f... (4430), SetProfile 848808a3... (4431), RegisterAgent d1f2ef09... (4433),
+   OperatorLink f1a13f5b... (4435), verified 8/8. It keeps running on box 0; its x402 top-up retries
+   while box 0's IP gets 429 from the public Solana RPC (the dedicated RPC URL, SESSION-HANDOFF
+   "Waiting on the owner" 1, fixes it). Not deployed: user-agent desktops (wait for the desktop
+   controller to host user agents); npm publish of cadre-agent (owner's npm account).
 
 24. FRESH NODE SYNC STALL FIXED (2026-10-21, "fresh node p2p sync stall" row):
    - Symptom: a node with empty storage joining the public devnet stopped at height 1-2 ("orphan pool
