@@ -2,7 +2,7 @@
 // No network, no ports. The real E2B / OpenRouter path is covered by the live runs (README).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyFile, loadWallet } from "../../src/wallet.ts";
@@ -262,6 +262,12 @@ test("controller: a post is typed by the social desktop from the paid thought an
 
 const swarmCfg = (dir: string) => ({ budget: { rowsPerDay: 1000, agentRowsCap: 1000, topupLamportsPerDay: 0n, transferUnitsPerDay: 0n, agentFloat: 0n }, maxTokens: 48, judgeMaxTokens: 2, topupRows: 0, minFreeRows: 0, mempoolMax: 500, cadenceScale: 1, killFile: join(dir, "STOP"), stateFile: join(dir, "sw.json"), allowHosts: [], house: true, reactShare: 0, followShare: 0, replyShare: 0 });
 
+test("encoder script: one loop per desktop and ffmpeg overwrites the old still after a crash", () => {
+  const sh = readFileSync(new URL("../sandbox/stream.sh", import.meta.url), "utf8");
+  assert.match(sh, /flock -n 9 \|\| exit 0/);
+  assert.match(sh, /ffmpeg -y /);
+});
+
 test("split: desktop agents come from the end of the persona list, so the headless swarm's first 30 - N never overlap", () => {
   assert.equal(PERSONAS.length, 30);
   const all = DEFAULT_HANDLES();
@@ -357,6 +363,18 @@ test("Phase A controller: first agents keep two desktops, the rest one; solo wor
   const bad = ctl.healthSummary().unhealthy.find((x) => x.agent === solo.persona.handle)!;
   assert.ok(bad.issues.includes("stream encoder down") && bad.issues.some((i) => i.startsWith("memory low")), JSON.stringify(bad));
   assert.ok(sbx.cmds.some((c) => c.includes("stream.sh") && c.includes("nohup")), "encoder restarted");
+  assert.ok(sbx.cmds.some((c) => c.includes("kill -9") && c.includes("rm -f /tmp/stream/thumb.jpg")), "old loops killed and the old still removed first");
+  // a frozen stream (encoder running, still 400 s old) is restarted too; low memory restarts the browser when idle
+  const before = sbx.cmds.length;
+  sbx.healthLine = `${n} ${n - 400} ${n - 2} 1 1 1024 40 0.9`;
+  await ctl.healthTick();
+  const fresh = sbx.cmds.slice(before);
+  assert.ok(fresh.some((c) => c.includes("rm -f /tmp/stream/thumb.jpg")), "frozen stream: encoder restarted");
+  assert.ok(fresh.some((c) => c.includes("deskhost.mjs") && c.includes("nohup")), "memory under 60 MB: browser host restarted");
+  // no process match can hit its own shell (2026-10-21: pkill -f "[s]tream.sh" in a command naming stream.sh killed itself)
+  for (const c of sbx.cmds) {
+    for (const m of c.matchAll(/p(?:grep|kill)\s+(?:-\S+\s+)*-f\s+"([^"]+)"/g)) assert.ok(/^\[/.test(m[1]!), `bracketed pattern: ${m[1]}`);
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 

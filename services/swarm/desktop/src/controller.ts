@@ -478,7 +478,7 @@ export class Controller {
           const h = await d.checkHealth();
           const issues = deskIssues(h, d.lastActionAt, staleMs, now(), this.started);
           if (issues.length) {
-            const healed = await d.heal().catch(() => [] as string[]);
+            const healed = await d.heal(a.busy[r] || (r === "social" && a.signing)).catch(() => [] as string[]);
             this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, issues, healed, mem_avail_mb: h?.mem_avail_mb ?? null, stream_age_s: h?.stream_age_s ?? null });
           }
         } catch (e: any) {

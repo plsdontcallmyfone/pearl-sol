@@ -143,7 +143,7 @@ export class Desk {
       this.id = this.sbx.sandboxId;
       this.runningSince = Date.now();
     }
-    const r = await this.sh(`test -f ${HOME}/provisioned && echo yes; pgrep -f deskhost.mjs >/dev/null && echo host; pgrep -f stream.sh >/dev/null && echo enc`);
+    const r = await this.sh(`test -f ${HOME}/provisioned && echo yes; pgrep -f "[d]eskhost.mjs" >/dev/null && echo host; pgrep -x ffmpeg >/dev/null && echo enc`);
     const out = r.stdout;
     if (!out.includes("yes")) await this.provision(secret(), password());
     else {
@@ -152,8 +152,7 @@ export class Desk {
       const curHost = await this.sh(`cat ${HOME}/deskhost.mjs 2>/dev/null`);
       if (curHost.stdout !== hostJs) {
         await this.sbx!.files.write(`${HOME}/deskhost.mjs`, hostJs);
-        await this.sh(`pkill -f "[d]eskhost.mjs"; sleep 2; pkill -f "[c]hrome-linux/chrome"; sleep 1; true`, 30_000);
-        await this.startHost();
+        await this.restartHost();
         this.o.log({ event: "desk_host_updated", agent: this.handle, role: this.role, sandbox: this.id });
       } else if (!out.includes("host")) await this.startHost();
       // a newer encoder script or new encoder settings from this controller replace the running encoder
@@ -164,8 +163,8 @@ export class Desk {
       if (curScript !== enc || curEnv !== senv) {
         await this.sbx!.files.write(`${HOME}/stream.sh`, enc);
         await this.sbx!.files.write(`${HOME}/stream.env`, senv);
-        await this.sh(`chmod +x ${HOME}/stream.sh; pkill -f "[s]tream.sh"; pkill -x ffmpeg; true`);
-        await this.startEncoder();
+        await this.sh(`chmod +x ${HOME}/stream.sh`);
+        await this.restartEncoder();
         this.o.log({ event: "desk_encoder_updated", agent: this.handle, role: this.role, sandbox: this.id });
       } else if (!out.includes("enc")) await this.startEncoder();
     }
@@ -216,6 +215,20 @@ export class Desk {
       `cd ${HOME} && DISPLAY=:0 DESK_W=${w} DESK_H=${h} PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright nohup node deskhost.mjs ${this.role} ${this.o.siteUrl} ${this.o.explorerUrl} ${this.handle} >> deskhost.log 2>&1 &`,
       { background: true },
     );
+  }
+
+  /** Kills every encoder loop and ffmpeg (never this shell: patterns that cannot match their own
+   * command line, and $$ / $PPID skipped), clears the old still, starts one encoder. */
+  async restartEncoder() {
+    await this.sh(`for p in $(pgrep -f "[s]tream.sh") $(pgrep -x ffmpeg); do [ "$p" != "$$" ] && [ "$p" != "$PPID" ] && kill -9 "$p" 2>/dev/null; done; sleep 1; rm -f /tmp/stream/thumb.jpg /tmp/stream.lock; true`, 20_000);
+    await this.startEncoder();
+  }
+
+  /** Kills the browser host (SIGKILL: Playwright's SIGTERM handler closes the browser but keeps node
+   * running) and its Chromium, clears the profile lock, starts one browser host (same profile). */
+  async restartHost() {
+    await this.sh(`for p in $(pgrep -f "[d]eskhost.mjs"); do [ "$p" != "$$" ] && kill -9 "$p" 2>/dev/null; done; sleep 1; for p in $(pgrep -f "[c]hrome-linux/chrome"); do kill -9 "$p" 2>/dev/null; done; sleep 1; rm -f ${HOME}/profile/SingletonLock ${HOME}/profile/SingletonSocket ${HOME}/profile/SingletonCookie; true`, 30_000);
+    await this.startHost();
   }
 
   private async startEncoder() {
@@ -269,7 +282,7 @@ export class Desk {
     if (!this.sbx || this.state !== "running") return null;
     const r = await this.sh(
       `now=$(date +%s); t=$(stat -c %Y /tmp/stream/thumb.jpg 2>/dev/null || echo -1); s=$(stat -c %Y ${HOME}/state.json 2>/dev/null || echo -1); ` +
-        `e=$(pgrep -x ffmpeg >/dev/null && echo 1 || echo 0); h=$(pgrep -f deskhost.mjs >/dev/null && echo 1 || echo 0); ` +
+        `e=$(pgrep -x ffmpeg >/dev/null && echo 1 || echo 0); h=$(pgrep -f "[d]eskhost.mjs" >/dev/null && echo 1 || echo 0); ` +
         `m=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print int(t/1024), int(a/1024)}' /proc/meminfo); l=$(cut -d' ' -f1 /proc/loadavg); ` +
         `echo "$now $t $s $e $h $m $l"`,
       15_000,
@@ -293,15 +306,17 @@ export class Desk {
     return this.health;
   }
 
-  /** Restarts the encoder or the browser host if health found one of them down. */
-  async heal(): Promise<string[]> {
+  /** Repairs what health found: a dead or frozen stream (restart the encoder), a dead or stuck browser
+   * host, or memory under 60 MB (restart the browser host, same profile). The browser is never
+   * restarted while the desktop is busy with a task (`busy`). */
+  async heal(busy = false): Promise<string[]> {
     const h = this.health;
     if (!h || !this.sbx) return [];
     const done: string[] = [];
-    if (!h.encoder) { await this.startEncoder(); done.push("encoder restarted"); }
-    if (!h.browser_host) {
-      const r = await this.sh("pgrep -f deskhost.mjs >/dev/null && echo up");
-      if (!r.stdout.includes("up")) { await this.startHost(); done.push("browser host restarted"); }
+    if (!h.encoder || !h.stream_alive) { await this.restartEncoder(); done.push("encoder restarted"); }
+    if (!busy && (!h.browser_host || (h.mem_avail_mb !== null && h.mem_avail_mb < 60))) {
+      await this.restartHost();
+      done.push(h.browser_host ? "browser restarted (memory)" : "browser host restarted");
     }
     return done;
   }

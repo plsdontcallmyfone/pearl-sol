@@ -90,8 +90,10 @@ for (const p of ctx.pages()) if (p.url().startsWith(`chrome-extension://${extId}
 if (existsSync(`${HOME}/agent-secret`)) await seed().catch(e => log('seed_error', { error: String(e.message).slice(0, 200) }));
 else if (!(await seeded())) log('no_wallet', { why: 'no key file and no seeded profile' });
 
+// Work: the wallet and one working tab (tasks open their pages in the focused tab), plus the activity
+// console; a third tab (the market) pushed 1 GiB desktops into the OOM killer on 2026-10-21
 const startTabs = mode === 'work'
-  ? [walletUrl, explorer, `${site}/buy`]
+  ? [walletUrl, explorer]
   : [`${site}/town`];
 if (ctx.pages().filter(p => !p.url().startsWith('about:')).length === 0) {
   const blank = ctx.pages()[0];
@@ -146,9 +148,16 @@ for (let n = 0; ; n++) {
   await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));
   if (n % 5 === 0) {
     await unlockIfLocked().catch(() => {});
-    // keep the wallet's own tab count small on a 1 GiB desktop: at most 4 tabs (plus the console)
+    // keep the tab count small on a 1 GiB desktop: at most 3 tabs plus the console; close the oldest
+    // non-wallet tabs, never the focused one the vision model works in
     const pages = ctx.pages().filter(p => !isConsole(p));
-    if (pages.length > 4) for (const p of pages.slice(0, pages.length - 4)) if (!p.url().startsWith(`chrome-extension://`)) await p.close().catch(() => {});
+    let extra = pages.length - 3;
+    for (const p of pages) {
+      if (extra <= 0) break;
+      if (p.url().startsWith(`chrome-extension://`) || p === lastWork) continue;
+      await p.close().catch(() => {});
+      extra--;
+    }
     const tabs = [];
     for (const p of ctx.pages()) tabs.push({ url: p.url().slice(0, 300), title: (await p.title().catch(() => '')).slice(0, 120) });
     const st = { t: Date.now(), mode, ext: extId, address, tabs, console: !!front };
