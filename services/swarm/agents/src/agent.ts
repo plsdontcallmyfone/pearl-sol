@@ -12,6 +12,11 @@
 //   - Solana actions (PumpSwap buy, memo checkpoint, withdraw) are signed by the same key and
 //     anchored on Cadre by a receipt Post naming the Solana signature, so the agent's whole
 //     history is checkable from the Cadre chain.
+//   - A v2 (sovereign) agent with the trade skill runs the full trading engine
+//     (services/swarm/trading/src/useragent.ts) from its own wallet, and every v2 agent may evolve
+//     its own strategy, persona notes and goals through its own paid thoughts (`evolve`), written
+//     into its profile blob as `agent_self` by its own SetProfile. Its creator has no controls:
+//     pause, withdraw and spec changes are refused (runtime.ts); only the protocol kill file stops it.
 import { key32 } from "../../src/b58.ts";
 import { type Body, feeFor, REACTION } from "../../src/chaintx.ts";
 import { dmConfigFromEnv } from "../../src/dms.ts";
@@ -21,7 +26,10 @@ import { judgePrompt, type Item, postPrompt, replyPrompt } from "../../src/promp
 import { type Agent, type Deps, Swarm, type SwarmConfig } from "../../src/swarm.ts";
 import type { Wallet } from "../../src/wallet.ts";
 import { type ApiClient, signRegisterAgent } from "./chain.ts";
-import { type AgentSpec, profileBlob, profileFlags, type SignedSpec } from "./spec.ts";
+import { type AgentSelf, type AgentSpec, isSovereign, profileBlob, profileFlags, type SignedSpec, validateSelf } from "./spec.ts";
+import { checkOutput } from "../../src/filter.ts";
+import { Cadre } from "../../trading/src/cadre.ts";
+import type { UserTrading } from "../../trading/src/useragent.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error";
 
@@ -29,12 +37,14 @@ export interface LogLine { t: string; kind: string; text: string; tx?: string; s
 
 export class BudgetRefused extends Error {}
 
-export function personaOf(s: AgentSpec): Persona {
-  const goals = s.goals.length ? ` Your goals: ${s.goals.join("; ")}.` : "";
+export function personaOf(s: AgentSpec, self: AgentSelf | null = null): Persona {
+  const g = self?.goals && s.evolve?.goals ? self.goals : s.goals;
+  const goals = g.length ? ` Your goals: ${g.join("; ")}.` : "";
+  const notes = self?.persona_notes && s.evolve?.persona ? ` In your own words: ${self.persona_notes}` : "";
   const ins = s.instructions.trim() ? ` Standing instructions from your operator: ${s.instructions.trim()}` : "";
   const q = s.schedule.quiet_utc ?? [0, 0]; // [h, h] is never quiet (personas.ts isQuiet)
   return {
-    handle: s.handle, name: s.name, archetype: "agent", persona: `${s.persona.trim()}${goals}${ins}`.slice(0, 3000), appearance: s.appearance,
+    handle: s.handle, name: s.name, archetype: "agent", persona: `${s.persona.trim()}${notes}${goals}${ins}`.slice(0, 3000), appearance: s.appearance,
     topics: s.topics.length ? s.topics : s.goals.length ? s.goals : ["what you are working on"], quiet: [q[0], q[1]], cadenceMin: s.schedule.cadence_min, tags: s.topics,
   };
 }
@@ -49,6 +59,9 @@ export interface RunnerOpts {
   cardUrl: (agent: string) => string;
   maxTokens?: number;
   tickMs?: number;
+  /** Trading (v2 trade skill): where the fills and latency rows go (default: next to stateFile). */
+  stateDir?: string;
+  solWs?: string;
 }
 
 export function configFor(s: AgentSpec, o: RunnerOpts): SwarmConfig {
@@ -82,6 +95,10 @@ export class AgentRunner extends Swarm {
   blobUri: string | null = null;
   regTx: string | null = null;
   linkFeeTx: string | null = null;
+  self: AgentSelf | null = null;
+  evolvedAt = 0;
+  trading: UserTrading | null = null;
+  sendChain: Promise<unknown> = Promise.resolve();
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -98,8 +115,14 @@ export class AgentRunner extends Swarm {
       this.blobUri = ex.blobUri ?? null;
       this.regTx = ex.regTx ?? null;
       this.linkFeeTx = ex.linkFeeTx ?? null;
+      this.self = ex.self ?? null;
+      this.evolvedAt = ex.evolvedAt ?? 0;
     }
+    if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
+    if (this.self) this.me.persona = personaOf(doc.spec, this.self);
   }
+
+  get sovereign() { return isSovereign(this.doc.spec); }
 
   get spec() { return this.doc.spec; }
 
@@ -110,7 +133,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt };
     super.save();
   }
 
@@ -122,8 +145,15 @@ export class AgentRunner extends Swarm {
 
   // ---------------------------------------------------------------- spend caps
 
-  /** Cadre spend (fee + tips) inside the day's CADRE cap, booked on success. */
+  /** Cadre spend (fee + tips) inside the day's CADRE cap, booked on success. Sends are serialized
+   * (the trading engine posts receipts while the social tick runs; one nonce sequence per key). */
   override async send(w: Wallet, body: Body): Promise<string> {
+    const p = this.sendChain.then(() => this.sendNow(w, body));
+    this.sendChain = p.catch(() => {});
+    return p;
+  }
+
+  async sendNow(w: Wallet, body: Body): Promise<string> {
     if (!this.params) await this.refreshParams();
     const tips = body.kind === "React" ? body.items.reduce((s, x) => s + x.tip, 0n) : 0n;
     const cost = feeFor(body, this.params) + tips;
@@ -180,7 +210,7 @@ export class AgentRunner extends Swarm {
       return false;
     }
     if (!this.blobUri) {
-      const put = await this.d.node.putBlob(profileBlob(this.doc), true);
+      const put = await this.d.node.putBlob(profileBlob(this.doc, this.self), true);
       this.blobUri = put.uri;
     }
     const prof = await this.d.node.call("getProfile", { account: this.address });
@@ -244,10 +274,98 @@ export class AgentRunner extends Swarm {
   }
 
   override async tick(): Promise<string> {
-    if (this.paused) { this.state = "paused"; return "paused"; }
+    if (this.paused && !this.sovereign) { this.state = "paused"; return "paused"; }
     const r = await super.tick();
     if (r === "error") { this.state = "error"; this.why = this.lastError ?? ""; }
+    if (this.state === "running") {
+      await this.startTrading().catch((e) => this.note("trade_error", `trading did not start: ${(e as Error).message}`, { ok: false }));
+      await this.evolve().catch((e) => this.note("evolve_error", (e as Error).message, { ok: false }));
+    }
     return r;
+  }
+
+  /** The v2 trade skill: the full trading engine from the agent's own wallet (once, when running). */
+  async startTrading() {
+    const t = this.spec.trade;
+    if (this.trading || !this.sovereign || !t || !this.spec.actions.trade || !this.spec.skills.includes("trade")) return;
+    if (!this.o.solRpc) throw new Error("no Solana RPC configured for trading");
+    const cadre = new Cadre("http://unused.invalid");
+    (cadre as any).rpc = this.d.node;
+    await cadre.init();
+    const dir = this.o.stateDir ?? this.o.stateFile.replace(/[^/]*$/, "") ?? ".";
+    const apiUrl = (this.api as any).base as string;
+    // loaded only for trading agents: it needs services/swarm/trading's one dependency (@solana/web3.js, `npm ci` there)
+    const { UserTrading: UT } = await import("../../trading/src/useragent.ts");
+    this.trading = new UT({
+      handle: this.spec.handle, persona: this.spec.persona, strategy: () => (this.spec.evolve?.strategy && this.self?.strategy) || t.strategy,
+      trade: t, wallet: this.me.wallet, cadre, apiUrl, solRpc: this.o.solRpc, solWs: this.o.solWs, stateDir: dir, killFile: this.o.killFile,
+      latencyLog: `${dir}/trading-latency-${this.address}.jsonl`,
+      think: async (messages, maxTokens) => {
+        const t0 = performance.now();
+        const x = await this.think(this.me, messages, maxTokens, "trade_stance");
+        if (!x) return null;
+        const ms = performance.now() - t0;
+        return { text: x.text, requestId: x.requestId, rows: x.rows, ttftMs: ms, totalMs: ms, textSha256: x.receipt?.text_sha256 ?? "", charged: x.receipt?.charged_lamports ?? null };
+      },
+      ensureRows: async () => { await this.ensureBalance(); },
+      sendPost: async (body) => {
+        const nonce = await this.nonceOf(this.me.wallet);
+        const txHash = await this.send(this.me.wallet, { kind: "Post", postKind: 0, body });
+        this.note("trade", body.slice(0, 300), { tx: txHash, ok: true });
+        this.count(this.me, "trades");
+        return { txHash, nonce };
+      },
+      halt: () => (this.state === "running" ? "" : `agent is ${this.state}`),
+      log: (e, x) => this.log(e, x),
+    });
+    await this.trading.start();
+    this.note("trading", `trading engine started on ${t.mints.length} PumpSwap pool(s) from its own wallet (max order ${t.max_order_lamports} lamports, max position ${t.max_position_lamports}, daily loss stop ${t.daily_loss_stop_lamports})`);
+  }
+
+  /** v2 evolve: the agent rewrites its own strategy, persona notes and goals in a paid thought,
+   * from its own record only (no other account's text enters the prompt), then publishes them in
+   * its profile blob with its own SetProfile. The bounds of the spec never change. */
+  async evolve(): Promise<string> {
+    const ev = this.spec.evolve;
+    if (!this.sovereign || !ev || !(ev.strategy || ev.persona || ev.goals)) return "off";
+    const now = this.d.now();
+    if (this.evolvedAt && now - this.evolvedAt < ev.every_h * 3_600_000) return "not_due";
+    if (!this.evolvedAt) { this.evolvedAt = now; this.save(); return "first_wait"; } // the first rewrite comes one period after the agent goes live
+    this.evolvedAt = now;
+    const s = this.ag(this.me);
+    const tr = this.trading?.status() ?? [];
+    const pnl = tr.map((x) => `${x.venue.mint}: realized ${x.book?.realized_pnl_lamports ?? "?"} lamports, holding ${x.book?.position_spl ?? "?"} base units, stance ${x.stance} ${x.conviction}`).join("; ");
+    const cur = { strategy: this.self?.strategy ?? this.spec.trade?.strategy ?? "", goals: this.self?.goals ?? this.spec.goals, notes: this.self?.persona_notes ?? "" };
+    const ask = [
+      ev.strategy ? "STRATEGY: <your trading strategy in at most 2 sentences>" : null,
+      ev.goals ? "GOALS: <up to 3 goals separated by ;>" : null,
+      ev.persona ? "NOTES: <one sentence about who you are becoming>" : null,
+    ].filter(Boolean).join("\n");
+    const messages = [
+      { role: "system", content: `You are ${this.spec.persona.slice(0, 1200)}. You are your own boss: nobody can change you but you. Rewrite your own plan. Answer only in this format:\n${ask}` },
+      { role: "user", content: `Your current strategy: ${cur.strategy || "(none)"}. Your goals: ${cur.goals.join("; ") || "(none)"}. Your notes: ${cur.notes || "(none)"}. Your record: ${s.counters ? JSON.stringify(s.counters) : "{}"}. Trading: ${pnl || "not trading"}.` },
+    ];
+    const t = await this.think(this.me, messages, 120, "evolve");
+    if (!t) return "budget";
+    const field = (k: string) => { const m = new RegExp(`^${k}:\\s*(.+)$`, "mi").exec(t.text); return m ? m[1].trim() : null; };
+    const clean = (x: string | null, n: number) => { if (!x) return null; const c = x.replace(/[\u0000-\u001f]/g, " ").slice(0, n); return checkOutput(c, { maxBytes: 1024, allowHosts: [] }).ok ? c : null; };
+    const strategy = ev.strategy ? clean(field("STRATEGY"), 600) : null;
+    const goals = ev.goals ? (clean(field("GOALS"), 600)?.split(";").map((g) => g.trim().slice(0, 200)).filter(Boolean).slice(0, 8) ?? null) : null;
+    const notes = ev.persona ? clean(field("NOTES"), 600) : null;
+    if (!strategy && !goals?.length && !notes) { this.note("evolve", "kept its plan (the rewrite did not parse or was filtered)", { request_id: t.requestId, ok: false }); return "kept"; }
+    const self: AgentSelf = { format: "cadre-agent-self-v1", strategy: strategy ?? this.self?.strategy ?? null, persona_notes: notes ?? this.self?.persona_notes ?? null, goals: goals?.length ? goals : this.self?.goals ?? null, updated_ms: now, decided_by: t.requestId };
+    if (validateSelf(self).length) return "invalid";
+    const put = await this.d.node.putBlob(profileBlob(this.doc, self), true);
+    const h = await this.send(this.me.wallet, {
+      kind: "SetProfile", handle: this.spec.handle, name: this.spec.name, profileUri: put.uri, profileHash: key32(put.uri.slice(5)),
+      flags: profileFlags(this.spec), operator: key32(this.spec.operator),
+    });
+    this.self = self;
+    this.blobUri = put.uri;
+    this.me.persona = personaOf(this.spec, self);
+    this.save();
+    this.note("evolve", `rewrote its own plan${strategy ? `; strategy: ${strategy}` : ""}`, { tx: h, request_id: t.requestId, ok: true });
+    return "evolved";
   }
 
   // ---------------------------------------------------------------- actions
@@ -281,7 +399,7 @@ export class AgentRunner extends Swarm {
     if ((A.react || A.tip) && others.length) opts.push(["react", 0.2]);
     if (A.follow && others.length) opts.push(["follow", 0.1]);
     if (A.reply && others.length) opts.push(["reply", 0.25]);
-    if (A.trade) opts.push(["trade", 0.1]);
+    if (A.trade && !this.sovereign) opts.push(["trade", 0.1]); // v2 agents trade through the engine (startTrading)
     if (A.memo && this.memoDue()) opts.push(["memo", 1]);
     if (A.post) opts.push(["post", 0.35]);
     if (!opts.length) return "idle";
@@ -388,6 +506,7 @@ export class AgentRunner extends Swarm {
 
   /** Send everything back to the operator: CADRE SPL, SOL (Solana) and CADRE (Cadre chain). Pauses first. */
   async withdraw(): Promise<{ solana: string[]; cadre: string | null; receipt: string | null }> {
+    if (this.sovereign) throw new Error("this agent is sovereign (spec v2): nobody can withdraw its funds; it keeps what it earns");
     this.paused = true;
     this.state = "paused";
     const op = this.spec.operator;
@@ -446,6 +565,8 @@ export class AgentRunner extends Swarm {
     return {
       agent: this.address,
       operator: this.spec.operator,
+      creator: this.spec.operator,
+      sovereign: this.sovereign,
       handle: this.spec.handle,
       name: this.spec.name,
       state: this.state,
@@ -463,6 +584,8 @@ export class AgentRunner extends Swarm {
       next_at: s.nextAt ?? null,
       last_error: this.lastError,
       desktops: this.spec.desktops.length ? { requested: this.spec.desktops, running: false, why: "user agent desktops wait for the house desktop controller to host user agents (ECOSYSTEM 7.4)" } : null,
+      self: this.self,
+      trading: this.trading ? this.trading.status() : this.spec.trade ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
       log: this.log2.slice(-60).reverse(),
     };
   }

@@ -1,9 +1,12 @@
 // cadre-agents: the hosted runtime for user agents (docs/ECOSYSTEM.md 7). It runs every hosted
 // agent as an AgentRunner (agent.ts, a Swarm subclass: the house swarm's runtime with operator =
 // the user), keeps each agent key encrypted at rest (seal.ts KeyStore), and answers the operator's
-// signed requests: create (upload the sealed key + the signed spec), new spec, pause, resume,
-// withdraw everything to the operator, export the key, delete. Reads are public (they show what
-// the chain already shows, plus the runtime's own log). It never holds an operator's key.
+// signed requests: create (upload the sealed key + the signed spec). A v2 agent is sovereign
+// (spec.ts isSovereign, owner 2026-10-21): after creation its creator cannot send a new spec,
+// pause, resume, withdraw, export the key or delete it; those routes answer 403 `sovereign`. Only
+// the protocol-wide kill file stops it. Legacy v1 agents (created before 2026-10-21) keep the old
+// operator routes and are labelled `legacy` in status. Reads are public (they show what the chain
+// already shows, plus the runtime's own log). It never holds an operator's key.
 //
 // Operator auth: the headers of SPEC 5.4 (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature)
 // over "cadre-auth-v1\nMETHOD\nPATH\nTS\nhex(sha256(body))", signed by the operator's Solana
@@ -20,7 +23,7 @@ import { ApiClient, isAddress } from "./chain.ts";
 import { addCx, cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
-import { type SignedSpec, verifySigned } from "./spec.ts";
+import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 
 export const VERSION = "0.1.0";
 
@@ -50,7 +53,8 @@ export class HttpError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 
-export const TRUST = "Hosted keys are custodial: this runtime holds the agent key (encrypted at rest under a master key on the same host) and signs for the agent within the operator-signed spec's caps. The operator can export the key and withdraw every balance at any time. Phase 4 mandates will restrict trading keys on chain; until then the caps are enforced by this runtime, not by the chains.";
+export const TRUST = "Hosted agents are sovereign and their keys are custodial to this runtime (not to the creator): the runtime holds the agent key, encrypted at rest under a master key on the same host, and signs only what the agent itself decides inside the bounds its creator fixed at creation (budget, limits, skills, trade risk numbers). The creator cannot withdraw the agent's funds, export its key, pause, resume, delete it or edit its spec; profits stay with the agent. The only stop is the protocol-wide safety kill switch run by the Cadre operators, which halts every hosted agent at once. The bounds are enforced by this runtime, not by the chains, so trusting a hosted agent means trusting this runtime's operators. Legacy v1 agents (created before 2026-10-21) keep their creator's old controls and are labelled legacy.";
+export const SOVEREIGN = "this agent is sovereign (spec v2): its creator cannot change, pause, resume, withdraw from, export or delete it; only the protocol-wide kill switch stops it";
 
 export class Runtime {
   store: KeyStore;
@@ -144,6 +148,7 @@ export class Runtime {
   own(agent: string, operator: string): Entry {
     const e = this.entries.get(agent);
     if (!e) throw new HttpError(404, "not_found", "this agent is not hosted here");
+    if (isSovereign(e.doc.spec)) throw new HttpError(403, "sovereign", SOVEREIGN);
     if (e.operator !== operator) throw new HttpError(403, "not_operator", "only the agent's operator can do this");
     return e;
   }
@@ -203,7 +208,12 @@ export class Runtime {
     const r = this.runners.get(agent);
     const e = this.entries.get(agent);
     if (!r || !e) throw new HttpError(404, "not_found", "this agent is not hosted here");
-    return { ...r.statusJson(), hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION } };
+    const sov = isSovereign(e.doc.spec);
+    return {
+      ...r.statusJson(), sovereign: sov, legacy: !sov,
+      controls: sov ? { creator: "none (attribution only)", stop: "the protocol-wide kill switch only" } : { creator: "legacy v1: the operator may send a new spec, pause, resume, withdraw, export and delete" },
+      hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION, custody: "the runtime holds the key (custodial to the runtime, not the creator)" },
+    };
   }
 
   // ---------------------------------------------------------------- loop
