@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use commonware_cryptography::{ed25519, Signer as _};
 use commonware_p2p::{Blocker as _, Receiver as _, Recipients, Sender as _};
-use commonware_runtime::{deterministic, Clock, IoBuf, Quota, Runner as _, Supervisor as _};
+use commonware_runtime::{deterministic, Clock, IoBuf, Quota, Runner as _, Spawner as _, Supervisor as _};
 use net::open::testing::GatedNetwork;
 use net::open::{Config, Network, Oracle, Receiver, Seed, Sender};
 
@@ -268,5 +268,65 @@ fn pinned_seeds_in_one_slash16_all_connect() {
             let peers = n.oracle.peers();
             assert_eq!(peers.len(), 2, "node {i} peers {:?}", peers.iter().map(|p| p.remote).collect::<Vec<_>>());
         }
+    });
+}
+
+/// A follower that is pulling many large blobs from a peer still gets that peer's block and
+/// tip gossip promptly: bulk frames (blob channels, `register_bulk`) wait behind the normal
+/// lane and overflow on their own queue, never the normal one. Before 2026-10-21 both shared
+/// one 1024-frame queue per peer: on a busy link, blocks and tips queued behind megabytes of
+/// blob answers or were dropped when the queue was full, and a synced node stopped following
+/// the tip while its peers still listed it as connected (HANDOFF item 24).
+#[test]
+fn normal_lane_is_not_held_behind_bulk_frames() {
+    const BULK: u64 = 8;
+    runner(41).start(|ctx| async move {
+        // 1 MB/s link in each direction (sends take simulated time)
+        let mk = |i: u64, port: u16, seeds: &[u16]| {
+            let net = net::open::testing::ThrottledNetwork::new(ctx.child("net"), ctx.child("clock"), 1_000_000.0);
+            let (mut n, oracle) = Network::new(ctx.child("node").with_attribute("i", i), net, cfg(i, port, seeds));
+            let q = Quota::per_second(std::num::NonZeroU32::new(100_000).unwrap());
+            let normal = n.register(CH, q, 4096);
+            let bulk = n.register_bulk(BULK, q, 4096);
+            n.start();
+            (oracle, normal, bulk)
+        };
+        let (oa, (mut sa, _ra), (mut ba, _bra)) = mk(0, 3400, &[]);
+        let (ob, (_sb, mut rb), (_bb, mut brb)) = mk(1, 3401, &[3400]);
+        while oa.peers().is_empty() || ob.peers().is_empty() {
+            ctx.sleep(Duration::from_millis(100)).await;
+        }
+        // drain B's bulk channel as it arrives (as the node's blob consumers do)
+        let bulk_got = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let bg = bulk_got.clone();
+        ctx.child("bulk_rx").spawn(move |_| async move {
+            while brb.recv().await.is_ok() {
+                bg.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        // 200 bulk frames of 256 KiB: 52 MB, about 52 s on this link, far past the bulk queue
+        let frame = vec![7u8; 256 * 1024];
+        for _ in 0..200 {
+            let _ = ba.send(Recipients::All, IoBuf::from(frame.clone()), false);
+        }
+        // then a burst of normal messages (blocks, tips): every one arrives, within a few
+        // seconds (at most one bulk frame, 0.26 s, ahead of each)
+        let t0 = ctx.current();
+        for i in 0..100u32 {
+            let _ = sa.send(Recipients::All, IoBuf::from(i.to_be_bytes().to_vec()), false);
+        }
+        for i in 0..100u32 {
+            let (from, msg) = rb.recv().await.unwrap();
+            assert_eq!(from, oa.me());
+            assert_eq!(msg.as_ref(), i.to_be_bytes(), "normal messages arrive in order, none dropped");
+        }
+        let took = ctx.current().duration_since(t0).unwrap();
+        assert!(took < Duration::from_secs(3), "normal lane waited {took:?} behind bulk frames");
+        let st = oa.stats();
+        assert_eq!(st.queue_dropped, 0, "{st:?}");
+        assert!(st.bulk_dropped > 0, "the bulk queue overflowed on its own: {st:?}");
+        // the bulk frames that were queued still arrive, after the normal lane is empty
+        ctx.sleep(Duration::from_secs(30)).await;
+        assert!(bulk_got.load(Ordering::SeqCst) >= 10, "bulk frames still flow");
     });
 }

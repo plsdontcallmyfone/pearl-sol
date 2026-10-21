@@ -394,6 +394,7 @@ where
     let conn_id = s.next_conn;
     s.next_conn += 1;
     let (mut qtx, qrx) = futures::channel::mpsc::channel::<IoBufs>(cfg.queue_size);
+    let (btx, brx) = futures::channel::mpsc::channel::<IoBufs>(cfg.bulk_queue_size);
     let _ = qtx.try_send(IoBufs::from(wire::encode(&Msg::Hello { version: wire::VERSION, listen: cfg.advertised() })));
     if !inbound {
         let _ = qtx.try_send(IoBufs::from(wire::encode(&Msg::GetAddr)));
@@ -408,6 +409,7 @@ where
             remote: h.remote,
             listen: dialed,
             queue: qtx,
+            bulk: btx,
             handle: None,
             last_getaddr: None,
             addr_tokens: cfg.addr_burst,
@@ -418,7 +420,7 @@ where
     s.changed();
     drop(s);
     let (sh, ch, c2, k2) = (shared.clone(), channels.clone(), cfg.clone(), key.clone());
-    let handle = ctx.child("peer").spawn(move |c| conn_task(c, sh, ch, c2, k2, conn_id, sender, receiver, qrx));
+    let handle = ctx.child("peer").spawn(move |c| conn_task(c, sh, ch, c2, k2, conn_id, sender, receiver, qrx, brx));
     let mut s = lock(shared);
     match s.peers.get_mut(&key) {
         Some(p) if p.conn_id == conn_id => p.handle = Some(handle),
@@ -437,6 +439,7 @@ async fn conn_task<E, Si, St>(
     mut sender: encrypted::Sender<Si>,
     receiver: encrypted::Receiver<St>,
     mut queue: futures::channel::mpsc::Receiver<IoBufs>,
+    mut bulk: futures::channel::mpsc::Receiver<IoBufs>,
 ) where
     E: Spawner + Clock + Send + Sync + 'static,
     Si: commonware_runtime::Sink,
@@ -450,8 +453,19 @@ async fn conn_task<E, Si, St>(
     let mut next_ping = ctx.current() + cfg.ping_interval;
     let mut nonce = 0u64;
     loop {
+        // biased: the normal lane first, the bulk lane only when it is empty
         select! {
             m = queue.next() => {
+                match m {
+                    Some(b) => {
+                        if sender.send(b).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            },
+            m = bulk.next() => {
                 match m {
                     Some(b) => {
                         if sender.send(b).await.is_err() {

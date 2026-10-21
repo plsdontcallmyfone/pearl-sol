@@ -686,7 +686,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getBlobStats" => {
                 let Some(b) = self.blobs.as_ref() else { return Err(RpcError::server("this node has no blob store")) };
                 let c = b.config();
-                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(),
+                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(), "fetch_in_flight": self.blob_fetch.in_flight(),
                           "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
                           "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune}))
             }

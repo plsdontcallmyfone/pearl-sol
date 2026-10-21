@@ -131,8 +131,9 @@ where
         tips: network.register(CH_TIPS, quota(), backlog),
         headers: network.register(CH_HEADERS, quota(), backlog),
         bodies: network.register(CH_BODIES, quota(), backlog),
-        blobs: network.register(CH_BLOBS, quota(), backlog),
-        blob_fetch: network.register(CH_BLOB_FETCH, quota(), backlog),
+        // bulk lane: multi-MB blob frames must not delay or crowd out block and tip gossip
+        blobs: network.register_bulk(CH_BLOBS, quota(), backlog),
+        blob_fetch: network.register_bulk(CH_BLOB_FETCH, quota(), backlog),
     };
     let handle = network.start();
     StartedOpen { oracle, channels, handle }

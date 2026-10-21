@@ -24,6 +24,8 @@ pub(crate) struct PeerEntry {
     /// Address it listens on (dialed address for outbound, Hello for inbound).
     pub listen: Option<SocketAddr>,
     pub queue: futures::channel::mpsc::Sender<IoBufs>,
+    /// Bulk lane (see `Config::bulk_queue_size`).
+    pub bulk: futures::channel::mpsc::Sender<IoBufs>,
     pub handle: Option<Handle<()>>,
     pub last_getaddr: Option<SystemTime>,
     pub addr_tokens: f64,
@@ -38,6 +40,8 @@ pub(crate) struct Counters {
     pub dials: u64,
     pub dial_failures: u64,
     pub rate_dropped: u64,
+    pub queue_dropped: u64,
+    pub bulk_dropped: u64,
 }
 
 pub(crate) struct Shared {

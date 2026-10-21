@@ -92,7 +92,7 @@ where
             producer: h,
             mailbox_size: std::num::NonZeroUsize::new(4096).unwrap(),
             me: Some(me),
-            timeout: Duration::from_secs(2),
+            timeout: request_timeout(kind),
             fetch_retry_timeout: Duration::from_millis(250),
             priority_requests: false,
             priority_responses: false,
@@ -100,6 +100,19 @@ where
     );
     engine.start(net);
     mailbox
+}
+
+/// How long one request waits for a peer's answer before the resolver asks again. Headers
+/// and bodies are small and latency matters (fork repair, tip follow). A blob is up to
+/// 4 MiB and shares the link with everything else: at 2 s a node missing many blobs timed
+/// out and re-asked for each one about every 2 s, and the re-asks kept the link full, so its
+/// peers' block and tip gossip to it was dropped and the node stopped following the tip
+/// (2026-10-21, HANDOFF item 24).
+pub fn request_timeout(kind: Kind) -> Duration {
+    match kind {
+        Kind::Header | Kind::Body => Duration::from_secs(2),
+        Kind::Blob => Duration::from_secs(30),
+    }
 }
 
 pub fn key(h: &[u8; 32]) -> Key {
