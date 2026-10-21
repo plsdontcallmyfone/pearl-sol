@@ -735,7 +735,19 @@ CLAUDE.md "Who is working on what".
      (or put rate) for the upload.
    - crates/pearl-cli/Cargo.lock refreshed (ureq's tls feature had added rustls, ring, webpki-roots and
      friends without a lock update); `cargo build --release --locked` passes on the test box.
-   - Devnet rollout: ROLLOUT_RESULT
+   - Devnet rollout DONE 2026-10-21 (combined with the Phase 1 town merge, main 816c941: matrix height
+     4200 + social height 3260): the tip (4148 at 13:30 UTC) was already past 3260 on old binaries, so first a
+     replay check: the 4162 finalized devnet blocks (raw, from node 1's RPC) through consensus_pow::Chain with
+     the Pearl verifier and the new code reached the identical block hash at 4162 (a6f552a4...), 17 s on the
+     test box (scratch tool, not committed). Then agent-node 7ce3d9a1... + pearl-miner fe576acc... built on box 0,
+     cadre-node + cadre-miner restarted on box 1 (14:22 UTC), box 2 (15:10), box 0 (15:11); after each, the
+     three nodes had the same tip, finalized height and finalized hash, 3 peers, not syncing. Height 4200
+     passed between box 1 and box 2 with no RegisterModel over 384 sent. After all three: finality moved
+     4219 -> 4223 with equal hashes, box 1's miner 20 blocks accepted 0 rejected since its restart, box 2 mined
+     tip 4253, every cadre-* unit active on all boxes. Old binaries kept in ~lode/{agent-node,pearl-miner}.prev.
+     Seen on the way: a fresh node on the test box (old and new binary alike) stalled at height 1-2 syncing
+     devnet over p2p ("orphan pool full" on gossiped blocks); the NODE.md join recipe synced on 2026-10-20, so
+     the header sync path needs a look (not this row's change: the old deployed binary does the same).
    - Not done (owner, 2026-10-20): no 8B registration on devnet, no GPU; devnet stays on the 1B and the
      CPU worker. Open for an 8B: the gateway's balance ticket budget (`max_blocks_balance`, capped at 10,000
      blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
