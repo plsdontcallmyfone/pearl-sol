@@ -44,7 +44,7 @@ export function estimatePromptTokens(body, chat) {
 
 export class Proxy {
   /**
-   * cfg: {gateway, wallet, apiKey?, ledger, token?, defaultMaxTokens, log?(obj), pricesTtlMs?}
+   * cfg: {gateway, wallet, apiKey?, ledger, token?, defaultMaxTokens, log?(obj), pricesTtlMs?, allowOrigins?: string[]}
    */
   constructor(cfg) {
     this.cfg = { defaultMaxTokens: 256, pricesTtlMs: 60_000, log: (o) => process.stderr.write(JSON.stringify(o) + "\n"), ...cfg };
@@ -92,6 +92,23 @@ export class Proxy {
     return got.length === want.length && timingSafeEqual(got, want);
   }
 
+  /**
+   * Browser guard. The proxy spends from its wallet and, on loopback, needs no token, so a web
+   * page the user visits must not be able to drive it: browsers attach Origin to every
+   * cross-origin POST (also no-cors ones, which skip the CORS preflight), so a request with an
+   * Origin not in cfg.allowOrigins is refused; and a Host that is not this loopback listener
+   * (DNS rebinding: evil.example resolving to 127.0.0.1) is refused too.
+   */
+  browserGuard(req) {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !(this.cfg.allowOrigins ?? []).includes(origin)) return `requests from a web page (Origin ${String(origin).slice(0, 80)}) are refused; allow it with CADRE_PROXY_ALLOW_ORIGINS`;
+    if (this.loopback) {
+      const host = String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
+      if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(host)) return `Host ${String(req.headers.host ?? "").slice(0, 80)} is not this loopback listener (DNS rebinding guard)`;
+    }
+    return null;
+  }
+
   async handle(req, res) {
     const url = new URL(req.url, "http://local");
     const path = url.pathname;
@@ -99,6 +116,8 @@ export class Proxy {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
+    const refused = this.browserGuard(req);
+    if (refused) return send(openaiError(403, refused, "invalid_request_error", "forbidden_origin"));
     try {
       if (req.method === "GET" && path === "/health") {
         return send({ status: 200, body: { ok: true, service: "cadre-proxy", wallet: this.cfg.wallet.address, gateway: this.gateway, auth: this.cfg.apiKey ? "api-key" : "wallet", spend: this.cfg.ledger.summary() } });
@@ -209,6 +228,7 @@ export class Proxy {
 
   listen(port, host = "127.0.0.1") {
     const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
+    this.loopback = loopback;
     if (!loopback && !this.cfg.token) throw new Error(`refusing to listen on ${host} without --token (the proxy spends from its wallet)`);
     this.server = createServer((req, res) => this.handle(req, res));
     return new Promise((ok, fail) => {
