@@ -258,7 +258,8 @@ pub struct HistoryEntry {
 
 /// Accounts a tx touches, as far as the tx bytes say: the sender, a Transfer's
 /// recipient, a BridgeUnlock's recipient, a RejectResult's deliverer, a Follow's targets,
-/// an OperatorLink's agent (job payouts, coinbase and tip recipients are not listed).
+/// an OperatorLink's agent, a DM's recipient, a ChannelMember's named member (job payouts,
+/// coinbase and tip recipients are not listed).
 pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
     let mut v = vec![t.from];
     match &t.body {
@@ -268,6 +269,8 @@ pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
         agent_types::TxBody::RejectResult { deliverer, .. } => v.push(*deliverer),
         agent_types::TxBody::Follow { items } => v.extend(items.iter().map(|x| x.target)),
         agent_types::TxBody::OperatorLink { agent, .. } => v.push(*agent),
+        agent_types::TxBody::SendMessage(m) if m.to != [0; 32] => v.push(m.to),
+        agent_types::TxBody::ChannelMember { member, .. } if *member != [0; 32] => v.push(*member),
         _ => {}
     }
     v.dedup();

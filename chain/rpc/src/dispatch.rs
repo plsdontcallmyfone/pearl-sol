@@ -695,6 +695,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     let rejected = matches!(&t.body, agent_types::TxBody::RejectResult { deliverer, .. } if *deliverer == a);
                     let followed = matches!(&t.body, agent_types::TxBody::Follow { items } if t.from != a && items.iter().any(|x| x.target == a));
                     let linked = matches!(&t.body, agent_types::TxBody::OperatorLink { agent, .. } if *agent == a);
+                    let messaged = matches!(&t.body, agent_types::TxBody::SendMessage(m) if t.from != a && m.to == a);
+                    let membered = matches!(&t.body, agent_types::TxBody::ChannelMember { member, .. } if t.from != a && *member == a);
                     v["role"] = json!(if lien {
                         "lien"
                     } else if rejected {
@@ -703,6 +705,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         "follow"
                     } else if linked {
                         "operator"
+                    } else if messaged {
+                        "message"
+                    } else if membered {
+                        "member"
                     } else if t.from == a {
                         "sender"
                     } else {
@@ -723,7 +729,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             },
             "getMempool" => Ok(json!({"size": self.mempool.len(), "txs": self.mempool.hashes().iter().map(hex::encode).collect::<Vec<_>>()})),
             "subscribe" => Err(RpcError::server("subscribe is only available over the WebSocket endpoint")),
-            m => Err(RpcError::method(m)),
+            m => match self.dm_dispatch(m, p).await {
+                Some(r) => r,
+                None => Err(RpcError::method(m)),
+            },
         }
     }
 }

@@ -13,6 +13,7 @@ use commonware_cryptography::{ed25519, Signer, Verifier};
 
 use crate::codec::{R, W};
 use crate::social::{read_follows, read_reactions, write_follows, write_reactions, FollowEdge, Post, Reaction, SetProfile};
+use crate::dm::{read_consents, read_envelopes, write_consents, write_envelopes, ChannelConfig, Consent, KeyEnvelope, SendMessage};
 use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_REJECT, DOMAIN_RESULT, NS_TX, TX_VERSION};
 
 pub const MAX_NAME: usize = 64;
@@ -79,6 +80,12 @@ pub enum TxKind {
     RejectResult = 13,
     SetProfile = 14,
     OperatorLink = 15,
+    SendMessage = 16,
+    ReclaimMessage = 17,
+    SetConsent = 18,
+    ChannelConfig = 19,
+    ChannelMember = 20,
+    ChannelKey = 21,
     Post = 22,
     React = 23,
     Follow = 24,
@@ -103,6 +110,12 @@ impl TxKind {
             13 => Self::RejectResult,
             14 => Self::SetProfile,
             15 => Self::OperatorLink,
+            16 => Self::SendMessage,
+            17 => Self::ReclaimMessage,
+            18 => Self::SetConsent,
+            19 => Self::ChannelConfig,
+            20 => Self::ChannelMember,
+            21 => Self::ChannelKey,
             22 => Self::Post,
             23 => Self::React,
             24 => Self::Follow,
@@ -112,6 +125,10 @@ impl TxKind {
     /// The social kinds (SPEC 4.6): valid from `social_upgrade_height`, under the social fee rule.
     pub fn is_social(&self) -> bool {
         matches!(self, Self::SetProfile | Self::OperatorLink | Self::Post | Self::React | Self::Follow)
+    }
+    /// The DM and channel kinds (SPEC 4.10): valid from `dm_upgrade_height`, under the social fee rule.
+    pub fn is_dm(&self) -> bool {
+        matches!(self, Self::SendMessage | Self::ReclaimMessage | Self::SetConsent | Self::ChannelConfig | Self::ChannelMember | Self::ChannelKey)
     }
 
     pub fn name(&self) -> &'static str {
@@ -132,6 +149,12 @@ impl TxKind {
             Self::RejectResult => "RejectResult",
             Self::SetProfile => "SetProfile",
             Self::OperatorLink => "OperatorLink",
+            Self::SendMessage => "SendMessage",
+            Self::ReclaimMessage => "ReclaimMessage",
+            Self::SetConsent => "SetConsent",
+            Self::ChannelConfig => "ChannelConfig",
+            Self::ChannelMember => "ChannelMember",
+            Self::ChannelKey => "ChannelKey",
             Self::Post => "Post",
             Self::React => "React",
             Self::Follow => "Follow",
@@ -364,6 +387,19 @@ pub enum TxBody {
     React { items: Vec<Reaction> },
     /// `count u8 (1..=64) | (target [32] | on u8)*` (SPEC 4.6).
     Follow { items: Vec<FollowEdge> },
+    /// DM or channel message (SPEC 4.10).
+    SendMessage(SendMessage),
+    /// `message_id [32]`: the sender reclaims an escrowed pay after its window, or the
+    /// recipient declines it early (SPEC 4.10).
+    ReclaimMessage { message_id: Hash },
+    /// `count u8 (1..=64) | (peer [32] | state u8)*` (SPEC 4.10).
+    SetConsent { items: Vec<Consent> },
+    /// Create or update a channel (SPEC 4.10).
+    ChannelConfig(ChannelConfig),
+    /// `channel [32] | action u8 | member [32] | pay u64` (SPEC 4.10).
+    ChannelMember { channel: Hash, action: u8, member: Pubkey, pay: u64 },
+    /// `channel [32] | epoch u32 | count u8 (1..=100) | (member [32] | envelope [104])*` (SPEC 4.10).
+    ChannelKey { channel: Hash, epoch: u32, envelopes: Vec<KeyEnvelope> },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -404,6 +440,12 @@ impl TxBody {
             Self::RejectResult { .. } => TxKind::RejectResult,
             Self::SetProfile(_) => TxKind::SetProfile,
             Self::OperatorLink { .. } => TxKind::OperatorLink,
+            Self::SendMessage(_) => TxKind::SendMessage,
+            Self::ReclaimMessage { .. } => TxKind::ReclaimMessage,
+            Self::SetConsent { .. } => TxKind::SetConsent,
+            Self::ChannelConfig(_) => TxKind::ChannelConfig,
+            Self::ChannelMember { .. } => TxKind::ChannelMember,
+            Self::ChannelKey { .. } => TxKind::ChannelKey,
             Self::Post(_) => TxKind::Post,
             Self::React { .. } => TxKind::React,
             Self::Follow { .. } => TxKind::Follow,
@@ -472,6 +514,19 @@ impl TxBody {
             Self::Post(p) => p.write(w),
             Self::React { items } => write_reactions(w, items),
             Self::Follow { items } => write_follows(w, items),
+            Self::SendMessage(m) => m.write(w),
+            Self::ReclaimMessage { message_id } => {
+                w.bytes(message_id);
+            }
+            Self::SetConsent { items } => write_consents(w, items),
+            Self::ChannelConfig(c) => c.write(w),
+            Self::ChannelMember { channel, action, member, pay } => {
+                w.bytes(channel).u8(*action).bytes(member).u64(*pay);
+            }
+            Self::ChannelKey { channel, epoch, envelopes } => {
+                w.bytes(channel).u32(*epoch);
+                write_envelopes(w, envelopes);
+            }
         }
     }
 
@@ -564,6 +619,19 @@ impl TxBody {
             TxKind::Post => Self::Post(Post::read(r)?),
             TxKind::React => Self::React { items: read_reactions(r)? },
             TxKind::Follow => Self::Follow { items: read_follows(r)? },
+            TxKind::SendMessage => Self::SendMessage(SendMessage::read(r)?),
+            TxKind::ReclaimMessage => Self::ReclaimMessage { message_id: r.arr()? },
+            TxKind::SetConsent => Self::SetConsent { items: read_consents(r)? },
+            TxKind::ChannelConfig => Self::ChannelConfig(ChannelConfig::read(r)?),
+            TxKind::ChannelMember => {
+                let channel = r.arr()?;
+                let action = r.u8()?;
+                if action > crate::dm::MEMBER_REMOVE {
+                    return Err(DecodeError::Invalid("channel member action"));
+                }
+                Self::ChannelMember { channel, action, member: r.arr()?, pay: r.u64()? }
+            }
+            TxKind::ChannelKey => Self::ChannelKey { channel: r.arr()?, epoch: r.u32()?, envelopes: read_envelopes(r)? },
         })
     }
 }

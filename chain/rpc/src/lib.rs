@@ -3,6 +3,7 @@
 
 pub mod core;
 pub mod dispatch;
+mod dm;
 mod reject;
 mod social;
 pub mod server;

@@ -36,6 +36,17 @@ pub mod tag {
     pub const REACT: u8 = 23;
     pub const FOLLOW: u8 = 24;
     pub const HANDLE: u8 = 25;
+    /// DM and channel records (state/src/dm.rs, SPEC 4.10).
+    pub const DM_PARAMS: u8 = 26;
+    pub const MSG_ESCROW: u8 = 27;
+    pub const DM_LAST: u8 = 28;
+    pub const CONSENT: u8 = 29;
+    pub const DM_STATS: u8 = 30;
+    pub const CHANNEL: u8 = 31;
+    pub const CHANNEL_MEMBER: u8 = 32;
+    pub const CHANNEL_INVITE: u8 = 33;
+    pub const CHANNEL_INDEX: u8 = 34;
+    pub const CHANNEL_COUNT: u8 = 35;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {

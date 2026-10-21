@@ -1,0 +1,83 @@
+{
+  "accounts": [
+    {
+      "account": "6DDSqnFUxWMu66T4pgQJpaUxEmfYdrJLJdcJmUtL6HW7",
+      "enc_key": "AmPTUKBstWgxwJYssxhzLUF8fcHEncFo9gc2Bk1rMMjH",
+      "enc_key_hex": "911821248565c5acbe4f98659a1c340a628fc1a017aaf96ddac79267b3033c54",
+      "enc_secret": "926c33c8b9008b01e39bf5a8bd6cd4b0e7b1366bc387a7d07e427fb27b34ca78",
+      "name": "alice",
+      "seed": "b5802e2c4b58c29279a877868859e11d9c2ae86ee8bdb15ab912176fa6e74c9e"
+    },
+    {
+      "account": "BAWZgY5CUMzXJmnGEKzKBPuwq8EeuBPetJ3FtQKgN9km",
+      "enc_key": "AWNs8C8i3G4YAkZXBaMFBnGYbxqFk4aujZqmdAGYT17S",
+      "enc_key_hex": "8d3fbf6bbff676ab9d3cd22f2bf70514e92ba24cc502506fc9703d2da9ee9115",
+      "enc_secret": "c7c52b9b1ada7d4b98f1c33f97a682666b2c74dd522b765021a9c95d40ba9acc",
+      "name": "bob",
+      "seed": "3ba935cfa50b5a651c83fbddaa7dc616fd2a15508e6fe50388fe0acb9b931e25"
+    },
+    {
+      "account": "9fGF5tNPk4sQdJCZCECuHBJNynbkRPL4dFu49qR25PNa",
+      "enc_key": "2CqTNiq1uGeJ4esUNsPbxJ3mEvF4bPL8nVp5sfGjQHtZ",
+      "enc_key_hex": "11e3dd1fd96c73449609dc291940ee98de3f4b57e428b258125730ce5d5f8d06",
+      "enc_secret": "c2a43c7e2fcb9d4d2a49d285b0f9f66a7ac9591b3381fe5a022d036b1864f0df",
+      "name": "carol",
+      "seed": "913620e3ea8f30e2bfe4cdcadf87e1f0ffd1e9f0fb285252d90e017542d6be8c"
+    }
+  ],
+  "format": "cadre-dm-crypto-v1",
+  "hkdf_check": {
+    "ikm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "info": "78323535313920656e635f6b6579",
+    "okm": "1626170ea898ff1804ed5a80af401f576d0ae828a85e7d152fdd103c82e091f1",
+    "salt": "63616472652d646d2d7631"
+  },
+  "scheme": {
+    "chan_body": "0x02 | epoch u32 LE | nonce [24] | XChaCha20-Poly1305(group_key, nonce, plaintext, aad = \"cadre-chan-v1\" || channel || from || epoch u32 LE)",
+    "chan_key_envelope": "eph_pub [32] | nonce [24] | XChaCha20-Poly1305(chan_key_key, nonce, group_key, aad = info) [48]",
+    "chan_key_key": "HKDF-SHA256(ikm = X25519(eph, M), salt = eph_pub || M, info = \"cadre-chan-v1\" || channel || epoch u32 LE || member, 32)",
+    "dm_aead": "XChaCha20-Poly1305(dm_key, nonce, plaintext, aad = info)",
+    "dm_body": "0x01 | count u8 (1..=2) | (eph_pub [32] | nonce [24] | ct_len u16 LE | ct)*; envelope 0 to the recipient, 1 to the sender",
+    "dm_key": "HKDF-SHA256(ikm = X25519(eph, R), salt = eph_pub || R, info = \"cadre-dm-v1\" || from || to, 32)",
+    "enc_secret": "HKDF-SHA256(ikm = ed25519 seed, salt = \"cadre-dm-v1\", info = \"x25519 enc_key\", 32); enc_key = X25519(enc_secret, 9)"
+  },
+  "sealed_channel": {
+    "channel_id": "70896ffca4a7b7ee5afc6e1fba9eddd353f33ae9e59ae9e83173f330431b4001",
+    "envelopes": [
+      {
+        "envelope_hex": "e401fe9a60d32d444f66c2a7c8ffd728d9ef1eae8584e85e8da50ee8686a5f66005890d7f94f53928d0ca39848da83d022368e3e70deeb70a45b1371c4170bc85a202fac55bf9b701848933bf48520afaa2f8aced9529ac4a4c12d79ae8f5a927abf99e1401cfa4f",
+        "eph_secret": "bd80d8a4127584607f4fdcad61e0addc99bc18c2e0be2d01f8853daa4e8e6403",
+        "member": "6DDSqnFUxWMu66T4pgQJpaUxEmfYdrJLJdcJmUtL6HW7",
+        "nonce": "005890d7f94f53928d0ca39848da83d022368e3e70deeb70"
+      },
+      {
+        "envelope_hex": "8a131003be7b990de844e692510d84a958649d0e00a24e44fdfcb94d6dc760163b3effca462c3b3728cf5cd1902fcde22863c8f9be4b12e074cbb84b565a243569c7af8153568be314730505c1ebf8addb5bab43b3b1ac1c6ababe13cafed549cf5d1249e38dce37",
+        "eph_secret": "8a1c37dbf85aac3b3a339d872f821c68ffb902c5dab4718c03e9727a056cfa59",
+        "member": "9fGF5tNPk4sQdJCZCECuHBJNynbkRPL4dFu49qR25PNa",
+        "nonce": "3b3effca462c3b3728cf5cd1902fcde22863c8f9be4b12e0"
+      }
+    ],
+    "epoch": 1,
+    "group_key": "da802cfd74bbda7338bffd8c1466a47a212428812133f6f75eb88a50ad39a996",
+    "message": {
+      "body_hex": "0201000000d4375d4762f77315870a6a1472045e1998a4e718346e90f8eebabbeaef7e586d3c75b95092ddb27e87b5eb9dc42f3dd3333264848f9641452716f99337a4bb99d32d4306bb",
+      "from": "9fGF5tNPk4sQdJCZCECuHBJNynbkRPL4dFu49qR25PNa",
+      "nonce": "d4375d4762f77315870a6a1472045e1998a4e718346e90f8",
+      "plaintext": "Bids on GPU hours open at 40."
+    }
+  },
+  "sealed_dm": {
+    "body_hex": "01025246b438dd5d2fdaa29ff0508dba16c3ab0709301ad2c3530d08e5d05ebe2e36b17d4dc84843a604670320a26044d4d55b653dcb70bc50c63b00b59ced5b77d9e69a91d9ea2cb48ec0d965c998a10cb610d19791a063014799faeb24b7cc88388a1d683fda7121b4a872f7388a9a6456ed9240aec1eb0f5298b742d2cd9be8f57ada3d77628b3795d0500ef80c4d2cc0ff66439438ed33f89085117b9e048b529853bdc5edf0b46f9a2d32852b3b00a16bd0ba2b0a0bd4789c82938738f3edb69787f76303fc1e07168655c958e6eb60a238be9f2994231b3537f67b40ba1f98a5460a4eb0a0328854a9",
+    "eph_secrets": [
+      "1fb907da4356f3f8309bf568424f0110014cb35906c0dbaf2678e95140bb5c4b",
+      "806e48ad4c7e4379733b543cfd569633d7217ed580520699db86cdec878428ec"
+    ],
+    "from": "6DDSqnFUxWMu66T4pgQJpaUxEmfYdrJLJdcJmUtL6HW7",
+    "nonces": [
+      "b17d4dc84843a604670320a26044d4d55b653dcb70bc50c6",
+      "ed33f89085117b9e048b529853bdc5edf0b46f9a2d32852b"
+    ],
+    "plaintext": "Meet me at the harbour desk, café at dawn.",
+    "to": "BAWZgY5CUMzXJmnGEKzKBPuwq8EeuBPetJ3FtQKgN9km"
+  }
+}

@@ -20,3 +20,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 serde_json.workspace = true
 hex.workspace = true
 bs58.workspace = true
+# sealed DM reference + vectors (tests/dm_crypto.rs only; the chain never decrypts)
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
+chacha20poly1305 = "0.11"
+hmac = "0.12"

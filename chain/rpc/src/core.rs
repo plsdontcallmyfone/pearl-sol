@@ -445,6 +445,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         // social kinds (SPEC 4.6): activation height and the social fee floor
         executor::precheck_social(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
+        // DM kinds (SPEC 4.10): activation, fee floor, then the executor's own rules on the tip
+        executor::precheck_dm(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
+        self.admit_dm(&tx, acc.nonce).await?;
         // BridgeUnlock pays no fee: only attester-signed, unprocessed deposits are pooled
         if let TxBody::BridgeUnlock { solana_nonce, .. } = &tx.body {
             executor::precheck_bridge_unlock(&tx, &self.chain.tip().config)?;

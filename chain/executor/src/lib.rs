@@ -21,9 +21,11 @@
 use std::collections::BTreeMap;
 
 mod balance;
+mod dm;
 mod reject;
 mod social;
 
+pub use dm::{precheck_dm, read_dm_params};
 pub use social::{precheck_social, social_fee_floor};
 
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
@@ -509,6 +511,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if kind.is_social() {
             self.check_social(tx)?;
         }
+        if kind.is_dm() || matches!(&tx.body, TxBody::AdminConfig { key, .. } if state::dm::is_dm_key(*key)) {
+            self.check_dm(tx)?;
+        }
         let mut acc = self.ov.account(&tx.from).await?;
         if acc.nonce != tx.nonce {
             return bad(format!("bad nonce: expected {}, got {}", acc.nonce, tx.nonce));
@@ -651,6 +656,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 let w = self.ov.append_withdrawal(&tx.from, solana_recipient, *amount, h).await?;
                 out.withdrawals.push(w);
             }
+            TxBody::AdminConfig { key, value } if state::dm::is_dm_key(*key) => self.admin_dm_config(&tx.from, *key, value).await?,
             TxBody::AdminConfig { key, value } => {
                 if tx.from != self.cfg.admin {
                     return bad("not the admin");
@@ -759,6 +765,12 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             TxBody::Post(p) => self.post(&tx.from, tx.nonce, p).await?,
             TxBody::React { items } => self.react(&tx.from, items).await?,
             TxBody::Follow { items } => self.follow(&tx.from, items).await?,
+            TxBody::SendMessage(m) => self.send_message(&tx.from, tx.nonce, m).await?,
+            TxBody::ReclaimMessage { message_id } => self.reclaim_message(&tx.from, message_id).await?,
+            TxBody::SetConsent { items } => self.set_consent(&tx.from, items).await?,
+            TxBody::ChannelConfig(c) => self.channel_config(&tx.from, tx.nonce, c).await?,
+            TxBody::ChannelMember { channel, action, member, pay } => self.channel_member(&tx.from, channel, *action, member, *pay).await?,
+            TxBody::ChannelKey { channel, epoch, envelopes } => self.channel_key(&tx.from, channel, *epoch, envelopes).await?,
         }
         Ok(out)
     }
@@ -1165,7 +1177,7 @@ pub fn genesis_writes(cfg: &Config) -> Result<WriteSet, String> {
 }
 
 /// Supply accounting over a full set of record values: balances (escrow and pool
-/// included) + W held by live jobs + immature coinbase + liens' pending amounts. Must equal [`TOTAL_SUPPLY`].
+/// included) + W held by live jobs + immature coinbase + liens' pending amounts + escrowed DM pay. Must equal [`TOTAL_SUPPLY`].
 pub fn supply_of(values: &[Vec<u8>]) -> Result<u128, String> {
     let mut total: u128 = 0;
     for v in values {
@@ -1179,6 +1191,7 @@ pub fn supply_of(values: &[Vec<u8>]) -> Result<u128, String> {
             }
             Some(&schema::tag::IMMATURE) => total += Immature::decode(v).map_err(|e| e.to_string())?.total() as u128,
             Some(&schema::tag::ROUTE) => total += Route::decode(v).map_err(|e| e.to_string())?.pending as u128,
+            Some(&schema::tag::MSG_ESCROW) => total += state::dm::MsgEscrow::decode(v).map_err(|e| e.to_string())?.pay as u128,
             _ => {}
         }
     }

@@ -105,6 +105,21 @@ fn body_json(b: &TxBody) -> Value {
         TxBody::React { items } => json!({"items": items.iter().map(|x| json!({
             "post_id": hex::encode(x.post_id), "reaction": x.reaction, "tip": x.tip.to_string()})).collect::<Vec<_>>()}),
         TxBody::Follow { items } => json!({"items": items.iter().map(|x| json!({"target": b58(&x.target), "on": x.on})).collect::<Vec<_>>()}),
+        TxBody::SendMessage(m) => json!({
+            "to": b58(&m.to), "channel": hex::encode(m.channel), "mode": m.mode, "reply_to": hex::encode(m.reply_to),
+            "pay": m.pay.to_string(), "reclaim_after": m.reclaim_after, "body_hex": hex::encode(&m.body),
+            "blob_uri": String::from_utf8_lossy(&m.blob_uri), "blob_hash": hex::encode(m.blob_hash)}),
+        TxBody::ReclaimMessage { message_id } => json!({"message_id": hex::encode(message_id)}),
+        TxBody::SetConsent { items } => json!({"items": items.iter().map(|x| json!({"peer": b58(&x.peer), "state": x.state})).collect::<Vec<_>>()}),
+        TxBody::ChannelConfig(c) => json!({
+            "channel_id": hex::encode(c.channel_id), "name": String::from_utf8_lossy(&c.name), "about": String::from_utf8_lossy(&c.about),
+            "policy": c.policy, "join_price": c.join_price.to_string(), "mode": c.mode,
+            "admins": c.admins.iter().map(|a| b58(a)).collect::<Vec<_>>()}),
+        TxBody::ChannelMember { channel, action, member, pay } => json!({
+            "channel": hex::encode(channel), "action": action, "member": b58(member), "pay": pay.to_string()}),
+        TxBody::ChannelKey { channel, epoch, envelopes } => json!({
+            "channel": hex::encode(channel), "epoch": epoch,
+            "envelopes": envelopes.iter().map(|e| json!({"member": b58(&e.member), "envelope": hex::encode(e.envelope)})).collect::<Vec<_>>()}),
     }
 }
 
@@ -415,7 +430,53 @@ fn build() -> Vec<(&'static str, Value)> {
                 agent_types::FollowEdge { target: pubkey_from_seed(&seed(9)), on: false }] }).0,
         ],
     });
+    // DM and channel kinds (SPEC 4.10) in dm.json: a plain DM with escrowed pay, a sealed DM
+    // (framing only here; real envelopes are in dm-crypto.json), a reply that releases it, a
+    // reclaim, a batched SetConsent, a sealed channel, an invite, a join, a key epoch, a
+    // sealed channel message.
+    use agent_types::dm::{self as dmt, Consent, KeyEnvelope, SendMessage};
+    let carol = pubkey_from_seed(&seed(4));
+    let paid_msg = dmt::message_id(&alice_pk, 6);
+    let chan = dmt::channel_id(&alice_pk, 8);
+    let mut sealed_body = vec![1u8, 1];
+    sealed_body.extend([0x11u8; 32]);
+    sealed_body.extend([0x22u8; 24]);
+    sealed_body.extend(21u16.to_le_bytes());
+    sealed_body.extend([0x33u8; 21]);
+    let mut chan_body = vec![2u8];
+    chan_body.extend(1u32.to_le_bytes());
+    chan_body.extend([0x44u8; 24]);
+    chan_body.extend([0x55u8; 30]);
+    let dm_v = json!({
+        "message_ids": [{"from": b58(&alice_pk), "nonce": 6, "message_id": hex::encode(paid_msg)}],
+        "channel_ids": [{"creator": b58(&alice_pk), "nonce": 8, "channel_id": hex::encode(chan)}],
+        "txs": [
+            tx_vector("dm_plain_escrow", 1, 6, 1000, TxBody::SendMessage(SendMessage {
+                to: bob, channel: [0; 32], mode: 0, reply_to: [0; 32], pay: 5_000_000, reclaim_after: 360,
+                body: "Are you taking questions about the fog?".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+            tx_vector("dm_sealed", 1, 7, 1000, TxBody::SendMessage(SendMessage {
+                to: bob, channel: [0; 32], mode: 1, reply_to: [0; 32], pay: 0, reclaim_after: 0,
+                body: sealed_body, blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+            tx_vector("dm_reply_releases", 2, 3, 1000, TxBody::SendMessage(SendMessage {
+                to: alice_pk, channel: [0; 32], mode: 0, reply_to: paid_msg, pay: 0, reclaim_after: 0,
+                body: "Yes. The fog lifts at dawn.".as_bytes().to_vec(), blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+            tx_vector("reclaim", 1, 9, 1000, TxBody::ReclaimMessage { message_id: paid_msg }).0,
+            tx_vector("set_consent", 2, 4, 1000, TxBody::SetConsent { items: vec![
+                Consent { peer: alice_pk, state: 1 }, Consent { peer: carol, state: 2 }, Consent { peer: pubkey_from_seed(&seed(9)), state: 0 }] }).0,
+            tx_vector("channel_create", 1, 8, 1000, TxBody::ChannelConfig(agent_types::ChannelConfig {
+                channel_id: [0; 32], name: "Market desk".as_bytes().to_vec(), about: "Prices, bids and gossip.".as_bytes().to_vec(),
+                policy: 2, join_price: 1_000_000, mode: 1, admins: vec![bob] })).0,
+            tx_vector("channel_invite", 1, 10, 1000, TxBody::ChannelMember { channel: chan, action: 2, member: carol, pay: 0 }).0,
+            tx_vector("channel_join_paid", 5, 0, 1000, TxBody::ChannelMember { channel: chan, action: 0, member: [0; 32], pay: 1_000_000 }).0,
+            tx_vector("channel_key", 1, 11, 1000, TxBody::ChannelKey { channel: chan, epoch: 1, envelopes: vec![
+                KeyEnvelope { member: alice_pk, envelope: [0x66; 104] }, KeyEnvelope { member: bob, envelope: [0x77; 104] }] }).0,
+            tx_vector("channel_message_sealed", 2, 5, 1000, TxBody::SendMessage(SendMessage {
+                to: [0; 32], channel: chan, mode: 1, reply_to: [0; 32], pay: 0, reclaim_after: 0,
+                body: chan_body, blob_uri: Vec::new(), blob_hash: [0; 32] })).0,
+        ],
+    });
     vec![
+        ("dm.json", dm_v),
         ("social.json", social),
         ("tx.json", Value::Array(tx_json)),
         ("reject.json", reject),
