@@ -377,6 +377,27 @@ whose manifest it holds. `putBlob` takes `"push": false` so a model upload is no
 every peer; others fetch on demand. `pearl model fetch` rebuilds the directory from blobs
 and checks every file hash and every `hash_b`.
 
+Upload order (2026-10-21, for the 8B; owner-approved with serving it): an unreferenced blob
+lives only `grace_blocks` (100 by default) on a node, and an 8B upload (7.5 GB of B files,
+about 2 h at the default 1 MiB/s put rate) is far longer than 100 devnet blocks. The fix needs
+no consensus change because pinning already follows the registry: once a model is registered,
+every node that holds its manifest pins the manifest and every chunk the manifest lists,
+whenever those chunks arrive. So `pearl model register` uploads in this order: (1) the manifest
+blob (one blob, at most a few hundred KB), (2) RegisterModel, waiting for inclusion, (3) the
+chunks, `--parallel N` (default 4) at a time, each read from its byte range. Only the
+manifest must outlive the inclusion wait; the chunks are pinned on arrival, so the upload may
+take hours. A rerun skips the tx when the model exists (refusing a different manifest under
+the same id) and uploads only what the node lacks, so an interrupted upload resumes. Rejected
+alternatives: a chain-side reservation keyed by the manifest hash (a new tx kind, fee and
+expiry for what the registry already gives), and only raising `grace_blocks` (the upload time
+grows with the model, and every unreferenced blob would live as long). Spam bound: pins exist
+only for registered models (a registration costs the tx fee; a registration deposit is the
+OPEN DECISION in section 9), `push: false` keeps chunks on the upload node, and every node
+caps total bytes (`max_total_bytes`, 1 GiB by default) and its put rate; the node an 8B is
+uploaded to needs `max_total_bytes` above the model (10 GB or more) and a put rate that makes
+the upload practical (`put_rate_bytes_per_s`; the put rate also bounds every other putBlob on
+that node).
+
 **Ticket** (one paid inference request): a `PostJob` body (4.1) whose config is the ticket
 form, so the existing storefront Order (5.1) carries it unchanged:
 ```
@@ -417,8 +438,14 @@ ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_
   (pearl-verify-sbf `chaintx::job_by_id`), and header-relay registers each segment from its
   posting block. A Solana tx carries one such chain tx with its path, so the gateway posts one
   segment per PostSegments (measured: 322-byte chain tx, register_job 52,995 CU in LiteSVM).
-  Cost on real Solana: one register_job tx and one JobCommit account (rent, about 0.003 SOL)
-  per segment, 144 per round on Llama-3.2-1B; a model-level commit would cut this (follow-up).
+  Since 2026-10-21 the light client does not register posted segments at all: a block mined
+  on a segment proves the segment's PostSegments tx inline when it is verified
+  (`begin_verify_job`, 5.3 "Job check at mining"), so posting a round costs nothing on Solana
+  and a mined segment costs no JobCommit rent. Before (measured on Solana devnet 2026-10-21,
+  434 JobCommit accounts of the 1B's rounds): one register_job tx per posted segment (5,000
+  lamports fee, 90.9k-103.6k CU, 973-1,006 bytes) plus a 313-byte JobCommit account (2,240,280
+  lamports rent, never closed): 0.0022 SOL per segment, 0.32 SOL per 1B round of 144 and 1.44
+  SOL per 8B round of 640, all of it whether or not the segment was ever mined.
 - Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
   The server serves requests off chain against the ticket's row budget R and posts their GEMMs
   in rounds: round r stacks the rows of every request served in that period (each request's
@@ -911,6 +938,34 @@ relay services/header-relay):
 - Job commitments: `register_job` proves the job's posting tx (PostJob or order
   BridgeUnlock) by tx_root inclusion in a verified canonical header below the job
   block. No state proof needed (blocks are all-or-nothing).
+- Job check at mining (2026-10-21, for the 8B's 640 segments per round): `begin_verify_job(
+  proof_len, tx, path)` starts the verification of a job block with the job proven inline:
+  accounts work, config, canon, the pending job block and the posting header; the posting tx
+  (PostJob, order BridgeUnlock, or the PostSegments carrying the segment) is checked under the
+  posting header's tx_root, the posting header must be Verified and final or canonical and
+  lower than the job block, and the job id must be the job block's. These are exactly the
+  checks of `register_job` plus the JobCommit branch of `begin_verify`, so soundness is
+  unchanged: a job block is still verified only against commitments its own verified ancestry
+  posted. Nothing is stored outside the relayer's work account, so a posted job costs nothing
+  on Solana until a block is mined on it, and a mined one costs no JobCommit rent. Measured in
+  LiteSVM (token/tests/lightclient-litesvm, a 640-tx posting block with real blob URIs): the
+  PostSegments tx is 384 bytes and its path 264 bytes, the begin tx fits (Solana's 1,232-byte
+  limit is asserted), `begin_verify_job` 101,257 CU, and the segment block verifies in 35 txs
+  and 7.34M CU; with a JobCommit it was 34 txs and 7.24M CU plus the separate register_job tx
+  (53,163 CU) and its rent, so the tx count per mined segment is the same and the rent is gone.
+  The instruction can not batch several segments per Solana tx: a PostSegments of 64 segments
+  is about 12 KB and would need its own chunked upload (13 more txs per mined block), so the
+  gateway keeps one segment per PostSegments, which the agent chain carries at no Solana cost.
+  header-relay: it no longer registers jobs; it indexes the jobs each new canonical block posts
+  (job id -> posting height and hash, getJob `posted_height` after a restart), starts a job
+  block's flight with `begin_verify_job` once the posting header is Verified (all chunks in the
+  next batch, the begin tx carries no chunk), uses an existing JobCommit when one exists (jobs
+  registered by older relays), and falls back to `register_job` only for a posting tx too large
+  to go inline (above 800 bytes with its path). Because the posting header must exist when the
+  job is mined, the relay keeps its own posting headers open past `retain_final` until the
+  latest deadline of the jobs they posted (getJob `deadline_height`; one header record, 0.0042
+  SOL refundable, per posting block, not per job), and a posting header closed anyway (by an
+  older relay) is restored from the accumulator (`restore_header`) before the bind.
 - `bridge.release_proof`: Commonware MMR proof of the withdrawal entry against
   withdraw_root of a final header; `set_release_modes` = signers, proof or both.
 - `storefront.finalize_order_proof` / `expire_order_proof`: inclusion of the
@@ -1039,9 +1094,29 @@ stacks more than `max_round_rows` rows: every segment's A blob (`"PSA1" || m || 
 int8`) must fit one 4 MiB blob at the model's widest k, so 2,044 rows on Llama-3.2-1B (k = 2048,
 row period 4; `--max-round-rows` lowers it). A round is also due once that many rows are
 pending, oldest requests first, and a request larger than one round is refused (400). Why a slow
-period: every round is 144 segment jobs on the 1B model, the chain mines about 1,440 job blocks a
-day, and the header relay registers each segment on Solana (about 0.0019 SOL each, MAINNET.md 7),
-so rounds, not rows, are what cost.
+period: every round is 144 segment jobs on the 1B model (640 on the 8B) and the chain mines about
+1,440 job blocks a day, so rounds, not rows, are what cost. (Until 2026-10-21 the header relay also
+registered every posted segment on Solana, 0.0022 SOL each on devnet; since then only mined
+segments cost anything there, 5.3 "Job check at mining".)
+Ticket block budget (2026-10-21, for the 8B): a ticket's `max_blocks` must cover every segment of
+every round it posts, and one round allocates `round_blocks = matrices x --blocks-per-segment`
+(640 on the 8B, 144 on the 1B). The gateway sizes a balance ticket at top-up as
+`max_blocks = max_rounds x round_blocks` with `max_rounds = min(rows / row period, ceil(life /
+round period) + 1 + rows / max_round_rows, cap / round_blocks)`, where life = the ticket's
+deadline in blocks x the chain's `target_block_time_ms` and `cap = min(--max-ticket-blocks,
+the chain's max_job_blocks)`; `--max-ticket-blocks` (default 10,000) must not exceed the
+storefront's on-chain `max_blocks_cap` (10,000 at initialize; admin `set_config` raises it, up to
+the chain's `max_job_blocks`, 100,000). The top-up answer echoes `max_rounds` and `max_blocks`,
+`GET /v1/balance` each ticket's `max_rounds`. The settlement loop never posts more rounds than
+`max_rounds`: in a ticket's last round a request is admitted only if the round can still stack
+it (`max_round_rows`), after it the ticket has no free rows, completes (unused rows refunded on
+the chain, 4.5) and the wallet tops up again. Before, the budget was `matrices x 64` capped at
+10,000 with no round limit, so the 8B's 16th round (or the 1B's 70th) would have been refused by
+the chain mid-ticket ("segments would use more than the ticket's blocks"). Figures at the
+initial cap: 8B 15 rounds (9,600 blocks), 1B 69 rounds (9,936 blocks); with the cap at the chain's
+100,000: 8B 156 rounds of 60 s, or 61 rounds for an 8,192-row balance at the 3 h period
+(services/inference-gateway tests/budget.rs). Chain-native tickets and ledgers from before this
+change read their round budget from the ticket's `max_blocks`.
 Receipts carry `text_sha256` (since 2026-10-20): sha256 of the completion text exactly as the
 response returns it (`message.content` / `text`), the hash a town post's `thought_ref` is
 checked against (4.6). `output_sha256` stays the hash of the token ids.

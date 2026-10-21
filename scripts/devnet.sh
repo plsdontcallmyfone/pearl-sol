@@ -27,7 +27,7 @@
 #   DEVNET_NET      static (default) or open; `open` as the first argument sets it
 #   DEVNET_NODES    node count (default 3 static, 5 open; open allows at most 5)
 #   DEVNET_MINE_NODE  node index `mine` talks to (default 0)
-#   DEVNET_BLOBS    JSON object for every static node's "blobs" limits (docs/NODE.md), e.g.
+#   DEVNET_BLOBS    JSON object for every static node's "blobs" limits (docs/NODE.md) (DEVNET_BLOBS_<i>: node i's own), e.g.
 #                   '{"max_total_bytes": 8000000000}' to hold a registered model (SPEC 4.5)
 set -euo pipefail
 
@@ -50,8 +50,8 @@ if [[ -f "$DEV/devnet.env" ]]; then
   source "$DEV/devnet.env"
 fi
 BIN="$ROOT/chain/target/release/agent-node"
-RPC_BASE=10630
-P2P_BASE=10640
+RPC_BASE=$((10630 + ${DEMO_PORT_OFFSET:-0}))
+P2P_BASE=$((10640 + ${DEMO_PORT_OFFSET:-0}))
 
 pubkey_of_keyfile() { # Solana JSON keypair -> base58 pubkey
   python3 - "$1" <<'EOF'
@@ -139,6 +139,10 @@ init_static_nodes() {
   done
   for ((i = 0; i < N; i++)); do
     mkdir -p "$DEV/node$i"
+    # DEVNET_BLOBS_<i>: this node's own blob limits instead (e.g. a slow, short-grace upload node)
+    local own="DEVNET_BLOBS_$i"
+    [[ -n "${!own:-}" ]] && blobs="${!own}" || blobs="${DEVNET_BLOBS:-}"
+    [[ -n "$blobs" ]] || blobs='{}'
     cat > "$DEV/node$i.json" <<EOF
 {
   "data_dir": "$DEV/node$i/data",

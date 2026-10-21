@@ -964,3 +964,93 @@ fn close_work_returns_rent() {
     assert_eq!(env.svm.get_balance(&w).unwrap_or(0), 0);
     assert!(env.svm.get_balance(&pk).unwrap() + 10_000 > bal + lamports);
 }
+
+/// SPEC 5.3 "job check at mining" (2026-10-21, for the 8B's 640 segments per round): a block
+/// mined on one segment of a 640-matrix round verifies with `begin_verify_job`, which proves the
+/// segment's PostSegments tx (one of 640 in its block, real blob URIs) inline against the posting
+/// header. No JobCommit is created and nothing is sent when the round is posted. The same
+/// refusals as `register_job`: a wrong path, another segment's tx, a posting header that is not
+/// Verified; and a job block cannot start without its job.
+#[test]
+fn segment_of_a_640_matrix_round_verifies_with_its_job_proven_inline() {
+    use pearl_job::standing;
+    use rand::{Rng, SeedableRng};
+    let p = params(4);
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(640);
+    let (k, n, m) = (LOCAL_K, 64u32, 8u32);
+    let base = pearl_job::MiningConfig::localnet_default();
+    let model = standing::model_id(&[0x21; 32], b"llama-3.1-8b-shape");
+    let (ticket, round, mined) = ([0x22u8; 32], 0u16, 639u16);
+    let a: Vec<i8> = (0..m as usize * k as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let bt: Vec<i8> = (0..k as usize * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let key = standing::matrix_job_key(&model, mined, k, n, &base);
+    let (hash_a, hash_b) = (pearl_job::job::commit_a(&key, &a), standing::commit_bt(&key, &bt));
+    // one PostSegments tx per matrix, as the gateway posts a round (SPEC 4.5)
+    let seg_tx = |matrix: u16, ha: [u8; 32], hb: [u8; 32], nonce: u64| {
+        let mut body = ticket.to_vec();
+        body.extend_from_slice(&round.to_le_bytes());
+        body.extend_from_slice(&model);
+        body.extend_from_slice(&base.rank.to_le_bytes());
+        body.extend_from_slice(&base.rows_pattern.to_bytes());
+        body.extend_from_slice(&base.cols_pattern.to_bytes());
+        body.push(1);
+        body.extend_from_slice(&matrix.to_le_bytes());
+        for x in [m, k, n, 1u32] {
+            body.extend_from_slice(&x.to_le_bytes());
+        }
+        body.extend_from_slice(&ha);
+        body.extend_from_slice(&hb);
+        body.extend_from_slice(&[0x77; 32]); // c_hash
+        let uri = format!("blob:{}", hex::encode(blake3::hash(&[matrix as u8, (matrix >> 8) as u8]).as_bytes()));
+        body.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+        body.extend_from_slice(uri.as_bytes());
+        tx_bytes(&[0x31; 32], nonce, 12, &body)
+    };
+    let txs: Vec<Vec<u8>> = (0..640u16)
+        .map(|i| if i == mined { seg_tx(i, hash_a, hash_b, i as u64) } else { seg_tx(i, [i as u8; 32], [0x44; 32], i as u64) })
+        .collect();
+    let (root, paths) = tx_root(&txs);
+    let post = txs[mined as usize].clone();
+    let path = paths[mined as usize].clone();
+    println!("PostSegments chain tx {} bytes, tx_root path {} bytes (640 txs in the block)", post.len(), path.len());
+    let b1 = child(&p, &g, &Work::Fallback, ChildOpts { tx_root: root, ..Default::default() });
+    env.relay(&b1).unwrap();
+    let seg = standing::segment_id(&ticket, mined, round);
+    let cfg = standing::matrix_config(&base, k);
+    let job = pearl_job::Job { header: standing::matrix_job_header(&model, mined, k, n), config: cfg, m, n, hash_a, hash_b };
+    let prep = pearl_job::PreparedJob::new_bt(job, &a, bt).unwrap();
+    let b2 = child(&p, &b1, &Work::Job(&prep, seg), ChildOpts::default());
+    env.submit(&b2).unwrap();
+    let (pk, w) = (env.payer.pubkey(), env.work.pubkey());
+    let plen = b2.proof.len() as u32;
+    // without its job (no JobCommit, nothing inline) the job block cannot start
+    let e = env.send(&[client::begin_verify(pk, w, &b2.hash, Some(&seg), plen)], &[]).unwrap_err();
+    assert!(matches!(e, solana_sdk::transaction::TransactionError::InstructionError(..)), "{e:?}");
+    // a wrong path, another segment's tx, a posting header that is not Verified: refused
+    let e = env.send(&[client::begin_verify_job(pk, w, &b2.hash, &b1.hash, plen, post.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::VerifyFailed))(&e), "{e:?}");
+    let e = env.send(&[client::begin_verify_job(pk, w, &b2.hash, &b1.hash, plen, txs[5].clone(), paths[5].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::VerifyFailed))(&e), "{e:?}");
+    let e = env.send(&[client::begin_verify_job(pk, w, &b2.hash, &b2.hash, plen, post.clone(), path.clone())], &[]).unwrap_err();
+    assert!(matches!(e, solana_sdk::transaction::TransactionError::InstructionError(..)), "{e:?}");
+    // the posting tx proven inline: begin + every chunk, then the planned steps
+    env.cu_log.clear();
+    let cu = env.send_labeled("begin_verify_job", &[client::begin_verify_job(pk, w, &b2.hash, &b1.hash, plen, post.clone(), path.clone())], &[]).unwrap();
+    let mut off = 0;
+    while off < b2.proof.len() {
+        let c = client::WRITE_CHUNK.min(b2.proof.len() - off);
+        env.send_labeled("write_proof", &[client::write_proof(pk, w, off as u32, b2.proof[off..off + c].to_vec())], &[]).unwrap();
+        off += c;
+    }
+    let shape = client::Shape::new(false, p.fallback_m, p.fallback_n, &cfg.to_bytes(), b2.proof.len());
+    let plan = client::plan(&shape, client::TX_CU_BUDGET);
+    env.steps(&b2, &plan).unwrap();
+    assert_eq!(env.status(&b2.hash), lightclient::STATUS_VERIFIED);
+    assert_eq!(env.config().tip_hash, b2.hash);
+    assert!(env.svm.get_account(&client::job_addr(&seg)).is_none(), "no JobCommit account");
+    let total: u64 = env.cu_log.iter().map(|(_, c)| *c).sum();
+    let rent = env.svm.minimum_balance_for_rent_exemption(8 + <lightclient::JobCommit as anchor_lang::Space>::INIT_SPACE);
+    println!("begin_verify_job: {cu} CU; segment block: {} txs, {total} CU; JobCommit rent avoided per posted segment: {rent} lamports", env.cu_log.len());
+}

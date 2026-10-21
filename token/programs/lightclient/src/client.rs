@@ -182,6 +182,15 @@ pub fn register_job(payer: Pubkey, block: &[u8; 32], job_id: [u8; 32], tx: Vec<u
     )
 }
 
+/// `begin_verify` for a job block with its job proven inline (SPEC 5.3): `block` is the
+/// header that posted the job, `tx` the posting chain tx, `path` its tx_root path.
+pub fn begin_verify_job(authority: Pubkey, work: Pubkey, hash: &[u8; 32], block: &[u8; 32], proof_len: u32, tx: Vec<u8>, path: Vec<u8>) -> Instruction {
+    ix(
+        accounts::BeginVerifyJob { authority, work, config: config_pda(), canon: canon_pda(), header: header_addr(hash), block: header_addr(block) },
+        instruction::BeginVerifyJob { proof_len, tx, path },
+    )
+}
+
 pub fn close_header(hash: &[u8; 32], relayer: Pubkey) -> Instruction {
     ix(accounts::CloseHeader { config: config_pda(), canon: canon_pda(), acc: acc_addr(), header: header_addr(hash), relayer }, instruction::CloseHeader {})
 }

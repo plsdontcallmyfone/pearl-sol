@@ -34,6 +34,8 @@
 //! Job blocks need the job's commitments: `register_job` proves the PostJob (or the
 //! storefront-order BridgeUnlock) tx against the `tx_root` of a verified canonical
 //! header and stores hash_a, hash_b, m, n, config and the Pearl job header.
+//! `begin_verify_job` does the same proof inline when the job block is verified, so a
+//! job is only proven when it is mined (no JobCommit per posted job; SPEC 5.3).
 //!
 //! Final-header accumulator (Agent Credit R5; `Accumulator ["acc"]`): a SHA-256 Merkle
 //! mountain range (crates/pearl-verify-sbf `acc`) over the hashes of FINAL headers in
@@ -514,33 +516,53 @@ pub mod lightclient {
     /// BridgeUnlock, or a PostSegments for a standing job), proved against a verified
     /// canonical header.
     pub fn register_job(ctx: Context<RegisterJob>, job_id: [u8; 32], tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
-        let c = &ctx.accounts.config;
         let canon = ctx.accounts.canon.load()?;
         let block = ctx.accounts.block.load()?;
-        require!(block.status == STATUS_VERIFIED, LcError::NotVerified);
-        require!(block.is_final == 1 || is_canonical(&canon, c, &block.hash, block.height), LcError::NotCanonical);
-        let h = Header(&block.header);
-        let th = pv::chaintx::tx_hash(&tx);
-        pv::chaintx::verify_tx_path(&th, &path, &h.tx_root()).map_err(|e| verr(e))?;
-        let view = pv::chaintx::TxView::new(&tx, c.params.chain_id).map_err(|e| verr(e))?;
-        // PostJob, order BridgeUnlock, or one standing job of a PostSegments (SPEC 4.5)
-        let jc = pv::chaintx::job_by_id(&view, &job_id, sha256).map_err(|e| verr(e))?;
-        require!(jc.job_id == job_id, LcError::JobMissing);
-        let cfg = pv::config::MiningConfig::from_bytes(&jc.config).map_err(|e| verr(e))?;
-        cfg.check_shape(jc.m, jc.n).map_err(|e| verr(e))?;
+        let pj = prove_job(&ctx.accounts.config, &canon, &block, &job_id, &tx, &path)?;
         let j = &mut ctx.accounts.job;
-        j.job_id = jc.job_id;
-        j.job_key = pv::verify::job_key(&jc.header76, &jc.config);
-        j.header76 = jc.header76;
-        j.config = jc.config;
-        j.m = jc.m;
-        j.n = jc.n;
-        j.hash_a = jc.hash_a;
-        j.hash_b = jc.hash_b;
+        j.job_id = pj.job_id;
+        j.job_key = pj.job_key;
+        j.header76 = pj.header76;
+        j.config = pj.config;
+        j.m = pj.m;
+        j.n = pj.n;
+        j.hash_a = pj.hash_a;
+        j.hash_b = pj.hash_b;
         j.posted_height = block.height;
         j.posted_block = block.hash;
         j.bump = ctx.bumps.job;
         emit!(JobRegistered { job_id, posted_height: block.height });
+        Ok(())
+    }
+
+    /// `begin_verify` for a job block whose job is proven inline instead of registered
+    /// (SPEC 5.3 "job check at mining", 2026-10-21): the job's posting tx (PostJob, order
+    /// BridgeUnlock or the PostSegments carrying the segment) with its path to the
+    /// `tx_root` of `block`, a Verified header that is final or canonical and lower than the
+    /// job block. Exactly the checks of `register_job` + the JobCommit branch of
+    /// `begin_verify`, but nothing is stored outside the relayer's work account: no
+    /// JobCommit rent and no registration tx per posted job; only mined jobs cost anything.
+    pub fn begin_verify_job(ctx: Context<BeginVerifyJob>, proof_len: u32, tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
+        let rec = ctx.accounts.header.load()?;
+        require!(rec.status == STATUS_PENDING, LcError::NotPending);
+        let h = Header(&rec.header);
+        require!(!h.is_fallback(), LcError::BadStep);
+        let canon = ctx.accounts.canon.load()?;
+        let block = ctx.accounts.block.load()?;
+        require!(block.height < h.height(), LcError::JobMissing);
+        let pj = prove_job(&ctx.accounts.config, &canon, &block, &h.job_id(), &tx, &path)?;
+        let params = JobParams {
+            job_key: pj.job_key,
+            config: pv::config::MiningConfig::from_bytes(&pj.config).map_err(|_| error!(LcError::JobMissing))?,
+            m: pj.m,
+            n: pj.n,
+            hash_a: pj.hash_a,
+            hash_b: pj.hash_b,
+        };
+        let info = ctx.accounts.work.to_account_info();
+        let mut w = Work::load(&info, &ctx.accounts.authority.key())?;
+        w.begin(&rec.hash, proof_len, false, &params, &pj.config)?;
+        emit!(JobBound { job_id: pj.job_id, posted_height: block.height, header: rec.hash });
         Ok(())
     }
 
@@ -657,6 +679,43 @@ pub mod lightclient {
 fn verr(e: pv::Error) -> Error {
     msg!("verifier: {:?}", e);
     error!(LcError::VerifyFailed)
+}
+
+/// A job proven against a light-client header: its posting tx is in `block` (Verified,
+/// final or canonical) and carries `job_id` (PostJob, order BridgeUnlock or one segment of a
+/// PostSegments, SPEC 4.5), with a mining config whose shape fits the job.
+pub struct ProvenJob {
+    pub job_id: [u8; 32],
+    pub job_key: [u8; 32],
+    pub header76: [u8; 76],
+    pub config: [u8; 52],
+    pub m: u32,
+    pub n: u32,
+    pub hash_a: [u8; 32],
+    pub hash_b: [u8; 32],
+}
+
+fn prove_job(c: &Config, canon: &Canon, block: &HeaderRecord, job_id: &[u8; 32], tx: &[u8], path: &[u8]) -> Result<ProvenJob> {
+    require!(block.status == STATUS_VERIFIED, LcError::NotVerified);
+    require!(block.is_final == 1 || is_canonical(canon, c, &block.hash, block.height), LcError::NotCanonical);
+    let h = Header(&block.header);
+    let th = pv::chaintx::tx_hash(tx);
+    pv::chaintx::verify_tx_path(&th, path, &h.tx_root()).map_err(verr)?;
+    let view = pv::chaintx::TxView::new(tx, c.params.chain_id).map_err(verr)?;
+    let jc = pv::chaintx::job_by_id(&view, job_id, sha256).map_err(verr)?;
+    require!(jc.job_id == *job_id, LcError::JobMissing);
+    let cfg = pv::config::MiningConfig::from_bytes(&jc.config).map_err(verr)?;
+    cfg.check_shape(jc.m, jc.n).map_err(verr)?;
+    Ok(ProvenJob {
+        job_id: jc.job_id,
+        job_key: pv::verify::job_key(&jc.header76, &jc.config),
+        header76: jc.header76,
+        config: jc.config,
+        m: jc.m,
+        n: jc.n,
+        hash_a: jc.hash_a,
+        hash_b: jc.hash_b,
+    })
 }
 
 fn is_canonical(canon: &Canon, c: &Config, hash: &[u8; 32], height: u64) -> bool {
@@ -942,6 +1001,22 @@ pub struct BeginVerify<'info> {
 }
 
 #[derive(Accounts)]
+pub struct BeginVerifyJob<'info> {
+    pub authority: Signer<'info>,
+    /// CHECK: owner and layout checked in `Work::load`.
+    #[account(mut, owner = crate::ID)]
+    pub work: UncheckedAccount<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [CANON_SEED], bump)]
+    pub canon: AccountLoader<'info, Canon>,
+    /// The pending job block.
+    pub header: AccountLoader<'info, HeaderRecord>,
+    /// The block that posted the job.
+    pub block: AccountLoader<'info, HeaderRecord>,
+}
+
+#[derive(Accounts)]
 pub struct VerifyStep<'info> {
     pub authority: Signer<'info>,
     /// CHECK: owner and layout checked in `Work::load`.
@@ -1129,6 +1204,13 @@ pub struct Accumulated {
 pub struct HeaderRestored {
     pub hash: [u8; 32],
     pub height: u64,
+}
+
+#[event]
+pub struct JobBound {
+    pub job_id: [u8; 32],
+    pub posted_height: u64,
+    pub header: [u8; 32],
 }
 
 #[event]

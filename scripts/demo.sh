@@ -39,7 +39,9 @@ if [[ ${1:-} == down ]]; then down; exit 0; fi
 
 # --- preflight: our ports must be free (a previous run may still be up)
 busy=""
-for p in 10600 10601 10602 10603 10630 10631 10632 10633 10634 10635 10640 10641 10642 10660 10661 10662 10664 10665; do
+# DEMO_PORT_OFFSET (default 0) shifts every port of the stack (a second stack on a shared box)
+for p0 in 10600 10601 10602 10603 10630 10631 10632 10633 10634 10635 10640 10641 10642 10660 10661 10662 10664 10665; do
+  p=$((p0 + ${DEMO_PORT_OFFSET:-0}))
   # listeners only (TCP LISTEN or a bound UDP port): a client of the old stack (e.g. a service polling 10600) does not own the port
   holders="$( (lsof -ti tcp:$p -sTCP:LISTEN; lsof -ti udp:$p) 2>/dev/null | sort -u | tr '\n' ' ' || true)"
   if [[ -n "${holders// /}" ]]; then busy+=" $p(pid $holders)"; fi

@@ -214,6 +214,12 @@ pub trait Src {
     fn header_at(&self, height: u64) -> Result<Option<ChainHeader>>;
     /// Block txs and the coinbase receipt (see `Node::block_body`).
     fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)>;
+    /// `(posted_height, deadline_height)` of a job (getJob), if the source knows it. The relay
+    /// finds a job's posting block this way after a restart, and keeps the posting header's
+    /// light-client record open until the deadline (SPEC 5.3 "job check at mining").
+    fn job_heights(&self, _job_id: &[u8; 32]) -> Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
 }
 
 impl Src for Node {
@@ -228,5 +234,12 @@ impl Src for Node {
     }
     fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
         Node::block_body(self, hash)
+    }
+    fn job_heights(&self, job_id: &[u8; 32]) -> Result<Option<(u64, u64)>> {
+        let v = self.rpc.call("getJob", json!({"job_id": hex::encode(job_id)}))?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        Ok(Some((num(&v["posted_height"])?, num(&v["deadline_height"])?)))
     }
 }

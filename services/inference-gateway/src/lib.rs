@@ -245,9 +245,17 @@ pub struct TicketState {
     /// `big_round_every` for a ticket above 4096 rows (SPEC 5.4, ECOSYSTEM M1.5).
     #[serde(default)]
     pub round_secs: Option<u64>,
+    /// Rounds this ticket's block budget holds (`max_blocks / (matrices x blocks_per_segment)`,
+    /// SPEC 5.4 "Ticket block budget"). None: not known yet (read from the chain at settle).
+    #[serde(default)]
+    pub max_rounds: Option<u32>,
 }
 
 impl TicketState {
+    /// Rounds still allowed (None: unbounded as far as this ledger knows).
+    pub fn rounds_left(&self) -> Option<u32> {
+        self.max_rounds.map(|m| m.saturating_sub(self.rounds.len() as u32))
+    }
     pub fn posted_rows(&self) -> u64 {
         self.rounds.iter().map(|r| r.m as u64).sum()
     }
@@ -266,6 +274,21 @@ impl Ledger {
     pub fn free(&self, t: &TicketState, period: u64) -> u64 {
         let pending: u64 = t.pending.iter().filter_map(|r| self.requests.get(r)).map(|r| r.rows as u64).sum();
         t.rows.saturating_sub(t.posted_rows() + round_up(pending + t.reserved, period))
+    }
+
+    /// Free rows a new request may draw, with the ticket's round budget: none once every
+    /// round it may post is posted, and in its last round only what that round can still
+    /// stack (`round_cap` rows), so a served request is never left without a round.
+    pub fn free_in_budget(&self, t: &TicketState, period: u64, round_cap: u64) -> u64 {
+        let base = self.free(t, period);
+        match t.rounds_left() {
+            Some(0) => 0,
+            Some(1) => {
+                let pending: u64 = t.pending.iter().filter_map(|r| self.requests.get(r)).map(|r| r.rows as u64).sum();
+                base.min(round_cap.saturating_sub(round_up(pending + t.reserved, period)))
+            }
+            _ => base,
+        }
     }
 }
 
@@ -297,6 +320,9 @@ pub struct Config {
     pub max_round_rows: u32,
     pub min_free_rows: u64,
     pub close_margin_blocks: u64,
+    /// Largest `max_blocks` a ticket asks for: the storefront's on-chain `max_blocks_cap`
+    /// (10,000 at initialize) bounds an order's; the chain's `max_job_blocks` bounds it too.
+    pub max_ticket_blocks: u32,
     pub ticket_wait: Duration,
     pub poll: Duration,
     /// Explorer base URL for receipts (`<explorer>/job/<ticket>`).
@@ -324,6 +350,7 @@ impl Default for Config {
             max_round_rows: 0,
             min_free_rows: 64,
             close_margin_blocks: 50,
+            max_ticket_blocks: 10_000,
             ticket_wait: Duration::from_secs(900),
             poll: Duration::from_millis(1000),
             explorer_url: "http://127.0.0.1:10670".into(),
@@ -521,7 +548,7 @@ impl Gateway {
         let rows = self.cfg.balance_rows;
         let blob = balance_blob(&self.model.model_id, &self.server(), rows);
         let spec = ticket_spec(&self.model, &self.server(), rows as u32 - 1, 1, &pearl_job::data::blob_uri(&pearl_job::data::blob_id(&blob)),
-            &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, self.max_blocks_balance());
+            &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, self.ticket_budget(rows, None).ok()?.0);
         let (st, v, _) = self.storefront.post_job(&json!({"spec": spec}), None).ok()?;
         if st != 402 {
             return None;
@@ -558,9 +585,35 @@ impl Gateway {
         }
     }
 
-    fn max_blocks_balance(&self) -> u32 {
-        // enough for one segment per matrix in every round of a balance
-        (self.model.matrices.len() as u32 * self.cfg.blocks_per_segment.max(1) * 64).min(10_000)
+    /// Blocks one round of segments allocates: one segment per registered matrix,
+    /// `blocks_per_segment` blocks each (640 on Llama-3.1-8B, 144 on Llama-3.2-1B).
+    pub fn round_blocks(&self) -> u32 {
+        self.model.matrices.len() as u32 * self.cfg.blocks_per_segment.max(1)
+    }
+
+    /// Ticket block budget (SPEC 5.4 "Ticket block budget", 2026-10-21): `(max_blocks,
+    /// max_rounds)` for a balance of `rows` rows with an optional own round period. It scales
+    /// with the model's matrix count: `max_blocks = max_rounds x round_blocks`, where
+    /// `max_rounds` is every round the ticket can post over its life (one per round period
+    /// over the deadline, plus the rounds its rows can fill early, never more than rows / row
+    /// period), cut to the largest budget an order and the chain accept
+    /// (`min(max_ticket_blocks, max_job_blocks) / round_blocks`). The settlement loop never
+    /// posts more than `max_rounds` rounds (`Ledger::free_in_budget`), so a ticket can not
+    /// run out of blocks mid-round.
+    pub fn ticket_budget(&self, rows: u64, own_round_secs: Option<u64>) -> Result<(u32, u32)> {
+        let per = self.round_blocks() as u64;
+        let params = self.node.call("getParams", json!({})).unwrap_or(Value::Null);
+        let chain_cap = params["max_job_blocks"].as_u64().unwrap_or(100_000);
+        let cap = (self.cfg.max_ticket_blocks as u64).min(chain_cap);
+        ensure!(per <= cap, "one round of this model allocates {per} blocks, above the ticket cap {cap} (--max-ticket-blocks, the storefront's max_blocks_cap, the chain's max_job_blocks)");
+        let block_ms = params["target_block_time_ms"].as_u64().unwrap_or(60_000).max(1);
+        let life_s = self.cfg.balance_deadline_blocks.saturating_mul(block_ms) / 1000;
+        let period_s = self.round_period(rows, own_round_secs).as_secs().max(1);
+        let p = self.model.period().max(1) as u64;
+        let by_rows = (rows / p).max(1);
+        let by_time = life_s.div_ceil(period_s) + 1 + rows / (self.round_rows_cap().max(1) as u64);
+        let rounds = by_rows.min(by_time).min(cap / per).max(1);
+        Ok(((rounds * per) as u32, rounds as u32))
     }
 
     pub fn models_json(&self) -> Value {
@@ -599,6 +652,7 @@ impl Gateway {
     }
 
     fn balance_json(&self, w: &[u8; 32]) -> Value {
+        let cap = self.round_rows_cap() as u64;
         let l = self.ledger.lock().unwrap();
         let p = self.model.period() as u64;
         let ws = b58(w);
@@ -609,12 +663,13 @@ impl Gateway {
             .map(|t| {
                 let pending: u64 = t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum();
                 json!({"ticket_id": t.ticket_id, "order": t.order, "status": t.state, "rows": t.rows, "rows_reserved": t.reserved,
-                    "rows_posted": t.posted_rows(), "rows_pending": pending, "rows_free": if t.state == "open" { l.free(t, p) } else { 0 },
+                    "rows_posted": t.posted_rows(), "rows_pending": pending, "rows_free": if t.state == "open" { l.free_in_budget(t, p, cap) } else { 0 },
+                    "max_rounds": t.max_rounds,
                     "rounds": t.rounds.len(), "lamports_per_row": t.lamports_per_row.map(|x| x.to_string()), "single_request": t.single,
                     "deadline_height": t.deadline_height, "explorer_url": self.explorer(&t.ticket_id)})
             })
             .collect();
-        let free: u64 = l.tickets.values().filter(|t| t.wallet == ws && t.state == "open").map(|t| l.free(t, p)).sum();
+        let free: u64 = l.tickets.values().filter(|t| t.wallet == ws && t.state == "open").map(|t| l.free_in_budget(t, p, cap)).sum();
         json!({"wallet": ws, "rows_free": free, "tickets": ts})
     }
 
@@ -680,6 +735,7 @@ impl Gateway {
                 l.tickets.entry(id.clone()).or_insert(TicketState {
                     ticket_id: id.clone(), order: None, wallet: b58(w), rows, lamports_per_row: None, reserved: 0, pending: vec![], rounds: vec![],
                     state: "open".into(), single: false, created_ms: now_ms(), error: None, deadline_height: j["deadline_height"].as_u64(), round_secs: None,
+                    max_rounds: j["max_blocks"].as_u64().map(|b| (b / self.round_blocks().max(1) as u64) as u32),
                 });
             });
         }
@@ -701,7 +757,8 @@ impl Gateway {
         };
         let blob = balance_blob(&self.model.model_id, &self.server(), rows);
         let uri = self.node.put_blob(&blob).context("put the balance descriptor")?;
-        let spec = ticket_spec(&self.model, &self.server(), rows as u32 - 1, 1, &uri, &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, self.max_blocks_balance());
+        let (max_blocks, max_rounds) = self.ticket_budget(rows, round_secs)?;
+        let spec = ticket_spec(&self.model, &self.server(), rows as u32 - 1, 1, &uri, &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, max_blocks);
         let mut sf = json!({"spec": spec});
         if let Some(r) = b.get("recipient").filter(|r| !r.is_null()) {
             sf["recipient"] = r.clone();
@@ -721,13 +778,13 @@ impl Gateway {
         let t = TicketState {
             ticket_id: ticket.clone(), order: v["id"].as_str().map(String::from), wallet: wallet.clone(), rows,
             lamports_per_row: paid.map(|p| p.div_ceil(rows)), reserved: 0, pending: vec![], rounds: vec![], state: "open".into(),
-            single: false, created_ms: now_ms(), error: None, deadline_height: None, round_secs,
+            single: false, created_ms: now_ms(), error: None, deadline_height: None, round_secs, max_rounds: Some(max_rounds),
         };
         self.with_ledger(|l| l.tickets.insert(ticket.clone(), t));
         (self.log)(json!({"event": "topup", "ticket": ticket, "wallet": wallet, "rows": rows, "order": v["id"]}));
         let period_s = self.round_period(rows, round_secs).as_secs();
         let mut r = resp(201, json!({"ticket_id": ticket, "order": v["id"], "rows": rows, "wallet": wallet, "lamports_paid": paid.map(|p| p.to_string()), "explorer_url": self.explorer(&ticket),
-            "round_secs": period_s, "max_round_rows": self.round_rows_cap()}));
+            "round_secs": period_s, "max_round_rows": self.round_rows_cap(), "max_rounds": max_rounds, "max_blocks": max_blocks}));
         if let Some(x) = xpr {
             r.headers.push(("x-payment-response".into(), x));
         }
@@ -766,12 +823,13 @@ impl Gateway {
         let p = self.model.period() as u64;
         // a request is posted whole in one round, whose A blobs must fit one blob each
         ensure!(round_up(need, p) <= self.round_rows_cap() as u64, "prompt + max_tokens is {need} rows, above one settlement round ({} rows)", self.round_rows_cap());
+        let cap = self.round_rows_cap() as u64;
         let ticket = match auth.wallet() {
             Some(w) => {
                 // draw on the wallet's balance: reserve the rows now
                 let reserve = |l: &mut Ledger| -> Option<String> {
                     let ws = b58(&w);
-                    let id = l.tickets.values().filter(|t| t.wallet == ws && t.state == "open" && !t.single && l.free(t, p) >= need).map(|t| t.ticket_id.clone()).next()?;
+                    let id = l.tickets.values().filter(|t| t.wallet == ws && t.state == "open" && !t.single && l.free_in_budget(t, p, cap) >= need).map(|t| t.ticket_id.clone()).next()?;
                     l.tickets.get_mut(&id).unwrap().reserved += need;
                     Some(id)
                 };
@@ -814,7 +872,7 @@ impl Gateway {
                 let t = TicketState {
                     ticket_id: id.clone(), order: v["id"].as_str().map(String::from), wallet, rows, lamports_per_row: paid.map(|x| x.div_ceil(rows)),
                     reserved: need, pending: vec![], rounds: vec![], state: "open".into(), single: true, created_ms: now_ms(), error: None, deadline_height: None,
-                    round_secs: None,
+                    round_secs: None, max_rounds: Some(1),
                 };
                 self.with_ledger(|l| l.tickets.insert(id.clone(), t));
                 id
@@ -1024,8 +1082,20 @@ impl Gateway {
         let st = &chain["standing"];
         let deadline = chain["deadline_height"].as_u64().unwrap_or(u64::MAX);
         let tip = self.node.call("getChainInfo", json!({}))?["height"].as_u64().unwrap_or(0);
-        self.with_ledger(|l| l.tickets.get_mut(id).map(|x| x.deadline_height = Some(deadline)));
+        // the round budget of a ticket this ledger did not size (older ledger, chain-native ticket)
+        let per = self.round_blocks().max(1) as u64;
+        let chain_rounds_cap = chain["max_blocks"].as_u64().map(|b| (b / per) as u32);
+        self.with_ledger(|l| {
+            l.tickets.get_mut(id).map(|x| {
+                x.deadline_height = Some(deadline);
+                if x.max_rounds.is_none() {
+                    x.max_rounds = chain_rounds_cap;
+                }
+            })
+        });
+        let t = self.ledger.lock().unwrap().tickets.get(id).cloned().ok_or_else(|| anyhow!("unknown ticket"))?;
         let p = self.model.period() as u64;
+        let cap = self.round_rows_cap() as u64;
         if t.state == "delivered" {
             // delivered but not completed yet (e.g. the attester was down): retry the completion
             return self.close_ticket(&tid, id, &t, &chain);
@@ -1039,7 +1109,7 @@ impl Gateway {
                 || t.state == "closing"
                 || self.oldest_pending_age(&t) >= self.round_period(t.rows, t.round_secs)
                 || pending_rows >= self.round_rows_cap() as u64
-                || self.ledger.lock().unwrap().free(&t, p) < self.cfg.min_free_rows);
+                || self.ledger.lock().unwrap().free_in_budget(&t, p, cap) < self.cfg.min_free_rows);
         if due {
             // a round the chain has started but this ledger has not recorded (an earlier attempt
             // stopped half way) is resumed: same round, only the matrices still missing
@@ -1048,7 +1118,7 @@ impl Gateway {
             self.post_round(&tid, id, &t, round)?;
         }
         let t = self.ledger.lock().unwrap().tickets.get(id).cloned().unwrap();
-        let free = self.ledger.lock().unwrap().free(&t, p);
+        let free = self.ledger.lock().unwrap().free_in_budget(&t, p, cap);
         let close = t.pending.is_empty()
             && t.reserved == 0
             && !t.rounds.is_empty()

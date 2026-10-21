@@ -10,10 +10,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/.ledger"
 mkdir -p "$RUN"
 
+# DEMO_PORT_OFFSET shifts every port (a second stack on a shared box, scripts/serve8b)
+O=${DEMO_PORT_OFFSET:-0}
 ports() {
   case "$1" in
-    token) RPC=10600 FAUCET=10602 GOSSIP=10603 DYN=10604-10629 ;;
-    agent) RPC=10630 FAUCET=10632 GOSSIP=10633 DYN=10634-10659 ;;
+    token) RPC=$((10600 + O)) FAUCET=$((10602 + O)) GOSSIP=$((10603 + O)) DYN=$((10604 + O))-$((10629 + O)) ;;
+    agent) RPC=$((10630 + O)) FAUCET=$((10632 + O)) GOSSIP=$((10633 + O)) DYN=$((10634 + O))-$((10659 + O)) ;;
     *) echo "unknown chain $1" >&2; exit 1 ;;
   esac
 }
