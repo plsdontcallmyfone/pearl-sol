@@ -931,7 +931,8 @@ CLAUDE.md "Who is working on what".
      later. One paid round (256-row balance, x402 25,707,635 lamports, 2 requests, 32 rows): 640 segments
      posted in blocks 381-426 (20 batches of 32 txs), all 640 mined (382-1796, the stall before the template
      fix included), ticket completed, Order finalized by finalize_order_proof, 2,208 s from payment to
-     settlement. Light client over the whole run: 1,572 headers, 641 begin_verify_job (87.8k CU average),
+     settlement (a rerun on the tree merged with main, template fix from the start: 7/7 PASS, segments mined
+     in blocks 340-979, settled 1,000 s after payment). Light client over the whole first run: 1,572 headers, 641 begin_verify_job (87.8k CU average),
      0 register_job, 0 JobCommit accounts, 61,662 txs, 0 failed, 0.308 SOL fees, lag at most 21 blocks.
    - Devnet: lightclient 47mav... upgraded 2026-10-21 (slot 513580446; .so 665,536 B sha256 2017132c...;
      programdata 718,124 B so no extend; buffer rent 3.38157312 SOL held during the deploy and returned;

@@ -26,7 +26,7 @@ down() {
     [[ -f $f ]] || continue
     pid="$(cat "$f")"
     # only our own processes: check what the PID is now before killing it
-    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|header-relay|cadre-gateway|tools/cadre/worker.py|src/main.ts"; then
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -Eq "pearl-miner|pearl-attester|header-relay|cadre-gateway|tools/cadre/worker.py|serve8b/synth_worker.py|src/main.ts"; then
       kill "$pid" && echo "stopped $(basename "$f" .pid) ($pid)"
     fi
     rm -f "$f"

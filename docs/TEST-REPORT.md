@@ -460,4 +460,6 @@ BeginVerifyJob (56,289,474 CU), 0 RegisterJob, 0 JobCommit, 0 failed, 308,350,00
 Found and fixed in the run: block templates scanned the newest 512 jobs only, so 83 of the round's 640 segments
 were never offered until the three nodes were restarted with TEMPLATE_JOB_SCAN = 4096 (mid-run, same data).
 The test box was resized and rebooted (owner) during the first attempt, which died in step 6; the second
-attempt is the one above.
+attempt is the one above. A third run on the tree merged with main (security pass L-1/L-2, template scan 4096 from the
+start): 7/7 PASS, step 11 1,116.0 s, upload 104.5 s, all 640 segments mined in blocks 340-979 with no stall, settled
+1,000 s after payment, 1,280 chunks held 651 blocks after registration, relay 0 failed txs, lag max 20.
