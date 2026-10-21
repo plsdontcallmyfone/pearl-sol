@@ -44,19 +44,34 @@ pub enum Mode {
 
 impl Mode {
     pub fn detect() -> Mode {
-        Mode::from_env(std::env::var("NO_COLOR").ok().as_deref(), std::env::var("COLORTERM").ok().as_deref(), std::env::var("TERM").ok().as_deref())
+        let v = |k: &str| std::env::var(k).ok();
+        Mode::from_env(v("NO_COLOR").as_deref(), v("CADRE_COLOR").as_deref(), v("COLORTERM").as_deref(), v("TERM").as_deref(), v("TERM_PROGRAM").as_deref())
     }
 
-    pub fn from_env(no_color: Option<&str>, colorterm: Option<&str>, term: Option<&str>) -> Mode {
+    /// NO_COLOR wins; then CADRE_COLOR=truecolor|256|none; then COLORTERM=truecolor|24bit.
+    /// Otherwise truecolor, because ssh does not forward COLORTERM and nearly every
+    /// terminal in use takes 24-bit color; 256 colors only for terminals that clearly
+    /// cannot (the Linux console, vt100-style, dumb, macOS Terminal.app).
+    pub fn from_env(no_color: Option<&str>, cadre_color: Option<&str>, colorterm: Option<&str>, term: Option<&str>, term_program: Option<&str>) -> Mode {
         if no_color.is_some_and(|v| !v.is_empty()) {
             return Mode::NoColor;
         }
+        match cadre_color.unwrap_or("").to_ascii_lowercase().as_str() {
+            "truecolor" | "24bit" | "rgb" => return Mode::TrueColor,
+            "256" | "ansi256" => return Mode::Ansi256,
+            "none" | "off" | "0" | "no" => return Mode::NoColor,
+            _ => {}
+        }
         let ct = colorterm.unwrap_or("").to_ascii_lowercase();
+        if ct == "truecolor" || ct == "24bit" {
+            return Mode::TrueColor;
+        }
         let t = term.unwrap_or("").to_ascii_lowercase();
-        if ct == "truecolor" || ct == "24bit" || t.contains("truecolor") || t.contains("24bit") || t.contains("direct") {
-            Mode::TrueColor
-        } else {
+        let limited = matches!(t.as_str(), "linux" | "dumb" | "ansi" | "cons25" | "xterm-color" | "xterm-16color") || t.starts_with("vt");
+        if limited || term_program == Some("Apple_Terminal") {
             Mode::Ansi256
+        } else {
+            Mode::TrueColor
         }
     }
 
@@ -69,22 +84,19 @@ impl Mode {
     }
 }
 
-/// Nearest xterm-256 color: the 6x6x6 cube or the 24-step gray ramp, whichever is closer.
+/// xterm-256 index for a color. Neutral grays (channels within 8 of each other) use only
+/// the 24-step gray ramp 232-255, never the 16 system colors or the color cube, whose
+/// entries many terminal themes tint; other colors take the nearest cube cell.
 pub fn ansi256(rgb: u32) -> u8 {
     let (r, g, b) = ((rgb >> 16) as i32 & 0xff, (rgb >> 8) as i32 & 0xff, rgb as i32 & 0xff);
+    if r.max(g).max(b) - r.min(g).min(b) <= 8 {
+        let avg = (r + g + b) / 3;
+        // ramp entry i is 8 + 10 i (8..=238)
+        return 232 + (((avg - 8).max(0) + 5) / 10).min(23) as u8;
+    }
     let lv = [0, 95, 135, 175, 215, 255];
     let near = |v: i32| (0..6).min_by_key(|&i| (lv[i] - v).abs()).unwrap();
-    let (ci, cj, ck) = (near(r), near(g), near(b));
-    let cube = (lv[ci], lv[cj], lv[ck]);
-    let avg = (r + g + b) / 3;
-    let gi = ((avg - 8).max(0) / 10).min(23);
-    let gv = 8 + gi * 10;
-    let d = |a: (i32, i32, i32)| (a.0 - r).pow(2) + (a.1 - g).pow(2) + (a.2 - b).pow(2);
-    if d((gv, gv, gv)) < d(cube) {
-        232 + gi as u8
-    } else {
-        16 + (36 * ci + 6 * cj + ck) as u8
-    }
+    16 + (36 * near(r) + 6 * near(g) + near(b)) as u8
 }
 
 #[cfg(test)]
@@ -100,10 +112,19 @@ mod tests {
 
     #[test]
     fn color_modes() {
-        assert_eq!(Mode::from_env(Some("1"), Some("truecolor"), None), Mode::NoColor);
-        assert_eq!(Mode::from_env(Some(""), Some("truecolor"), None), Mode::TrueColor);
-        assert_eq!(Mode::from_env(None, Some("24bit"), None), Mode::TrueColor);
-        assert_eq!(Mode::from_env(None, None, Some("xterm-256color")), Mode::Ansi256);
+        let m = |nc, cc, ct, t, tp| Mode::from_env(nc, cc, ct, t, tp);
+        assert_eq!(m(Some("1"), None, Some("truecolor"), None, None), Mode::NoColor);
+        assert_eq!(m(Some(""), None, Some("truecolor"), None, None), Mode::TrueColor);
+        assert_eq!(m(None, None, Some("24bit"), None, None), Mode::TrueColor);
+        // over ssh: TERM=xterm-256color and no COLORTERM is truecolor
+        assert_eq!(m(None, None, None, Some("xterm-256color"), None), Mode::TrueColor);
+        // terminals that cannot, and the override both ways
+        assert_eq!(m(None, None, None, Some("linux"), None), Mode::Ansi256);
+        assert_eq!(m(None, None, None, Some("vt100"), None), Mode::Ansi256);
+        assert_eq!(m(None, None, None, Some("xterm-256color"), Some("Apple_Terminal")), Mode::Ansi256);
+        assert_eq!(m(None, Some("256"), Some("truecolor"), None, None), Mode::Ansi256);
+        assert_eq!(m(None, Some("truecolor"), None, Some("linux"), None), Mode::TrueColor);
+        assert_eq!(m(None, Some("none"), None, None, None), Mode::NoColor);
         assert_eq!(Mode::TrueColor.color(BLUE), Color::Rgb(0x5c, 0x9c, 0xf5));
         assert_eq!(Mode::NoColor.color(BLUE), Color::Reset);
     }
@@ -114,6 +135,14 @@ mod tests {
         assert_eq!(ansi256(0xeeeeee), 255);
         assert_eq!(ansi256(0x0a0a0a), 232);
         assert_eq!(ansi256(0x1e1e1e), 234);
+        assert_eq!(ansi256(0x282828), 235);
+        assert_eq!(ansi256(0x434343), 238);
+        assert_eq!(ansi256(0x000000), 232);
+        assert_eq!(ansi256(0xffffff), 255);
+        // every theme gray lands on the gray ramp
+        for g in [super::BG, super::PANEL, super::MUTED, super::TEXT, super::DIM, 0x282828, 0x434343, 0x484848] {
+            assert!(ansi256(g) >= 232, "{g:06x}");
+        }
         assert_eq!(ansi256(0x5c9cf5), 75);
     }
 }
