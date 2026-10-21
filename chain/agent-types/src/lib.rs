@@ -8,6 +8,7 @@
 pub mod block;
 pub mod coinbase;
 pub mod codec;
+pub mod contracts;
 pub mod header;
 pub mod merkle;
 pub mod social;

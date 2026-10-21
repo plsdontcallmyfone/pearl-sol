@@ -4,6 +4,7 @@
 pub mod core;
 pub mod dispatch;
 mod reject;
+mod contracts;
 mod social;
 pub mod server;
 

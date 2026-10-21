@@ -1,0 +1,35 @@
+# Cadre contract SDK (docs/CONTRACTS.md). Its own workspace: contracts build for
+# wasm32-unknown-unknown, apart from the host crates in ../Cargo.toml.
+[workspace]
+members = [".", "examples/counter", "examples/escrow", "examples/token", "examples/bounty", "examples/testkit"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "ISC"
+version = "0.1.0"
+
+[package]
+name = "cadre-contract-sdk"
+description = "Write Cadre smart contracts in Rust (no_std, wasm32-unknown-unknown)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+default = ["allocator", "panic-handler"]
+# Bump allocator over wasm memory (memory is per call, so nothing needs freeing).
+allocator = []
+# A panic reverts the call with "panic".
+panic-handler = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+[profile.dev]
+panic = "abort"

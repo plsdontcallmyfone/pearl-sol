@@ -103,7 +103,13 @@ impl Node {
     pub fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
         let v = self.rpc.call("getBlock", json!({"hash": hex::encode(hash)}))?;
         let txs = v["txs"].as_array().cloned().unwrap_or_default();
-        let txs = txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect::<Result<Vec<_>>>()?;
+        let mut txs = txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect::<Result<Vec<_>>>()?;
+        // A block with contract txs has a contracts record leaf between the txs and the
+        // receipt (docs/CONTRACTS.md). It is appended here so tx_root paths stay right; it
+        // never parses as a tx (version byte 0x02), so tx scans skip it.
+        if let Some(r) = v["contracts"]["record"].as_str() {
+            txs.push(hex::decode(r)?);
+        }
         let cb = match v["coinbase"]["record"].as_str() {
             Some(r) => Some(hex::decode(r)?),
             None => None,

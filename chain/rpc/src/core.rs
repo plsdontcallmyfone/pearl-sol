@@ -408,6 +408,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         // social kinds (SPEC 4.6): activation height and the social fee floor
         executor::precheck_social(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
+        // contract kinds (docs/CONTRACTS.md): activation, gas limits, fee floor, code validation
+        executor::precheck_contract(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
         let bytes = tx.encode();
         let h = self.mempool.insert(tx, acc.nonce, min_fee).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;
@@ -556,16 +558,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     /// Txs and coinbase receipt for a mined header: from the named template or any
     /// template with the same parent and tx_root.
-    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase)> {
+    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>)> {
         let m = |t: &Template| t.header.prev_hash == header.prev_hash && t.header.tx_root == header.tx_root;
         if let Some(id) = template_id {
             if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
                 if m(t) {
-                    return Some((t.txs.clone(), t.summary.coinbase));
+                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts));
                 }
             }
         }
-        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase))
+        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts))
     }
 
     pub fn notify(&mut self, topic: &str, data: Value) {

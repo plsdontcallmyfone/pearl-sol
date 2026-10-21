@@ -105,6 +105,15 @@ fn body_json(b: &TxBody) -> Value {
         TxBody::React { items } => json!({"items": items.iter().map(|x| json!({
             "post_id": hex::encode(x.post_id), "reaction": x.reaction, "tip": x.tip.to_string()})).collect::<Vec<_>>()}),
         TxBody::Follow { items } => json!({"items": items.iter().map(|x| json!({"target": b58(&x.target), "on": x.on})).collect::<Vec<_>>()}),
+        TxBody::DeployCode(d) => json!({"gas_limit": d.gas_limit.to_string(), "code": hex::encode(&d.code),
+            "code_hash": hex::encode(agent_types::contracts::code_hash(&d.code))}),
+        TxBody::Instantiate(i) => json!({"code_hash": hex::encode(i.code_hash), "admin": b58(&i.admin), "value": i.value.to_string(),
+            "gas_limit": i.gas_limit.to_string(), "label": String::from_utf8_lossy(&i.label), "args": hex::encode(&i.args)}),
+        TxBody::Call(c) => json!({"contract": b58(&c.contract), "value": c.value.to_string(), "gas_limit": c.gas_limit.to_string(),
+            "args": hex::encode(&c.args)}),
+        TxBody::Migrate(m) => json!({"contract": b58(&m.contract), "code_hash": hex::encode(m.code_hash),
+            "gas_limit": m.gas_limit.to_string(), "args": hex::encode(&m.args)}),
+        TxBody::SetContractAdmin { contract, admin } => json!({"contract": b58(contract), "admin": b58(admin)}),
     }
 }
 
@@ -286,7 +295,7 @@ fn build() -> Vec<(&'static str, Value)> {
         proof_hash: agent_types::block::proof_hash(&proof),
         nonce: 77,
     };
-    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec(), coinbase: Some(coinbase) };
+    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec(), coinbase: Some(coinbase), contracts: None };
     assert_eq!(block.check_commitments(), Ok(()));
     assert_eq!(Block::decode(&block.encode()).unwrap(), block);
     let header_v = json!({
@@ -415,7 +424,48 @@ fn build() -> Vec<(&'static str, Value)> {
                 agent_types::FollowEdge { target: pubkey_from_seed(&seed(9)), on: false }] }).0,
         ],
     });
+    // Contract kinds (docs/CONTRACTS.md) in contracts.json: the five tx kinds, the contract
+    // address rule, an event topic, ABI-encoded call args, and a contracts record with a
+    // receipt, an event and their paths.
+    use agent_types::contracts as ac;
+    let code = b"\0asm\x01\0\0\0".to_vec();
+    let ch = ac::code_hash(&code);
+    let addr = ac::contract_address(&alice_pk, 7);
+    // ABI: method "increment" (u8 len) then u64 5
+    let mut args = vec![9u8];
+    args.extend_from_slice(b"increment");
+    args.extend_from_slice(&5u64.to_le_bytes());
+    let call_tx = tx_vector("call", 2, 3, 2_000_000, TxBody::Call(ac::Call { contract: addr, value: 1_000_000_000, gas_limit: 1_000_000, args: args.clone() }));
+    let ev = ac::Event { contract: addr, tx_hash: call_tx.1.hash(), index: 0, topics: vec![ac::event_topic(b"Incremented")], data: 5u64.to_le_bytes().to_vec() };
+    let rc = ac::Receipt { tx_hash: call_tx.1.hash(), kind: 32, status: ac::Status::Ok, gas_limit: 1_000_000, gas_used: 412_345,
+        fee_charged: 1_500_000, contract: addr, code_hash: ch, event_count: 1, ret: 5u64.to_le_bytes().to_vec(), error: Vec::new() };
+    let rec = ac::ContractsRecord::build(42, std::slice::from_ref(&rc), std::slice::from_ref(&ev));
+    let cb = agent_types::Coinbase { height: 42, miner: bob, fees: 1_500_000, subsidy: 0, job_id: [0; 32], mature_height: 72 };
+    let txs1 = std::slice::from_ref(&call_tx.1);
+    let block_root = block::tx_root_full(txs1, Some(&rec), Some(&cb));
+    let contracts = json!({
+        "block": {"txs": [hex::encode(call_tx.1.encode())], "coinbase": hex::encode(cb.encode()), "tx_root": hex::encode(block_root),
+            "record_leaf_index": 1, "record_path": hex::encode(block::leaf_path_full(txs1, Some(&rec), Some(&cb), 1)),
+            "coinbase_path": hex::encode(block::leaf_path_full(txs1, Some(&rec), Some(&cb), 2)),
+            "event_path": hex::encode(ac::path_bytes(&[ev.hash()], 0))},
+        "address_rule": {"creator": b58(&alice_pk), "nonce": 7, "address": b58(&addr)},
+        "event_topic": {"name": "Incremented", "topic": hex::encode(ac::event_topic(b"Incremented"))},
+        "call_args": {"method": "increment", "fields": [{"u64": "5"}], "args": hex::encode(&args)},
+        "event": {"bytes": hex::encode(ev.encode()), "hash": hex::encode(ev.hash())},
+        "receipt": {"bytes": hex::encode(rc.encode()), "hash": hex::encode(rc.hash())},
+        "record": {"bytes": hex::encode(rec.encode()), "hash": hex::encode(rec.hash()), "events_root": hex::encode(rec.events_root),
+            "receipts_root": hex::encode(rec.receipts_root)},
+        "txs": [
+            tx_vector("deploy_code", 1, 6, 2_000_000, TxBody::DeployCode(ac::DeployCode { gas_limit: 1_000_000, code: code.clone() })).0,
+            tx_vector("instantiate", 1, 7, 2_000_000, TxBody::Instantiate(ac::Instantiate { code_hash: ch, admin: alice_pk, value: 0,
+                gas_limit: 2_000_000, label: b"counter".to_vec(), args: 10u64.to_le_bytes().to_vec() })).0,
+            call_tx.0,
+            tx_vector("migrate", 1, 8, 2_000_000, TxBody::Migrate(ac::Migrate { contract: addr, code_hash: ch, gas_limit: 500_000, args: Vec::new() })).0,
+            tx_vector("set_contract_admin", 1, 9, 1000, TxBody::SetContractAdmin { contract: addr, admin: [0; 32] }).0,
+        ],
+    });
     vec![
+        ("contracts.json", contracts),
         ("social.json", social),
         ("tx.json", Value::Array(tx_json)),
         ("reject.json", reject),

@@ -5,6 +5,7 @@
 mod agent;
 mod brand;
 mod commands;
+mod contract;
 mod ctx;
 mod fmt;
 mod html;

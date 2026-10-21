@@ -12,6 +12,7 @@ use commonware_codec::{Encode, ReadExt};
 use commonware_cryptography::{ed25519, Signer, Verifier};
 
 use crate::codec::{R, W};
+use crate::contracts::{Call, DeployCode, Instantiate, Migrate, MAX_DEPLOY_TX_SIZE};
 use crate::social::{read_follows, read_reactions, write_follows, write_reactions, FollowEdge, Post, Reaction, SetProfile};
 use crate::{blake3_hash, sha256, DecodeError, Hash, Pubkey, Sig, DOMAIN_DEPOSIT, DOMAIN_DEPOSIT_ORDER, DOMAIN_ORDER_JOB, DOMAIN_REJECT, DOMAIN_RESULT, NS_TX, TX_VERSION};
 
@@ -82,6 +83,11 @@ pub enum TxKind {
     Post = 22,
     React = 23,
     Follow = 24,
+    DeployCode = 30,
+    Instantiate = 31,
+    Call = 32,
+    Migrate = 33,
+    SetContractAdmin = 34,
 }
 
 impl TxKind {
@@ -106,12 +112,23 @@ impl TxKind {
             22 => Self::Post,
             23 => Self::React,
             24 => Self::Follow,
+            30 => Self::DeployCode,
+            31 => Self::Instantiate,
+            32 => Self::Call,
+            33 => Self::Migrate,
+            34 => Self::SetContractAdmin,
             k => return Err(DecodeError::Kind(k)),
         })
     }
     /// The social kinds (SPEC 4.6): valid from `social_upgrade_height`, under the social fee rule.
     pub fn is_social(&self) -> bool {
         matches!(self, Self::SetProfile | Self::OperatorLink | Self::Post | Self::React | Self::Follow)
+    }
+
+    /// The contract kinds (docs/CONTRACTS.md): valid from `contracts_upgrade_height`, under
+    /// the gas fee rule, and a failing call still lands (fee charged, state undone).
+    pub fn is_contract(&self) -> bool {
+        matches!(self, Self::DeployCode | Self::Instantiate | Self::Call | Self::Migrate | Self::SetContractAdmin)
     }
 
     pub fn name(&self) -> &'static str {
@@ -135,6 +152,11 @@ impl TxKind {
             Self::Post => "Post",
             Self::React => "React",
             Self::Follow => "Follow",
+            Self::DeployCode => "DeployCode",
+            Self::Instantiate => "Instantiate",
+            Self::Call => "Call",
+            Self::Migrate => "Migrate",
+            Self::SetContractAdmin => "SetContractAdmin",
         }
     }
 }
@@ -364,6 +386,16 @@ pub enum TxBody {
     React { items: Vec<Reaction> },
     /// `count u8 (1..=64) | (target [32] | on u8)*` (SPEC 4.6).
     Follow { items: Vec<FollowEdge> },
+    /// Upload contract code (docs/CONTRACTS.md): `gas_limit u64 | code (u32 len)`.
+    DeployCode(DeployCode),
+    /// Create a contract from deployed code.
+    Instantiate(Instantiate),
+    /// Call a contract.
+    Call(Call),
+    /// Swap a contract's code (its admin only).
+    Migrate(Migrate),
+    /// `contract [32] | admin [32]` (its admin only; zero admin = never migratable again).
+    SetContractAdmin { contract: Pubkey, admin: Pubkey },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -407,6 +439,11 @@ impl TxBody {
             Self::Post(_) => TxKind::Post,
             Self::React { .. } => TxKind::React,
             Self::Follow { .. } => TxKind::Follow,
+            Self::DeployCode(_) => TxKind::DeployCode,
+            Self::Instantiate(_) => TxKind::Instantiate,
+            Self::Call(_) => TxKind::Call,
+            Self::Migrate(_) => TxKind::Migrate,
+            Self::SetContractAdmin { .. } => TxKind::SetContractAdmin,
         }
     }
 
@@ -472,6 +509,13 @@ impl TxBody {
             Self::Post(p) => p.write(w),
             Self::React { items } => write_reactions(w, items),
             Self::Follow { items } => write_follows(w, items),
+            Self::DeployCode(d) => d.write(w),
+            Self::Instantiate(i) => i.write(w),
+            Self::Call(c) => c.write(w),
+            Self::Migrate(m) => m.write(w),
+            Self::SetContractAdmin { contract, admin } => {
+                w.bytes(contract).bytes(admin);
+            }
         }
     }
 
@@ -564,6 +608,11 @@ impl TxBody {
             TxKind::Post => Self::Post(Post::read(r)?),
             TxKind::React => Self::React { items: read_reactions(r)? },
             TxKind::Follow => Self::Follow { items: read_follows(r)? },
+            TxKind::DeployCode => Self::DeployCode(DeployCode::read(r)?),
+            TxKind::Instantiate => Self::Instantiate(Instantiate::read(r)?),
+            TxKind::Call => Self::Call(Call::read(r)?),
+            TxKind::Migrate => Self::Migrate(Migrate::read(r)?),
+            TxKind::SetContractAdmin => Self::SetContractAdmin { contract: r.arr()?, admin: r.arr()? },
         })
     }
 }
@@ -604,8 +653,8 @@ impl Tx {
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
-        // Only a RegisterModel (kind byte at offset PREFIX_LEN - 1) may exceed MAX_TX_SIZE.
-        let limit = if b.get(PREFIX_LEN - 1) == Some(&(TxKind::RegisterModel as u8)) { MAX_REGISTER_MODEL_TX_SIZE } else { MAX_TX_SIZE };
+        // Only a RegisterModel or a DeployCode (kind byte at offset PREFIX_LEN - 1) may exceed MAX_TX_SIZE.
+        let limit = max_tx_size(b.get(PREFIX_LEN - 1).copied());
         if b.len() > limit {
             return Err(DecodeError::TooLarge("tx"));
         }
@@ -643,6 +692,18 @@ impl Tx {
         verify(&self.from, NS_TX, &self.signing_bytes(), &self.sig)
     }
 }
+
+/// Largest encoded tx of the kind with byte `kind` (None = unknown: the general cap).
+pub fn max_tx_size(kind: Option<u8>) -> usize {
+    match kind {
+        Some(k) if k == TxKind::RegisterModel as u8 => MAX_REGISTER_MODEL_TX_SIZE,
+        Some(k) if k == TxKind::DeployCode as u8 => MAX_DEPLOY_TX_SIZE,
+        _ => MAX_TX_SIZE,
+    }
+}
+
+/// Largest encoded tx of any kind (the p2p / block codec bound).
+pub const MAX_ANY_TX_SIZE: usize = MAX_DEPLOY_TX_SIZE;
 
 /// Commonware `union_unique` framing: `varint(len ns) || ns || msg`.
 pub fn frame(ns: &[u8], msg: &[u8]) -> Vec<u8> {
@@ -766,7 +827,7 @@ impl commonware_codec::Read for Tx {
     type Cfg = ();
     fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, commonware_codec::Error> {
         let len = u32::read(buf)? as usize;
-        if len > MAX_REGISTER_MODEL_TX_SIZE || buf.remaining() < len {
+        if len > MAX_ANY_TX_SIZE || buf.remaining() < len {
             return Err(commonware_codec::Error::Invalid("Tx", "length"));
         }
         let mut b = vec![0u8; len];

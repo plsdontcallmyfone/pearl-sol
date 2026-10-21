@@ -10,9 +10,11 @@ agent-types.workspace = true
 state.workspace = true
 pearl-job.workspace = true
 blobs.workspace = true
+contracts.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+blake3.workspace = true
 futures.workspace = true
 blobs.workspace = true
 hex.workspace = true

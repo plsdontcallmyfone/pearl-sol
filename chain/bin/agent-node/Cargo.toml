@@ -49,6 +49,7 @@ ureq = { version = "2", default-features = false, features = ["json"] }
 blake3.workspace = true
 
 [dev-dependencies]
+contracts.workspace = true
 commonware-p2p = { version = "=2026.9.0" }
 pearl-verify-sbf = { path = "../../../crates/pearl-verify-sbf" }
 sha2 = "0.10"

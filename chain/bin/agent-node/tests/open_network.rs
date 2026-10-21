@@ -237,7 +237,7 @@ fn node_sending_invalid_blocks_gets_banned() {
         let proof = vec![0xAA; 48];
         h.proof_hash = block::proof_hash(&proof);
         let coinbase = Some(Coinbase::decode(&hex::decode(tj["coinbase"].as_str().unwrap()).unwrap()).unwrap());
-        let bad = Block { header: h, proof, txs: vec![], coinbase };
+        let bad = Block { header: h, proof, txs: vec![], coinbase, contracts: None };
         let before = n0.api.tip().await;
         let mut s = evil.channels.blocks.0.clone();
         let sent = s.send(Recipients::One(node_key(0)), IoBuf::from(bad.encode()), false);

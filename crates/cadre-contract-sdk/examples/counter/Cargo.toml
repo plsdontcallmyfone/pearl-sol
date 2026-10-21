@@ -1,0 +1,12 @@
+[package]
+name = "cadre-example-counter"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+cadre-contract-sdk = { path = "../.." }

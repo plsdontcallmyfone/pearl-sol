@@ -21,9 +21,11 @@
 use std::collections::BTreeMap;
 
 mod balance;
+mod contracts;
 mod reject;
 mod social;
 
+pub use contracts::{contract_fee_floor, gas_limit_of, precheck_contract, query_contract, simulate_call, vm, QueryResult, NATIVE_CALL_KINDS};
 pub use social::{precheck_social, social_fee_floor};
 
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
@@ -82,6 +84,12 @@ pub struct BlockSummary {
     pub withdrawals: Vec<Withdrawal>,
     pub jobs_created: Vec<Hash>,
     pub deposits: Vec<u64>,
+    /// Contract txs' receipts and events in block order, gas used by them, and the block's
+    /// contracts record (set by `finish` when there is at least one receipt).
+    pub receipts: Vec<agent_types::contracts::Receipt>,
+    pub events: Vec<agent_types::contracts::Event>,
+    pub gas_used: u64,
+    pub contracts: Option<agent_types::contracts::ContractsRecord>,
 }
 
 /// Successful tx effects worth reporting.
@@ -91,6 +99,13 @@ pub struct TxOutcome {
     /// Withdrawal-log entries this tx appended (a BridgeLock, or lien splits).
     pub withdrawals: Vec<Withdrawal>,
     pub routed: Vec<(Pubkey, u64)>,
+    /// Contract txs: unused gas paid back to the sender (the block's fees exclude it).
+    pub fee_refund: u64,
+    /// Jobs a contract posted through native calls.
+    pub extra_jobs: Vec<Hash>,
+    /// A contract tx's receipt and events.
+    pub receipt: Option<agent_types::contracts::Receipt>,
+    pub events: Vec<agent_types::contracts::Event>,
 }
 
 /// Read-through layers over a base state.
@@ -98,14 +113,40 @@ pub struct Overlay<'a, S: StateRead> {
     base: &'a S,
     block: BTreeMap<Key, Option<Vec<u8>>>,
     tx: BTreeMap<Key, Option<Vec<u8>>>,
+    /// Nested savepoints above the tx layer (contract call frames, docs/CONTRACTS.md).
+    sp: Vec<BTreeMap<Key, Option<Vec<u8>>>>,
 }
 
 impl<'a, S: StateRead> Overlay<'a, S> {
     pub fn new(base: &'a S) -> Self {
-        Self { base, block: BTreeMap::new(), tx: BTreeMap::new() }
+        Self { base, block: BTreeMap::new(), tx: BTreeMap::new(), sp: Vec::new() }
+    }
+
+    /// Open a savepoint: later writes can be undone by [`Overlay::rollback_savepoint`].
+    pub fn savepoint(&mut self) {
+        self.sp.push(BTreeMap::new());
+    }
+
+    /// Keep the writes since the last savepoint (they join the layer below).
+    pub fn release_savepoint(&mut self) {
+        let top = self.sp.pop().expect("savepoint open");
+        match self.sp.last_mut() {
+            Some(below) => below.extend(top),
+            None => self.tx.extend(top),
+        }
+    }
+
+    /// Drop the writes since the last savepoint.
+    pub fn rollback_savepoint(&mut self) {
+        self.sp.pop().expect("savepoint open");
     }
 
     pub async fn get(&self, k: &Key) -> Result<Option<Vec<u8>>, StateError> {
+        for layer in self.sp.iter().rev() {
+            if let Some(v) = layer.get(k) {
+                return Ok(v.clone());
+            }
+        }
         if let Some(v) = self.tx.get(k) {
             return Ok(v.clone());
         }
@@ -116,15 +157,25 @@ impl<'a, S: StateRead> Overlay<'a, S> {
     }
 
     pub fn put(&mut self, k: Key, v: Option<Vec<u8>>) {
-        self.tx.insert(k, v);
+        match self.sp.last_mut() {
+            Some(layer) => {
+                layer.insert(k, v);
+            }
+            None => {
+                self.tx.insert(k, v);
+            }
+        }
     }
 
     fn commit_tx(&mut self) {
+        debug_assert!(self.sp.is_empty(), "savepoint left open");
+        self.sp.clear();
         let tx = std::mem::take(&mut self.tx);
         self.block.extend(tx);
     }
 
     fn rollback_tx(&mut self) {
+        self.sp.clear();
         self.tx.clear();
     }
 
@@ -433,10 +484,16 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         match self.exec_tx(tx).await {
             Ok(o) => {
                 self.ov.commit_tx();
-                self.summary.fees += tx.fee;
+                self.summary.fees += tx.fee - o.fee_refund;
                 self.summary.tx_count += 1;
                 if let Some(id) = o.job_id {
                     self.summary.jobs_created.push(id);
+                }
+                self.summary.jobs_created.extend(o.extra_jobs.iter().copied());
+                if let Some(r) = &o.receipt {
+                    self.summary.gas_used += r.gas_used;
+                    self.summary.receipts.push(r.clone());
+                    self.summary.events.extend(o.events.iter().cloned());
                 }
                 self.summary.withdrawals.extend(o.withdrawals.iter().copied());
                 self.summary.routed.extend(o.routed.iter().copied());
@@ -453,7 +510,6 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
     }
 
     async fn exec_tx(&mut self, tx: &Tx) -> Result<TxOutcome, TxError> {
-        let h = self.env.height;
         if tx.chain_id != self.env.chain_id {
             return bad("wrong chain_id");
         }
@@ -470,6 +526,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if kind.is_social() {
             self.check_social(tx)?;
         }
+        if kind.is_contract() {
+            self.check_contract(tx)?;
+        }
         let mut acc = self.ov.account(&tx.from).await?;
         if acc.nonce != tx.nonce {
             return bad(format!("bad nonce: expected {}, got {}", acc.nonce, tx.nonce));
@@ -482,7 +541,21 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         self.ov.put_account(&tx.from, &acc);
 
         let mut out = TxOutcome::default();
-        match &tx.body {
+        if kind.is_contract() {
+            self.exec_contract(tx, &mut out).await?;
+        } else {
+            self.exec_body(&tx.from, tx.nonce, &tx.body, &mut out).await?;
+        }
+        Ok(out)
+    }
+
+    /// Effects of a non-contract tx body sent by `from` with `nonce` (fee and nonce already
+    /// taken). Contracts run native bodies through this as their own account (docs/CONTRACTS.md
+    /// "Native access").
+    pub(crate) async fn exec_body(&mut self, from: &Pubkey, nonce: u64, body: &TxBody, out: &mut TxOutcome) -> Result<(), TxError> {
+        let h = self.env.height;
+        let tx = TxRef { from: *from, nonce };
+        match body {
             TxBody::Transfer { to, amount } => {
                 if *to == escrow_address() {
                     return bad("use BridgeLock to send to the escrow");
@@ -623,6 +696,10 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if *key > keys::LEGACY_LAST && h < act {
                     return bad(format!("config key {key} activates at height {act}"));
                 }
+                let cact = agent_types::contracts::contracts_upgrade_height(self.env.chain_id);
+                if *key > keys::SOCIAL_LAST && h < cact {
+                    return bad(format!("config key {key} activates at height {cact}"));
+                }
                 let mut c = self.cfg.clone();
                 c.set(*key, value).map_err(TxError::Invalid)?;
                 c.validate().map_err(TxError::Invalid)?;
@@ -720,8 +797,11 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             TxBody::Post(p) => self.post(&tx.from, tx.nonce, p).await?,
             TxBody::React { items } => self.react(&tx.from, items).await?,
             TxBody::Follow { items } => self.follow(&tx.from, items).await?,
+            TxBody::DeployCode(_) | TxBody::Instantiate(_) | TxBody::Call(_) | TxBody::Migrate(_) | TxBody::SetContractAdmin { .. } => {
+                return bad("contract kinds run through exec_contract");
+            }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// RegisterModel (SPEC 4.5): shapes only; the blobs are never read.
@@ -1075,9 +1155,18 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             imm.entries.push((self.env.miner, reward, h));
             self.ov.put(k, Some(imm.encode()));
         }
+        if !self.summary.receipts.is_empty() {
+            self.summary.contracts = Some(agent_types::contracts::ContractsRecord::build(h, &self.summary.receipts, &self.summary.events));
+        }
         let withdrawals = if withdrawal_log { self.summary.withdrawals.iter().map(Withdrawal::log_entry).collect() } else { Vec::new() };
         Ok((WriteSet { writes: self.ov.into_writes(), withdrawals }, self.summary))
     }
+}
+
+/// Sender and nonce of the body being executed (a tx, or a contract's native call).
+struct TxRef {
+    from: Pubkey,
+    nonce: u64,
 }
 
 /// Can a block at `height` mine `job`? (parent-state check)
@@ -1140,6 +1229,8 @@ pub fn supply_of(values: &[Vec<u8>]) -> Result<u128, String> {
             }
             Some(&schema::tag::IMMATURE) => total += Immature::decode(v).map_err(|e| e.to_string())?.total() as u128,
             Some(&schema::tag::ROUTE) => total += Route::decode(v).map_err(|e| e.to_string())?.pending as u128,
+            Some(&state::contracts::tag::CODE) => total += state::contracts::CodeInfo::decode(v).map_err(|e| e.to_string())?.deposit as u128,
+            Some(&state::contracts::tag::CONTRACT) => total += state::contracts::Contract::decode(v).map_err(|e| e.to_string())?.deposit as u128,
             _ => {}
         }
     }
