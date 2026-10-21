@@ -1,0 +1,151 @@
+{
+  "format": "Cx + 64 hex of the 32-byte ed25519 key; checksum casing: h = blake3(ascii(lowercase hex)), uppercase hex letter i iff nibble i of h >= 8 (nibble 2j = h[j] >> 4, 2j+1 = h[j] & 15). docs/SPEC.md 2.1",
+  "short": "Cx + first 4 + '...' + last 4 checksummed hex characters",
+  "valid": [
+    {
+      "note": "owner example (base58 C1Epvwo9...)",
+      "hex": "a38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "base58": "C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7",
+      "cx": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06",
+      "cx_lowercase": "Cxa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "short": "Cxa380...7d06"
+    },
+    {
+      "note": "all zero key",
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "base58": "11111111111111111111111111111111",
+      "cx": "Cx0000000000000000000000000000000000000000000000000000000000000000",
+      "cx_lowercase": "Cx0000000000000000000000000000000000000000000000000000000000000000",
+      "short": "Cx0000...0000"
+    },
+    {
+      "note": "all 0xff",
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "base58": "JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG",
+      "cx": "CxffFfFFfFffffFFFFffFFfFfFFFffFFFFFFFfFFFfffFFFFFfFFFFFfFfFFffFfff",
+      "cx_lowercase": "Cxffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "short": "CxffFf...Ffff"
+    },
+    {
+      "note": "bytes 0x00..0x1f",
+      "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "base58": "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE",
+      "cx": "Cx000102030405060708090a0b0C0D0e0F101112131415161718191a1b1c1d1E1F",
+      "cx_lowercase": "Cx000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "short": "Cx0001...1E1F"
+    },
+    {
+      "note": "bytes 0xe0..0xff",
+      "hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "base58": "G8r6kyQd2ToxoqMAa46UpgRSP7YhPsRTA5HE5Wxf71ca",
+      "cx": "Cxe0e1E2E3e4e5E6E7E8e9EaebEceDeEeff0F1F2f3F4f5f6F7F8F9FAfbFCFDfeff",
+      "cx_lowercase": "Cxe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "short": "Cxe0e1...feff"
+    },
+    {
+      "note": "0xab repeated",
+      "hex": "abababababababababababababababababababababababababababababababab",
+      "base58": "CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t",
+      "cx": "CxaBAbABabAbAbABabaBABABABABabABabAbAbabABAbabaBAbABabaBaBAbABAbAb",
+      "cx_lowercase": "Cxabababababababababababababababababababababababababababababababab",
+      "short": "CxaBAb...AbAb"
+    },
+    {
+      "note": "leading zero byte then 0xcd",
+      "hex": "00cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "base58": "1491pCio1jQ5rkdK8oGq7VRWzZJFLGsEqqQUkwaoQNbE",
+      "cx": "Cx00cdCdCDcdCDcdCdCdCdcdcDCDcDCDcDcDCdcdcDcDCdcDCDCDCdCDcDcDcdcDCD",
+      "cx_lowercase": "Cx00cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "short": "Cx00cd...cDCD"
+    }
+  ],
+  "lowercase_accepted": [
+    {
+      "input": "Cxa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "hex": "a38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "displays_as": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06"
+    },
+    {
+      "input": "Cx0000000000000000000000000000000000000000000000000000000000000000",
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "displays_as": "Cx0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "input": "Cxffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "displays_as": "CxffFfFFfFffffFFFFffFFfFfFFFffFFFFFFFfFFFfffFFFFFfFFFFFfFfFFffFfff"
+    },
+    {
+      "input": "Cx000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "displays_as": "Cx000102030405060708090a0b0C0D0e0F101112131415161718191a1b1c1d1E1F"
+    },
+    {
+      "input": "Cxe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "displays_as": "Cxe0e1E2E3e4e5E6E7E8e9EaebEceDeEeff0F1F2f3F4f5f6F7F8F9FAfbFCFDfeff"
+    },
+    {
+      "input": "Cxabababababababababababababababababababababababababababababababab",
+      "hex": "abababababababababababababababababababababababababababababababab",
+      "displays_as": "CxaBAbABabAbAbABabaBABABABABabABabAbAbabABAbabaBAbABabaBaBAbABAbAb"
+    },
+    {
+      "input": "Cx00cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "hex": "00cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "displays_as": "Cx00cdCdCDcdCDcdCdCdCdcdcDCDcDCDcDcDCdcdcDcDCdcDCDCDCdCDcDcDcdcDCD"
+    }
+  ],
+  "invalid": [
+    {
+      "note": "one letter's case flipped (checksum failure)",
+      "input": "CxA38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06",
+      "error": "checksum"
+    },
+    {
+      "note": "all uppercase hex is not the checksum casing",
+      "input": "CxA38030920A564589BDFE976BDB50F37CDEAECBBB34B3934E65B3F1A717BB7D06",
+      "error": "checksum"
+    },
+    {
+      "note": "one hex digit changed, casing kept",
+      "input": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d07",
+      "error": "checksum"
+    },
+    {
+      "note": "too short (63 hex)",
+      "input": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d0",
+      "error": "bad_length"
+    },
+    {
+      "note": "too long (65 hex)",
+      "input": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d060",
+      "error": "bad_length"
+    },
+    {
+      "note": "non-hex character",
+      "input": "Cxg38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "error": "bad_hex"
+    },
+    {
+      "note": "lowercase prefix cx is not a Cx address (and not base58: x is fine but 0 is not)",
+      "input": "cxa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "error": "bad_base58"
+    },
+    {
+      "note": "0x prefix is not accepted as an address",
+      "input": "0xa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06",
+      "error": "bad_base58"
+    },
+    {
+      "note": "base58 that is not 32 bytes",
+      "input": "3mJr7AoUXx2Wqd",
+      "error": "not_32_bytes"
+    },
+    {
+      "note": "empty",
+      "input": "",
+      "error": "empty"
+    }
+  ]
+}

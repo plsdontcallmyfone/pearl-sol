@@ -49,8 +49,11 @@ fn opt_hash(k: &[u8; 32]) -> Value {
     if *k == [0; 32] { Value::Null } else { json!(hex::encode(k)) }
 }
 
-/// A 32-byte value from hex (64 chars) or base58.
+/// A 32-byte value from a Cx address (SPEC 2.1), hex (64 chars) or base58.
 pub fn parse32(s: &str) -> Result<[u8; 32], RpcError> {
+    if s.trim().starts_with(agent_types::cx::CX_PREFIX) {
+        return agent_types::cx::parse_address(s).map_err(|e| RpcError::params(format!("{s:?}: {e}")));
+    }
     let t = s.trim().trim_start_matches("0x");
     if t.len() == 64 && t.bytes().all(|c| c.is_ascii_hexdigit()) {
         return hex::decode(t).map(|v| v.try_into().unwrap()).map_err(|e| RpcError::params(e.to_string()));
