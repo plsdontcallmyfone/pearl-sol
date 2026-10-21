@@ -748,6 +748,7 @@ CLAUDE.md "Who is working on what".
      Seen on the way: a fresh node on the test box (old and new binary alike) stalled at height 1-2 syncing
      devnet over p2p ("orphan pool full" on gossiped blocks); the NODE.md join recipe synced on 2026-10-20, so
      the header sync path needs a look (not this row's change: the old deployed binary does the same).
+     Closed by item 24 (the orphan pool cap, not a commit; fixed in the sync-fix commit).
    - Not done (owner, 2026-10-20): no 8B registration on devnet, no GPU; devnet stays on the 1B and the
      CPU worker. Open for an 8B: the gateway's balance ticket budget (`max_blocks_balance`, capped at 10,000
      blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
@@ -809,6 +810,38 @@ CLAUDE.md "Who is working on what".
    NOT DEPLOYED to box 0 (needs cadre-api with the town + useragents routes on box 0, which the Phase
    1 row's box 0 deploy brings, then `cadre-agents` unit + CADRE_AGENTS_URL in cadre-api's env, then
    the site). User-agent desktops wait for the desktop controller to host user agents.
+
+24. FRESH NODE SYNC STALL FIXED (2026-10-21, "fresh node p2p sync stall" row):
+   - Symptom: a node with empty storage joining the public devnet stopped at height 1-2 ("orphan pool
+     full"); the NODE.md recipe had synced 3,022 blocks on 2026-10-20.
+   - Root cause: chain length, not a commit. Headers-first sync walks back from a peer's tip and asked for
+     every body as soon as its header arrived (chain/bin/agent-node/src/node.rs), so bodies came newest first
+     and waited in the orphan pool (`MAX_ORPHANS` 4096, chain/consensus-pow/src/chain.rs) for their parents.
+     Past 4096 each body was refused while the resolver counted it delivered and never asked again, leaving a
+     gap above block 1. Devnet passed 4096 blocks on 2026-10-21. `MAX_HEADERS_ONLY` (16384, each entry with a
+     ~25 KB proof) would have done the same at about 16k blocks.
+   - Shown: a length-only test (fallback blocks) at b54e0c9 syncs 3000 of 3000 and stops at 1 of 4350; main
+     before the fix stays at height 1 in the regression test; a box-built main synced live against devnet
+     stayed at height 1 with 3 peers. (b54e0c9 cannot follow today's devnet: pre-3260/4200 upgrades.)
+   - Fix (main aa5db01): the chain keeps a height-ordered queue of header-only entries;
+     `Core::schedule_bodies()` (chain/rpc/src/core.rs) after every node event asks for at most `BODY_WINDOW`
+     (512) bodies at a time, lowest first, never more than 512 above the tip; a body refused for a full
+     pool is queued again. Header-only entries keep the 256-byte header only (the proof comes with the body
+     and is verified when it connects), so `MAX_HEADERS_ONLY` is 262144 (about 80 MB at the cap). A node no
+     longer serves a header it has no body for. Not a consensus change; old and new nodes mix.
+   - Test: chain/bin/agent-node/tests/fresh_sync.rs `fresh_node_syncs_devnet_history_past_both_upgrades`
+     (devnet chain id; 384-matrix RegisterModel; social kinds refused at 3258, SetProfile, OperatorLink,
+     AdminConfig key 22, Post, reply, React with tip, Follow from 3260; a 640-matrix RegisterModel (25,815
+     bytes) refused at 4199 and mined at 4200; tip 4350; a fresh node joins both seeds and matches tip,
+     finalized hash, profile, handle, post, follow counts, params, both models and a balance).
+   - Live: agent-node built from the fix, fresh data dir on the test box, devnet seeds only: 4352 blocks
+     in under 80 s (389 MB data, 166 MiB RSS), tip 3894a69f..., finalized 4322 3ac10d0a..., equal to all
+     three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
+     clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
+   - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
+     Rollout status is in DEVNET.md "binaries" and the CLAUDE.md row.
+   - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
+     orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
 ## M1 components (SPEC v2, all DONE)
 
