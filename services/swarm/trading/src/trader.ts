@@ -46,6 +46,8 @@ export interface TraderOpts {
   postReceipts: boolean;
   /** cadre-api base (https://api.../v1 root without /v1): the receipt counts as visible once the API serves it. */
   apiUrl?: string;
+  /** Read the pool this often even without events (ms, default 60,000). */
+  pollMs?: number;
 }
 
 export interface LatencyRow {
@@ -70,6 +72,7 @@ export class Trader {
   book: Book | null = null;
   prices: { t: number; p: number }[] = [];
   thinkTimer: any;
+  pollTimer: any;
 
   constructor(o: TraderOpts) { this.o = o; }
 
@@ -78,13 +81,18 @@ export class Trader {
   async start() {
     this.book = await this.o.venue.book();
     await this.o.venue.start((e) => this.onEvent(e));
+    // a quiet pool sends no events: read it every pollMs too, so a stance is acted on without outside trades
+    this.pollTimer = setInterval(async () => {
+      const r = await this.o.venue.reserves().catch(() => null);
+      if (r) this.onEvent({ venue: this.o.venue.name, base: r.base, quote: r.quote, at: performance.now(), ref: "poll" });
+    }, this.o.pollMs ?? 60_000);
     const loop = async () => {
       await this.think().catch((e) => this.o.log("think_error", { agent: this.o.handle, error: (e as Error).message }));
       this.thinkTimer = setTimeout(loop, this.o.thinkEveryMs);
     };
     loop();
   }
-  stop() { clearTimeout(this.thinkTimer); this.o.venue.stop(); }
+  stop() { clearTimeout(this.thinkTimer); clearInterval(this.pollTimer); this.o.venue.stop(); }
 
   change(sinceMs: number): number | null {
     const now = Date.now();

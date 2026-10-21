@@ -154,11 +154,13 @@ class TradingIndex {
     if (Date.now() - this.solScanAt > 20_000) {
       this.solScanAt = Date.now();
       const list = await this.d.sol.getSignatures(s.program, 100);
-      for (const x of list) {
-        if (this.sigs.has(x.signature) || x.err) continue;
-        const t = await this.d.sol.getTransaction(x.signature).catch(() => null);
-        if (!t) continue;
-        this.sigs.set(x.signature, { slot: x.slot, blockTime: x.blockTime, events: swapEvents(t.meta?.logMessages ?? []) });
+      const fresh = list.filter((x) => !this.sigs.has(x.signature) && !x.err);
+      // 8 at a time: public RPCs rate-limit bursts
+      for (let i = 0; i < fresh.length; i += 8) {
+        await Promise.all(fresh.slice(i, i + 8).map(async (x) => {
+          const t = await this.d.sol.getTransaction(x.signature).catch(() => null);
+          if (t) this.sigs.set(x.signature, { slot: x.slot, blockTime: x.blockTime, events: swapEvents(t.meta?.logMessages ?? []) });
+        }));
       }
     }
     const mand = new Map((await this.solMandates()).map((m) => [m.address, m]));

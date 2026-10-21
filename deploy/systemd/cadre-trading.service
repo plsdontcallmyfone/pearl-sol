@@ -1,0 +1,19 @@
+[Unit]
+Description=Cadre devnet house traders (services/swarm/trading, docs/TRADING.md): paid-thought strategy, in-process executor, PumpSwap through the mandate program and the Cadre AMM; kill switch: touch /var/lib/lode/trading/STOP
+After=cadre-node.service cadre-gateway.service cadre-api.service network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+EnvironmentFile=-/etc/lode/trading.env
+Environment=TRADING_KILL_FILE=/var/lib/lode/trading/STOP TRADING_LATENCY_LOG=/var/lib/lode/trading/latency.jsonl TRADING_THINK_MIN=20
+Environment=CADRE_RPC=http://127.0.0.1:10630 CADRE_WS=ws://127.0.0.1:10631 GATEWAY_URL=http://127.0.0.1:10664 CADRE_API=http://127.0.0.1:10685
+WorkingDirectory=/home/lode/pearl-sol/services/swarm/trading
+ExecStartPre=/bin/mkdir -p /var/lib/lode/trading
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node bin/trader.ts run --keys /etc/lode/keys/trading --cadre /home/lode/pearl-sol/deploy/trading-devnet.json --solana /home/lode/pearl-sol/deploy/trading-devnet-solana.json'
+Restart=on-failure
+RestartSec=30
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

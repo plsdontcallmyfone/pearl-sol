@@ -645,3 +645,15 @@ deploy/build.sh, deploy/test.sh, deploy/node-config.py, deploy/systemd/*.service
 deploy/Caddyfile*.tmpl, deploy/devnet.env (public facts), deploy/genesis.json, deploy/devnet-idl/;
 scripts/devnet-deploy.sh (boxes), scripts/devnet-solana.sh + scripts/devnet-init/ (Solana side),
 scripts/devnet-e2e.sh + scripts/devnet-e2e/ (end to end from the Mac).
+
+## Trading (docs/TRADING.md, 2026-10-21)
+
+Solana mandate program `BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc` (devnet build, 377,552 B,
+max-len 415,307, upgrade authority the deployer; config `Euayzq1d...`, protocol 1,000 bps to the
+storefront buyback vault). Cadre: AMM code `471b452b...`, mandate code `c39d2b15...`, DESK token
+`GqHzh8yz...` and its CADRE pool `65QGmPmE...` (launched by the house trader desk_maker), mandate
+contract `JCs8ZiUd...`. Addresses: deploy/trading-devnet.json, deploy/trading-devnet-solana.json,
+deploy/trading-house.json. Keys: keys/devnet/trading/ (gitignored). House traders run on the test
+box (`~/trading/run-trader.sh`; stop: `touch ~/trading/STOP; kill $(cat ~/trading/trader.pid)`);
+the box 0 unit `deploy/systemd/cadre-trading.service` is ready for the orchestrator (TRADING.md 10).
+

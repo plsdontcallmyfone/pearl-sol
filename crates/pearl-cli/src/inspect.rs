@@ -356,14 +356,15 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
     let api = ctx.eps.get("api").map(String::from);
     let handle = s(&prof, "handle").to_string();
     // everything off-chain, in parallel, best effort
-    let (record, solb, posts, desk, hosted, ua) = std::thread::scope(|sc| {
+    let (record, solb, posts, desk, hosted, ua, trading) = std::thread::scope(|sc| {
         let r = sc.spawn(|| crate::agent::fetch_profile(&base, &a));
         let sb = sc.spawn(|| solana_balances(ctx, &a));
         let ps = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/profiles/{a}/posts?limit=5"))));
         let dk = sc.spawn(|| api.as_ref().filter(|_| !handle.is_empty()).map(|x| get(&format!("{x}/desktops/{handle}"))));
         let ho = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/hosted/agents/{a}"))));
         let us = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/useragents/{a}"))));
-        (r.join().unwrap(), sb.join().unwrap(), ps.join().unwrap(), dk.join().unwrap(), ho.join().unwrap(), us.join().unwrap())
+        let tr = sc.spawn(|| api.as_ref().and_then(|x| crate::trades::agent_blocks(x, &a)));
+        (r.join().unwrap(), sb.join().unwrap(), ps.join().unwrap(), dk.join().unwrap(), ho.join().unwrap(), us.join().unwrap(), tr.join().unwrap())
     });
     let (profile, perr) = match record {
         Ok(p) => (p, None),
@@ -415,6 +416,11 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
             .collect();
         view.0.push(Block::Table(Table { chip: Some("Recent posts".into()), head: ["HEIGHT", "KIND", "BODY", "THOUGHT RECEIPT"].map(String::from).to_vec(), right: vec![true, false, false, false], rows, empty: "no posts".into() }));
     }
+    // trading (docs/TRADING.md): positions, realized PnL, recent fills
+    let trading_json = trading.as_ref().map(|t| t.1.clone());
+    if let Some((blocks, _)) = trading {
+        view.0.extend(blocks);
+    }
     // the explorer record (jobs, money behind work)
     if profile.is_object() {
         let (blocks, _) = crate::agent::profile_view(&profile);
@@ -426,7 +432,7 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
     Ok(Out::new(
         json!({"account": a, "agent": agent, "route": route, "explorer": base, "profile": profile, "profile_error": perr,
                "town": prof, "balances": {"chain": ac["balance"], "solana": solb}, "posts": post_list,
-               "desktops": desk.filter(|d| d.ok()).map(|d| d.json), "hosted": hosted.filter(|h| h.ok()).map(|h| h.json), "user_agent": ua.filter(|h| h.ok()).map(|h| h.json)}),
+               "desktops": desk.filter(|d| d.ok()).map(|d| d.json), "hosted": hosted.filter(|h| h.ok()).map(|h| h.json), "user_agent": ua.filter(|h| h.ok()).map(|h| h.json), "trading": trading_json}),
         t,
     )
     .view(view))

@@ -661,3 +661,16 @@ result WARN
 - Not run: header-relay catchup tests (they need the lightclient .so built under token/, absent in the
   build tree); a QMDB storage-proof verifier on Solana does not exist yet.
 
+## Agents trade on chain (2026-10-21, docs/TRADING.md 8)
+
+| Suite | Where | Result |
+|---|---|---|
+| mandate program LiteSVM (token/tests/mandate, real pump.fun / PumpSwap bytecode, exploit set) | Mac, against the test box build (litesvm aborts on the box) | 11/11 |
+| trading contracts in the executor (contracts/tests) | test box | 3/3 |
+| trading runtime (services/swarm/trading) | test box | 6/6 |
+| cadre-api trading routes (test/trading.test.ts) + suite | Mac | 4/4; suite 56 pass, client/sol fail on the untouched tree too (missing dev dep in a fresh worktree) |
+| pearl-cli (with `cadre trades`) | test box | 75 + 4 pass |
+| pearl-wallet mandate-decode.spec | Mac | 3/3; pearl unit 209 (2 drift.spec failures predate this) |
+| cadre-web lint, typecheck, build, headless screens (desktop + phone, no horizontal scroll, no monospace) | Mac | clean |
+| live devnet | test box -> public endpoints | 22 fills on both chains by 3 house traders, receipts on Cadre, 4 unsigned mandate builders simulated |
+
