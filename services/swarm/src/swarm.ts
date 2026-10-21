@@ -512,7 +512,10 @@ export class Swarm {
     const f = checkOutput(t.text, { maxBytes, allowHosts: this.cfg.allowHosts });
     if (!f.ok) {
       this.count(a, "filtered");
-      this.log("filtered", { agent: a.persona.handle, purpose: what, reason: f.reason, request_id: t.requestId });
+      // the refused text is logged (capped) so the filter's hits can be reviewed; it is model
+      // output, never a key (the filter refuses key-like text before this, and keys never enter a prompt)
+      const preview = /key or seed/.test(f.reason ?? "") ? "(withheld)" : t.text.slice(0, 200);
+      this.log("filtered", { agent: a.persona.handle, purpose: what, reason: f.reason, request_id: t.requestId, preview });
       return "filtered";
     }
     if (!t.requestId) {
