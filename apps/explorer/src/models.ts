@@ -318,6 +318,7 @@ export async function blockModel(ix: Indexer, id: string) {
     coinbase: raw?.coinbase ?? null,
     header: raw?.header ?? null,
     header_fields: raw?.header_fields ?? null,
+    contracts: raw?.contracts ?? null, // the block's contracts record (receipts, events, gas), null when it has no contract tx
     matured: raw?.matured ?? null,
     job: job ? jobSummary(ix, job) : null,
     order: o ? orderModel(o) : null,

@@ -38,6 +38,7 @@ tags:
   - name: tx
   - name: market
   - name: town
+  - name: contracts
 
 paths:
   /v1:
@@ -894,6 +895,143 @@ paths:
         "413": { description: Too large, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /v1/contracts:
+    get:
+      tags: [contracts]
+      operationId: listContracts
+      summary: WASM contracts, newest first (node listContracts)
+      parameters:
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Contracts, content: { application/json: { schema: { type: object, properties: { total: { type: integer }, offset: { type: integer }, limit: { type: integer }, order: { type: string }, items: { type: array, items: { $ref: "#/components/schemas/Contract" } } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/contracts/receipts/{tx_hash}:
+    get:
+      tags: [contracts]
+      operationId: getContractReceipt
+      summary: The receipt of a contract tx (status, gas used, fee charged, return data, error, events with known names)
+      parameters:
+        - { name: tx_hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }
+      responses:
+        "200": { description: Receipt, content: { application/json: { schema: { $ref: "#/components/schemas/ContractReceipt" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/contracts/{address}:
+    get:
+      tags: [contracts]
+      operationId: getContract
+      summary: One contract (node getContract) with balance, entries, imports, upgradable and admin
+      parameters:
+        - { name: address, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Contract, content: { application/json: { schema: { $ref: "#/components/schemas/Contract" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/contracts/{address}/events:
+    get:
+      tags: [contracts]
+      operationId: getContractEvents
+      summary: "A contract's events, newest first; `topic` is 64 hex or an event name (topic = blake3(\"pearl-sol:event:v1\" || name)) matched against topic 0"
+      parameters:
+        - { name: address, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { name: topic, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Events, content: { application/json: { schema: { type: object, properties: { address: { type: string }, total: { type: integer }, next_offset: { type: integer }, offset: { type: integer }, limit: { type: integer }, topic: { type: [string, "null"] }, topic_name: { type: [string, "null"] }, known_events: { type: array, items: { type: string } }, events: { type: array, items: { $ref: "#/components/schemas/ContractEvent" } } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/contracts/{address}/query:
+    post:
+      tags: [contracts]
+      operationId: queryContract
+      summary: Read-only call at the tip (node queryContract); args as hex or method + fields; `returns` decodes the return data
+      parameters:
+        - { name: address, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContractInput" }
+      responses:
+        "200": { description: "Result: {contract, args, method, ok, return (hex), error, gas_used, height, decoded?, decode_error?}", content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/contracts/{address}/simulate:
+    post:
+      tags: [contracts]
+      operationId: simulateCall
+      summary: Dry-run a Call from `from` with `value` (node simulateCall); nothing is written
+      parameters:
+        - { name: address, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/ContractInput" }
+                - { type: object, required: [from], properties: { from: { $ref: "#/components/schemas/Address" }, value: { $ref: "#/components/schemas/Amount" } } }
+      responses:
+        "200": { description: "Result: {contract, from, value, args, method, ok, return, error, gas_used, log, events, fee_estimate, height}", content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/codes:
+    get:
+      tags: [contracts]
+      operationId: listCodes
+      summary: Deployed WASM code, newest first (node listCodes)
+      parameters:
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Codes, content: { application/json: { schema: { type: object, properties: { total: { type: integer }, offset: { type: integer }, limit: { type: integer }, items: { type: array, items: { $ref: "#/components/schemas/Code" } } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/codes/{hash}:
+    get:
+      tags: [contracts]
+      operationId: getCode
+      summary: One deployed code (node getCode); `include_code=1` adds the WASM bytes as hex
+      parameters:
+        - { name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }
+        - { name: include_code, in: query, schema: { type: string, enum: ["0", "1", "true", "false"] } }
+      responses:
+        "200": { description: Code, content: { application/json: { schema: { $ref: "#/components/schemas/Code" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/contract-call:
+    post:
+      tags: [contracts, tx]
+      operationId: buildContractCall
+      summary: "Unsigned Call (kind 32): the window.pearl form, the unsigned tx bytes, the framed message to sign, and the fee floor from getParams"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/ContractInput" }
+                - type: object
+                  required: [from, contract, gas_limit]
+                  properties:
+                    from: { $ref: "#/components/schemas/Address" }
+                    contract: { $ref: "#/components/schemas/Address" }
+                    value: { $ref: "#/components/schemas/Amount" }
+                    gas_limit: { $ref: "#/components/schemas/Amount" }
+                    fee: { $ref: "#/components/schemas/Amount" }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/ContractCallReply" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }
@@ -1298,3 +1436,91 @@ components:
         stage: { type: string, enum: [submitted, unlocked, final, released, unknown] }
     Transfers: { type: object, properties: { owner: { type: string }, deposits: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, withdrawals: { type: array, items: { $ref: "#/components/schemas/Transfer" } }, stages: { type: object } } }
     PumpQuote: { type: object, properties: { side: { type: string, enum: [buy, sell] }, venue: { type: string, enum: [curve, pumpswap] }, sol_in_lamports: { type: string }, tokens_out_spl: { type: string }, tokens_in_spl: { type: string }, sol_out_lamports: { type: string }, capped_at_real_reserve: { type: boolean }, reserves: { type: object }, note: { type: string } } }
+    Contract:
+      type: object
+      additionalProperties: true
+      properties:
+        address: { $ref: "#/components/schemas/Address" }
+        code_hash: { $ref: "#/components/schemas/Hex32" }
+        admin: { type: [string, "null"], description: null = immutable (can never be migrated) }
+        upgradable: { type: boolean }
+        creator: { type: string }
+        label: { type: string }
+        created_height: { type: integer }
+        migrated_height: { type: [integer, "null"] }
+        storage_bytes: { type: integer }
+        storage_items: { type: integer }
+        deposit: { $ref: "#/components/schemas/Amount" }
+        calls: { type: integer }
+        events: { type: integer }
+        balance: { $ref: "#/components/schemas/Amount" }
+        code_size: { type: integer }
+        entries: { type: array, items: { type: string } }
+        imports: { type: array, items: { type: string } }
+    ContractEvent:
+      type: object
+      additionalProperties: true
+      properties:
+        contract: { type: string }
+        tx_hash: { $ref: "#/components/schemas/Hex32" }
+        index: { type: integer }
+        topics: { type: array, items: { $ref: "#/components/schemas/Hex32" } }
+        data: { type: string, description: hex }
+        name: { type: [string, "null"], description: the known event name whose topic equals topic 0 }
+        height: { type: integer }
+        n: { type: integer }
+    ContractReceipt:
+      type: object
+      additionalProperties: true
+      properties:
+        tx_hash: { $ref: "#/components/schemas/Hex32" }
+        kind: { type: integer, description: "30 DeployCode, 31 Instantiate, 32 Call, 33 Migrate, 34 SetContractAdmin" }
+        status: { type: string, enum: [ok, reverted, out_of_gas, trapped, refused] }
+        ok: { type: boolean }
+        gas_limit: { type: string }
+        gas_used: { type: string }
+        fee_charged: { $ref: "#/components/schemas/Amount" }
+        contract: { type: [string, "null"] }
+        code_hash: { type: string }
+        event_count: { type: integer }
+        return: { type: string, description: hex }
+        error: { type: string }
+        height: { type: integer }
+        block_hash: { type: string }
+        final: { type: boolean }
+        events: { type: array, items: { $ref: "#/components/schemas/ContractEvent" } }
+    Code:
+      type: object
+      additionalProperties: true
+      properties:
+        code_hash: { $ref: "#/components/schemas/Hex32" }
+        deployer: { type: string }
+        height: { type: integer }
+        size: { type: integer }
+        deposit: { $ref: "#/components/schemas/Amount" }
+        instances: { type: integer }
+        code: { type: string, description: WASM hex (include_code=1 only) }
+    ContractInput:
+      type: object
+      description: "Call args: `args` (hex, method name first) or `method` + `fields` (each `{u8|u16|u32|u64|bool|addr|hash|bytes|str: value}` or `\"type:value\"`); not both"
+      properties:
+        args: { type: string }
+        method: { type: string }
+        fields: { type: array, items: {} }
+        returns: { type: array, items: { type: string, enum: [u8, u16, u32, u64, bool, addr, hash, bytes, str] } }
+        gas: { $ref: "#/components/schemas/Amount" }
+    ContractCallReply:
+      type: object
+      properties:
+        window_pearl: { type: object, description: "{method: signAndSendTransaction, params: {transaction: {kind: Call, contract, value, gasLimit, args (hex), fee}}}" }
+        chain_id: { type: integer }
+        nonce: { type: integer }
+        fee: { $ref: "#/components/schemas/Amount" }
+        fee_floor: { $ref: "#/components/schemas/Amount" }
+        fee_rule: { type: string }
+        fee_parts: { type: object, properties: { contract_base_fee: { type: string }, byte_fee: { type: string }, gas_fee: { type: string }, min_fee: { type: string }, tx_len: { type: integer } } }
+        unsigned_tx: { type: string, description: hex of the tx without its 64-byte signature }
+        framed_message: { type: string, description: "hex of varint len || \"pearl-sol:tx:v1\" || unsigned_tx, the ed25519 message" }
+        tx_len: { type: integer }
+        summary: { type: object }
+        sign_with: { type: string }

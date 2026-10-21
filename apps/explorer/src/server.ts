@@ -14,6 +14,7 @@ import { revenueModel } from "./revenue.ts";
 import { plainTokens, supplyModel } from "./supply.ts";
 import { revenuePage } from "./revenue-view.ts";
 import { agentRoute } from "./profile-route.ts";
+import { contractRoute } from "./contract-route.ts";
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const TYPES: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
@@ -43,6 +44,8 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
   const rest = api ? parts.slice(1) : parts;
   const ag = await agentRoute(ix, api, rest, q, sm);
   if (ag) return ag;
+  const ct = await contractRoute(ix, api, rest, q, sm);
+  if (ct) return ct;
   const filter = (["all", "paid", "fallback"].includes(q.get("filter") ?? "") ? q.get("filter") : "all") as "all" | "paid" | "fallback";
   const before = q.get("before") ? Number(q.get("before")) : undefined;
   const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
@@ -51,7 +54,7 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
   if (api) {
     switch (rest[0]) {
       case undefined:
-        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/jobs?evaluator={address}&status=", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback", "/api/revenue", "/api/supply", "/api/supply/circulating", "/api/supply/total", "/api/agents", "/api/agent/{address}"] });
+        return json({ endpoints: ["/api/summary", "/api/feed", "/api/block/{height|hash}", "/api/block/{height}/proof", "/api/jobs", "/api/jobs?evaluator={address}&status=", "/api/job/{id}", "/api/orders", "/api/order/{nonce}", "/api/sol/tx/{sig}", "/api/payers", "/api/buyback", "/api/revenue", "/api/supply", "/api/supply/circulating", "/api/supply/total", "/api/agents", "/api/agent/{address}", "/api/contracts?offset&codes_offset", "/api/contract/{address}?offset&topic", "/api/code/{hash}", "/api/tx/{hash}"] });
       case "summary":
         return json(sm);
       case "feed":
