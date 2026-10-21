@@ -1,4 +1,4 @@
-//! Contract records (docs/CONTRACTS.md, SPEC 4.7). Schema tags 40-48.
+//! Contract records (docs/CONTRACTS.md, SPEC 4.9). Schema tags 40-48.
 //!
 //! - `CodeInfo ["code", code_hash]` (tag 40) and the code itself `["code-bytes", code_hash]`
 //!   (tag 41, `tag || code`), indexed by `["code-index", i]` (tag 42).

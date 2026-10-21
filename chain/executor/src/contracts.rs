@@ -1,4 +1,4 @@
-//! Contract kinds (docs/CONTRACTS.md, SPEC 4.7): DeployCode, Instantiate, Call, Migrate,
+//! Contract kinds (docs/CONTRACTS.md, SPEC 4.9): DeployCode, Instantiate, Call, Migrate,
 //! SetContractAdmin.
 //!
 //! Rules shared by all five:

@@ -365,7 +365,7 @@ sendTx refuses a social tx below the activation height or under the social fee f
 (`max(min_fee, social_min_fee + social_byte_fee x tx bytes)`). getAccountTxs lists a Follow
 under each target (role `follow`) and an OperatorLink under its agent (role `operator`).
 
-### Contracts (SPEC 4.7, docs/CONTRACTS.md)
+### Contracts (SPEC 4.9, docs/CONTRACTS.md)
 
 Addresses are base58, hashes hex, binary (args, return data, keys, event data) hex. Contract
 object: `{"address", "code_hash", "admin": base58 | null, "upgradable", "creator", "label",

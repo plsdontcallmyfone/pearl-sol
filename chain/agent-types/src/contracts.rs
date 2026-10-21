@@ -1,5 +1,5 @@
 //! Contract tx bodies, receipts, events and the per-block contracts record (docs/CONTRACTS.md,
-//! SPEC 4.7).
+//! SPEC 4.9).
 //!
 //! Kinds 30-34: DeployCode, Instantiate, Call, Migrate, SetContractAdmin. They are valid from
 //! [`contracts_upgrade_height`] (devnet) or genesis (every other chain).
