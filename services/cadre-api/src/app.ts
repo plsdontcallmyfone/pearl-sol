@@ -14,6 +14,7 @@ import { registerInference } from "./routes/inference.ts";
 import { registerMarket } from "./routes/market.ts";
 import { registerTown } from "./routes/town.ts";
 import { registerDesktops } from "./routes/desktops.ts";
+import { registerUserAgents } from "./routes/useragents.ts";
 
 export const VERSION = "1.0.0";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,5 +80,6 @@ export function build(d: Deps): Api {
   registerMarket(api, d);
   registerTown(api, d);
   registerDesktops(api, d);
+  registerUserAgents(api, d);
   return api;
 }
