@@ -4,6 +4,7 @@
 
 import { b58decode, findPda, hex, pk, rd16, rd32, rd64, rdi64, rd8, sha256, slice, u64le, utf8 } from "./codec.ts";
 import { socialFacts, type SocialBody } from "./social.ts";
+import { dmFacts, type DmBody } from "./dm.ts";
 
 // Localnet ids by default; the public devnet sets STOREFRONT_PROGRAM / LIGHTCLIENT_PROGRAM / BRIDGE_PROGRAM (docs/DEVNET.md).
 export const STOREFRONT_ID = process.env.STOREFRONT_PROGRAM || "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr";
@@ -187,6 +188,10 @@ export interface TxFacts {
   social?: SocialBody;
   nonce?: string;
   postId?: string;
+  // DM kinds (SPEC 4.10, dm.ts): the decoded body, a message's id, a created channel's id
+  dm?: DmBody;
+  messageId?: string;
+  channelId?: string;
 }
 
 /** Signer keys of a `count u8, (pubkey [32], sig [64])*` list at `o`. */
@@ -200,6 +205,8 @@ function sigKeys(d: Uint8Array, o: number): string[] {
 export function txFacts(kind: string, txB64: string): TxFacts {
   const sf = socialFacts(kind, txB64);
   if (sf.social) return sf;
+  const df = dmFacts(kind, txB64);
+  if (df.dm) return df;
   const d = Uint8Array.from(Buffer.from(txB64, "base64"));
   if (d.length < HDR) return {};
   try {

@@ -89,7 +89,7 @@ export interface IndexerOptions {
   log?: (msg: string) => void;
 }
 
-const STATE_VERSION = 2; // 2: tx facts carry signers / deliverer / to / name / uri (agent profiles)
+const STATE_VERSION = 3; // 2: tx facts carry signers / deliverer / to / name / uri (agent profiles); 3: DM facts (dm.ts)
 
 export class Indexer {
   private lastSolPoll = 0;
