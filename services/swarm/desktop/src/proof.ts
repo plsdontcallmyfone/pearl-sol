@@ -61,7 +61,7 @@ const before = BigInt((await node.call("getAccount", { account: probe.address })
 const task = chainTask(cfg.siteUrl, { kind: "Post", postKind: 0, body: text, thoughtRef: requestId } as any)!;
 const chat = openRouterChat(sec.openrouterKey!);
 const [w, h] = cfg.resolution;
-const res = await runTask(desk.sbx!, chat, { model: cfg.visionModel, system: systemPrompt("Desk Probe", "desk_probe", w, h), task: task.text, verbatim: task.verbatim, maxSteps: 24, maxUsd: 0.1, onStep: (s) => log({ event: "step", ...s }) });
+const res = await runTask(desk.sbx!, chat, { model: cfg.visionModel, system: systemPrompt("Desk Probe", "desk_probe", w, h), task: task.text, verbatim: task.verbatim, openUrl: task.url, maxSteps: 24, maxUsd: 0.1, onStep: (s) => log({ event: "step", ...s }) });
 out.vision = { ok: res.ok, summary: res.summary, steps: res.steps, usd: res.usd, in_tokens: res.inTokens, out_tokens: res.outTokens, error: res.error ?? null };
 
 // 3. on chain and in the town index

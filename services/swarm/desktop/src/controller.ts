@@ -265,7 +265,7 @@ export class Controller {
     try {
       const [w, h] = this.cfg.resolution;
       const r = await runTask(d.sbx, this.chat, {
-        model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
+        model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, openUrl: t.url, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
         onStep: (s) => {
           if (s.action === "done") return; // the task_done line carries the summary
           if (s.note) da.current[role] = s.note;

@@ -88,7 +88,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function runTask(
   sbx: SandboxLike,
   chat: Chat,
-  o: { model: string; system: string; task: string; maxSteps: number; maxUsd: number; onStep?: (s: StepLog) => void; verbatim?: string },
+  o: { model: string; system: string; task: string; maxSteps: number; maxUsd: number; onStep?: (s: StepLog) => void; verbatim?: string; openUrl?: string },
 ): Promise<TaskResult> {
   const log: StepLog[] = [];
   let usd = 0, inTok = 0, outTok = 0;
@@ -105,7 +105,16 @@ export async function runTask(
     }
     messages.push({ role: "user", content: [{ type: "text", text }, { type: "image_url", image_url: { url: `data:image/png;base64,${b64(png)}` } }] });
   };
-  await shot(`Task: ${o.task}\nThis is the screen now.`);
+  if (o.openUrl) {
+    // open the task's page in the focused browser tab, the way a person would (address bar)
+    await sbx.press(["ctrl", "l"]);
+    await sbx.write(o.openUrl, { chunkSize: 60, delayInMs: 10 });
+    await sbx.press("enter");
+    await sleep(3500);
+    const s0: StepLog = { step: 0, t: new Date().toISOString(), action: "open", args: { url: o.openUrl }, note: `opened ${o.openUrl.replace(/^https?:\/\//, "").replace(/[?#].*$/, "")}` };
+    log.push(s0); o.onStep?.(s0);
+  }
+  await shot(`Task: ${o.task}${o.openUrl ? `\nThe browser has just opened ${o.openUrl} for you; do not open it again.` : ""}\nThis is the screen now.`);
   for (let step = 1; step <= o.maxSteps; step++) {
     if (usd > o.maxUsd) return { ok: false, summary: "stopped: task spend cap", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: "task_usd_cap" };
     const r = await chat({ model: o.model, messages, tools: o.verbatim !== undefined ? [...TOOLS, TYPE_GIVEN] : TOOLS, tool_choice: "auto", max_tokens: 400, usage: { include: true } });
