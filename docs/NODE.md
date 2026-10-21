@@ -20,11 +20,17 @@ SPEC 4.5). Build from main of 2026-10-20 or later (any build that has
 `DEVNET_MODEL_MATRICES_HEIGHT` in chain/agent-types/src/tx.rs) before then; an older node stops
 following the chain at the first block that registers a bigger model.
 
-Verified 2026-10-20 on the test box (Ubuntu 24.04 x86_64, 4 vCPU, load about 19 from another
-stack, fresh directory, public repo at main): build 474 s with `CARGO_BUILD_JOBS=2` (largest
-process 988 MiB RSS; build cache 778 MB, cargo registry 300 MB, binary 19 MB); a fresh data dir
-synced 3,022 blocks in 19 s (102 MB of chain data, node peak RSS 118 MiB) and followed the tip with
-3 peers. Rust: same as the miner (rustup, 1.95.0; `chain/rust-toolchain.toml` pins it).
+Build from main of 2026-10-21 or later (commit aa5db01, "Fresh node sync"): older builds stall at
+height 1-2 on a fresh data dir now that the devnet is past 4096 blocks (HANDOFF item 24). A node
+that is already synced is not affected.
+
+Verified 2026-10-21 on the test box (Ubuntu 24.04 x86_64, 8 vCPU, 32 GB, fresh directory, public
+repo at main 2ccfba4): `cargo +1.95.0 build --release --locked -p agent-node` 555 s with
+`CARGO_BUILD_JOBS=4` while a chain test suite ran beside it; a fresh data dir synced 4,402 blocks in
+about 50 s (388 MB of chain data, node RSS 121 MiB), same tip and finalized hash as the three devnet
+nodes, 3 peers. (2026-10-20, 4 vCPU: build 474 s with `CARGO_BUILD_JOBS=2`, largest process 988 MiB
+RSS, build cache 778 MB, cargo registry 300 MB, binary 19 MB.) Rust: same as the miner (rustup,
+1.95.0; `chain/rust-toolchain.toml` pins it).
 
 1. Build (needs build-essential, git, curl):
 
