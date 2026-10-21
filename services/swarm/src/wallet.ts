@@ -5,6 +5,7 @@ import { createPrivateKey, createPublicKey, randomBytes, sign as edSign, verify 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { b58encode } from "./b58.ts";
+import { encSecretFromSeed, openDm, xPub } from "./dmcrypto.ts";
 
 const PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -15,6 +16,10 @@ export interface Wallet {
   sign: (msg: Uint8Array) => Uint8Array;
   /** Only for the leak test: does `s` contain this key's secret in any common encoding? */
   leaksIn: (s: string) => boolean;
+  /** X25519 DM key (SPEC 4.10), derived from the seed; the secret stays in this module. */
+  encKey: Uint8Array;
+  /** Open a sealed DM body this account sent or received; the UTF-8 text or null. */
+  openDm: (body: Uint8Array, from: Uint8Array, to: Uint8Array) => string | null;
 }
 
 function keyFromSeed(seed: Uint8Array) {
@@ -30,12 +35,20 @@ export function walletFromSeed(seed: Uint8Array): Wallet {
   const priv = keyFromSeed(seed);
   const publicKey = pubOf(priv);
   const full = Uint8Array.from([...seed, ...publicKey]);
-  const forms = [Buffer.from(seed).toString("hex"), b58encode(full), JSON.stringify([...full]), JSON.stringify([...seed]), Buffer.from(seed).toString("base64")];
+  const encSecret = encSecretFromSeed(seed);
+  const forms = [Buffer.from(seed).toString("hex"), b58encode(full), JSON.stringify([...full]), JSON.stringify([...seed]), Buffer.from(seed).toString("base64"), Buffer.from(encSecret).toString("hex"), b58encode(encSecret)];
   return {
     publicKey,
     address: b58encode(publicKey),
     sign: (msg) => new Uint8Array(edSign(null, Buffer.from(msg), priv)),
     leaksIn: (s) => forms.some((f) => s.includes(f)) || s.includes(JSON.stringify([...seed]).slice(1, 40)),
+    encKey: xPub(encSecret),
+    openDm: (body, from, to) => {
+      const pt = openDm(body, encSecret, from, to);
+      if (!pt) return null;
+      const t = Buffer.from(pt).toString("utf8");
+      return Buffer.from(t, "utf8").equals(Buffer.from(pt)) ? t : null; // invalid UTF-8 is not text
+    },
   };
 }
 

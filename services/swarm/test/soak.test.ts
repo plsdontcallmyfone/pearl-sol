@@ -115,3 +115,60 @@ test("daily top-up cap refuses a payment over it", async () => {
   assert.equal(await sw.topup(), false);
   assert.equal(f.gw.topups, topups);
 });
+
+test("soak with DMs: paid, sealed, mempool and thread DMs over a UTC day; caps hold, escrows end released or refunded", async () => {
+  const { answerRows } = await import("../src/dms.ts");
+  const { dmCfg, human, sendDm } = await import("./helpers.ts");
+  const clock = { t: Date.UTC(2026, 9, 26, 6, 0) };
+  const cfg = testConfig({ dm: dmCfg(), budget: { ...testConfig().budget, rowsPerDay: 14000, agentRowsCap: 2500, topupLamportsPerDay: 100_000_000n } });
+  const { sw, agents } = makeSwarm(f, cfg, 10, clock, [], 10); // personas 10..19 (the first soak used 0..9)
+  const h = human(f);
+  f.node.balances.set(h.address, 10n ** 15n); // the fake dm_price is about 2 CADRE a cold DM
+  const sent: { id: string; to: string; escrowed: boolean; sealed: boolean }[] = [];
+  const results: Record<string, number> = {};
+  let held = false;
+  for (let i = 0; i < 400; i++) {
+    if (held) { f.node.mine(); held = false; }
+    const ready = agents.filter((a) => f.node.profiles.get(a.wallet.address)?.encKey?.some((v: number) => v));
+    if (ready.length && i % 2 === 0 && i < 330) {
+      const a = ready[(i / 2) % ready.length];
+      const g = f.node.gate(h.address, a.wallet.address);
+      const pay = BigInt(g.required_pay);
+      const kind = (i / 2) % 4;
+      const hold = kind === 3;
+      const id = sendDm(f, h, a, { text: `Letter ${i}: how is the tide at block ${f.node.height}?`, sealed: kind === 1, pay: pay > 0n ? pay : kind === 2 ? 0n : 0n, reclaimAfter: pay > 0n && kind !== 2 ? 10 + ((i * 37) % 290) : 0, hold });
+      if (hold) held = true;
+      sent.push({ id, to: a.wallet.address, escrowed: pay > 0n && kind !== 2, sealed: kind === 1 });
+    }
+    const r = await sw.tick();
+    results[r] = (results[r] ?? 0) + 1;
+    f.node.height += 1;
+    assert.ok(sw.budget.st.rows <= cfg.budget.rowsPerDay);
+    for (const a of agents) assert.ok((sw.budget.st.agentRows[a.persona.handle] ?? 0) < sw.budget.agentCap(a.persona.handle) + answerRows(a.persona, cfg.maxTokens));
+    clock.t += 5 * 60_000;
+  }
+  f.node.height += 400; // every window over: what was not answered must have been refunded
+  for (let i = 0; i < 10; i++) { await sw.tick(); clock.t += 60_000; }
+  assert.deepEqual(f.node.refused, [], "every tx the swarm sent was valid");
+  const own = new Set(agents.map((a) => a.wallet.address));
+  const replies = f.node.sent.filter((s) => s.kind === "SendMessage" && own.has(s.from));
+  const byId = new Map(sent.map((x) => [x.id, x]));
+  for (const r of replies) {
+    const src = byId.get(Buffer.from(r.body.replyTo).toString("hex"));
+    assert.ok(src && src.to === r.from, "every reply answers a DM sent to that agent");
+    assert.equal(r.body.pay, 0n);
+    assert.equal(r.body.mode, src.sealed ? 1 : 0, "same mode as the incoming message");
+    const text = r.body.mode === 1 ? h.openDm(r.body.body, r.body.from ?? agents.find((a) => a.wallet.address === r.from)!.wallet.publicKey, h.publicKey) : Buffer.from(r.body.body).toString("utf8");
+    assert.ok(text, "the human opens every sealed reply");
+    const sha = createHash("sha256").update(text!).digest("hex");
+    assert.ok([...f.gw.receipts.values()].some((x) => x.text_sha256 === sha), "every reply is a receipted paid thought, verbatim");
+    if (r.body.mode === 0) assert.equal(f.gw.receipts.get(r.body.thoughtRef)?.text_sha256, sha);
+  }
+  const esc = sent.filter((x) => x.escrowed);
+  const released = esc.filter((x) => f.node.released.includes(x.id)).length;
+  const refunded = esc.filter((x) => f.node.refunded.some((r) => r.id === x.id && own.has(r.by))).length;
+  assert.ok(released > 0, "paid DMs were answered and released");
+  assert.equal(released + refunded, esc.length, `escrows: ${esc.length}, released ${released}, refunded ${refunded}, still open ${[...f.node.escrows.values()].filter((e) => e.from === h.address).length}`);
+  const dmReplies = replies.length;
+  console.log(JSON.stringify({ ticks: 400, results, dms_sent: sent.length, escrowed: esc.length, released, refunded_by_agent: refunded, replies: dmReplies, sealed_replies: replies.filter((r) => r.body.mode === 1).length, rows: sw.budget.st.rows }));
+});

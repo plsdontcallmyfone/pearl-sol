@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { key32 } from "../src/b58.ts";
-import { type Body, decodeTx, signingBytes, signTx, txLen } from "../src/chaintx.ts";
+import { type Body, decodeTx, encodeBody, messageId, signingBytes, signTx, txLen } from "../src/chaintx.ts";
 import { walletFromSeed } from "../src/wallet.ts";
 
 const VEC = new URL("../../../chain/agent-types/vectors/", import.meta.url);
@@ -20,6 +20,9 @@ function bodyOf(v: any): Body {
     case "Post": return { kind: "Post", postKind: b.kind, parent: h(b.parent), channel: h(b.channel), body: b.body, blobUri: b.blob_uri, blobHash: h(b.blob_hash), thoughtRef: b.thought_ref };
     case "React": return { kind: "React", items: b.items.map((x: any) => ({ postId: h(x.post_id), reaction: x.reaction, tip: BigInt(x.tip) })) };
     case "Follow": return { kind: "Follow", items: b.items.map((x: any) => ({ target: key32(x.target), on: x.on })) };
+    case "SendMessage": return { kind: "SendMessage", to: key32(b.to), channel: h(b.channel), mode: b.mode, replyTo: h(b.reply_to), pay: BigInt(b.pay), reclaimAfter: b.reclaim_after, body: h(b.body_hex), blobUri: b.blob_uri, blobHash: h(b.blob_hash), thoughtRef: b.thought_ref };
+    case "ReclaimMessage": return { kind: "ReclaimMessage", messageId: h(b.message_id) };
+    case "SetConsent": return { kind: "SetConsent", items: b.items.map((x: any) => ({ peer: key32(x.peer), state: x.state })) };
   }
   throw new Error(`no body for ${v.kind_name}`);
 }
@@ -48,4 +51,21 @@ test("social kinds match social.json (SPEC 4.6)", (t) => {
   const kinds = new Set<string>();
   for (const v of s.txs) { check(v); kinds.add(v.kind_name); }
   for (const k of ["SetProfile", "OperatorLink", "Post", "React", "Follow"]) assert.ok(kinds.has(k), `vector for ${k}`);
+});
+
+test("DM kinds SendMessage / ReclaimMessage / SetConsent match dm.json (SPEC 4.10)", () => {
+  const d = JSON.parse(readFileSync(new URL("dm.json", VEC), "utf8"));
+  const kinds = new Set<string>();
+  for (const v of d.txs.filter((x: any) => ["SendMessage", "ReclaimMessage", "SetConsent"].includes(x.kind_name))) {
+    check(v);
+    // the decoder gives the same body back (re-encoded bytes equal)
+    const dec = decodeTx(Uint8Array.from(Buffer.from(v.tx, "hex")));
+    assert.equal(Buffer.from(encodeBody(dec.body).bytes).toString("hex"), Buffer.from(encodeBody(bodyOf(v)).bytes).toString("hex"), `${v.name}: decode`);
+    kinds.add(v.kind_name);
+  }
+  for (const k of ["SendMessage", "ReclaimMessage", "SetConsent"]) assert.ok(kinds.has(k), `vector for ${k}`);
+  for (const m of d.message_ids) assert.equal(Buffer.from(messageId(key32(m.from), BigInt(m.nonce))).toString("hex"), m.message_id);
+  // the reclaim vector names the escrowed message of dm_plain_escrow
+  const esc = d.txs.find((x: any) => x.name === "dm_plain_escrow");
+  assert.equal(Buffer.from(messageId(key32(esc.from), BigInt(esc.nonce))).toString("hex"), d.txs.find((x: any) => x.name === "reclaim").body.message_id);
 });
