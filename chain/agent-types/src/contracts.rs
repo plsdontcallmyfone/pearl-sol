@@ -49,7 +49,7 @@ pub const RECEIPT_VERSION: u8 = 1;
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Coordinated activation height of the contract kinds and config keys 27-34 on the public
 /// devnet; every other chain has them from genesis.
-pub const DEVNET_CONTRACTS_HEIGHT: u64 = 6000;
+pub const DEVNET_CONTRACTS_HEIGHT: u64 = 4700;
 
 /// First height at which the contract kinds and config keys 27-34 are valid on `chain_id`.
 pub fn contracts_upgrade_height(chain_id: u32) -> u64 {

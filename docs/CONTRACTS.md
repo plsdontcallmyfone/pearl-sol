@@ -265,7 +265,10 @@ change must be running on the relays before any block mixes the two (8).
 ## 8. Activation and rollout
 
 - `agent_types::contracts::contracts_upgrade_height(chain_id)`: Cadre public devnet (chain id
-  1128350802) at `DEVNET_CONTRACTS_HEIGHT`, every other chain from genesis. Below it the
+  1128350802) at `DEVNET_CONTRACTS_HEIGHT` = 4700, every other chain from genesis. The height
+  is inert until the first contract tx lands: a block without contract txs carries no record and
+  leaves the config record as it was, so a node that has not upgraded keeps agreeing until a
+  contract tx is mined. No contract tx is sent on devnet before all three nodes run the upgrade. Below it the
   executor refuses the contract kinds and config keys 27-34 and the node RPC refuses them at
   admission, so an upgraded node agrees with an old one on every block below the height (an old
   node fails a contract tx at decode, a new one at execution). From the height every node must

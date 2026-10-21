@@ -55,7 +55,7 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 | reserve | 8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi | 386,216 B, 13f78f26...613570c4 |
 | bridge | 3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN | 398,248 B, 1f6abc9c...2f7970e0 |
 | storefront | 9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu | 624,544 B, ad947c9a...2e717088 |
-| lightclient | 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m | 652,840 B, e8786d59...5d58aef |
+| lightclient | 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m | 665,536 B, 2017132c...657c0b (upgraded 2026-10-21, begin_verify_job; was 652,840 B, e8786d59...5d58aef) |
 
 Deployed 2026-10-19 from commit fe8e04a (build on box 0), max-len 1.1x the .so size (programdata
 424,837 / 438,072 / 686,998 / 718,124 B).
@@ -154,6 +154,26 @@ cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-worke
 (submit, connect, mark_final, accumulate, job registration) are sent at once by the lane that owns the
 step's height and by the other lane only after 45 s (`shared_grace`), so one lane covers a dead one;
 since 1a1f4f8, 2026-10-20).
+
+Light client upgrade + header relay rollout (2026-10-21, "serve the 8B" row, SPEC 5.3 "Job check at
+mining"): the lightclient program was upgraded in place at slot 513580446 with the devnet build of main
+(adds `begin_verify_job`; every existing instruction and account unchanged, so the old relays kept
+working): .so 665,536 B under the 718,124 B programdata (no extend), buffer rent 3.38157312 SOL held during
+the deploy and returned, deployer 43.961159746 -> 43.957719746 SOL (0.00344 SOL fees, including one buffer
+write that hit the public RPC's retry limit; its buffer was closed and the deploy redone). Program keypairs
+backed up first (~/.config/pearl-sol/keys-devnet-backup-20261021). Then header-relay sha256 ca062bd1...8a85f
+(built on box 0 from main b21f0f4, `--features devnet`; old binary kept as /opt/lode/bin/header-relay.prev):
+box 1 cadre-header-relay 17:52 UTC, box 2 cadre-header-relay 18:00 UTC, box 0 cadre-settle 18:10 UTC. Before
+it, the old relays registered every posted segment (blocking, about 11 s each): JobCommit accounts went from
+434 (about 15:40 UTC) to 1,495 (18:10 UTC), each 2,240,280 lamports never returned, and box 2 sat in that loop
+while the light client fell 111 blocks behind; after it the new relays verified job blocks with
+begin_verify_job (35 txs each) and the lag fell (111 -> 92 by 18:10 UTC). Seen in the first minutes: one
+connect NotWorkDone (6027) and one accumulate AccOrder (6023), the known lane races; no VerifyFailed. At 18:28 UTC:
+still 1,495 JobCommit accounts (none created since the rollout), light client tip 4396 -> 4489 since 17:52 UTC
+(lag 33-47 and falling), 0 VerifyFailed and 0 register_job on either box; relay payer balances 18:10 -> 18:28 UTC
+box 1 2.76598716 -> 2.75733416 SOL, box 2 2.78587568 -> 2.73428568 SOL (fees plus refundable header-record rent).
+Devnet nodes still scan 512 jobs per template (TEMPLATE_JOB_SCAN 4096 comes with the next cadre-node rollout;
+the 1B's 144-segment rounds fit either way).
 
 Header relay build (2026-10-20): boxes 1 and 2 (cadre-header-relay) and box 0 (cadre-settle) run
 header-relay sha256 098fbb52...5c4b5931, built on box 0 from main 1a1f4f8 (contains de8edd5, the
