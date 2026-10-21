@@ -535,7 +535,12 @@ async fn reader_task<E, St>(
                 }
                 b.0 -= 1.0;
                 let tx = senders.get_mut(&channel).unwrap();
+                let t0 = std::time::Instant::now();
                 let _ = tx.send((key.clone(), payload)).await;
+                let waited = t0.elapsed();
+                if waited > Duration::from_secs(2) {
+                    tracing::warn!(peer = ?key, channel, waited_ms = waited.as_millis() as u64, "reader blocked on a full channel");
+                }
             }
             Msg::Hello { version, listen } => {
                 if !lock(&shared).on_hello(&key, conn_id, version, listen, now) {
