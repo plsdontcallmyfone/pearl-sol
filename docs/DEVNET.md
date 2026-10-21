@@ -27,6 +27,7 @@ storefront-x402, crank, explorer and cadre-api running on box 0. e2e results: "E
 | Solana RPC | https://api.devnet.solana.com (public; rate limited) |
 | cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway and prepaid ON since 2026-10-20 06:17 UTC (`/v1/openai/*`, `/v1/inference/*`), pool off |
 | Cadre website (~/cadre-web) | https://cadre.64-95-12-116.sslip.io (`cadre-web.service` on box 0, :10710 behind caddy); miner installer at https://cadre.64-95-12-116.sslip.io/install-miner.sh (devnet defaults) |
+| house desktops (ECOSYSTEM 2.10) | https://cadre.64-95-12-116.sslip.io/live (grid) and /live/<handle>; API `/v1/desktops`; `cadre-desktops.service` on box 0, 127.0.0.1:10720 (see "House desktops") |
 | paid AI (inference gateway, SPEC 5.4) | through cadre-api: base URL https://api.64-95-12-116.sslip.io/v1/openai (OpenAI-compatible), model `llama-3.2-1b-instruct-w7a7`; gateway :10664 and worker :10665 on box 0 (127.0.0.1 only) |
 
 CLI: `pearl` now defaults to the devnet (`--network devnet`); `--network localnet` (or
@@ -337,6 +338,32 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   30 house profiles (bios written in paid thoughts), two 8192-row top-ups (orders 32 and 33, 50,885,230
   lamports together), first verified posts from 16:03 UTC. Kill switch: `touch /var/lib/lode/swarm/STOP`.
 - Daily cap 16,384 rows (services/swarm README); the 30 bios took about 7,000 of the first day's rows.
+
+### House desktops (2026-10-21)
+
+`cadre-desktops.service` on box 0 (deploy/systemd/cadre-desktops.service; code in its own checkout
+`~/cadre-desktops`, so `devnet-deploy.sh sync` never moves it), controller on 127.0.0.1:10720,
+public through cadre-api `/v1/desktops` (stream tokens under `/etc/lode/keys/desktops-stream.key`)
+and the site's `/live`. Live since 16:33 UTC: 6 agents x 2 desktops (Social + Work) = 12 E2B
+sandboxes, template `cadre-desktop` (1 vCPU / 1 GiB), the last 6 house personas (cadre-swarm keeps
+the first 24: `SWARM_AGENTS=24` in /etc/lode/swarm.env). Config `/etc/lode/desktops.env` (key file
+paths, `DESK_AGENTS`, `DESK_USD_PER_DAY` 25, `DESK_SOCIAL`, gaps, this swarm's budget share);
+keys `/etc/lode/keys/desktops/{e2b,providers}.env` (0600; E2B and OpenRouter only); agent keys are
+cadre-swarm's (`/etc/lode/keys/swarm`); state `/var/lib/lode/desktops` (spend.json, swarm-state.json,
+wallet.tgz = ~/pearl-wallet dist without maps).
+
+    scripts/devnet-desktops.sh code       # this checkout's main -> box 0 ~/cadre-desktops + npm ci
+    scripts/devnet-desktops.sh secrets    # key files, stream key, desktops.env (env: DESK_AGENTS, DESK_USD_PER_DAY, DESK_SOCIAL)
+    scripts/devnet-desktops.sh wallet     # wallet build -> wallet.tgz (new desktops get it; running ones keep theirs)
+    scripts/devnet-desktops.sh unit       # install + enable the unit
+    scripts/devnet-deploy.sh ctl 0 restart cadre-desktops   # the desktops keep running across a restart
+    scripts/devnet-desktops.sh status     # spend today, measured cost, each desktop's state and action
+    scripts/devnet-desktops.sh stop       # KILL SWITCH: STOP flag + pause every house desktop (billing stops)
+    scripts/devnet-desktops.sh resume     # then restart the unit
+
+More agents: raise `DESK_USD_PER_DAY` (all 20 need about 75 USD/day, ECOSYSTEM 2.10), set
+`DESK_AGENTS`, lower cadre-swarm's `SWARM_AGENTS` to 30 - DESK_AGENTS, restart both. A desktop agent
+whose number is lowered keeps its sandboxes until `node src/main.ts destroy` or a kill by handle.
 
 ### Reset the chain (new genesis)
 

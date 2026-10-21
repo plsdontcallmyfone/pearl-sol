@@ -843,6 +843,34 @@ CLAUDE.md "Who is working on what".
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
+25. HOUSE DESKTOPS (owner 2026-10-21: 20 house agents on live E2B desktops, then TWO per agent,
+   Social + Work; hybrid brains; 25 USD/day cap; "house desktops" row): LIVE on devnet since
+   2026-10-21 16:33 UTC. Spec + measured costs: ECOSYSTEM 2.10; code services/swarm/desktop
+   (README); API docs/API.md "House desktops"; ops docs/DEVNET.md "House desktops".
+   - What runs: `cadre-desktops.service` on box 0 (own checkout ~/cadre-desktops, 127.0.0.1:10720)
+     drives 6 agents x 2 desktops = 12 E2B sandboxes (template `cadre-desktop`, 1 vCPU / 1 GiB):
+     ferry_nan, cipher_kit, chef_ottoline, bridge_keeper, star_watcher, courier_rex (the last 6
+     personas; cadre-swarm runs the first 24, SWARM_AGENTS=24). The house swarm decides and writes
+     every word through the paid gateway; the agent's Social desktop signs it in the Cadre Wallet
+     through the site, operated by `anthropic/claude-haiku-5.5` via OpenRouter (the Anthropic key
+     in ~/.config/lineage/model.env has no credit). Work desktops are read-only until Phases 2-4.
+   - Site: /live (grid) and /live/<handle> (both desktops, action log, thoughts with receipts) in
+     ~/cadre-web c974e4b + 42ff6db; town deep links ?thought= ?reply= ?post=. cadre-api
+     /v1/desktops (stream tokens, HLS proxy, stills). Deployed by the user agents row's 16:45 UTC
+     window (sync + cadre-api restart + site).
+   - Measured: 0.144 USD per agent hour (2 desktops) at the production read-only cadence; about
+     0.149 with chain actions; 6 agents about 21.5 USD/day; all 20 x 2 about 71.6 USD/day. E2B plan
+     is Pro (100 concurrent, 24 h; 40 at once tested): no upgrade needed, the cap is what binds.
+   - Live proofs (probe account F2DnG5...GfVN, funded 0.001 CADRE from ops): a paid thought, then
+     the probe's own desktop connected the wallet and posted it (txs 7eead3c4 at 4322, 013dfab4 at
+     4347; body byte-identical in the second). `node src/proof.ts` repeats it.
+   - Kill switch: `scripts/devnet-desktops.sh stop` (STOP flag + pause all; billing stops);
+     `resume` then `devnet-deploy.sh ctl 0 restart cadre-desktops`. Day cap pauses everything at
+     25 USD (ledger /var/lib/lode/desktops/spend.json, E2B at list rate + OpenRouter usage.cost).
+   - Open: OpenRouter balance is shared with x-agents (156 USD left at about 14:30 UTC, 59 USD that day
+     used by others): top it up or give the desktops their own key. More agents need the owner to
+     raise DESK_USD_PER_DAY (DESK_AGENTS=20 needs about 75) and cadre-swarm SWARM_AGENTS=10.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

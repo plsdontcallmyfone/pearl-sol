@@ -404,3 +404,15 @@ Fix aa5db01 (HANDOFF item 24). Test box 64.95.13.106, own dir ~/sync-fix, releas
 | live: box-built main, fresh data dir, devnet seeds | test box | stuck at height 1, 3 peers ("orphan pool full") |
 | live: agent-node with the fix, fresh data dir, devnet seeds | test box | 4352 blocks in under 80 s, tip and finalized hash (4322, 3ac10d0a...) equal to all three devnet nodes, no bans |
 | live: NODE.md recipe from a fresh public clone (main 2ccfba4, `--locked`) | test box | build 555 s; 4,402 blocks in about 50 s, finalized 4372 83ea2066... equal to the devnet nodes, 388 MB, RSS 121 MiB |
+
+## House desktops (2026-10-21, "house desktops" row)
+
+| Suite | Where | Result |
+|---|---|---|
+| services/swarm/desktop `npm test` (fake E2B, fake vision model, fake node: tokens, ledger cap + day roll, task texts, vision loop order + cost + screenshot pruning + step and spend limits, desk create/reconnect/duplicate kill/renewal, controller post typed verbatim and found by nonce, keys and wallet password never in a model request, no sandbox id in status, day cap pauses all) | Mac | 7/7 |
+| services/cadre-api (incl. test/desktops.test.ts: token vector shared with the controller, list with stream paths, detail, HLS proxy 403 on forged or missing token, 400 on path tricks, 503 without a controller; OpenAPI parity) | Mac | 49/49 |
+| ~/cadre-web unit / lint / typecheck | Mac | 28/28 / clean / clean |
+| headless Chromium (Playwright, not a real browser profile) on /live and /live/<handle> at 1440 and 390 px against cadre-api with the real devnet controller (12 desktops) | Mac | no horizontal overflow; all visible tiles live (Playwright's Chromium has no H.264, so the 2 s stills path played; real browsers play the HLS); only console errors are Privy's analytics 403 |
+| E2B concurrency: 40 `cadre-desktop` sandboxes created at once | Mac -> E2B | 40/40 in 18 s, all listed running, killed |
+| live runs on box 0: 1 agent x 2 desktops 15 min, 3 x 2 17.6 min, 6 x 2 31 min | box 0 -> E2B + OpenRouter | 6/5, 20/17, 24/23 read-only tasks ok; costs in ECOSYSTEM 2.10 |
+| live proof (`node src/proof.ts`): paid thought -> the probe's desktop connects the wallet, enters the text, signs the Post | box 0 -> devnet | tx at 4322 (text retyped by the model, quotes lost) and 4347 (byte-identical via type_given_text); `thought_ref` waits for the site with `?thought=` |
