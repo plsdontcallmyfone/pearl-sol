@@ -45,7 +45,7 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 | attester (chain + bridge signer + storefront attester), 1 of 1 | `9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD` |
 | miner payouts | box 0 `GDcEUhU4fXRziN3YQyrwyoZJhsGhSRytJooX7kr7hC4s`, box 1 `4pDphQUNYsybNnXH4nkHdHMS6udinkjVuFrf6iRZpU8b`, box 2 `AHYHqULAUjJzvBkNsRYFpksrbjL1qqurZcgMWq9mHdAH` |
 | scheduled upgrade | height 4200: RegisterModel takes up to 1024 matrices (was 384; SPEC 4.5, HANDOFF item 21). Every node, ours or outside, must run main from 2026-10-20 or later before 4200; an older node forks off at the first block carrying a RegisterModel over 384 matrices |
-| binaries | built on box 0 from commit fe8e04a (agent-node sha256 3a80b545...91f277d0, pearl-miner 356437dc...3b52ee0); was 424c2c1 until the 2026-10-19 rolling upgrade |
+| binaries | agent-node 7ce3d9a1... and pearl-miner fe576acc... on all three boxes, built on box 0 from main 816c941 (2026-10-21 rolling upgrade: RegisterModel 1024 matrices from height 4200, social kinds from 3260); other services as before. Earlier: built on box 0 from commit fe8e04a (agent-node sha256 3a80b545...91f277d0, pearl-miner 356437dc...3b52ee0); was 424c2c1 until the 2026-10-19 rolling upgrade |
 
 ## Solana devnet programs (NEW keypairs, `--features devnet` builds)
 
@@ -384,6 +384,24 @@ connection from the Mac, never the chain, the relay or a program:
 Two consecutive passes were not reached on the public RPC. The fix is the dedicated RPC (next
 section) for the boxes AND the Mac-side scripts, or running the e2e from a host whose IP nothing
 else uses.
+
+### Runs off the Mac (2026-10-20, "Cadre leftovers" agent)
+
+The Mac's IP shares the public Solana devnet RPC limit with other work, so these ran on hosts with
+their own IP, our own devnet ops key only (copied for the runs, removed after).
+
+- Devnet box 0 (`E2E_ON_BOX0=1`): run box0-1 7/7 PASS (96.7 min). Run box0-2 right after it FAILED
+  preflight: box 0's own services (relayer, storefront-x402, explorer, cadre-api, settle, crank) plus the
+  e2e's calls had pushed box 0's IP into 429s, so the relayer reported unhealthy. Box 0 is a poor e2e
+  host for that reason.
+- Test box 64.95.13.106 (`E2E_HEADER_RELAY=<box 0's devnet header-relay build>`, status read against the
+  public node RPC): tb-1 FAILED step 3 with a 502 from storefront-x402 (it crashed on an unhandled
+  Solana 429 while box 0 was still throttled and systemd restarted it; tb-2 then failed preflight on the
+  same throttle). After box 0 recovered (10 min later: relayer 3 and storefront 13 lines with 429, then
+  healthy), two runs in a row both PASSED 7/7: tb-3 140.3 min (bridge in 35.3, bridge out + paid job
+  40.3, refund 64.5) and tb-4 131.4 min (32.3, 36.1, 62.7). Ops SOL 15.8668 -> 14.6823 over tb-3 and tb-4.
+- Open: storefront-x402 exits on an unhandled 429 rejection (services/storefront-x402, not changed here);
+  the dedicated RPC below removes the cause.
 
 ### Dedicated Solana RPC (owner decision 2026-10-20)
 

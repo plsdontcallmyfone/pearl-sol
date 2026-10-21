@@ -89,7 +89,7 @@ def quant_act(x):
 
 
 class Model:
-    def __init__(self, d, device="cpu"):
+    def __init__(self, d, device="cpu", glue="cadre-glue-v1"):
         self.dir = d
         self.dev = torch.device(device)
         if self.dev.type == "cuda":
@@ -120,6 +120,14 @@ class Model:
         self.attn_scale = t["rope_inv_freq"].get("attention_scaling", 1.0)
         self.tok = None
         self.lock = threading.Lock()
+        # cadre-glue-v1 (SPEC 4.7, tools/cadre/glue.py): deterministic glue, the same A on every
+        # device and in every batch shape, so an evaluator can replay it; "fp32": the old glue
+        assert glue in ("cadre-glue-v1", "fp32"), glue
+        self.glue = glue
+        self.det = None
+        if glue == "cadre-glue-v1":
+            import glue as gluemod
+            self.det = gluemod.DetGlue(self)
 
     def tokenizer(self):
         if self.tok is None:
@@ -164,6 +172,8 @@ class Model:
     def forward(self, ids, cache, cap, logits_rows=None):
         """ids: new token ids (r); cache: per-layer [K, V] (T x KV x hd) extended in place.
         Returns logits (r x vocab) for every new row (all rows go through lm_head)."""
+        if self.det is not None:
+            return self.det.forward(ids, cache, cap)
         r = len(ids)
         start = cache[0][0].shape[0] if cache[0][0] is not None else 0
         pos = torch.arange(start, start + r, device=self.dev)
@@ -194,6 +204,13 @@ class Model:
             h = h + self.lin(f"layers.{li}.down", torch.nn.functional.silu(gte) * up, cap)
         h = self.rms(h, self.norms["norm.final"])
         return self.lin("lm_head", h, cap)
+
+    def pick(self, row):
+        """Greedy token (cadre-glue-v1: largest binary64 logit, lowest index on ties)."""
+        if self.det is not None:
+            import glue as gluemod
+            return gluemod.pick(row)
+        return int(row.argmax())
 
     def eos_ids(self):
         """Stop tokens: config eos plus generation_config.json's (an Instruct model ends a turn
@@ -238,7 +255,7 @@ class Model:
             logits = self.forward(list(prompt_ids), cache, cap)
             t_prefill = time.time() - t0
             out = []
-            nxt = int(logits[-1].argmax())
+            nxt = self.pick(logits[-1])
             t1 = time.time()
             tok = self.tokenizer()
             stop = [x for x in (stop or []) if x]
@@ -260,7 +277,7 @@ class Model:
                 if len(out) >= max_new:
                     break
                 logits = self.forward([nxt], cache, cap)
-                nxt = int(logits[-1].argmax())
+                nxt = self.pick(logits[-1])
             t_decode = time.time() - t1
             rows = len(prompt_ids) + len(out) - 1
             period = len(self.man["rows_pattern"])
@@ -292,7 +309,7 @@ class Model:
             macs = sum(m.k * m.n for m in self.mats)
             return {
                 "output_ids": out, "text": text, "rows": rows, "rows_padded": padded, "prompt_tokens": len(prompt_ids),
-                "completion_tokens": len(out), "finish_reason": finish,
+                "completion_tokens": len(out), "finish_reason": finish, "glue": self.glue,
                 "matrices": mats,
                 "timing": {"prefill_s": round(t_prefill, 3), "decode_s": round(t_decode, 3), "first_token_s": round(t_prefill, 3),
                            "decode_tokens_per_s": round((len(out) - 1) / t_decode, 3) if len(out) > 1 and t_decode > 0 else None,
@@ -325,7 +342,7 @@ def serve(model, host, port):
         def do_GET(self):
             if self.path == "/health":
                 return self.reply(200, {"ok": True, "name": model.man["name"], "model_id": model.man.get("model_id"), "matrices": len(model.mats), "pid": os.getpid(),
-                                        "device": str(model.dev)})
+                                        "device": str(model.dev), "glue": model.glue})
             self.reply(404, {"error": "not found"})
 
         def do_POST(self):
@@ -370,13 +387,14 @@ def main():
     ap.add_argument("--port", type=int, default=10665)
     ap.add_argument("--threads", type=int, default=0)
     ap.add_argument("--device", default=os.environ.get("CADRE_DEVICE", "cpu"), help="cpu (default) or cuda")
+    ap.add_argument("--glue", default=os.environ.get("CADRE_GLUE", "cadre-glue-v1"), help="cadre-glue-v1 (default, replayable) or fp32")
     ap.add_argument("--ppl", type=int, default=0, help="WikiText-2 test PPL over N windows of 1024 tokens, then exit")
     ap.add_argument("--seqlen", type=int, default=1024)
     a = ap.parse_args()
     if a.threads:
         torch.set_num_threads(a.threads)
     t0 = time.time()
-    model = Model(a.model, a.device)
+    model = Model(a.model, a.device, a.glue)
     print(json.dumps({"msg": "loaded", "device": a.device, "s": round(time.time() - t0, 1), "matrices": len(model.mats)}), file=sys.stderr, flush=True)
     if a.ppl:
         from datasets import load_dataset

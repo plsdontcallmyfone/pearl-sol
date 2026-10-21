@@ -155,7 +155,7 @@ impl Worker for FakeWorker {
             on_text("hi ");
         }
         Ok(json!({"output_ids": vec![5; max_new as usize], "text": "hi ".repeat(max_new as usize), "rows": rows, "rows_padded": rows,
-            "prompt_tokens": ids.len(), "completion_tokens": max_new, "finish_reason": "length", "timing": {"decode_tokens_per_s": 2.5}}))
+            "prompt_tokens": ids.len(), "completion_tokens": max_new, "finish_reason": "length", "glue": "cadre-glue-v1", "timing": {"decode_tokens_per_s": 2.5}}))
     }
 }
 
@@ -415,7 +415,7 @@ fn large_balances_round_period_and_round_cap() {
     let served = |id: &str, rows: u32| Served {
         request_id: id.into(), wallet: String::new(), ticket_id: String::new(), dir: PathBuf::new(), rows, prompt_tokens: 0, completion_tokens: 0,
         body_sha256: String::new(), output_sha256: String::new(), text_sha256: String::new(), charged_lamports: None, at_ms: 0, round: None,
-        row_offset: None, ttft_s: 0.0, decode_tokens_per_s: None,
+        row_offset: None, ttft_s: 0.0, decode_tokens_per_s: None, prompt_ids: vec![], output_ids: vec![], max_new_tokens: 0, stop: vec![], glue: String::new(),
     };
     let ids = |v: Vec<Served>| v.iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
     let take = round_take(vec![served("a", 1000), served("b", 1100), served("c", 10)], 2044, p);
@@ -440,4 +440,24 @@ fn receipts_carry_the_completion_text_hash() {
     let rec = gw.handle("GET", &format!("/v1/requests/{rid}"), &[], b"").json()["receipt"].clone();
     assert_eq!(rec["text_sha256"], json!(want));
     assert_ne!(rec["text_sha256"], rec["output_sha256"], "output_sha256 hashes the token ids, not the text");
+}
+
+/// SPEC 4.7 replay bundle: the ledger keeps what an evaluator needs to rebuild every A of the
+/// request (the token ids fed and produced, max_new_tokens, stop, glue), which close_ticket
+/// publishes in the response blob.
+#[test]
+fn served_requests_keep_the_replay_bundle() {
+    let (gw, _c) = gateway("replaybundle");
+    let body = br#"{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 3, "stop": ["zz"]}"#;
+    let r = gw.handle("POST", "/v1/chat/completions", &[("x-payment".into(), "p".into())], body);
+    assert_eq!(r.status, 200, "{}", r.json());
+    let rid = r.json()["cadre"]["request_id"].as_str().unwrap().to_string();
+    let l = gw.ledger.lock().unwrap();
+    let q = l.requests.get(&rid).expect("served request in the ledger");
+    assert_eq!(q.prompt_ids, vec![7, 7], "the fake worker's chat ids");
+    assert_eq!(q.output_ids, vec![5, 5, 5]);
+    assert_eq!(q.max_new_tokens, 3);
+    assert_eq!(q.stop, vec!["zz".to_string()]);
+    assert_eq!(q.glue, "cadre-glue-v1");
+    assert_eq!(q.rows as usize, q.prompt_ids.len() + q.output_ids.len() - 1, "rows = prompt + every output token but the last");
 }

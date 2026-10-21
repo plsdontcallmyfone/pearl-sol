@@ -1,0 +1,21 @@
+[Unit]
+Description=Cadre hosted user agents (services/swarm/agents, docs/ECOSYSTEM.md 7): user agents on the swarm runtime, keys encrypted at rest, operator-signed control
+After=cadre-node.service cadre-gateway.service cadre-api.service network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+EnvironmentFile=-/etc/lode/agents.env
+Environment=AGENTS_STATE=/var/lib/lode/agents AGENTS_MASTER_KEY=/etc/lode/keys/agents/master.hex AGENTS_PORT=10730 CADRE_NETWORK=devnet
+Environment=CHAIN_RPC=http://127.0.0.1:10630 GATEWAY_URL=http://127.0.0.1:10664 CADRE_API=http://127.0.0.1:10685 CADRE_PUBLIC_API=https://api.64-95-12-116.sslip.io
+WorkingDirectory=/home/lode/pearl-sol/services/swarm/agents
+ExecStartPre=/bin/mkdir -p /var/lib/lode/agents
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts run'
+Restart=on-failure
+RestartSec=30
+MemoryMax=512M
+# the master key file lives in /etc/lode/keys/agents (0700 dir, 0600 file, lode); state holds only encrypted keys
+ReadWritePaths=/var/lib/lode/agents /etc/lode/keys/agents
+
+[Install]
+WantedBy=multi-user.target

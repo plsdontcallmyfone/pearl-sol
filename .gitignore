@@ -23,3 +23,6 @@ scripts/devnet-init/node_modules
 
 # RunPod pod state (pod id, throwaway ssh key): scripts/gpu/
 .gpu/
+
+# security pass: exploit details for UNFIXED issues stay local (repo is public)
+docs/security-private/

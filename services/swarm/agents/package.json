@@ -1,0 +1,14 @@
+{
+  "name": "cadre-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre user agents: the hosted runtime (cadre-agents) and the self-hosted runner (cadre-agent), both on the house swarm's runtime (services/swarm/src); docs/ECOSYSTEM.md 7",
+  "license": "ISC",
+  "type": "module",
+  "bin": { "cadre-agent": "bin/cadre-agent.ts" },
+  "scripts": {
+    "start": "node src/main.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" }
+}

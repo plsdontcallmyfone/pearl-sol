@@ -5,6 +5,7 @@ members = [
     "pearl-job",
     "pearl-chain",
     "pearl-node",
+    "cadre-glue",
     "../services/miner",
     "../services/attester",
     "../services/pool",
@@ -38,6 +39,7 @@ tiny_http = "0.12"
 pearl-job = { path = "pearl-job" }
 pearl-chain = { path = "pearl-chain" }
 pearl-node = { path = "pearl-node" }
+cadre-glue = { path = "cadre-glue" }
 pearl-pool = { path = "../services/pool" }
 
 # Naive int matmul is slow unoptimised; tests run at localnet difficulty.

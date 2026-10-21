@@ -208,6 +208,20 @@ pub struct Served {
     pub row_offset: Option<u32>,
     pub ttft_s: f64,
     pub decode_tokens_per_s: Option<f64>,
+    /// What an evaluator needs to replay the request (SPEC 4.7): the token ids the worker fed and
+    /// produced, the stopping rule and the glue it ran. Published in the response blob; the A
+    /// blobs already carry the prompt (layer 0 activations are the quantized embeddings), so
+    /// this adds no new exposure. Empty for requests served before this field existed.
+    #[serde(default)]
+    pub prompt_ids: Vec<u32>,
+    #[serde(default)]
+    pub output_ids: Vec<u32>,
+    #[serde(default)]
+    pub max_new_tokens: u32,
+    #[serde(default)]
+    pub stop: Vec<String>,
+    #[serde(default)]
+    pub glue: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -907,6 +921,11 @@ impl Gateway {
                 request_id: id.into(), wallet: wallet.into(), ticket_id: ticket.into(), dir: dir.to_path_buf(), rows, prompt_tokens: r.ids.len() as u32,
                 completion_tokens: completion, body_sha256: body_sha.into(), output_sha256: out_sha, text_sha256: text_sha, charged_lamports: lpr.map(|x| x * rows as u64),
                 at_ms: now_ms(), round: None, row_offset: None, ttft_s: ttft, decode_tokens_per_s: decode,
+                prompt_ids: r.ids.clone(),
+                output_ids: gen["output_ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u32).collect()).unwrap_or_default(),
+                max_new_tokens: r.max_new,
+                stop: r.stop.clone(),
+                glue: gen["glue"].as_str().unwrap_or("").to_string(),
             };
             if let Some(t) = l.tickets.get_mut(ticket) {
                 t.reserved = t.reserved.saturating_sub(reserved);
@@ -1117,8 +1136,19 @@ impl Gateway {
                 .rounds
                 .iter()
                 .map(|r| {
-                    let reqs: Vec<Value> = r.requests.iter().filter_map(|q| l.requests.get(q)).map(|q| json!({"request_id": q.request_id, "body_sha256": q.body_sha256,
-                        "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256, "text_sha256": q.text_sha256})).collect();
+                    let reqs: Vec<Value> = r.requests.iter().filter_map(|q| l.requests.get(q)).map(|q| {
+                        let mut v = json!({"request_id": q.request_id, "body_sha256": q.body_sha256,
+                            "row_offset": q.row_offset, "rows": q.rows, "prompt_tokens": q.prompt_tokens, "completion_tokens": q.completion_tokens, "output_sha256": q.output_sha256, "text_sha256": q.text_sha256});
+                        if !q.glue.is_empty() {
+                            // the replay bundle (SPEC 4.7): an evaluator rebuilds every A from these
+                            v["glue"] = json!(q.glue);
+                            v["prompt_ids"] = json!(q.prompt_ids);
+                            v["output_ids"] = json!(q.output_ids);
+                            v["max_new_tokens"] = json!(q.max_new_tokens);
+                            v["stop"] = json!(q.stop);
+                        }
+                        v
+                    }).collect();
                     json!({"round": r.round, "m": r.m, "requests": reqs})
                 })
                 .collect();
@@ -1133,6 +1163,15 @@ impl Gateway {
             "format": "cadre-response-v1", "model_id": hex::encode(self.model.model_id), "ticket_id": id,
             "request_hash": chain["standing"]["request_hash"], "rows": t.posted_rows(), "rounds": rounds, "segments": segments,
         });
+        // replayable (SPEC 4.7) when every request of every round ran the deterministic glue
+        let glue = {
+            let l = self.ledger.lock().unwrap();
+            let all: Vec<String> = t.rounds.iter().flat_map(|r| r.requests.iter()).map(|q| l.requests.get(q).map(|x| x.glue.clone()).unwrap_or_default()).collect();
+            if !all.is_empty() && all.iter().all(|g| g == "cadre-glue-v1") { Some("cadre-glue-v1") } else { None }
+        };
+        if let Some(g) = glue {
+            resp_v["glue"] = json!(g);
+        }
         if t.single {
             if let Some(q) = single_req {
                 resp_v["prompt_tokens"] = json!(q.prompt_tokens);

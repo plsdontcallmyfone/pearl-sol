@@ -146,11 +146,28 @@ function txReply(ixs: Ix[], feePayer: string, bh: { blockhash: string; lastValid
   };
 }
 
-function bps(v: unknown, name: string, def: bigint): bigint {
+/**
+ * Most slippage a built tx may allow (bps), on top of pump's fee allowance. Wider limits only
+ * make the signer easier to sandwich, so the builders refuse them (CADRE_MAX_SLIPPAGE_BPS
+ * changes it per deployment).
+ */
+export const MAX_SLIPPAGE_BPS = (() => {
+  const v = Number(process.env.CADRE_MAX_SLIPPAGE_BPS ?? 1000);
+  return BigInt(Number.isInteger(v) && v >= 0 && v <= 5000 ? v : 1000);
+})();
+
+function bps(v: unknown, name: string, def: bigint, max: bigint = MAX_SLIPPAGE_BPS): bigint {
   if (v === undefined || v === null) return def;
   const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : NaN;
-  if (!Number.isInteger(n) || n < 0 || n > 5000) throw badRequest(`${name} must be an integer in [0, 5000]`);
+  if (!Number.isInteger(n) || n < 0 || BigInt(n) > max) throw badRequest(`${name} must be an integer in [0, ${max}]`);
   return BigInt(n);
+}
+
+/** A caller-chosen minimum out may be tighter than the quote allows, never looser than MAX_SLIPPAGE_BPS below it. */
+function checkMinOut(minOverride: bigint | null, quotedNet: bigint, name: string): void {
+  if (minOverride === null) return;
+  const floor = lessBps(quotedNet, MAX_SLIPPAGE_BPS);
+  if (minOverride < floor) throw new ApiError(422, "unsafe_min_out", `${name} ${minOverride} is more than ${MAX_SLIPPAGE_BPS} bps below the quote (${quotedNet} after pump's fee allowance); the tx would accept a sandwiched fill`, { floor: floor.toString(), quoted: quotedNet.toString() });
 }
 const lessBps = (x: bigint, b: bigint) => (x * (10_000n - b)) / 10_000n;
 
@@ -293,6 +310,7 @@ export function registerMarket(api: Api, d: Deps) {
     const net = (solIn * 10_000n) / (10_000n + PUMP_FEE_BPS_MAX);
     const q = await pumpQuote(d, net);
     const quoted = BigInt(q.tokens_out_spl);
+    checkMinOut(minOverride, quoted, "min_tokens_out");
     const minOut = minOverride ?? lessBps(quoted, slip);
     if (minOut <= 0n) throw new ApiError(422, "amount_too_small", "sol_in buys less than one base unit after fees and slippage");
     // same order as the pump SDKs: (wSOL wrap on PumpSwap), the buyer's token ATA (idempotent), the buy, (unwrap)
@@ -352,8 +370,9 @@ export function registerMarket(api: Api, d: Deps) {
     const gross = BigInt(q.sol_out_lamports);
     // pump takes its fee from the SOL out: allow the most it can be
     const net = lessBps(gross, PUMP_FEE_BPS_MAX);
+    checkMinOut(minOverride, net, "min_sol_out");
     const minOut = minOverride ?? lessBps(net, slip);
-    if (minOverride === null && minOut <= 0n) throw new ApiError(422, "amount_too_small", "amount_spl returns less than one lamport after fees and slippage");
+    if (minOut <= 0n) throw new ApiError(422, "amount_too_small", "amount_spl returns less than one lamport after fees and slippage");
     const ixs: Ix[] = [computeUnitLimit(400_000)];
     let route: Record<string, unknown>;
     if (q.venue === "curve") {

@@ -615,6 +615,10 @@ reserve has no admin-key exit.
   per 86,400 s (2% of supply a day). The admin can pause (`paused`, error `FundPaused`)
   but cannot redirect: `mining_pool` and `bridge_program` freeze once `total_funded > 0`
   (`update_config` then refuses a different value, `DestinationFrozen`).
+- The coin is fixed once set: `update_config` refuses a different `mint` after `launch`
+  (`MintFrozen`), and an open crank (`cranker` unset) must spend the full
+  `min(available, max_buy_per_call)` (`PartialSpend`; only an allowlisted cranker may pass a
+  smaller `max_sol_in`) (security pass 2026-10-21, docs/SECURITY-REVIEW.md).
 - `MiningFunded` gains `caller, reserve_left, window_start, window_used, calls` (appended;
   older decoders stop after `total_funded`).
 - Config layout 1 appends `layout u8, fund_paused bool, fund_min_interval_secs i64,
@@ -642,6 +646,11 @@ reserve has no admin-key exit.
 - Refund path: if the job expires, W comes back over the bridge to the buyer. If the
   chain never unlocks the order, the deposit is refunded on Solana (see "Refunds" below).
 - Slippage bound and per-order caps are admin-editable.
+- Frozen once used (security pass 2026-10-21): `mint` and `bridge_program` at the first order
+  (`orders > 0`), `reserve_program` at the first buyback routed to the reserve
+  (`bb_to_reserve > 0`); `update_config` / `set_buyback` then refuse a different value
+  (`DestinationFrozen`). An open buyback crank (`buyback_cranker` unset) must spend the full
+  `min(available, buyback_max_per_call)` (`PartialSpend`).
 
 As built (18f3cd0, token/programs/storefront, ID DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr):
 - Two steps, since the spec plus about 27 accounts exceeds 1232 bytes:

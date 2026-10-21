@@ -1,0 +1,21 @@
+[package]
+name = "cadre-glue"
+description = "cadre-glue-v1 (SPEC 4.7): the deterministic glue between a Cadre model's int7 GEMMs, an independent Rust implementation for evaluators (full replay, fraud proofs)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "cadre_glue"
+
+[[bin]]
+name = "cadre-replay"
+path = "src/bin/cadre-replay.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha2.workspace = true
+pearl-job.workspace = true

@@ -975,16 +975,27 @@ pub mod storefront {
 fn create_share_record<'info>(payer: &AccountInfo<'info>, rec: &AccountInfo<'info>, system: &AccountInfo<'info>, nonce: u64, buyer: Pubkey, lamports: u64) -> Result<()> {
     let (want, bump) = share_pda(nonce);
     require_keys_eq!(rec.key(), want, StorefrontError::BadAccount);
-    require!(rec.lamports() == 0 && rec.data_is_empty(), StorefrontError::BadAccount);
+    require!(rec.data_is_empty() && *rec.owner == anchor_lang::system_program::ID, StorefrontError::BadAccount);
     let space = 8 + ShareRecord::INIT_SPACE;
     let rent = Rent::get()?.minimum_balance(space);
     let n = nonce.to_le_bytes();
     let seeds: &[&[u8]] = &[SHARE_SEED, &n, &[bump]];
-    invoke_signed(
-        &system_instruction::create_account(payer.key, rec.key, rent, space as u64, &ID),
-        &[payer.clone(), rec.clone(), system.clone()],
-        &[seeds],
-    )?;
+    let have = rec.lamports();
+    if have == 0 {
+        invoke_signed(
+            &system_instruction::create_account(payer.key, rec.key, rent, space as u64, &ID),
+            &[payer.clone(), rec.clone(), system.clone()],
+            &[seeds],
+        )?;
+    } else {
+        // Someone sent lamports to the PDA first (create_account would fail and block the
+        // order): top up, allocate and assign instead (security pass S-1).
+        if have < rent {
+            invoke(&system_instruction::transfer(payer.key, rec.key, rent - have), &[payer.clone(), rec.clone(), system.clone()])?;
+        }
+        invoke_signed(&system_instruction::allocate(rec.key, space as u64), &[rec.clone(), system.clone()], &[seeds])?;
+        invoke_signed(&system_instruction::assign(rec.key, &ID), &[rec.clone(), system.clone()], &[seeds])?;
+    }
     let r = ShareRecord { nonce, buyer, lamports, bump };
     let mut d = rec.try_borrow_mut_data()?;
     r.try_serialize(&mut &mut d[..])?;
@@ -1415,10 +1426,15 @@ pub struct ConfigParams {
 
 impl Config {
     fn apply(&mut self, p: ConfigParams) -> Result<()> {
+        // Freeze at the first order (security pass S-2): afterwards the admin key cannot point
+        // buy_job at another coin or another "bridge" (which would receive the buyer's signer
+        // and the trader PDA's tokens), nor fake refund records for existing orders.
         if let Some(v) = p.mint {
+            require!(v == self.mint || self.orders == 0, StorefrontError::DestinationFrozen);
             self.mint = v;
         }
         if let Some(v) = p.bridge_program {
+            require!(v == self.bridge_program || self.orders == 0, StorefrontError::DestinationFrozen);
             self.bridge_program = v;
         }
         if let Some(v) = p.paused {
@@ -1460,7 +1476,10 @@ impl Config {
             require!(v == DEST_RESERVE || v == DEST_BURN, StorefrontError::BadConfig);
             self.buyback_dest = v;
         }
+        // Frozen once a buyback reached the reserve (security pass S-2): the reserve destination
+        // cannot be re-pointed at an ATA the admin controls.
         if let Some(v) = p.reserve_program {
+            require!(v == self.reserve_program || self.bb_to_reserve == 0, StorefrontError::DestinationFrozen);
             self.reserve_program = v;
         }
         if let Some(v) = p.cranker {
@@ -1492,8 +1511,12 @@ impl Config {
     /// Lamports one buyback spends out of `available` (vault above rent).
     fn buyback_spend(&self, available: u64, max_sol_in: u64) -> Result<u64> {
         let cap = if self.buyback_max_per_call == 0 { u64::MAX } else { self.buyback_max_per_call };
-        let s = available.min(cap).min(max_sol_in);
+        let full = available.min(cap);
+        let s = full.min(max_sol_in);
         require!(s >= self.buyback_min_buy.max(1), StorefrontError::NothingToBuy);
+        // Security pass S-3: an open crank cannot throttle the buyback to min_buy per interval;
+        // only an allowlisted cranker may spend less than the full amount.
+        require!(s == full || self.buyback_cranker != Pubkey::default(), StorefrontError::PartialSpend);
         Ok(s)
     }
 
@@ -2265,4 +2288,8 @@ pub enum StorefrontError {
     TooSoon,
     #[msg("nothing to buy back (below buyback_min_buy)")]
     NothingToBuy,
+    #[msg("mint / bridge_program are frozen after the first order, reserve_program after the first buyback to the reserve")]
+    DestinationFrozen,
+    #[msg("an open crank must spend min(available, buyback_max_per_call); max_sol_in is below it")]
+    PartialSpend,
 }

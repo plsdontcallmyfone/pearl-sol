@@ -10,6 +10,7 @@
 //!   since a client could then describe a fake job with an easy target.
 
 pub mod evaluator;
+pub mod replay;
 
 use std::time::Instant;
 
@@ -317,6 +318,14 @@ impl Attester {
         }
         ensure!(total == st["rows_used"].as_u64().unwrap_or(0), "rounds add up to {total} rows, the ticket used {}", st["rows_used"]);
         let store = pearl_job::standing::ModelStore::new(&self.models_dir);
+        // cadre-glue-v1 responses (SPEC 4.7): full replay, which also checks every segment's
+        // c_hash; a failure is a replay::TicketFraud (provable), anything else an ordinary error
+        if replay::replayable(&r) {
+            let rep = replay::replay_ticket(node, &store, info, &model_hex, &r)?;
+            ensure!(rep.segments == segs.len(), "replay checked {} segments, the ticket has {}", rep.segments, segs.len());
+            eprintln!("replay {}: {} rounds, {} requests, {} rows, {} segments in {:.1} s (GEMM {:.1} s)", hex::encode(ticket_id), rep.rounds, rep.requests, rep.rows, rep.segments, rep.secs, rep.gemm_secs);
+            return Ok(rh);
+        }
         let ids: Vec<[u8; 32]> = segs.iter().map(|s| parse_key32(s["segment_id"].as_str().unwrap_or(""))).collect::<Result<_>>()?;
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4);
         let next = std::sync::atomic::AtomicUsize::new(0);

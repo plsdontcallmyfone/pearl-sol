@@ -365,3 +365,9 @@ Test box 64.95.13.106, own dir ~/regmodel, release builds (HANDOFF item 21).
 | crates/pearl-cli (`cargo test --release --locked`, refreshed Cargo.lock) | 38 passed |
 | crates/pearl-job (`cargo test --release -p pearl-job`) | 42 passed |
 | e2e: 2 real agent-node processes + `pearl model register` / `model fetch`, synthetic manifests | 640 registered and fetched (every hash_b checked on node 1), 1024 registered (getModel 1024 on both nodes), 1025 refused, on chain 1347616811; devnet chain id: 640 refused below 4200 and registered after it, 384 registered below it |
+- devnet e2e off the Mac: box 0 run box0-1 7/7 (96.7 min), box0-2 failed preflight (box 0's IP in Solana
+  429s); test box tb-1 failed step 3 (storefront-x402 crashed on an unhandled 429), tb-2 failed preflight
+  (same throttle); then tb-3 7/7 (140.3 min) and tb-4 7/7 (131.4 min) in a row. Paid inference run on box 0
+  after the reboots: "Paris" with a public receipt link, 144/144 segments mined 64.2 min after the close
+  (138 min before the fix with box 0 alone), Order finalized by finalize_order_proof, result hash = ticket's.
+
