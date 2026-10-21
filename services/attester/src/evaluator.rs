@@ -382,7 +382,20 @@ fn fetch_result(node: &dyn NodeApi, uri: &str, len: usize) -> Result<std::result
     let bytes = if uri.starts_with(pearl_job::data::BLOB_URI_PREFIX) {
         pearl_node::fetch_blob(node, uri)?
     } else if let Some(p) = uri.strip_prefix("file://") {
-        std::fs::read(p).with_context(|| format!("read {p}"))?
+        // The URI comes from the chain: never read a device, FIFO or oversized file
+        // (security pass V-2b). A wrong kind or size is the deliverer's fault; a
+        // missing file may still appear, so that stays an Err (hold).
+        let path = std::path::Path::new(p);
+        let want = (len as u64).saturating_mul(4);
+        if let Ok(md) = std::fs::metadata(path) {
+            if !md.is_file() {
+                return Ok(Err(format!("result uri {uri:?} is not a regular file")));
+            }
+            if md.len() != want {
+                return Ok(Err(format!("delivered C is {} bytes, expected m*n*4 = {want}", md.len())));
+            }
+        }
+        pearl_job::data::read_exact_file(path, want)?
     } else if uri.is_empty() {
         return Ok(Err("delivery has no result uri".into()));
     } else {

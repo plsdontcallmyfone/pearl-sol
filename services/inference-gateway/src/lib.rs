@@ -33,7 +33,7 @@ use pearl_job::standing;
 use pearl_node::tx::{self, Body, SegmentSpec, Tx};
 use pearl_node::{b58, NodeApi};
 
-pub use auth::{auth_message, Auth, Keys};
+pub use auth::{auth_message, auth_message_v2, Auth, Keys};
 pub use transport::{Evaluator, GenOpts, HttpEvaluator, HttpStorefront, HttpWorker, Storefront, Worker};
 
 pub fn now_ms() -> u64 {
@@ -367,7 +367,14 @@ pub struct Gateway {
     price: Mutex<Option<(u64, Instant)>>,
     /// Measured: (ttft_s, decode tokens/s) of recent requests.
     pub recent: Mutex<VecDeque<(f64, Option<f64>, u32)>>,
+    /// When `discover` last ran for a wallet on an unauthenticated read (security pass V-8).
+    discovered: Mutex<std::collections::HashMap<[u8; 32], Instant>>,
 }
+
+/// Unauthenticated balance reads rescan the chain for a wallet at most this often.
+pub const DISCOVER_TTL: Duration = Duration::from_secs(15);
+/// Wallets remembered for the TTL above; past this, expired entries are dropped first.
+const DISCOVER_CACHE_MAX: usize = 10_000;
 
 pub enum Payload {
     Json(Value),
@@ -417,7 +424,9 @@ struct InferReq {
 impl Gateway {
     #[allow(clippy::too_many_arguments)]
     pub fn new(node: Box<dyn NodeApi>, storefront: Box<dyn Storefront>, worker: Box<dyn Worker>, evaluator: Box<dyn Evaluator>, key: SigningKey, model: ModelInfo, cfg: Config, log: Logger) -> Self {
-        let ledger = std::fs::read(cfg.work_dir.join("ledger.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut ledger: Ledger = std::fs::read(cfg.work_dir.join("ledger.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        ledger.keys.audience = Some(b58(&key.verifying_key().to_bytes()));
+        ledger.keys.require_audience = std::env::var(auth::REQUIRE_AUDIENCE_ENV).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         Self {
             node,
             storefront,
@@ -432,7 +441,30 @@ impl Gateway {
             settle_lock: Mutex::new(()),
             price: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
+            discovered: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// `discover` for an unauthenticated caller: at most once per wallet per
+    /// DISCOVER_TTL, so anonymous balance polls cannot fan out into node calls
+    /// (getAccountTxs + up to 100 getTicket each). Returns whether it ran.
+    fn discover_throttled(&self, w: &[u8; 32]) -> bool {
+        {
+            let mut d = self.discovered.lock().unwrap();
+            let now = Instant::now();
+            if d.get(w).is_some_and(|t| now.duration_since(*t) < DISCOVER_TTL) {
+                return false;
+            }
+            if d.len() >= DISCOVER_CACHE_MAX {
+                d.retain(|_, t| now.duration_since(*t) < DISCOVER_TTL);
+                if d.len() >= DISCOVER_CACHE_MAX {
+                    return false;
+                }
+            }
+            d.insert(*w, now);
+        }
+        self.discover(w);
+        true
     }
 
     pub fn server(&self) -> [u8; 32] {
@@ -465,7 +497,7 @@ impl Gateway {
             Err(e) => return err(401, "authentication_error", e),
         };
         let r: Result<HttpResponse> = (|| match (method, path) {
-            ("GET", "/health") => Ok(resp(200, json!({"ok": true, "server": b58(&self.server()), "model_id": hex::encode(self.model.model_id), "model": self.model.name, "api": "cadre-gateway v1"}))),
+            ("GET", "/health") => Ok(resp(200, json!({"ok": true, "server": b58(&self.server()), "model_id": hex::encode(self.model.model_id), "model": self.model.name, "api": "cadre-gateway v1", "auth": [auth::AUTH_DOMAIN_V2, auth::AUTH_DOMAIN]}))),
             ("GET", "/v1/models") => Ok(resp(200, self.models_json())),
             ("GET", "/v1/stats") => Ok(resp(200, self.stats_json())),
             ("POST", "/v1/keys") => {
@@ -485,17 +517,23 @@ impl Gateway {
             }
             ("POST", "/v1/balance/topup") => self.topup(headers, body),
             ("GET", "/v1/balance") => {
-                let w = match (auth.wallet(), q("wallet")) {
-                    (Some(w), _) => w,
-                    (None, Some(w)) => auth::parse_wallet(&w)?,
+                // an authenticated caller always rescans; anonymous reads are throttled (V-8)
+                match (auth.wallet(), q("wallet")) {
+                    (Some(w), _) => {
+                        self.discover(&w);
+                        Ok(resp(200, self.balance_json(&w)))
+                    }
+                    (None, Some(w)) => {
+                        let w = auth::parse_wallet(&w)?;
+                        self.discover_throttled(&w);
+                        Ok(resp(200, self.balance_json(&w)))
+                    }
                     _ => bail!("authenticate, or pass ?wallet=ADDR"),
-                };
-                self.discover(&w);
-                Ok(resp(200, self.balance_json(&w)))
+                }
             }
             ("GET", p) if p.starts_with("/v1/prepaid/") => {
                 let w = auth::parse_wallet(&p["/v1/prepaid/".len()..])?;
-                self.discover(&w);
+                self.discover_throttled(&w);
                 Ok(resp(200, self.balance_json(&w)))
             }
             ("POST", "/v1/balance/close") => {

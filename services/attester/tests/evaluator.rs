@@ -301,3 +301,16 @@ fn unfunded_evaluator_publishes_but_does_not_send() {
     let msg = hex::decode(&out[0].message_hex).unwrap();
     sk(5).verifying_key().verify(&msg, &Signature::from_bytes(&sig)).unwrap();
 }
+
+#[test]
+fn file_result_uri_naming_a_device_is_rejected_without_reading_it() {
+    // security pass V-2b: a chain-sourced file:// URI must not make the evaluator read
+    // /dev/zero (or a FIFO) until it is killed.
+    let fx = fixture("device", vec![pk(5)], 1);
+    let ev = evaluator(&fx.node, 5, EvalConfig { submit: false, ..Default::default() });
+    let mut j = fx.node.get_job(&fx.job_id).unwrap().unwrap();
+    j.result_uri = "file:///dev/zero".into();
+    let t = std::time::Instant::now();
+    assert!(matches!(ev.check(&j, 10), Verdict::Reject(r) if r.contains("regular file")));
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+}
