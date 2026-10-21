@@ -108,8 +108,7 @@ pub enum ContractCmd {
 }
 
 fn addr(s: &str) -> Result<[u8; 32]> {
-    let v = bs58::decode(s.trim()).into_vec().map_err(|_| anyhow!("{s:?} is not a base58 address"))?;
-    v.try_into().map_err(|_| anyhow!("{s:?} is not 32 bytes"))
+    crate::fmt::parse_chain_addr(s)
 }
 
 fn hash32(s: &str) -> Result<[u8; 32]> {
@@ -321,8 +320,8 @@ fn instantiate(ctx: &Ctx, code_hash: &str, fields: Vec<u8>, label: &str, admin: 
     let body = TxBody::Instantiate(ac::Instantiate { code_hash: ch, admin, value, gas_limit: gas, label: label.as_bytes().to_vec(), args: fields });
     let (sent, r) = send(ctx, "Instantiate", body, gas)?;
     let address = b58(&contract_address(&me(ctx)?, sent.nonce));
-    let p = receipt_panel("Contract", &r).kv("Address", address.as_str()).kv("Code", hex::encode(ch)).kv("Tx", sent.tx_hash.as_str());
-    Ok(Out { json: json!({"address": address, "tx_hash": sent.tx_hash, "receipt": r}), text: address.clone(), view: View::panel(p) })
+    let p = receipt_panel("Contract", &r).kv("Address", crate::fmt::cx_str(&address)).kv("Code", hex::encode(ch)).kv("Tx", sent.tx_hash.as_str());
+    Ok(Out { json: json!({"address": address, "tx_hash": sent.tx_hash, "receipt": r}), text: crate::fmt::cx_str(&address), view: View::panel(p) })
 }
 
 pub fn exec(ctx: &Ctx, cmd: &ContractCmd) -> Result<Out> {
@@ -395,11 +394,11 @@ pub fn exec(ctx: &Ctx, cmd: &ContractCmd) -> Result<Out> {
             let c = ctx.call("getContract", json!({"address": address}))?;
             ensure!(!c.is_null(), "no contract at {address}");
             let p = Panel::new("Contract")
-                .kv("Address", s(&c, "address"))
+                .kv("Address", crate::fmt::cx_str(s(&c, "address")))
                 .kv("Label", s(&c, "label"))
                 .kv("Code", s(&c, "code_hash"))
-                .kv("Admin", if c["admin"].is_null() { "none (immutable)".to_string() } else { s(&c, "admin").to_string() })
-                .kv("Creator", s(&c, "creator"))
+                .kv("Admin", if c["admin"].is_null() { "none (immutable)".to_string() } else { crate::fmt::cx_str(s(&c, "admin")) })
+                .kv("Creator", crate::fmt::cx_str(s(&c, "creator")))
                 .kv("Created at", u(&c, "created_height").to_string())
                 .kv("Balance", s(&c, "balance"))
                 .kv("Storage", format!("{} items, {} bytes, deposit {}", u(&c, "storage_items"), u(&c, "storage_bytes"), s(&c, "deposit")))
@@ -408,7 +407,7 @@ pub fn exec(ctx: &Ctx, cmd: &ContractCmd) -> Result<Out> {
         }
         ContractCmd::Ls { limit } => {
             let l = ctx.call("listContracts", json!({"limit": limit}))?;
-            let lines: Vec<String> = l["items"].as_array().into_iter().flatten().map(|c| format!("{}  {}  calls {}  {}", s(c, "address"), s(c, "label"), u(c, "calls"), short(s(c, "code_hash")))).collect();
+            let lines: Vec<String> = l["items"].as_array().into_iter().flatten().map(|c| format!("{}  {}  calls {}  {}", crate::fmt::cx_str(s(c, "address")), s(c, "label"), u(c, "calls"), short(s(c, "code_hash")))).collect();
             let p = Panel::new("Contracts").kv("Total", u(&l, "total").to_string());
             Ok(Out { json: l, text: lines.join("\n"), view: View::panel(p).hint(lines.join("\n")) })
         }

@@ -194,6 +194,29 @@ test("routes: /api/agent, /agent, /agents over a real indexer on a fake node", a
       assert.doesNotMatch(r.body as string, /—/, "no em dashes");
     }
     assert.equal((await route(ix, "GET", "/api/agent/not-an-address")).status, 400);
+    // Cx addresses (SPEC 2.1): the same agent by Cx, lowercase Cx and base58; JSON adds *_cx; a bad casing is 400
+    const { toCx, shortCx } = await import("../../../packages/cx-address/src/index.ts");
+    const cx = toCx(A.seller);
+    const byCx = JSON.parse((await route(ix, "GET", `/api/agent/${cx}`)).body as string);
+    const byLower = JSON.parse((await route(ix, "GET", `/api/agent/Cx${cx.slice(2).toLowerCase()}`)).body as string);
+    assert.deepEqual(byCx, p);
+    assert.deepEqual(byLower, p);
+    assert.equal(p.account, A.seller, "base58 kept");
+    assert.equal(p.account_cx, cx);
+    assert.equal(l.agents[0].account_cx, cx);
+    const at = [...cx].findIndex((c, k) => k >= 2 && /[a-fA-F]/.test(c));
+    const bad = cx.slice(0, at) + (cx[at] === cx[at].toLowerCase() ? cx[at].toUpperCase() : cx[at].toLowerCase()) + cx.slice(at + 1);
+    const rb = await route(ix, "GET", `/api/agent/${bad}`);
+    assert.equal(rb.status, 400);
+    assert.equal(JSON.parse(rb.body as string).cx_code, "checksum");
+    assert.equal((await route(ix, "GET", `/agent/${bad}`)).status, 400);
+    const page = (await route(ix, "GET", `/agent/${cx}`)).body as string;
+    assert.match(page, new RegExp(`Cadre address`));
+    assert.ok(page.includes(cx), "full Cx in the detail view");
+    assert.ok(page.includes(A.seller), "Solana address (same key) shown too");
+    assert.ok(page.includes("Solana address"));
+    const list = (await route(ix, "GET", "/agents")).body as string;
+    assert.ok(list.includes(shortCx(A.seller)) || list.includes(cx), "list shows Cx");
   } finally {
     node.close();
     sol.close();

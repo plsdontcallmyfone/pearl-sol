@@ -645,10 +645,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts))
     }
 
-    pub fn notify(&mut self, topic: &str, data: Value) {
+    pub fn notify(&mut self, topic: &str, mut data: Value) {
         if self.subscribers.is_empty() {
             return;
         }
+        crate::cxjson::add_cx_fields(&mut data);
         let msg = json!({"jsonrpc": "2.0", "method": "notify", "params": {"topic": topic, "data": data}}).to_string();
         self.subscribers.retain_mut(|s| {
             if !s.topics.iter().any(|t| t == topic) {

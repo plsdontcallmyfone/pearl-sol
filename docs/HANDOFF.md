@@ -1124,6 +1124,26 @@ CLAUDE.md "Who is working on what".
      from 65-77 MB to 144-160 MB). After the 21:56 UTC restart: all 36 at 15 fps, one encoder each, 36/36 streams alive.
      1.5 GiB Work desktops were not used: +1.17 USD/day would cross the 64 cap.
 
+31. CX ADDRESS FORMAT (owner 2026-10-21: "Cx" + hex, EIP-55 style checksum, option A: the full
+   address stays the 32-byte key; "Cx address format" row): DONE in code, docs and the site; node
+   and service restarts pending (commands below). Spec + vectors: SPEC 2.1, vectors/cx-address.json
+   (Rust chain/agent-types/src/cx.rs, TS packages/cx-address; checksum = blake3 over the lowercase
+   hex). Example C1Epvwo9... = Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06,
+   short Cxa380...7d06. Inputs take Cx, lowercase Cx and base58 everywhere; JSON keeps base58 and
+   adds `<field>_cx` (RPC.md "Addresses", API.md "Addresses"). Surfaces: node RPC (parse32 + one
+   output pass chain/rpc/src/cxjson.rs, also WS notifications), cadre/pearl CLI (fmt::parse_chain_addr,
+   cx_str, short_addr, JSON pass; entry screen card), cadre-api (src/cx.ts: inputs normalized to
+   base58 before handlers, 400 bad_address with cx_code, `_cx` on replies except signable payloads),
+   explorer (addr() view helper, agent page shows "Cadre address" + "Solana address (same key)"),
+   swarm / user agents / desktops (log + status `_cx`, isAddress accepts Cx), ~/cadre-web 79016bf
+   (CxAddr everywhere, inputs + routes take Cx), Cadre Wallet dev + danishseal cadre-extension
+   cadre-chain 8bbabb0d0 (receive, send validation, approvals, window.pearl adds `cx`; Phantom
+   path test with the "abandon ... about" vector), ~/cadre-docs b45446d (reference/addresses).
+   Not converted yet: services/swarm/trading (not on main; trading row asked to use shortCx/toCx),
+   CLI contract return values of type addr, the old extension/ prototype, agent-node `pubkey` output
+   (scripts parse it). The RPC change ships with the NEXT cadre-node rolling upgrade (no window of
+   its own); cadre-api already adds `_cx` itself, so nothing waits on it.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

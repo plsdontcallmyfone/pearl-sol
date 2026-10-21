@@ -184,7 +184,7 @@ pub fn table_data(sn: &Snapshot, tab: Tab) -> TableData {
                         let job = s(&b["header_fields"], "job_id");
                         vec![
                             format!("/ {}", u(&b["header_fields"], "height")),
-                            if m == me { "you".into() } else { short(m) },
+                            if m == me { "you".into() } else { fmt::short_addr(m) },
                             if is_zero_hex(job) { "fallback".into() } else { format!("job {}", fmt::short_n(job, 3)) },
                             tok(u(b, "reward")),
                             b["txs"].as_array().map(|a| a.len()).unwrap_or(0).to_string(),
@@ -231,7 +231,7 @@ pub fn table_data(sn: &Snapshot, tab: Tab) -> TableData {
                         vec![
                             format!("/ {n}"),
                             fmt::spl(u(w, "amount_spl") as u128),
-                            short(s(w, "from")),
+                            fmt::short_addr(s(w, "from")),
                             short(s(w, "solana_recipient")),
                             u(w, "height").to_string(),
                             match (rel(n), w["final"] == true) {
@@ -538,8 +538,8 @@ fn render_shell(f: &mut Frame, app: &App, area: Rect) {
         lines.insert(0, Line::from(""));
     }
     let (who, addr) = match (&sn.me, app.connected) {
-        (Some(a), true) => ("Wallet Connected_ ", short(a)),
-        (Some(a), false) => ("Watching_ ", short(a)),
+        (Some(a), true) => ("Wallet Connected_ ", fmt::short_addr(a)),
+        (Some(a), false) => ("Watching_ ", fmt::short_addr(a)),
         (None, _) => ("No wallet_ ", "--key FILE".into()),
     };
     lines.push(Line::from(vec![
@@ -743,7 +743,7 @@ mod tests {
         // shell strip: black, address green, path cyan, hotkeys cyan
         let (cx, cy) = find(&t, "Wallet Connected_").unwrap();
         assert_eq!(b[(cx, cy)].bg, BLACK);
-        let (ax, ay) = find(&t, &short(sample::ME)).unwrap();
+        let (ax, ay) = find(&t, &fmt::short_addr(sample::ME)).unwrap();
         assert_eq!(b[(ax, ay)].fg, GREEN);
         let (px, py) = find(&t, "~/Jobs").unwrap();
         assert_eq!(b[(px, py)].fg, CYAN);

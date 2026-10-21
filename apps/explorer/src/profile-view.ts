@@ -1,10 +1,11 @@
 // /agents and /agent/{address}: agent profiles (models in profile.ts / profile-route.ts).
 // Same primitives and shell as views.ts; Geist only, no monospace.
 
+import { shortCx, toCx } from "../../../packages/cx-address/src/index.ts";
 import { BRAND } from "./brand.ts";
 import { fmtInt, pct } from "./math.ts";
 import type { Summary } from "./models.ts";
-import { S, T, badge, card, esc, id, kv, page, sol, tok } from "./views.ts";
+import { S, T, addr, badge, card, esc, id, kv, page, sol, tok } from "./views.ts";
 
 const share = (ppm: number | null | undefined) => (ppm === null || ppm === undefined ? `<span class="faint">none</span>` : `<span class="num">${esc(pct(ppm, 1_000_000))}</span>`);
 const n = (v: number) => `<span class="num">${fmtInt(v)}</span>`;
@@ -73,7 +74,7 @@ function cardCard(c: any) {
 function signers(list: string[] | null, poster: string, deliverer: string) {
   if (list === null) return `<span class="faint">CompleteJob not indexed</span>`;
   if (!list.length) return `<span class="faint">none</span>`;
-  return `<span class="signers">${list.map((k) => `${id(k, { href: `/agent/${k}`, head: 4, tail: 4 })}${k === poster ? badge("warn", "buyer") : k === deliverer ? badge("warn", "seller") : ""}`).join("")}</span>`;
+  return `<span class="signers">${list.map((k) => `${addr(k, { href: `/agent/${k}`, head: 4, tail: 4 })}${k === poster ? badge("warn", "buyer") : k === deliverer ? badge("warn", "seller") : ""}`).join("")}</span>`;
 }
 
 export function agentPage(sm: Summary, p: any) {
@@ -103,7 +104,7 @@ export function agentPage(sm: Summary, p: any) {
     ? `<div class="table t-agent"><div class="tr th"><span>Job</span><span>Payer</span><span>P</span><span>SOL</span><span>Signed by</span></div>${sv.completed
         .map(
           (j: any) =>
-            `<div class="tr"><span>${id(j.job_id, { href: `/job/${j.job_id}` })}${j.self_dealt ? ` ${badge("warn", "excluded")}` : ""}</span><span>${id(j.poster, { href: `/agent/${j.poster}` })}</span><span class="num">${tok(j.protocol_fee, 2)}</span><span class="num">${j.storefront_sol_lamports === "0" ? `<span class="faint">none</span>` : sol(j.storefront_sol_lamports)}</span><span>${signers(j.signers, j.poster, p.account)}</span></div>`,
+            `<div class="tr"><span>${id(j.job_id, { href: `/job/${j.job_id}` })}${j.self_dealt ? ` ${badge("warn", "excluded")}` : ""}</span><span>${addr(j.poster, { href: `/agent/${j.poster}` })}</span><span class="num">${tok(j.protocol_fee, 2)}</span><span class="num">${j.storefront_sol_lamports === "0" ? `<span class="faint">none</span>` : sol(j.storefront_sol_lamports)}</span><span>${signers(j.signers, j.poster, p.account)}</span></div>`,
         )
         .join("")}</div>`
     : `<p class="note">No completed work yet.</p>`;
@@ -111,7 +112,7 @@ export function agentPage(sm: Summary, p: any) {
     ? `<div class="table t-agent"><div class="tr th"><span>Job</span><span>Payer</span><span>P</span><span>Block</span><span>Rejected by</span></div>${sv.rejected.list
         .map(
           (r: any) =>
-            `<div class="tr"><span>${id(r.job_id, { href: `/job/${r.job_id}` })}</span><span>${id(r.poster)}</span><span class="num">${r.protocol_fee === null ? "none" : tok(r.protocol_fee, 2)}</span><span><a href="/block/${r.height}">#${fmtInt(r.height)}</a></span><span>${signers(r.signers, r.poster ?? "", p.account)}</span></div>`,
+            `<div class="tr"><span>${id(r.job_id, { href: `/job/${r.job_id}` })}</span><span>${addr(r.poster)}</span><span class="num">${r.protocol_fee === null ? "none" : tok(r.protocol_fee, 2)}</span><span><a href="/block/${r.height}">#${fmtInt(r.height)}</a></span><span>${signers(r.signers, r.poster ?? "", p.account)}</span></div>`,
         )
         .join("")}</div>`
     : `<p class="note">No delivery of this account was rejected (RejectResult).</p>`;
@@ -119,9 +120,9 @@ export function agentPage(sm: Summary, p: any) {
   const b = p.buyer;
   const e = p.evaluator;
   return page(
-    `Agent ${p.agent?.name ?? p.account.slice(0, 8)}`,
+    `Agent ${p.agent?.name ?? shortCx(p.account)}`,
     `${STYLE}<nav class="crumbs"><a href="/">Overview</a><span>/</span><a href="/agents">Agents</a><span>/</span><span>${name}</span></nav>
-<div class="intro"><h1>${name}</h1><p>${id(p.account, { full: true })}</p><p>The record of this account in every role it played, read from chain state: money behind completed work first, with self-dealing excluded and failures shown next to it. Amounts are ${esc(BRAND.ticker)} and SOL, no USD. Counts appear only beside the amount they carry.</p></div>
+<div class="intro"><h1>${name}</h1><p class="addr-pair"><span class="faint">Cadre address</span> ${addr(p.account, { full: true })}</p><p class="addr-pair"><span class="faint">Solana address (same key)</span> ${id(p.account, { full: true })}</p><p>The record of this account in every role it played, read from chain state: money behind completed work first, with self-dealing excluded and failures shown next to it. Amounts are ${esc(BRAND.ticker)} and SOL, no USD. Counts appear only beside the amount they carry.</p></div>
 ${stats}
 <div class="cards">
   ${card("As seller", record, { aside: `<a class="more-s" href="/api/agent/${esc(p.account)}">JSON</a>` })}
@@ -166,7 +167,7 @@ export function agentsPage(sm: Summary, m: any) {
     ? `<div class="table t-agents"><div class="tr th"><span>Agent</span><span>Third-party signed P</span><span>SOL via storefront</span><span>Payers</span><span>Accepted</span><span>Card</span></div>${m.agents
         .map((a: any) => {
           const [tone, label] = HEALTH[a.card_health] ?? HEALTH.none;
-          return `<a class="tr" href="/agent/${esc(a.account)}"><span>${a.name ? `<strong>${esc(a.name)}</strong> ` : ""}<span class="faint">${esc(a.account.slice(0, 6))}…${esc(a.account.slice(-4))}</span>${a.listed ? "" : ` ${badge("warn", "stale")}`}</span><span class="num">${tok(a.independent_p, 2)} ${T()}</span><span class="num">${sol(a.storefront_sol_behind_completed_work)} ${S()}</span><span class="num">${fmtInt(a.distinct_payers)}</span><span>${share(a.acceptance_by_p_ppm)}</span><span>${badge(tone, label)}</span></a>`;
+          return `<a class="tr" href="/agent/${esc(a.account)}"><span>${a.name ? `<strong>${esc(a.name)}</strong> ` : ""}<span class="faint" title="${esc(toCx(a.account))}">${esc(shortCx(a.account))}</span>${a.listed ? "" : ` ${badge("warn", "stale")}`}</span><span class="num">${tok(a.independent_p, 2)} ${T()}</span><span class="num">${sol(a.storefront_sol_behind_completed_work)} ${S()}</span><span class="num">${fmtInt(a.distinct_payers)}</span><span>${share(a.acceptance_by_p_ppm)}</span><span>${badge(tone, label)}</span></a>`;
         })
         .join("")}</div>`
     : `<p class="note">No agent has delivered work or registered yet${m.hidden_stale ? ` that is not stale` : ""}.</p>`;

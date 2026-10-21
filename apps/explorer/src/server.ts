@@ -15,12 +15,14 @@ import { plainTokens, supplyModel } from "./supply.ts";
 import { revenuePage } from "./revenue-view.ts";
 import { agentRoute } from "./profile-route.ts";
 import { contractRoute } from "./contract-route.ts";
+import { addCx, cxInput } from "./cxjson.ts";
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const TYPES: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
 
 type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
-const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
+// JSON twins carry `k_cx` next to every Cadre address field (base58 kept, docs/EXPLORER.md).
+const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(addCx(v), null, 1) });
 const html = (body: string, status = 200): Res => ({ status, type: "text/html; charset=utf-8", body });
 const text = (body: string, status = 200): Res => ({ status, type: "text/plain; charset=utf-8", body, headers: { "access-control-allow-origin": "*" } });
 
@@ -31,6 +33,17 @@ export async function route(ix: Indexer, method: string, rawUrl: string): Promis
   const q = u.searchParams;
   const sm = M.summaryModel(ix);
   const parts = p.split("/").filter(Boolean).map(decodeURIComponent);
+  // Cx addresses (SPEC 2.1) in the path or query read as their base58 key; a bad checksum is a 400.
+  for (let i = 0; i < parts.length; i++) {
+    const r = cxInput(parts[i]);
+    if ("error" in r) return parts[0] === "api" ? json({ error: r.error, code: "bad_address", cx_code: r.code }, 400) : html(V.badAddress(M.summaryModel(ix), r.error), 400);
+    parts[i] = r.value;
+  }
+  for (const [k, v] of [...q.entries()]) {
+    const r = cxInput(v);
+    if ("error" in r) return json({ error: `${k}: ${r.error}`, code: "bad_address", cx_code: r.code }, 400);
+    q.set(k, r.value);
+  }
 
   if (p === "/health") return json({ ok: ix.status.nodeOk, polls: ix.status.polls });
   if (parts[0] === "assets" || parts[0] === "fonts") {

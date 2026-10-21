@@ -2,6 +2,7 @@
 // at query time: getAgent (name, uri) and getRejectStats (the chain's reject tally); the
 // agent card is probed by agentcard.ts. Everything else comes from the index (profile.ts).
 
+import { addCx } from "./cxjson.ts";
 import type { Indexer } from "./indexer.ts";
 import type { Summary } from "./models.ts";
 import { CardProber } from "./agentcard.ts";
@@ -10,7 +11,7 @@ import { agentPage, agentsPage } from "./profile-view.ts";
 import { notFound } from "./views.ts";
 
 type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
-const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
+const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(addCx(v), null, 1) });
 const html = (body: string, status = 200): Res => ({ status, type: "text/html; charset=utf-8", body });
 
 const probers = new WeakMap<Indexer, CardProber>();

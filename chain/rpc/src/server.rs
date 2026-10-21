@@ -55,7 +55,10 @@ async fn handle_one(mb: Mailbox, req: Value) -> Value {
     };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     match call(mb, method, params).await {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Ok(mut result) => {
+            crate::cxjson::add_cx_fields(&mut result);
+            json!({"jsonrpc": "2.0", "id": id, "result": result})
+        }
         Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": e.code, "message": e.message}}),
     }
 }

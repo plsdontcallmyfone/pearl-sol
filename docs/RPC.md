@@ -22,7 +22,7 @@ Devnet: `scripts/devnet.sh init|start|status|mine N|stop|reset` (3 nodes, data i
 
 | Value | JSON |
 |---|---|
-| account / pubkey (32 B) | base58 string (Solana style). Inputs accept base58 or hex. |
+| account / pubkey (32 B) | base58 string (Solana style), plus a `<field>_cx` sibling with the Cx form (see "Addresses"). Inputs accept Cx (SPEC 2.1), base58 or hex. |
 | hash (block, tx, job id, roots) | lowercase hex, 64 chars, no `0x`. Inputs accept hex or base58. |
 | amounts (u64 base units, 9 dp) | decimal string, e.g. `"1000000000"` (1 token) |
 | heights, nonces, counts, target_bits | JSON number |
@@ -37,6 +37,32 @@ Reserved addresses (no key; cannot send):
 - escrow `blake3("pearl-sol:escrow:v1")`
 - mining pool `blake3("pearl-sol:mining-pool:v1")`
 (base58 values in `chain/agent-types/vectors/messages.json`, also returned by `getEscrow`).
+
+## Addresses (Cx, SPEC 2.1, 2026-10-21)
+
+Display format only; the binary encoding is unchanged. Every address a method takes (`account`,
+`miner`, `to`, `target`, ...) accepts the checksummed `Cx` form, all-lowercase `Cx`, base58, or
+64-hex. A `Cx` string with any other casing fails with -32602 and
+`"<input>": address checksum failed: ...`.
+
+Every result (and every WebSocket notification) keeps its base58 address fields unchanged
+and gains a `<field>_cx` sibling (an array for address arrays), added by one pass in
+`chain/rpc/src/cxjson.rs` over these field names: `account address admin admins agent a b
+attesters author contract creator deliverer deployer escrow evaluators follower from
+house_operators member miner operator peer pool poster recipient registrant release_key
+signers target to`. A field gets a `_cx` sibling only when its value is a base58 string (or
+array of strings) that decodes to 32 bytes. Not converted: `solana_recipient` (a Solana
+address), `enc_key` / `sender_enc_key` (X25519 DM keys), `key` / `me` in getPeers (p2p node
+identities).
+
+Transition: the base58 fields are what every client before 2026-10-21 reads (cadre-api,
+explorer, swarm, Cadre Wallet, pearl/cadre CLI, relayer, attester, devnet e2e). They stay
+until every client reads `_cx` (or formats Cx itself from the base58), and are then
+reconsidered; removing them is a breaking change and needs its own notice here.
+
+Example: `getAccount {"account": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06"}`
+returns `{"account": "C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7",
+"account_cx": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06", "balance": ..., ...}`.
 
 ## Signatures (what wallets, attesters and evaluators sign)
 

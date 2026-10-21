@@ -76,6 +76,95 @@ sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol
 
 - Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
+### 2.1 Address display format: Cx (owner decision 2026-10-21)
+
+An account address IS the 32-byte ed25519 public key. Nothing about it changes on chain:
+transactions, signatures, state keys, the RPC binary fields and the Solana programs all
+carry the raw 32 bytes. What changed is how people and JSON see it.
+
+**Full form.** `Cx` followed by the 64 hex characters of the key, 66 characters in all,
+with mixed-case checksum casing in the style of EIP-55 but over the chain hash (blake3):
+
+```
+lower  = lowercase hex of the 32 key bytes             (64 ASCII characters)
+h      = blake3(lower)                                 (hash of that ASCII string, 32 bytes)
+nib(i) = h[i/2] >> 4  if i is even, h[i/2] & 15 if odd (i = 0..63, the hex position)
+out[i] = uppercase(lower[i]) if lower[i] is a letter a-f and nib(i) >= 8, else lower[i]
+address = "Cx" || out
+```
+
+Why blake3 and not keccak: blake3 is the hash the chain already uses (tx ids, blob ids, DM
+ids), so every implementation already carries it; keccak would add a second hash only to
+imitate Ethereum, and a Cx string is not meant to be an Ethereum address. No reason found
+to prefer keccak.
+
+**Parsing (every place that takes an address as input).** Accepted:
+
+1. `Cx` + 64 hex whose casing equals the checksum casing;
+2. `Cx` + 64 all-lowercase hex (no checksum, like an all-lowercase Ethereum address;
+   accepted, always displayed with the checksum);
+3. the legacy base58 form of the 32 bytes, so existing users, scripts and Solana-side tools
+   keep working (a 32-byte key is at most 44 base58 characters, so the forms never collide).
+
+Refused, with a clear error: any other casing of a `Cx` string (code `checksum`: "address
+checksum failed: the upper and lower case letters do not match this address, so it was
+probably mistyped"), all-uppercase hex included; a wrong length (`bad_length`); non-hex
+after `Cx` (`bad_hex`); any prefix other than exactly `Cx` (`cx`, `CX`, `0x` fall
+through to base58 and fail there, `bad_base58`); base58 that is not 32 bytes
+(`not_32_bytes`); empty (`empty`). Surrounding whitespace is trimmed. The error never
+offers a "corrected" address: a casing mismatch usually means a mistyped digit, and the
+corrected casing of a mistyped digit is a different, valid key. The node RPC and cadre-api
+also keep accepting bare or 0x-prefixed 64-hex where they did before.
+
+**Short form (UIs).** `Cx` + the first 4 + `...` + the last 4 checksummed hex characters,
+for example `Cxa380...7d06`. The full address is shown on hover, copied by copy buttons and
+shown in detail views. Addresses use the UI sans font like all other text.
+
+**Solana side.** Solana addresses (Solana recipients, SPL token accounts, mints, program
+ids, Solscan links) stay base58: they are Solana addresses. Where the same key is shown for
+both chains (agent profiles, wallet accounts) both are shown, labelled "Cadre" (Cx) and
+"Solana" (base58).
+
+**JSON.** Node RPC and cadre-api results keep every base58 address field unchanged and add a
+`<field>_cx` sibling with the Cx form (an array for address arrays). The base58 fields stay
+for a transition while clients depend on them; the field list is in docs/RPC.md
+"Addresses" and docs/API.md.
+
+**Wallet keys.** The Cadre Wallet derives mnemonic accounts on the Solana path
+`m/44'/501'/i'/0'` (SLIP-0010 ed25519), so a Phantom seed phrase imported into the
+Cadre Wallet gives the same private keys, and account i's Cx address is the same key as
+Phantom account i (proved by a test in ~/pearl-wallet against an independent derivation).
+
+**Implementations and vectors.** Rust: `chain/agent-types/src/cx.rs` (`to_cx`, `short_cx`,
+`parse_address`, `CxError::code`). TypeScript: `packages/cx-address/src/index.ts`
+(dependency free, browser safe; vendored by ~/cadre-web and the Cadre Wallet). Shared
+vectors: `vectors/cx-address.json` (written by `node packages/cx-address/scripts/gen-vectors.ts`;
+checked by `cargo test -p agent-types --test cx`, `packages/cx-address` tests and every
+vendored copy).
+
+| key (base58) | hex | Cx | short |
+|---|---|---|---|
+| C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7 | a38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06 | Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06 | Cxa380...7d06 |
+| 11111111111111111111111111111111 | 0000000000000000000000000000000000000000000000000000000000000000 | Cx0000000000000000000000000000000000000000000000000000000000000000 | Cx0000...0000 |
+| JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG | ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff | CxffFfFFfFffffFFFFffFFfFfFFFffFFFFFFFfFFFfffFFFFFfFFFFFfFfFFffFfff | CxffFf...Ffff |
+| 1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE | 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f | Cx000102030405060708090a0b0C0D0e0F101112131415161718191a1b1c1d1E1F | Cx0001...1E1F |
+| G8r6kyQd2ToxoqMAa46UpgRSP7YhPsRTA5HE5Wxf71ca | e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff | Cxe0e1E2E3e4e5E6E7E8e9EaebEceDeEeff0F1F2f3F4f5f6F7F8F9FAfbFCFDfeff | Cxe0e1...feff |
+| CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t | abababababababababababababababababababababababababababababababab | CxaBAbABabAbAbABabaBABABABABabABabAbAbabABAbabaBAbABabaBaBAbABAbAb | CxaBAb...AbAb |
+| 1491pCio1jQ5rkdK8oGq7VRWzZJFLGsEqqQUkwaoQNbE | 00cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd | Cx00cdCdCDcdCDcdCdCdCdcdcDCDcDCDcDcDCdcdcDcDCdcDCDCDCdCDcDcDcdcDCD | Cx00cd...cDCD |
+
+| input | error code | why |
+|---|---|---|
+| `CxA38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06` | checksum | one letter's case flipped (checksum failure) |
+| `CxA38030920A564589BDFE976BDB50F37CDEAECBBB34B3934E65B3F1A717BB7D06` | checksum | all uppercase hex is not the checksum casing |
+| `Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d07` | checksum | one hex digit changed, casing kept |
+| `Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d0` | bad_length | too short (63 hex) |
+| `Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d060` | bad_length | too long (65 hex) |
+| `Cxg38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06` | bad_hex | non-hex character |
+| `cxa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06` | bad_base58 | lowercase prefix cx is not a Cx address (and not base58: x is fine but 0 is not) |
+| `0xa38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06` | bad_base58 | 0x prefix is not accepted as an address |
+| `3mJr7AoUXx2Wqd` | not_32_bytes | base58 that is not 32 bytes |
+| (empty) | empty | empty |
+
 ## 3. Blocks and useful PoW
 
 ### 3.1 Header (fixed 256 bytes)

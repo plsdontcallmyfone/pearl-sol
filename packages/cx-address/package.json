@@ -1,0 +1,13 @@
+{
+  "name": "@cadre/cx-address",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cadre Cx address display and parsing (docs/SPEC.md 2.1), dependency free",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "vectors": "node scripts/gen-vectors.ts"
+  }
+}

@@ -3,6 +3,7 @@
 
 pub mod blobfetch;
 pub mod core;
+pub mod cxjson;
 pub mod dispatch;
 mod dm;
 mod reject;

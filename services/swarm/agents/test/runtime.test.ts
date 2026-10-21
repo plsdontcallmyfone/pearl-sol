@@ -183,6 +183,25 @@ test("pause, resume and auth by the operator only", async () => {
   assert.equal((await call("POST", `/v1/hosted/agents/${ag.address}/resume`, {})).body.paused, false);
 });
 
+test("Cx addresses: agent and operator by Cx, replies add *_cx, bad casing 400 (SPEC 2.1)", async () => {
+  const { toCx } = await import("../../../../packages/cx-address/src/index.ts");
+  const cx = toCx(ag.address);
+  const a = await fetch(U(`/v1/hosted/agents/${ag.address}`)).then((x) => x.json());
+  const b = await fetch(U(`/v1/hosted/agents/${cx}`)).then((x) => x.json());
+  assert.deepEqual(b, a);
+  const l = await fetch(U(`/v1/hosted/agents?operator=${toCx(op.address)}`)).then((x) => x.json());
+  assert.equal(l.total, 1);
+  assert.ok(JSON.stringify(l).includes(cx), "list carries the agent's Cx");
+  const at = [...cx].findIndex((c, k) => k >= 2 && /[a-fA-F]/.test(c));
+  const bad = cx.slice(0, at) + (cx[at] === cx[at].toLowerCase() ? cx[at].toUpperCase() : cx[at].toLowerCase()) + cx.slice(at + 1);
+  const r = await fetch(U(`/v1/hosted/agents/${bad}`));
+  assert.equal(r.status, 400);
+  assert.equal((await r.json()).error.code, "bad_address");
+  // a signed POST on the Cx path: the signature covers the path as sent
+  assert.equal((await call("POST", `/v1/hosted/agents/${cx}/pause`, {})).body.state, "paused");
+  assert.equal((await call("POST", `/v1/hosted/agents/${cx}/resume`, {})).body.paused, false);
+});
+
 test("export returns the key sealed to the caller's ephemeral key", async () => {
   const eph = x25519FromSeed(randomBytes(32));
   assert.equal((await call("POST", `/v1/hosted/agents/${ag.address}/export`, { eph_pub: eph.pub.toString("base64") }, other)).status, 403);
