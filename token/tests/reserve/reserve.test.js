@@ -202,6 +202,15 @@ test('launch cannot run twice', async () => {
   fails([ix], [admin, m2], /AlreadyLaunched|already launched/, 'second launch');
 });
 
+// Security pass 2026-10-21 (R-1): once a coin is launched the admin cannot point the reserve at
+// another mint (that would let the admin spend future creator fees on a coin of its choice).
+test('security R-1: update_config cannot swap the mint after launch', async () => {
+  const other = Keypair.generate().publicKey;
+  fails([await updateIx({ mint: other })], [admin], /MintFrozen/, 'swap the mint after launch');
+  ok([await updateIx({ mint: MINT })], [admin], 'same mint is fine');
+  assert.equal(config().mint.toBase58(), MINT.toBase58());
+});
+
 async function traderVolume(sol) {
   // buy_v3 then sell_v3 half: curve keeps the creator fee until swept
   let bc = curve();
@@ -271,6 +280,17 @@ test('per-call cap bounds the spend', async () => {
   // max_sol_in below min_buy -> NothingToBuy
   fails([await crankIx(1000, 1)], [cranker], /NothingToBuy/, 'dust crank');
   ok([await updateIx({ maxBuyPerCall: bn(LAMPORTS_PER_SOL) })], [admin], 'restore cap');
+});
+
+// Security pass 2026-10-21 (R-2): with the crank open to anyone, a third party could spend only
+// min_buy each interval and throttle the buyback for the price of a tx fee.
+test('security R-2: an open crank cannot throttle the buyback with a dust spend', async () => {
+  setTime(BigInt(config().lastCrankTs.toString()) + 601n);
+  const c = config();
+  assert.equal(c.cranker.toBase58(), PublicKey.default.toBase58(), 'crank is open');
+  const avail = lamports(CREATOR) - BigInt(c.solFloor.toString()) + BigInt(curve().creatorFee.toString());
+  assert.ok(avail > 2n * BigInt(c.minBuy.toString()), 'more than a dust buy is available');
+  fails([await crankIx(BigInt(c.minBuy.toString()) * 2n, 1)], [cranker], /PartialSpend/, 'dust spend by a stranger');
 });
 
 test('collect_curve_fees is permissionless and only collects', async () => {

@@ -75,8 +75,8 @@ pub mod reserve {
         Ok(())
     }
 
-    /// Admin: change any limit, the cranker/funder keys, the bridge target or
-    /// (before any reserve tokens exist) the mint.
+    /// Admin: change any limit, the cranker/funder keys, the bridge target (until the first
+    /// fund_mining) or the mint (only while unset).
     pub fn update_config(ctx: Context<AdminOnly>, params: ConfigParams) -> Result<()> {
         ctx.accounts.config.apply(params)?;
         emit!(ConfigUpdated { config: ctx.accounts.config.key() });
@@ -665,7 +665,10 @@ pub struct ConfigParams {
 
 impl Config {
     fn apply(&mut self, p: ConfigParams) -> Result<()> {
+        // The coin is fixed once set (launch, or update_config for a coin launched elsewhere):
+        // a new mint would let the admin spend future creator fees buying a coin of its choice.
         if let Some(v) = p.mint {
+            require!(v == self.mint || self.mint == Pubkey::default(), ReserveError::MintFrozen);
             self.mint = v;
         }
         if let Some(v) = p.cranker {
@@ -776,8 +779,13 @@ impl Config {
     }
 
     fn spend_from(&self, available: u64, max_sol_in: u64) -> Result<u64> {
-        let s = available.min(self.max_buy_per_call).min(max_sol_in);
+        let full = available.min(self.max_buy_per_call);
+        let s = full.min(max_sol_in);
         require!(s >= self.min_buy.max(1), ReserveError::NothingToBuy);
+        // Security pass R-2: with an open crank, a third party could spend only min_buy per
+        // interval and throttle the buyback for the price of a tx fee. Only an allowlisted
+        // cranker may spend less than the full amount.
+        require!(s == full || self.cranker != Pubkey::default(), ReserveError::PartialSpend);
         Ok(s)
     }
 
@@ -1198,4 +1206,8 @@ pub enum ReserveError {
     DestinationFrozen,
     #[msg("config predates the fund limits: run migrate_config")]
     NeedsMigration,
+    #[msg("the mint is fixed once set")]
+    MintFrozen,
+    #[msg("an open crank must spend min(available, max_buy_per_call); max_sol_in is below it")]
+    PartialSpend,
 }
