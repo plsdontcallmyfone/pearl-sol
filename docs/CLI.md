@@ -368,10 +368,11 @@ COLORTERM as over ssh, live devnet, watching `4pDphQUN...pU8b`): `screenshots/cl
 (every view, dashboard tabs, palette), `app-160x50-*.png`, `app-truecolor-120x40-*.png`,
 `app-256-120x40-*.png`, and the persistence sequence `app-seq-1-home-ask.png` ...
 `app-seq-5-job-detail.png` (ask on Home, select a job on the Dashboard, 45 s on Home while new
-blocks and jobs arrive, back: same conversation, same job selected). In that run 32 new jobs arrived while on
-Home (4005 to 4037 on chain) and the selected job `ce0e...b856` moved from row 6 to row 38 and
-stayed selected. CPU of the `cadre` process measured over 10 s in that xterm: 2.0% of one core on
-Home (robot at 12 fps plus the poller), 1.5% on the Dashboard. A real `ssh -tt` session from the
+blocks and jobs arrive, back: same conversation, same job selected). In an earlier xterm run of the same
+sequence 32 new jobs arrived while on Home (4005 to 4037 on chain) and the selected job
+`ce0e...b856` moved from row 6 to row 38 and stayed selected (also a unit test). CPU of the
+`cadre` process over 10 s in that xterm: 1.7% of one core on Home (robot at 12 fps plus the
+poller), 1.2% on the Dashboard. A real `ssh -tt` session from the
 Mac to the test box (Home, F2, 6, ctrl+c; TERM=xterm-256color, no COLORTERM) emitted only
 truecolor (6124 foreground codes, no 256-color codes), three background colors (the `#1e1e1e`
 panel and the two logo shadows), and entered and left the alternate screen. Piped outputs of
