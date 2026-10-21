@@ -1,4 +1,4 @@
-// User agents ("spawn your own Cadre agent", docs/ECOSYSTEM.md 7, SPEC 4.7): the routes a Solana
+// User agents ("spawn your own Cadre agent", docs/ECOSYSTEM.md 7, SPEC 4.8): the routes a Solana
 // wallet needs to create and run an agent, and the reads that verify one from the chains alone.
 //
 // - POST /v1/tx/encode: the exact bytes a Cadre tx is signed over (signing bytes, and the framed
@@ -23,7 +23,7 @@ import type { Deps } from "../deps.ts";
 import { addr, amount, solanaBalances } from "./wallet.ts";
 import { blake3 } from "../../../../apps/explorer/src/blake3.ts";
 import { b58decode, b58encode, hex } from "../../../../apps/explorer/src/codec.ts";
-import { decodeSocialTx, socialFee, socialSigningBytes, type SocialBody } from "../../../../apps/explorer/src/social.ts";
+import { avatar, decodeSocialTx, socialFee, socialSigningBytes, type SocialBody } from "../../../../apps/explorer/src/social.ts";
 import { ata, compileLegacy, computeUnitLimit, createAtaIdempotent, systemTransfer, TOKEN_2022, unsignedTx, type Ix } from "../sol.ts";
 import { verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
 
@@ -171,8 +171,13 @@ async function hostedGet(path: string): Promise<{ status: number; body: any } | 
 }
 
 /** Solana tx signers (static account keys flagged as signers). */
-async function solSigners(d: Deps, sig: string): Promise<{ found: boolean; ok: boolean; signers: string[]; slot: number | null }> {
-  const t = await d.sol.getTransaction(sig).catch(() => null);
+async function solSigners(d: Deps, sig: string): Promise<{ found: boolean; ok: boolean; signers: string[]; slot: number | null; error?: string }> {
+  let t: any;
+  try {
+    t = await d.sol.getTransaction(sig);
+  } catch (e) {
+    return { found: false, ok: false, signers: [], slot: null, error: (e as Error).message.slice(0, 120) };
+  }
   if (!t) return { found: false, ok: false, signers: [], slot: null };
   const m = t.transaction?.message;
   const keys: string[] = m?.accountKeys ?? [];
@@ -331,7 +336,8 @@ export function registerUserAgents(api: Api, d: Deps) {
               for (const s of sigs) {
                 if (verifyBudget-- <= 0) { e.receipt.solana.push({ signature: s, checked: false }); continue; }
                 const x = await solSigners(d, s);
-                e.receipt.solana.push({ signature: s, checked: true, found: x.found, ok: x.ok, slot: x.slot, signed_by_agent: x.signers.includes(t.from) });
+                if (x.error) e.receipt.solana.push({ signature: s, checked: false, error: `Solana RPC: ${x.error}` });
+                else e.receipt.solana.push({ signature: s, checked: true, found: x.found, ok: x.ok, slot: x.slot, signed_by_agent: x.signers.includes(t.from) });
               }
             }
           } else if (b.kind === "React") e.summary = `${b.items.length} reaction(s), tips ${b.items.reduce((s: bigint, x: any) => s + BigInt(x.tip), 0n)}`;
@@ -369,7 +375,7 @@ export function registerUserAgents(api: Api, d: Deps) {
       const acct = await d.chain<any>("getAccount", { account: a }).catch(() => null);
       const h = hostedList.find((x) => x.agent === a) ?? null;
       return {
-        account: a, linked_height: linked.get(a) ?? null, handle: p?.handle ?? null, name: p?.name ?? h?.name ?? null,
+        account: a, linked_height: linked.get(a) ?? null, handle: p?.handle ?? null, name: p?.name ?? h?.name ?? null, avatar: avatar(a, p?.name ?? h?.name ?? null, p?.handle ?? null),
         names_operator: p?.operator === op, operator_linked: !!p?.operator_linked && p?.operator === op,
         chain_balance: acct?.balance ?? null, hosted: h ? { state: h.state, paused: h.paused, why: h.why, spec_version: h.spec?.version ?? null } : null,
       };

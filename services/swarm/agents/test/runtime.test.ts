@@ -12,6 +12,7 @@ import { after, before, test } from "node:test";
 import { CadreApi, NodeRpc, authMessage, latestBlockhash } from "../../src/clients.ts";
 import { mulberry32 } from "../../src/swarm.ts";
 import { walletFromSeed, type Wallet } from "../../src/wallet.ts";
+import { b58encode as b58 } from "../../src/b58.ts";
 import { GatewayAt } from "../src/gateway.ts";
 import { Runtime } from "../src/runtime.ts";
 import { open, seal, x25519FromSeed } from "../src/seal.ts";
@@ -125,6 +126,13 @@ test("an agent goes live: funds, profile blob with the spec, RegisterAgent, oper
   assert.deepEqual(blob, profileBlob(doc));
   assert.equal(f.node.agents.get(ag.address)?.uri, `https://api.example/v1/useragents/${ag.address}/card`);
   assert.equal(rt.status(ag.address).state, "waiting_link");
+  // the operator held no CADRE on the chain: the agent sent it the link's fee once
+  await rt.loopOnce();
+  const feeTx = f.node.sent.filter((x) => x.from === ag.address && x.kind === "Transfer");
+  assert.equal(feeTx.length, 1);
+  assert.equal(b58(feeTx[0].body.to), op.address);
+  await rt.loopOnce();
+  assert.equal(f.node.sent.filter((x) => x.from === ag.address && x.kind === "Transfer").length, 1, "only once");
   // nothing social happens before the operator's link
   assert.equal(f.node.posts.length, 0);
   f.node.links.add(`${op.address}:${ag.address}`);

@@ -1,4 +1,4 @@
-// Agent spec v1 (docs/SPEC.md 4.7, docs/ECOSYSTEM.md 7): what a user agent is and may do, written
+// Agent spec v1 (docs/SPEC.md 4.8, docs/ECOSYSTEM.md 7): what a user agent is and may do, written
 // by its operator, signed by the operator's Solana key (a plain signMessage over a short text that
 // names the spec's sha256), and committed on the Cadre chain inside the agent's profile blob
 // (SetProfile profile_uri / profile_hash = the blob's blake3 id). Anyone can verify it from the

@@ -75,6 +75,7 @@ export class AgentRunner extends Swarm {
   log2: LogLine[] = [];
   blobUri: string | null = null;
   regTx: string | null = null;
+  linkFeeTx: string | null = null;
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -90,6 +91,7 @@ export class AgentRunner extends Swarm {
       this.log2 = ex.log ?? [];
       this.blobUri = ex.blobUri ?? null;
       this.regTx = ex.regTx ?? null;
+      this.linkFeeTx = ex.linkFeeTx ?? null;
     }
   }
 
@@ -97,7 +99,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx };
     super.save();
   }
 
@@ -209,6 +211,16 @@ export class AgentRunner extends Swarm {
     if (!(prof?.operator === this.spec.operator && prof?.operator_linked)) {
       this.state = "waiting_link";
       this.why = "the operator's OperatorLink to this agent is not on the chain yet";
+      // an operator new to the Cadre chain holds no CADRE for the link's fee: the agent sends it once
+      if (!this.linkFeeTx) {
+        const link: Body = { kind: "OperatorLink", agent: this.me.wallet.publicKey, add: true };
+        const fee = feeFor(link, this.params);
+        const opAcct = await this.d.node.call("getAccount", { account: this.spec.operator });
+        if (BigInt(opAcct?.balance ?? 0) < fee) {
+          this.linkFeeTx = await this.send(this.me.wallet, { kind: "Transfer", to: key32(this.spec.operator), amount: fee });
+          this.note("link_fee", `sent the operator ${fee} units for the OperatorLink fee`, { tx: this.linkFeeTx });
+        } else this.linkFeeTx = "not-needed";
+      }
       return false;
     }
     if (!s.profileDone) {
@@ -277,7 +289,7 @@ export class AgentRunner extends Swarm {
         s.reacted.push(cand.post_id);
         s.reacted = s.reacted.slice(-300);
         if (!t) return "budget";
-        if (!isYes(t.text)) return "judged_no";
+        if (!isYes(t.text)) { this.note("judged_no", `decided not to like a post by ${item(cand).author}`, { request_id: t.requestId }); return "judged_no"; }
         const tip = A.tip ? BigInt(this.spec.limits.tip_units) : 0n;
         const h = await this.send(a.wallet, { kind: "React", items: [{ postId: key32(cand.post_id), reaction: REACTION.like, tip }] });
         this.count(a, tip ? "tips" : "reactions");
@@ -290,7 +302,7 @@ export class AgentRunner extends Swarm {
         const t = await this.think(a, judgePrompt(a.persona, item(cand), "Would you follow the author of this post?"), this.cfg.judgeMaxTokens, "follow");
         s.followed.push(cand.author.account);
         if (!t) return "budget";
-        if (!isYes(t.text)) return "judged_no";
+        if (!isYes(t.text)) { this.note("judged_no", `decided not to follow ${item(cand).author}`, { request_id: t.requestId }); return "judged_no"; }
         const fol = await this.d.node.call("isFollowing", { follower: this.address, target: cand.author.account }).catch(() => null);
         if (fol?.following) return "already_following";
         const h = await this.send(a.wallet, { kind: "Follow", items: [{ target: key32(cand.author.account), on: true }] });
@@ -344,13 +356,16 @@ export class AgentRunner extends Swarm {
     return "trade";
   }
 
+  memoTriedAt = 0;
   memoDue(): boolean {
+    if (this.d.now() - this.memoTriedAt < 3_600_000) return false; // a failed attempt waits an hour
     const last = this.log2.filter((l) => l.kind === "receipt" && /^memo /.test(l.text)).at(-1);
     return !last || this.d.now() - Date.parse(last.t) > 86_400_000;
   }
 
   /** A daily Solana memo checkpoint naming the spec and the Cadre tip, anchored back on Cadre. */
   async memo(): Promise<string> {
+    this.memoTriedAt = this.d.now();
     const info = await this.d.node.call("getChainInfo", {});
     const text = `cadre-agent ${this.address} spec ${this.doc.sha256.slice(0, 16)} v${this.spec.version} cadre height ${info.height}`;
     const r = await this.solanaAction("/v1/tx/sol-memo", { from: this.address, memo: text }, 20_000n);

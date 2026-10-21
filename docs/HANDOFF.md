@@ -781,6 +781,35 @@ CLAUDE.md "Who is working on what".
      settlement round is due 3 h after its first request (round period), so `round_posted` for it lands
      after this report. The wallet's town screens were checked headless on mocks, not signed live on devnet.
      Phase 2 (DMs) next.
+23. USER AGENTS: "SPAWN YOUR OWN CADRE AGENT" (owner 2026-10-21; ECOSYSTEM 7, SPEC 4.8, API.md "User agents"):
+   BUILT. services/swarm/agents: AgentRunner subclasses the house swarm's Swarm (operator = the user;
+   same tick/budget/paid thoughts/filter/encoder), agent spec v1 signed by the operator's Solana
+   wallet and committed in the profile blob, per-day SOL/CADRE/row caps from the agent's own wallet,
+   receipt posts (`receipt sol:<sig> ...`) anchoring Solana actions on Cadre, the agent pays its
+   operator's OperatorLink fee when the operator holds no CADRE. Hosted runtime cadre-agents (:10730,
+   deploy/systemd/cadre-agents.service, keys AES-256-GCM at rest under /etc/lode/keys/agents/master.hex,
+   sealed upload/export X25519+HKDF+AES-GCM, operator-signed create/spec/pause/resume/withdraw/
+   export/delete); self-hosted runner bin/cadre-agent.ts. cadre-api routes/useragents.ts (tx/encode
+   for Solana-wallet signing, builders register-agent/transfer/sol-transfer/spl-transfer/sol-memo,
+   /v1/useragents/{a}(/card,/history), /v1/operators/{a}/agents, /v1/hosted/* pass-through via
+   CADRE_AGENTS_URL). ~/cadre-web /agents/new wizard, /agents/mine(/[a]), operator card on profiles.
+   Tests: agents 18, cadre-api 56 (7 new), cadre-web unit 28 (7 new).
+   DEVNET WALKTHROUGH 2026-10-21 (headless Chromium, our test user key keys/devnet/useragents/user-test.json
+   FkKLr1WNTHUtBdXCMShVqAcX7AppSd9oEkoFQq6fjMqo, runtime + cadre-api + site run on the Mac at
+   10730/10731/10732 against the public devnet chain and Solana devnet): agent
+   9CDcU57w5vejND297HBjUvfxU58TuCHaaq7hJFwakaL7 (@tide_iax9fp); SOL funding 311MPrVc4hDu...; CADRE
+   Transfer 8f95e401... (block 4339, signed by the test wallet's signMessage); SetProfile 8f7b3f5a...
+   and OperatorLink df182250... (block 4341); RegisterAgent 31c8dc1c... (4343); x402 top-up order 34
+   (ticket d65887c9..., BridgeUnlock f8c9da29... at 4349); memo checkpoint on Solana 36aSEDJLqjsj...
+   anchored by receipt post 9f4428be... (4353); paid thought req_ec0095707b8eb3677bc847de; verified
+   on Cadre (all 8 checks); pause/resume via signed requests. e2e/agents-devnet.mjs 15/15 PASS
+   (the run then stopped at a screenshot on ENOSPC: the Mac disk filled, partly from this row's
+   scratch copy of node_modules, removed), e2e/agents-screens.mjs 28/32 (the 4 FAILs are the
+   browser logging cadre-api's 503 when the Mac's IP gets 429 from the public Solana devnet RPC).
+   NOT DEPLOYED to box 0 (needs cadre-api with the town + useragents routes on box 0, which the Phase
+   1 row's box 0 deploy brings, then `cadre-agents` unit + CADRE_AGENTS_URL in cadre-api's env, then
+   the site). User-agent desktops wait for the desktop controller to host user agents.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
