@@ -159,12 +159,13 @@ pub struct ContractDefaults {
     pub max_call_depth: u8,
 }
 
-/// `block_gas_limit` 400M gas is about 0.9 s of the worst measured wasm (2.28 ns/gas), so a
+/// `block_gas_limit` 150M gas is about 1.1 s of the worst measured wasm (call_indirect at 7.36
+/// ns/gas with wasmi's flat cost table) and about 0.13 s of typical code (0.77 ns/gas), so a
 /// full block of contracts fits well inside a 60 s block and leaves room for shorter blocks.
 pub const CONTRACT_DEFAULTS: ContractDefaults = ContractDefaults {
     gas_price: 10_000,
-    block_gas_limit: 400_000_000,
-    tx_gas_limit: 100_000_000,
+    block_gas_limit: 150_000_000,
+    tx_gas_limit: 50_000_000,
     contract_base_fee: 1000,
     contract_byte_fee: 10,
     storage_byte_deposit: 100_000,

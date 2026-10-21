@@ -182,6 +182,28 @@ fn measure() {
     let (_, used) = run(&vm, &lp, "call", vec![], 500_000_000, Mode::Execute);
     let el = t.elapsed();
     println!("tight loop: {used} gas in {el:?}: {:.2} ns/gas", el.as_nanos() as f64 / used as f64);
+    // other worst-case candidates: 64-bit division, bulk memory, indirect calls, host calls
+    let cases = [
+        ("i64.div_u loop", r#"(module (memory (export "memory") 1) (func (export "call") (local $x i64) (local.set $x (i64.const -1))
+            (loop $l (local.set $x (i64.add (i64.div_u (local.get $x) (i64.const 3)) (i64.const -1))) (br $l))))"#),
+        ("memory.fill 4 MiB loop", r#"(module (memory (export "memory") 64) (func (export "call")
+            (loop $l (memory.fill (i32.const 0) (i32.const 7) (i32.const 4194304)) (br $l))))"#),
+        ("memory.copy 2 MiB loop", r#"(module (memory (export "memory") 64) (func (export "call")
+            (loop $l (memory.copy (i32.const 0) (i32.const 2097152) (i32.const 2097152)) (br $l))))"#),
+        ("call_indirect loop", r#"(module (memory (export "memory") 1) (type $t (func)) (table 1 funcref) (elem (i32.const 0) $f) (func $f)
+            (func (export "call") (loop $l (call_indirect (type $t) (i32.const 0)) (br $l))))"#),
+        ("gas_left host call loop", r#"(module (import "cadre" "gas_left" (func $g (result i64))) (memory (export "memory") 1)
+            (func (export "call") (loop $l (drop (call $g)) (br $l))))"#),
+        ("blake3 4 KiB host call loop", r#"(module (import "cadre" "blake3" (func $h (param i32 i32 i32))) (memory (export "memory") 1)
+            (func (export "call") (loop $l (call $h (i32.const 0) (i32.const 4096) (i32.const 8192)) (br $l))))"#),
+    ];
+    for (name, src) in cases {
+        let m = wat(src);
+        let t = std::time::Instant::now();
+        let (s, used) = run(&vm, &m, "call", vec![], 200_000_000, Mode::Execute);
+        let el = t.elapsed();
+        println!("{name}: {s:?} {used} gas in {el:?}: {:.2} ns/gas", el.as_nanos() as f64 / used as f64);
+    }
     let t = std::time::Instant::now();
     for _ in 0..100 {
         vm.validate(code, MAX).unwrap();

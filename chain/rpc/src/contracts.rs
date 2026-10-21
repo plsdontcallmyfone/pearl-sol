@@ -15,8 +15,8 @@ use crate::core::Core;
 use crate::dispatch::{b58, p_key, p_str, p_u64, parse32, RpcError};
 
 /// Gas a query gets when the caller names none (and the most it may ask for).
-pub const QUERY_GAS_DEFAULT: u64 = 50_000_000;
-pub const QUERY_GAS_MAX: u64 = 500_000_000;
+pub const QUERY_GAS_DEFAULT: u64 = 20_000_000;
+pub const QUERY_GAS_MAX: u64 = 50_000_000;
 
 fn srv<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<T, RpcError> {
     r.map_err(RpcError::server)
@@ -183,7 +183,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let args = hex_param(p, &["args", "input"])?;
         let value = p_u64(p, "value").unwrap_or(0);
         let tip_cfg = self.chain.tip().config.clone();
-        let gas = p_u64(p, "gas").unwrap_or(tip_cfg.tx_gas_limit).min(tip_cfg.tx_gas_limit);
+        let gas = p_u64(p, "gas").unwrap_or(tip_cfg.tx_gas_limit).min(tip_cfg.tx_gas_limit).min(QUERY_GAS_MAX);
         let height = self.chain.tip_height() + 1;
         let base = self.tip_read();
         let r = executor::simulate_call(&base, self.chain.chain_id(), height, &from, &a, args, value, gas).await.map_err(RpcError::params)?;

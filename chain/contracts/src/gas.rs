@@ -4,11 +4,12 @@
 //! costs (pinned with the wasmi version); host calls are charged here.
 //!
 //! Measured on the test box (8 vCPU x86_64, release build, 2026-10-21, docs/CONTRACTS.md
-//! "Measured"): wasm runs at 0.85 ns/gas (a hashing loop) to 2.28 ns/gas (the worst case
-//! found, a tight `br` loop); compiling a module costs 29.8 ns/byte, instantiating a cached
-//! one 4.8 ns/byte; merkleizing a 64-byte state write costs about 3.0 us. Host costs are set
-//! at or above those times at the worst case of 2.28 ns/gas, so a full block of gas stays
-//! within about the same wall time whichever mix of instructions and host calls fills it.
+//! "Measured"): wasm runs at 0.77 ns/gas (an arithmetic loop) to 7.36 ns/gas (the worst case
+//! found: a `call_indirect` loop, because wasmi 1.1's fuel table charges every op 1); a
+//! tight `br` loop 2.25, `i64.div_u` 3.14, `memory.copy` 4.88 ns/gas. Compiling a module costs
+//! 26.6-29.8 ns/byte, instantiating a cached one 4.9 ns/byte; merkleizing a 64-byte state
+//! write about 3.0 us. Host costs are set at or above those times at 2.25 ns/gas, and the
+//! block gas limit is sized for the 7.36 ns/gas worst case.
 //!
 //! Changing any value is a consensus change (it needs an activation height).
 

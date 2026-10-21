@@ -168,7 +168,7 @@ impl Chain {
         (addr, r)
     }
     fn call(&mut self, who: u8, contract: Pubkey, value: u64, args: Vec<u8>) -> ac::Receipt {
-        self.call_gas(who, contract, value, args, 100_000_000)
+        self.call_gas(who, contract, value, args, 50_000_000)
     }
     fn call_gas(&mut self, who: u8, contract: Pubkey, value: u64, args: Vec<u8>, gas_limit: u64) -> ac::Receipt {
         self.receipt(who, TxBody::Call(ac::Call { contract, value, gas_limit, args }))
@@ -213,7 +213,7 @@ fn counter_end_to_end_with_fees_and_receipts() {
     assert_eq!(r.status, Status::Ok, "{}", String::from_utf8_lossy(&r.error));
     assert_eq!(c.query_u64(&addr, In::m("get").b()), 41);
     let before = c.bal(&pk(4));
-    let body = TxBody::Call(ac::Call { contract: addr, value: 0, gas_limit: 100_000_000, args: In::m("increment").u64(1).b() });
+    let body = TxBody::Call(ac::Call { contract: addr, value: 0, gas_limit: 50_000_000, args: In::m("increment").u64(1).b() });
     let fee = c.floor(4, &body);
     let s = c.send(4, body).unwrap();
     let r = &s.receipts[0];
@@ -390,7 +390,7 @@ fn escrow_token_and_bounty_flows() {
     let (bty, _) = c.instantiate(2, bch, [0; 32], 0, vec![]);
     let h = c.height;
     let s = c
-        .send(3, TxBody::Call(ac::Call { contract: bty, value: 20 * CADRE, gas_limit: 100_000_000,
+        .send(3, TxBody::Call(ac::Call { contract: bty, value: 20 * CADRE, gas_limit: 50_000_000,
             args: In::m("post").str("Summarize block 100").str("").u64(h + 50).addr(&[0; 32]).u8(1).b() }))
         .unwrap();
     assert_eq!(s.receipts[0].status, Status::Ok, "{}", String::from_utf8_lossy(&s.receipts[0].error));
@@ -458,15 +458,15 @@ fn block_gas_limit_and_fee_floor() {
     let mut c = Chain::new(7);
     let kit = c.deploy(2, TESTKIT);
     let (a, _) = c.instantiate(2, kit, [0; 32], 0, vec![]);
-    // shrink the block gas limit to 3x a tx's limit
-    let lim = 100_000_000u64;
+    // set the block gas limit to 3x a tx's limit
+    let lim = 40_000_000u64;
     let t = c.tx(ADMIN, 1000, TxBody::AdminConfig { key: keys::TX_GAS_LIMIT, value: lim.to_le_bytes().to_vec() });
     c.block(&[t]).unwrap();
     *c.nonces.entry(ADMIN).or_insert(0) += 1;
     let t = c.tx(ADMIN, 1000, TxBody::AdminConfig { key: keys::BLOCK_GAS_LIMIT, value: (3 * lim).to_le_bytes().to_vec() });
     c.block(&[t]).unwrap();
     *c.nonces.entry(ADMIN).or_insert(0) += 1;
-    // four spinning calls of 100M gas each: the fourth does not fit
+    // four spinning calls of 40M gas each: the fourth does not fit
     let mk = |c: &Chain, who: u8| {
         let body = TxBody::Call(ac::Call { contract: a, value: 0, gas_limit: lim, args: In::m("burn").u64(1_000_000_000).b() });
         let fee = c.floor(who, &body);
