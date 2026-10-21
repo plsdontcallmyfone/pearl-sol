@@ -479,6 +479,34 @@ start): 7/7 PASS, step 11 1,116.0 s, upload 104.5 s, all 640 segments mined in b
 Deployed after the tests: test box cadre-api; devnet box 0 cadre-gateway, cadre-attester, cadre-miner, cadre-explorer,
 cadre-api (main 154a819); boxes 1-2 cadre-miner (same pearl-miner, sha256 295bfca2...). Public API answered 200 after.
 
+## Ecosystem Phase 2: on-chain DMs (2026-10-21, "ecosystem Phase 2: on-chain DMs" row)
+
+Test box 64.95.13.106 (8 vCPU), own dirs ~/dms-build, ~/dms-merge, ~/dms-api, ~/dms-swarm, ~/dms-replay.
+
+| Suite | Result |
+|---|---|
+| chain workspace (main + contracts + fix3 + DMs, -j 4) | 184/184 |
+| executor tests/dm.rs | 13/13: activation, params bounds, fee rule + size, policy matrix (open, priced, followers, closed) with consent, follows and thread window, consent batches, escrow release by reply, refund timing (deadline inclusive), decline + limits, protocol share, sealed framing + enc_key, channels (paid / invite / open, admins), sealed key epochs + removal forces a rekey, 60-step supply walk |
+| agent-node tests/dm_rpc.rs | 2/2: every DM RPC + sendTx admission refusals; reorg rolls back escrow, consent, channel and balances |
+| agent-types dm_crypto + vectors | dm.json and dm-crypto.json byte for byte; enc_key never equals the signing key |
+| apps/explorer | 60/60 (dm.test.ts reproduces every dm.json tx) |
+| services/cadre-api | 59 pass, 0 fail, 9 skipped (route parity included) |
+| services/swarm / agents | 41/41 (crypto vectors, HChaCha20 draft vectors, encoders, priority, decline, budgets, DM soak 163 DMs, injection corpus 30) / 20/20 |
+| extension tx-vectors | 67/67 (tx, reject, social, contracts, dm) |
+| ~/pearl-wallet (bf7f2113e) | unit 280 pass + 6 skipped (2 pre-existing token IDL drift fails), UI 132/132 headless (x3), tsc, eslint, build clean |
+| ~/cadre-web (d14cd9d) | unit 56, e2e 63/63 on mocks, 68 screenshots (1440 / 390 px, light / dark): no overflow, no monospace |
+| ~/cadre-docs (4ca6501) | check 47 pages x 2 viewports OK |
+
+Live on the test-box DM chain (one agent-node, chain 1347616769, DMs from genesis): cadre-api tools/live-dms.ts
+43/43 with real signed txs (heights 1301-1331: plain, priced refused then paid, escrow released, reclaimed after
+the window, declined, consent deny / clear, sealed, channel create / invite / joins / key epochs 1 and 2 / rekey
+after removal, SSE events); house swarm with a stub gateway: paid plain DM answered and released (1361-1362), sealed
+DM answered sealed and opened by the sender (1362-1364), over-budget DM declined with a refund (1407-1408).
+
+Devnet replay: a fresh follower running the new agent-node (5dcab264..., main e7e6cbb) synced the public devnet
+from genesis to 4653 with tip 7b8a9c16... and finalized 4623 c9d38411... equal to all three boxes. The devnet
+node rollout itself was not run (permission refused in this session; HANDOFF item 29).
+
 ## Follower stall + agent-node memory (2026-10-21, "fresh node p2p sync stall" row, round 2)
 
 Cause and fix in HANDOFF item 24. Test box 64.95.13.106, own dir ~/follow-stall.

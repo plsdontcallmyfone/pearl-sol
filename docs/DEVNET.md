@@ -502,6 +502,13 @@ an idle work account close; they come back with `close-works` when a relay is re
 relay box 1 4.4469, relay box 2 4.5020 (about 0.02 SOL/h each in fees), ops 17.2289, deployer 45.9612
 SOL (unchanged).
 
+## DMs (2026-10-21, "ecosystem Phase 2: on-chain DMs" row)
+
+DM kinds 16-21 activate at height 4800 (SPEC 4.10). STATUS: agent-node 5dcab264... (main e7e6cbb) is staged as
+/opt/lode/bin/agent-node.dms on boxes 0-2 and NOT running; the node rollout and the box 0 service redeploys are
+listed in HANDOFF item 29. Until all three nodes run it, no DM tx can enter any mempool (old nodes cannot decode
+the kinds), so the height passing first is harmless.
+
 ## Ops hardening (2026-10-21, security pass)
 
 Audited on all three boxes on 2026-10-21 (security + robustness row, docs/SECURITY-REVIEW.md lists the

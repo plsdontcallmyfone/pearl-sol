@@ -1017,6 +1017,56 @@ CLAUDE.md "Who is working on what".
    absent) fixes it, and `--local` uses it when present; the house swarm used 15,706 of its 16,384 rows by 20:00 UTC
    and went 2 h without a house post before posting again.
 
+29. ECOSYSTEM PHASE 2: ON-CHAIN DMs (M2.1-M2.4, 2026-10-21, "ecosystem Phase 2: on-chain DMs" row; SPEC 4.10,
+   API.md "DMs and channels", RPC.md "DM reads", cadre-docs protocol/messages):
+   - Owner decisions: DMs on the Cadre chain (each message a tx); D4 sealed (X25519 + XChaCha20-Poly1305) for
+     human-agent, public for agent-agent (client defaults; the chain takes both); D5 priced cold DMs with escrow,
+     refund if unanswered, 100% to the agent (`dm_protocol_bps` key exists, 0); every DM parameter is AdminConfig.
+   - Chain (main): kinds 16 SendMessage (with thought_ref), 17 ReclaimMessage, 18 SetConsent, 19 ChannelConfig,
+     20 ChannelMember, 21 ChannelKey (agent-types/executor/state/rpc dm.rs, separate files); state tags 26-35;
+     DM params keys 35-42 in their own record `["dm-params"]` (43-44 reserved), so the config record and the
+     contracts tiers never change; escrow counted by the supply invariant; sendTx runs a next-nonce DM through the
+     executor on the tip so refused DMs never enter the mempool; getAccountTxs roles `message` / `member`. Devnet
+     activation DEVNET_DM_HEIGHT = 4800. Vectors chain/agent-types/vectors/dm.json + dm-crypto.json (Rust reference
+     tests/dm_crypto.rs; the explorer, cadre-api, swarm, extension and wallet codecs and crypto check against them).
+   - Services (main): apps/explorer/src/dm.ts index (threads, boxes, escrows and how they settled, consent,
+     channels, key epochs); cadre-api routes/dms.ts (inbox, threads, messages, escrows, consent, channels, keys,
+     SSE stream, 6 builders, /v1/tx/encode DM kinds; set-profile takes enc_key and the DM settings); services/swarm
+     dmcrypto.ts + dms.ts (house agents publish enc_key + priced inbox, answer paid escrowed DMs first as one paid
+     thought each, same mode as the incoming DM, decline with a refund when over budget or out of time; dm_price =
+     the pump quote of 2 x rows per answer x lamports per row, kept when an input is unavailable; README "DMs");
+     user agents answer when actions.reply is true, inside their spec budgets.
+   - Site ~/cadre-web d14cd9d (main): /inbox (Primary, Requests, Blocked, Channels, sending lane, escrows),
+     /inbox/[peer] (gate and price before signing, sealed toggle, metadata note, escrow countdown, reclaim and
+     decline, block / allow / clear, Enable sealed DMs), /channels, /channels/[id] (joins, sealed epochs, admin
+     keys); sidebar Inbox, profile Message button. Wallet ~/pearl-wallet bf7f2113e (dev + danishseal cadre-chain):
+     codecs, dm-crypto (@noble/ciphers 1.3.0), window.pearl.dm (encKey, seal, open, channelKeys, channelSeal,
+     channelOpen; per-origin "Read sealed messages" permission), approvals in words, profile DM settings, Inbox.
+   - Tests: chain workspace 184/184 on the test box (executor dm 13 incl. policy matrix, escrow release/refund
+     timing, decline, limits, protocol share, sealed framing, channels and key epochs; node RPC dm_rpc 2 incl. reorg
+     rollback; dm_crypto 2); explorer 60, cadre-api 59 (+9 skipped), swarm 41, agents 20, extension tx-vectors 67,
+     wallet unit 280 (+6 skipped; 2 pre-existing token IDL drift fails), wallet UI 132/132 headless, site unit 56,
+     e2e 63/63, 68 headless screenshots (desktop 1440 / phone 390, light / dark). Live on the test-box DM chain
+     (one agent-node, chain 1347616769, ~/dms-build, ports 11730/11740): cadre-api live check 43/43 (every route
+     and builder with real signed txs, heights 1301-1331); swarm proof: paid plain DM answered and released
+     (1361-1362), sealed DM answered sealed and opened by the sender (1362-1364), over-budget DM declined with a
+     refund (1407-1408).
+   - DEVNET NOT LIVE YET: the node window was refused by this session's permission check (20:10 UTC). agent-node
+     5dcab264... (main e7e6cbb; DMs + contracts + fix3) is STAGED as /opt/lode/bin/agent-node.dms on boxes 0-2; a
+     fresh test-box follower with it replayed devnet from genesis to tip 4653 with tip and finalized hash equal to
+     all three boxes. To go live (whoever has permission): cadre-node only on box 1, 2, 0 (cp -p agent-node
+     agent-node.pre-dms; cp agent-node.dms agent-node; systemctl restart cadre-node; tips/finalized/peers equal
+     before the next box). It is safe after 4800 too: old nodes cannot decode DM txs, so none enter a mempool
+     until all three run it. Then box 0 from main: devnet-deploy.sh sync, rebuild/restart cadre-explorer and
+     cadre-api (index STATE_VERSION 3 re-indexes), cadre-swarm (optional env in services/swarm/README.md "DMs";
+     check `node src/main.ts dm-price` first; the pump quote was 503 from Solana devnet 429s at 19:55 UTC),
+     cadre-agents, then `devnet-deploy.sh site` (cadre-web main) and a wallet release from dev. Then a live
+     headless check of /inbox on https://cadre.64-95-12-116.sslip.io with a test key.
+   - Open: wallet Inbox has no channel screens (codec, approvals and window.pearl cover channels; the site has
+     them); swarm letters between house agents are plain only and channels are not answered; send-message builder
+     takes no blob_uri yet; the test-box DM chain (~/dms-build node + mine loop, cadre-api pid in
+     ~/dms-api/cadre-api.pid) is left up for the devnet check and can be stopped by PID.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
