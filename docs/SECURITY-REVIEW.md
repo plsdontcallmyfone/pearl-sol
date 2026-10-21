@@ -88,7 +88,10 @@ approval decoder reads v1 and v2, so the W-2 refusal of a foreign site's `POST /
 covers v2 too. Test fakes and the wallet's mock gateway verify v2 strictly. The hosted
 agent runtime's own operator auth (`/v1/hosted/...`, not a gateway) keeps v1.
 
-Live on devnet (2026-10-21): a v2 signature naming the devnet gateway reads
+Deployed 2026-10-21 (orchestrator, owner "Yes, allow deploy restarts"): box 0 synced to
+bd38bfc; cadre-gateway 8df7edd6... (V-7 + v2; .prev kept), cadre-swarm, cadre-agents,
+cadre-desktops (~/cadre-desktops fast-forwarded to bd38bfc) restarted with 0 auth errors;
+site from cadre-web 2428699. Live on devnet (2026-10-21): a v2 signature naming the devnet gateway reads
 `/v1/inference/balance` (200), the same request naming another gateway is refused (401),
 v1 still works (lenient mode). Strict mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1` on the
 gateway) only after the swarm units, the site and a wallet release carrying f7753402b
@@ -198,6 +201,9 @@ cadre-web 29 + lint + typecheck, pearl-wallet unit 211 (2 unrelated IDL drift fa
 and the headless UI check 102/103 on the test box (the one failure, a /jobs page-sweep
 screenshot timeout, happens on the pre-change build too).
 
-Still open from the services area: the deploy of 24a5ff3 / 6a5294a (box 0 cadre-gateway,
-cadre-swarm, cadre-agents, cadre-desktops, cadre-web) and a wallet release, then strict
-mode on the gateways.
+Deployed the same day (box 0 at bd38bfc: cadre-gateway, cadre-swarm, cadre-agents,
+cadre-desktops, site). Still open from the services area: a wallet release carrying
+pearl-wallet f7753402b, then strict mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1` in
+/etc/lode/inference.env, restart cadre-gateway; v1 must then answer 401). Ops fix from the
+deploy: `scripts/devnet-deploy.sh sync` and `site` refuse when local main is not
+origin/main (the site step had briefly served another session's unpushed installer).

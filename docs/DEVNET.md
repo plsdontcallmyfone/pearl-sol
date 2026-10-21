@@ -204,7 +204,9 @@ relayer / storefront state, header-relay work keypairs, explorer index).
 ### Update the nodes and services
 
 1. Commit on the Mac and run the tests (`deploy/test.sh` on box 0 runs the box-safe suites).
-2. `scripts/devnet-deploy.sh sync` (git bundle to box 0, fast-forward), `scripts/devnet-deploy.sh build`
+2. `scripts/devnet-deploy.sh sync` (git bundle to box 0, fast-forward; it and `site` refuse when the Mac's
+   local main is not exactly origin/main, so another session's unpushed commit never ships; `ALLOW_UNPUSHED_MAIN=1`
+   overrides), `scripts/devnet-deploy.sh build`
    (or `ssh 0 'bash -lc "cd ~/pearl-sol && bash deploy/build.sh rust"'`).
 3. `scripts/devnet-deploy.sh ship` copies agent-node + pearl-miner to boxes 1-2.
 4. Restart one node at a time: `ctl 1 restart cadre-node cadre-miner`, then 2, then 0 (+ services).

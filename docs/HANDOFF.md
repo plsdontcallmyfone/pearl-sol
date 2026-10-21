@@ -990,8 +990,10 @@ CLAUDE.md "Who is working on what".
    - Round 2 (2026-10-21): V-7 gateway front (64 in flight / 503, 30 s socket read timeout / 408, 413 over 4 MiB;
      24a5ff3) + crates/Cargo.lock webpki bumps; every gateway client on cadre-auth-v2 (pearl-sol 6a5294a, cadre-web
      2428699, pearl-wallet f7753402b on dev + danishseal cadre-chain); live v2 check on devnet 200 / wrong gateway 401.
-   - OPEN: deploy of 24a5ff3 / 6a5294a (box 0 cadre-gateway, cadre-swarm, cadre-agents, cadre-desktops, cadre-web) and a
-     wallet release with f7753402b, then CADRE_AUTH_REQUIRE_AUDIENCE=1 on the gateways (box 0, test box); chain
+   - Deployed (orchestrator): box 0 at bd38bfc, cadre-gateway 8df7edd6... (.prev kept), cadre-swarm, cadre-agents,
+     cadre-desktops (0 auth errors), site from cadre-web 2428699; v2 check right 200 / other 401 / v1 200.
+     devnet-deploy.sh sync + site now refuse when local main is not origin/main.
+   - OPEN: a wallet release with f7753402b, then CADRE_AUTH_REQUIRE_AUDIENCE=1 on the gateways (box 0, test box); chain
      C-1..C-12 wait for the next cadre-node rollout; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
      multisig + timelock before mainnet; attester/evaluator messages carry no chain_id (fresh mainnet keys).
 
