@@ -264,6 +264,20 @@ impl<E: commonware_storage::Context + Spawner> Store<E> {
         Ok(proof.encode().to_vec())
     }
 
+    /// Check a [`Store::state_proof`] (codec-encoded) that `key` currently holds `value`
+    /// under `root` (a header's `state_root`). Used for contract storage proofs
+    /// (docs/CONTRACTS.md "Proofs").
+    pub fn verify_state_proof(key: &Key, value: &[u8], proof: &[u8], root: &[u8; 32]) -> bool {
+        use commonware_codec::{DecodeExt, Read as _};
+        let mut buf = proof;
+        let Ok(p) = current::unordered::variable::KeyValueProof::<Family, ShaDigest, 32>::read_cfg(&mut buf, &4096usize) else { return false };
+        if !buf.is_empty() {
+            return false;
+        }
+        let Ok(r) = ShaDigest::decode(&root[..]) else { return false };
+        StateDb::<E>::verify_key_value_proof(B3(*key), value.to_vec(), &p, &r)
+    }
+
     /// Codec-encoded current-value proof for `key` against the committed `state_root`.
     pub async fn state_proof(&self, key: &Key) -> Result<Vec<u8>, StateError> {
         let p = self.sdb().key_value_proof(B3(*key)).await.map_err(StateError::db)?;

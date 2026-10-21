@@ -463,3 +463,18 @@ The test box was resized and rebooted (owner) during the first attempt, which di
 attempt is the one above. A third run on the tree merged with main (security pass L-1/L-2, template scan 4096 from the
 start): 7/7 PASS, step 11 1,116.0 s, upload 104.5 s, all 640 segments mined in blocks 340-979 with no stall, settled
 1,000 s after payment, 1,280 chunks held 651 blocks after registration, relay 0 failed txs, lag max 20.
+
+## Security pass: services (2026-10-21, "security + robustness pass" row)
+
+| suite | where | result |
+|---|---|---|
+| pearl-attester (attester 6 incl. `/dev/zero` result_uri, evaluator 8 incl. device result_uri, replay 1) | test box ~/secpass-svc | PASS |
+| cadre-gateway (gateway 10, auth_replay 2, auth_audience 2, discover_throttle 1) | test box | PASS |
+| pearl-pool (11 incl. pending registrations not persisted, pending cap) | test box | PASS (one old assertion updated: a miner with no accepted share is no longer in the saved state) |
+| pearl-job, pearl-miner, pearl-node | test box | PASS |
+| pearl-cli `cargo test --locked` with rustls-webpki 0.103.16 / webpki-roots 1.0.10 | test box | 38 PASS |
+| storefront-x402 (bn.js 5.2.5) / crank typecheck | Mac | 16 PASS / clean |
+| earlier in the pass: explorer 45, cadre-api 56, cadre-proxy 10, pearl-job data_files, gateway auth_replay | Mac | PASS |
+
+Deployed after the tests: test box cadre-api; devnet box 0 cadre-gateway, cadre-attester, cadre-miner, cadre-explorer,
+cadre-api (main 154a819); boxes 1-2 cadre-miner (same pearl-miner, sha256 295bfca2...). Public API answered 200 after.

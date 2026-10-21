@@ -62,7 +62,7 @@ key and check right after init); relay reward and header rent go to the submitte
 | V-4 | low/medium | cadre-api routes/market.ts | tx builders accepted 50% slippage and any min-out override | slippage capped at `CADRE_MAX_SLIPPAGE_BPS` (default 1000), looser min-out answers 422 | 88ad2de |
 | V-5 | medium | apps/explorer profile-view.ts | `RegisterAgent.uri` rendered as a link with any scheme (stored XSS on click) | links only http(s) | 52247dd |
 | V-6 | high (proxy users) | services/cadre-proxy | on loopback without `--token`, any web page could spend the proxy wallet | foreign Origin and non-loopback Host refused (`CADRE_PROXY_ALLOW_ORIGINS`) | ec2c80f |
-| V-7 | medium (DoS) | inference-gateway main.rs | one thread per connection, no cap, no read timeout; bodies over 4 MiB silently truncated | **open**, handed to the serve-8B row, which owns main.rs: connection cap, read timeout, 413. Today the gateway binds 127.0.0.1 behind cadre-api's rate limit | |
+| V-7 | medium (DoS) | inference-gateway main.rs | one thread per connection, no cap, no read timeout; bodies over 4 MiB silently truncated | **open**: the serve-8B row (owner of main.rs) finished without it. Fix: connection cap (semaphore ~64, 503 above), per-connection read timeout, 413 above 4 MiB. Today the gateway binds 127.0.0.1 behind cadre-api's rate limit | |
 | V-8 | low | inference-gateway lib.rs | anonymous `GET /v1/prepaid/{w}` and `/v1/balance?wallet=` each fanned out into node calls | anonymous reads rescan a wallet at most once per 15 s (cache capped at 10,000 wallets); signed reads always rescan | see section 7 |
 | V-9 | low | inference-gateway auth.rs | cadre-auth-v1 names no gateway, so a request signed for one gateway could be replayed to another inside the 120 s window | **cadre-auth-v2**: `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TS + "\n" + hex(sha256(body))`, AUDIENCE = the gateway's server key in base58 (`GET /health` -> `server`, `auth` lists the accepted versions). v1 stays accepted until `CADRE_AUTH_REQUIRE_AUDIENCE=1` | see section 7 |
 | V-10 | low (DoS) | services/pool lib.rs | unauthenticated registration rewrote the whole state file each time and consumed nonce ranges; every rejected share also rewrote it | unproven registrations stay in memory (at most 4096, dropped after 30 min idle, ids reused), saved with the first accepted share; rejected shares no longer write | see section 7 |
@@ -172,6 +172,13 @@ Commits 9bae779 (V-2b, V-8, V-9, V-10) and a69323a (pearl-cli lockfile). Tests o
 test box (8 vCPU): attester 6 + evaluator 8, cadre-gateway 10 + auth_replay 2 +
 auth_audience 2 + discover_throttle 1, pool 11, pearl-job, pearl-miner and pearl-node
 green, pearl-cli 38 with `--locked`.
-Redeploys: cadre-explorer, cadre-api and cadre-gateway on devnet box 0 and the test
-box (V-1, V-3, V-4, V-5, V-8, V-9); the attester (V-2b); pearl-miner on boxes 0-2 and
-for install-miner.sh users (V-2). Window posted in CLAUDE.md first.
+Redeployed 2026-10-21 (owner "Yes, allow deploy restarts"; run by the orchestrator
+session): test box cadre-api restarted (health and summary 200); devnet box 0 synced to
+154a819, cadre-gateway and pearl-attester installed and restarted, pearl-miner rebuilt
+(sha256 295bfca2...) and restarted, cadre-explorer and cadre-api restarted (public API
+200); boxes 1-2 the same pearl-miner (previous binary kept as .prev), cadre-miner
+restarted, nodes active. Miners installed with install-miner.sh pick up V-2 on their
+next install. The cadre-proxy fix (V-6) reaches users through the repo.
+
+Still open from the services area: V-7, the V-9 client migration and strict mode, and
+the crates/Cargo.lock webpki bumps (another row's uncommitted lockfile).

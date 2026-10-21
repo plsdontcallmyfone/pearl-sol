@@ -92,10 +92,12 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                     let _ = self.txs.send(Recipients::All, IoBuf::from(b), false);
                 }
                 Outbound::FetchHeader(h) => {
-                    let _ = self.headers.fetch(sync::key(&h));
+                    let fb = self.headers.fetch(sync::key(&h));
+                    debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
                 }
                 Outbound::FetchBody(h) => {
-                    let _ = self.bodies.fetch(sync::key(&h));
+                    let fb = self.bodies.fetch(sync::key(&h));
+                    debug!(key = %hex::encode(&h[..6]), ?fb, "fetch body");
                 }
                 Outbound::Blob(b) => {
                     let _ = self.blobs.send(Recipients::All, IoBuf::from(b), false);
@@ -145,10 +147,34 @@ pub async fn run<E, CE, V, S, R, D, B>(
     core.peer_info = cfg.peer_info.clone();
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
     let mut next_tip = context.current() + cfg.tip_interval;
+    // events handled per select branch (api, blocks, txs, blobs, tips, sync, timer), logged every 15 tip ticks
+    let mut seen = [0u64; 7];
 
     loop {
+        // biased select: the tip timer comes first so a busy branch below cannot starve it
+        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21)
         select! {
+            _ = context.sleep_until(next_tip) => {
+                next_tip = context.current() + cfg.tip_interval;
+                seen[6] += 1;
+                if seen[6] % 15 == 0 {
+                    debug!(api = seen[0], blocks = seen[1], txs = seen[2], blobs = seen[3], tips = seen[4], sync = seen[5], timer = seen[6], height = core.chain.tip().header.height, "node loop events");
+                }
+                let tip = core.chain.tip();
+                let mut m = tip.hash.to_vec();
+                m.extend_from_slice(&tip.header.height.to_le_bytes());
+                let _ = net.tips.send(Recipients::All, IoBuf::from(m), false);
+                core.peers = match &cfg.peer_count {
+                    Some(f) => (f.0)(),
+                    None => seen_peers.len(),
+                };
+                if cfg.peer_info.is_none() {
+                    core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
+                    core.static_peers.sort();
+                }
+            },
             req = api.next() => {
+                seen[0] += 1;
                 let Some(req) = req else { break };
                 match req {
                     ApiRequest::Call { method, params, reply } => {
@@ -160,6 +186,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = blocks_r.recv() => {
+                seen[1] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
                 match Block::decode(buf.as_ref()) {
@@ -183,6 +210,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = txs_r.recv() => {
+                seen[2] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer);
                 if let Ok(t) = Tx::decode(buf.as_ref()) {
@@ -190,6 +218,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = blobs_r.recv() => {
+                seen[3] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
                 let key = commonware_codec::Encode::encode(&peer);
@@ -199,6 +228,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = tips_r.recv() => {
+                seen[4] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer);
                 let b = buf.as_ref();
@@ -211,26 +241,12 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             ev = sync_rx.recv() => {
+                seen[5] += 1;
                 let Some(ev) = ev else { break };
                 handle_sync(&mut core, ev, now_ms(&context)).await;
             },
-            _ = context.sleep_until(next_tip) => {
-                next_tip = context.current() + cfg.tip_interval;
-                let tip = core.chain.tip();
-                let mut m = tip.hash.to_vec();
-                m.extend_from_slice(&tip.header.height.to_le_bytes());
-                let _ = net.tips.send(Recipients::All, IoBuf::from(m), false);
-                core.peers = match &cfg.peer_count {
-                    Some(f) => (f.0)(),
-                    None => seen_peers.len(),
-                };
-                if cfg.peer_info.is_none() {
-                    core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
-                    core.static_peers.sort();
-                }
-            },
         }
-        core.schedule_bodies();
+        core.schedule_fetches();
         let outs = core.take_outbox();
         if !outs.is_empty() {
             net.send(outs);
@@ -241,10 +257,11 @@ pub async fn run<E, CE, V, S, R, D, B>(
 async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(core: &mut Core<CE, V>, ev: SyncEvent, now: u64) {
     match ev {
         SyncEvent::Delivered { kind: Kind::Header, key, value, verdict } => {
+            debug!(key = %hex::encode(&key[..6]), "header delivered");
             let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
                 Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
                     Ok(HeaderAccept::Stored { need_parent }) => {
-                        // the body is asked for by Core::schedule_bodies, in height order
+                        // the body is asked for by Core::schedule_fetches, in height order
                         if let Some(p) = need_parent {
                             core.outbox.push(Outbound::FetchHeader(p));
                         }
@@ -265,6 +282,7 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             let ok = match Block::decode(&value) {
                 Ok(b) if b.hash() == key => {
                     let r = core.add_block(b, now, true).await;
+                    debug!(key = %hex::encode(&key[..6]), accepted = r.accepted, reason = ?r.reason, "body delivered");
                     // same rule as gossip: a future timestamp is not the serving peer's fault
                     r.accepted || !ban_worthy(r.reason.as_deref().unwrap_or(""))
                 }
@@ -322,7 +340,7 @@ pub fn open_peers_json(o: &net::open::Oracle) -> serde_json::Value {
             "inbound": s.inbound, "outbound": s.outbound, "book_new": s.book_new, "book_tried": s.book_tried,
             "banned": s.banned, "bans_total": s.bans_total, "inbound_full": s.inbound_full,
             "inbound_refused": s.inbound_refused, "dials": s.dials, "dial_failures": s.dial_failures,
-            "rate_dropped": s.rate_dropped,
+            "rate_dropped": s.rate_dropped, "queue_dropped": s.queue_dropped, "bulk_dropped": s.bulk_dropped,
         },
     })
 }

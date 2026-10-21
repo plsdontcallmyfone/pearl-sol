@@ -1,5 +1,5 @@
 // HTTP clients: the agent-chain node (JSON-RPC, docs/RPC.md), the inference gateway (SPEC 5.4,
-// wallet-signed cadre-auth-v1), cadre-api (town reads), Solana RPC (a recent blockhash for the
+// wallet-signed cadre-auth-v2, bound to the gateway's server key), cadre-api (town reads), Solana RPC (a recent blockhash for the
 // x402 payment). Every call has a timeout; errors carry the server's message.
 import { createHash } from "node:crypto";
 import type { Wallet } from "./wallet.ts";
@@ -30,24 +30,48 @@ export class NodeRpc {
   putBlob(data: Uint8Array, push = true) { return this.call<{ blob_id: string; uri: string; size: number }>("putBlob", { data: Buffer.from(data).toString("base64"), push }); }
 }
 
+/** cadre-auth-v1 (no audience). Gateways now take v2; v1 stays for the hosted runtime's own
+ *  operator auth (services/swarm/agents runtime.ts), which is not a gateway. */
 export const authMessage = (method: string, path: string, ts: number, body: string) =>
   Buffer.from(`cadre-auth-v1\n${method.toUpperCase()}\n${path.split("?")[0]}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`, "utf8");
+
+/** cadre-auth-v2 (security pass V-9): names the gateway's server key (`/v1/models` ->
+ *  data[0].cadre.server), so a request signed for one gateway is refused by another. */
+export const authMessageV2 = (audience: string, method: string, path: string, ts: number, body: string) =>
+  Buffer.from(`cadre-auth-v2\n${audience}\n${method.toUpperCase()}\n${path.split("?")[0]}\n${ts}\n${createHash("sha256").update(body).digest("hex")}`, "utf8");
+
+/** The gateway's server key from a `/v1/models` reply. */
+export function audienceOf(models: any): string {
+  const s = models?.data?.[0]?.cadre?.server;
+  if (typeof s !== "string" || !s) throw new Error("the gateway's /v1/models names no cadre.server (cadre-auth-v2 audience)");
+  return s;
+}
 
 export class Gateway {
   url: string;
   wallet: Wallet;
+  private aud: string | null = null;
   constructor(url: string, wallet: Wallet) { this.url = url.replace(/\/$/, ""); this.wallet = wallet; }
-  private headers(method: string, path: string, body: string): Record<string, string> {
+  /** The gateway's server key, fetched once from /v1/models. */
+  protected async audience(): Promise<string> {
+    if (this.aud) return this.aud;
+    const r = await this.models();
+    if (r.status !== 200) throw new Error(`gateway /v1/models: HTTP ${r.status}`);
+    this.aud = audienceOf(r.body);
+    return this.aud;
+  }
+  protected async signedHeaders(method: string, path: string, body: string): Promise<Record<string, string>> {
+    const aud = await this.audience();
     const ts = Date.now();
-    const sig = this.wallet.sign(authMessage(method, path, ts, body));
+    const sig = this.wallet.sign(authMessageV2(aud, method, path, ts, body));
     return { "content-type": "application/json", "x-cadre-wallet": this.wallet.address, "x-cadre-timestamp": String(ts), "x-cadre-signature": Buffer.from(sig).toString("hex") };
   }
   async chat(model: string | undefined, messages: { role: string; content: string }[], maxTokens: number) {
     const body = JSON.stringify({ ...(model ? { model } : {}), messages, max_tokens: maxTokens });
-    return fetchJson(this.url + "/v1/chat/completions", { method: "POST", headers: this.headers("POST", "/v1/chat/completions", body), body }, 900_000);
+    return fetchJson(this.url + "/v1/chat/completions", { method: "POST", headers: await this.signedHeaders("POST", "/v1/chat/completions", body), body }, 900_000);
   }
   async balance() {
-    return fetchJson(this.url + "/v1/balance", { method: "GET", headers: this.headers("GET", "/v1/balance", "") }, 30_000);
+    return fetchJson(this.url + "/v1/balance", { method: "GET", headers: await this.signedHeaders("GET", "/v1/balance", "") }, 30_000);
   }
   async topup(body: Record<string, unknown>, xPayment?: string) {
     const b = JSON.stringify(body);

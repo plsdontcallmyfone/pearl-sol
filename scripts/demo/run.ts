@@ -857,11 +857,14 @@ async function stepInference(): Promise<string> {
   const ticket: string = top.body.ticket_id;
   const nonce = BigInt(top.body.order);
   info("balance", { ticket, order: top.body.order, rows: top.body.rows, wallet: top.body.wallet });
-  // wallet-signed OpenAI requests (cadre-auth-v1)
+  // wallet-signed OpenAI requests (cadre-auth-v2: names the gateway's server key from /v1/models)
   const { ed25519 } = await import("@noble/curves/ed25519");
+  const gwModels = await httpJson(`${GATEWAY_URL}/v1/models`, { method: "GET" });
+  const audience: string = gwModels.body?.data?.[0]?.cadre?.server;
+  if (!audience) throw new Error(`gateway /v1/models names no cadre.server: ${JSON.stringify(gwModels.body).slice(0, 300)}`);
   const signedPost = async (path: string, b: string) => {
     const ts = Date.now();
-    const m = `cadre-auth-v1\nPOST\n${path}\n${ts}\n${createHash("sha256").update(b).digest("hex")}`;
+    const m = `cadre-auth-v2\n${audience}\nPOST\n${path}\n${ts}\n${createHash("sha256").update(b).digest("hex")}`;
     const sig = Buffer.from(ed25519.sign(Buffer.from(m), buyer.kp.secretKey.subarray(0, 32))).toString("hex");
     const res = await fetch(`${GATEWAY_URL}${path}`, { method: "POST", body: b, headers: { "content-type": "application/json",
       "x-cadre-wallet": buyer.kp.publicKey.toBase58(), "x-cadre-timestamp": String(ts), "x-cadre-signature": sig } });

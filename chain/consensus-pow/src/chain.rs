@@ -381,7 +381,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 let header = genesis_header(&genesis, snap.state_root, snap.withdraw_root);
                 let hash = header.hash();
                 chain.store.finalize(&snap).await.map_err(internal)?;
-                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None };
+                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None, contracts: None };
                 chain.archive_put(&block).await?;
                 chain.genesis_hash = hash;
                 chain.install_root(block, snap, U256::zero()).await?;
@@ -1087,6 +1087,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if block.coinbase != Some(summary.coinbase) {
             return invalid("coinbase receipt mismatch");
         }
+        // Likewise the contracts record (docs/CONTRACTS.md): present exactly when the block
+        // has contract txs, and equal to the one execution produced.
+        if block.contracts != summary.contracts {
+            return invalid("contracts record mismatch");
+        }
         let config = self.read_config(&snap).await?;
         Ok((snap, summary, config))
     }
@@ -1318,7 +1323,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             target_bits: self.required_bits(&parent),
             job_id: job.as_ref().map(|j| j.job_id).unwrap_or([0; 32]),
             miner,
-            tx_root: agent_types::block::tx_root_with(&txs, Some(&summary.coinbase)),
+            tx_root: agent_types::block::tx_root_full(&txs, summary.contracts.as_ref(), Some(&summary.coinbase)),
             state_root: snap.state_root,
             withdraw_root: snap.withdraw_root,
             proof_hash: [0; 32],

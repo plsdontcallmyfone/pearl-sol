@@ -68,9 +68,9 @@ pub const POLICY_FOLLOWED: u8 = 2;
 pub const POLICY_CLOSED: u8 = 3;
 
 /// Coordinated activation height of the DM kinds and config keys 35-44 on the Cadre public
-/// devnet. `u64::MAX` = not scheduled yet: the kinds stay refused there until the rollout
-/// commit sets a height. Every other chain has them from genesis.
-pub const DEVNET_DM_HEIGHT: u64 = u64::MAX;
+/// devnet (tip was 4621 at 2026-10-21 19:35 UTC; 60 s blocks). Every other chain has them from
+/// genesis.
+pub const DEVNET_DM_HEIGHT: u64 = 4800;
 
 /// First height at which the DM kinds and config keys 35-44 are valid on `chain_id`.
 pub fn dm_upgrade_height(chain_id: u32) -> u64 {

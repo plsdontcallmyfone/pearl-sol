@@ -89,6 +89,9 @@ pub enum Cmd {
     /// Model registry (SPEC 4.5): ls | show | register | fetch.
     #[command(subcommand)]
     Model(crate::model::ModelCmd),
+    /// Smart contracts (docs/CONTRACTS.md): build | deploy | instantiate | new | call | query | show | ls | events | receipt | migrate | admin.
+    #[command(subcommand)]
+    Contract(crate::contract::ContractCmd),
     /// An inference ticket and its standing jobs (segments).
     Ticket { id: String },
     /// Look up a transaction by hash.
@@ -632,6 +635,10 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Mine(m) => mine(ctx, m, shell),
         Cmd::Model(m) => {
             let o = crate::model::exec(ctx, m)?;
+            Ok(Out::new(o.json, o.text).view(o.view))
+        }
+        Cmd::Contract(c) => {
+            let o = crate::contract::exec(ctx, c)?;
             Ok(Out::new(o.json, o.text).view(o.view))
         }
         Cmd::Ticket { id } => {

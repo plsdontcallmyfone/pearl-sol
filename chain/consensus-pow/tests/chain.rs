@@ -34,7 +34,7 @@ fn seal_mock(t: &Template) -> Block {
     let mut h = t.header;
     let proof = MockVerifier::proof_for(&h);
     h.proof_hash = block::proof_hash(&proof);
-    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) }
+    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts }
 }
 
 type C<V> = Chain<deterministic::Context, V>;
@@ -324,7 +324,7 @@ fn seal_real(t: &Template, a: &[i8], b: &[i8]) -> Block {
     }
     .expect("easy target wins within 4096 nonces");
     let header = Header::decode(&mined.header.to_bytes()).unwrap();
-    Block { header, proof: mined.proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) }
+    Block { header, proof: mined.proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts }
 }
 
 #[test]

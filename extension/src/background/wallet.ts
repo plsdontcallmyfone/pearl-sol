@@ -7,6 +7,7 @@ import { commitJob, commitOrder, jobHeaderProblem } from "../chain/job";
 import { orderJobId } from "../chain/messages";
 import { ChainRpc, Job } from "../chain/rpc";
 import { PostJobBody, TxBody, UnsignedTx, signTx } from "../chain/tx";
+import { ContractContext, ContractFeeParams, contractFeeFor, contractFeeParams, isContractKind } from "../chain/contracts";
 import {
   BridgeConfig, PumpAccounts, StoreJobSpec, ammGlobalBuyback, bondingCurvePda, bridgeConfigPda, bridgeDepositIx, buyJobAmmIx, buyJobIx, canonicalPool,
   computeUnitLimit, cpQuote, createAtaIdempotent, decodeBridgeConfig, decodeCurve, decodeOrder, decodePool, decodeStoreConfig, mintDecimals, openOrderIx,
@@ -152,12 +153,12 @@ export async function balances(address: string): Promise<Balances> {
 
 // ---------------------------------------------------------------- agent-chain txs
 
-const paramCache = new Map<string, { at: number; minFee: bigint; chainId: number; k: number }>();
+const paramCache = new Map<string, { at: number; minFee: bigint; chainId: number; k: number; contractFee: ContractFeeParams | null }>();
 async function chainParams(c: Ctx) {
   const hit = paramCache.get(c.net.chainRpc);
   if (hit && Date.now() - hit.at < 30_000) return hit;
   const [p, info] = await Promise.all([c.chain.params(), c.chain.chainInfo()]);
-  const v = { at: Date.now(), minFee: BigInt(p.min_fee), chainId: info.chain_id, k: info.finality_k };
+  const v = { at: Date.now(), minFee: BigInt(p.min_fee), chainId: info.chain_id, k: info.finality_k, contractFee: contractFeeParams(p) };
   paramCache.set(c.net.chainRpc, v);
   return v;
 }
@@ -180,7 +181,26 @@ async function bumpNonce(c: Ctx, address: string, used: bigint) {
 export async function prepareChainTx(address: string, body: TxBody, fee?: bigint): Promise<UnsignedTx> {
   const c = await ctx();
   const p = await chainParams(c);
-  return { chainId: p.chainId, from: pk(address), nonce: await nextNonce(c, address), fee: fee ?? p.minFee, body };
+  const t = { chainId: p.chainId, from: pk(address), nonce: await nextNonce(c, address), fee: fee ?? p.minFee, body };
+  if (fee === undefined && isContractKind(body.kind)) {
+    // contract kinds pay the gas fee rule (getParams); the unused gas part is refunded
+    if (!p.contractFee) throw new Error("this node does not report the contract fee parameters (gas_price, contract_base_fee, contract_byte_fee)");
+    t.fee = contractFeeFor(t, p.contractFee);
+  }
+  return t;
+}
+
+/** Fee rule and known contract labels for a contract tx's approval text. */
+export async function contractSummaryContext(me: string, t: UnsignedTx): Promise<ContractContext> {
+  const c = await ctx();
+  const p = await chainParams(c).catch(() => null);
+  const labels: Record<string, string> = {};
+  const b = t.body;
+  if (b.kind === "Call" || b.kind === "Migrate" || b.kind === "SetContractAdmin") {
+    const info = await c.chain.contract(b58(b.contract)).catch(() => null);
+    if (info?.label) labels[b58(b.contract)] = info.label;
+  }
+  return { me, fee: p?.contractFee ?? null, labels };
 }
 
 export async function signChainTx(address: string, t: UnsignedTx) {

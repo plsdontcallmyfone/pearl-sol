@@ -81,7 +81,19 @@ pub struct Config {
     /// Retry delay for a peer that said its inbound slots are full.
     pub full_backoff: Duration,
     pub max_message: u32,
+    /// Frames queued per peer on the normal lane (blocks, txs, tips, headers, bodies, control).
     pub queue_size: usize,
+    /// Frames queued per peer on the bulk lane (channels registered with `register_bulk`:
+    /// blob pushes and blob fetch traffic). The writer drains it only when the normal lane is
+    /// empty, so multi-MB blob frames never delay or crowd out block and tip gossip.
+    pub bulk_queue_size: usize,
+    /// Bytes at most queued on one peer's bulk lane, and on all peers' together; a bulk
+    /// frame over either budget is dropped (a blob answer then times out and is asked again
+    /// later). Blob answers are up to 4 MiB each and a busy peer can ask for many: without a
+    /// byte bound a node held gigabytes of answers for one slow peer (devnet box 1 was
+    /// OOM-killed, 2026-10-21).
+    pub bulk_peer_bytes: usize,
+    pub bulk_total_bytes: usize,
     pub max_new: usize,
     pub max_tried: usize,
     pub max_per_source: usize,
@@ -124,6 +136,9 @@ impl Config {
             full_backoff: Duration::from_secs(300),
             max_message: crate::MAX_MESSAGE,
             queue_size: 1024,
+            bulk_queue_size: 64,
+            bulk_peer_bytes: 16 << 20,
+            bulk_total_bytes: 128 << 20,
             max_new: 4096,
             max_tried: 1024,
             max_per_source: 256,
@@ -182,6 +197,9 @@ impl Rand {
 
 pub(crate) struct ChannelIn {
     pub tx: futures::channel::mpsc::Sender<(ed25519::PublicKey, commonware_runtime::IoBuf)>,
+    /// Bulk channel: a full local backlog drops the frame (counted) instead of blocking the
+    /// connection's reader, so a slow blob consumer never stalls block and tip gossip.
+    pub bulk: bool,
     /// Inbound messages per second allowed per peer, and burst.
     pub rate: f64,
     pub burst: f64,
@@ -215,13 +233,22 @@ where
     /// Register a channel. `quota` limits what we send to each peer (as in discovery)
     /// and, with 2x slack, what each peer may send us (excess is dropped and scored).
     pub fn register(&mut self, channel: u64, quota: Quota, backlog: usize) -> (Sender<E>, Receiver) {
+        self.register_lane(channel, quota, backlog, false)
+    }
+
+    /// [`Self::register`] on the bulk lane (large, latency-tolerant frames such as blobs).
+    pub fn register_bulk(&mut self, channel: u64, quota: Quota, backlog: usize) -> (Sender<E>, Receiver) {
+        self.register_lane(channel, quota, backlog, true)
+    }
+
+    fn register_lane(&mut self, channel: u64, quota: Quota, backlog: usize, bulk: bool) -> (Sender<E>, Receiver) {
         assert!(!self.channels.contains_key(&channel), "channel {channel} registered twice");
         let (tx, rx) = futures::channel::mpsc::channel(backlog);
         let per_cell = quota.replenish_interval().as_secs_f64().max(1e-9);
         let rate = 2.0 / per_cell;
         let burst = 2.0 * quota.burst_size().get() as f64;
-        self.channels.insert(channel, ChannelIn { tx, rate, burst });
-        let sender = Sender::new(channel, self.cfg.max_message, self.oracle.clone(), self.context.child("sender"), quota);
+        self.channels.insert(channel, ChannelIn { tx, bulk, rate, burst });
+        let sender = Sender::new(channel, self.cfg.max_message, bulk, self.oracle.clone(), self.context.child("sender"), quota);
         (sender, Receiver::new(rx))
     }
 

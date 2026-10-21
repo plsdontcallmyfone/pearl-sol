@@ -1,15 +1,14 @@
 //! cadre-gateway HTTP server (SPEC 5.4, API v1). 127.0.0.1:10664 by default.
 
-use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use serde_json::json;
 
-use cadre_gateway::{Config, Gateway, HttpEvaluator, HttpStorefront, HttpWorker, ModelInfo, Payload};
+use cadre_gateway::{server, Config, Gateway, HttpEvaluator, HttpStorefront, HttpWorker, ModelInfo};
 use pearl_node::{read_key_file, HttpNode};
 
 #[derive(Parser)]
@@ -79,31 +78,12 @@ struct Args {
     /// e.g. https://api.example/v1/openai (cadre-api). Status links use it instead of --public-url.
     #[arg(long)]
     public_api_root: Option<String>,
-}
-
-/// Feeds an SSE channel to tiny_http as a Read.
-struct ChanReader {
-    rx: mpsc::Receiver<Vec<u8>>,
-    buf: Vec<u8>,
-    pos: usize,
-}
-
-impl Read for ChanReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos >= self.buf.len() {
-            match self.rx.recv() {
-                Ok(b) => {
-                    self.buf = b;
-                    self.pos = 0;
-                }
-                Err(_) => return Ok(0),
-            }
-        }
-        let n = out.len().min(self.buf.len() - self.pos);
-        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
-        self.pos += n;
-        Ok(n)
-    }
+    /// Requests handled at once; more answer 503 (security pass V-7).
+    #[arg(long, default_value_t = 64)]
+    max_in_flight: usize,
+    /// Socket read timeout per connection, seconds (headers, body, idle keep-alive).
+    #[arg(long, default_value_t = 30)]
+    read_timeout_secs: u64,
 }
 
 fn main() -> Result<()> {
@@ -146,56 +126,15 @@ fn main() -> Result<()> {
         Box::new(|v| println!("{v}")),
     ));
     let addr = format!("{}:{}", a.host, a.port);
-    let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;
+    let limits = server::Limits { max_in_flight: a.max_in_flight.max(1), read_timeout: Duration::from_secs(a.read_timeout_secs.max(1)), ..server::Limits::default() };
+    let srv = server::bind(&addr, &limits).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;
     println!("{}", json!({"msg": "cadre-gateway started", "url": format!("http://{addr}"), "server": pearl_node::b58(&gw.server()),
-        "model_id": hex::encode(gw.model.model_id), "model": gw.model.name, "matrices": gw.model.matrices.len(), "pid": std::process::id()}));
+        "model_id": hex::encode(gw.model.model_id), "model": gw.model.name, "matrices": gw.model.matrices.len(), "pid": std::process::id(),
+        "max_in_flight": limits.max_in_flight, "read_timeout_secs": limits.read_timeout.as_secs()}));
     let g2 = Arc::clone(&gw);
     std::thread::spawn(move || g2.run_rounds());
-    for mut req in server.incoming_requests() {
-        let gw = Arc::clone(&gw);
-        std::thread::spawn(move || {
-            let mut body = Vec::new();
-            let _ = req.as_reader().take(4 << 20).read_to_end(&mut body);
-            let method = req.method().as_str().to_uppercase();
-            let path = req.url().to_string();
-            let headers: Vec<(String, String)> = req.headers().iter().map(|h| (h.field.as_str().as_str().to_string(), h.value.as_str().to_string())).collect();
-            // CORS: browsers (the Cadre site) call the gateway directly or through cadre-api
-            let cors = [
-                "Access-Control-Allow-Origin: *",
-                "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers: content-type, authorization, x-payment, x-cadre-wallet, x-cadre-timestamp, x-cadre-signature",
-                "Access-Control-Expose-Headers: x-cadre-request, x-cadre-ticket, x-cadre-order, x-cadre-rows, x-cadre-charged-lamports, x-cadre-receipt, x-cadre-explorer, x-payment-response",
-            ];
-            if method == "OPTIONS" {
-                let mut resp = tiny_http::Response::empty(204);
-                for c in cors {
-                    resp = resp.with_header(c.parse::<tiny_http::Header>().unwrap());
-                }
-                let _ = req.respond(resp);
-                return;
-            }
-            let r = gw.handle(&method, &path, &headers, &body);
-            let mut hs: Vec<tiny_http::Header> = r.headers.iter().filter_map(|(k, v)| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok()).collect();
-            for c in cors {
-                hs.push(c.parse().unwrap());
-            }
-            match r.body {
-                Payload::Json(v) => {
-                    if !r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
-                        hs.push("Content-Type: application/json".parse().unwrap());
-                    }
-                    let mut resp = tiny_http::Response::from_string(v.to_string()).with_status_code(r.status);
-                    for h in hs {
-                        resp = resp.with_header(h);
-                    }
-                    let _ = req.respond(resp);
-                }
-                Payload::Stream(rx) => {
-                    let resp = tiny_http::Response::new(tiny_http::StatusCode(r.status), hs, ChanReader { rx, buf: vec![], pos: 0 }, None, None);
-                    let _ = req.respond(resp);
-                }
-            }
-        });
-    }
-    Ok(())
+    let g3 = Arc::clone(&gw);
+    server::serve(srv, limits, Arc::new(move |m: &str, p: &str, h: &[(String, String)], b: &[u8]| g3.handle(m, p, h, b)));
+    // only reached if the listener stopped: exit non-zero so systemd restarts the gateway
+    Err(anyhow!("the HTTP listener on {addr} stopped"))
 }

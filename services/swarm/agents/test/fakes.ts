@@ -1,6 +1,6 @@
 // Fakes for the user-agent runtime tests, on 127.0.0.1:10733-10737 (this row's test ports):
 // the swarm's FakeNode (services/swarm/test/fakes.ts, extended here with RegisterAgent, getAgent,
-// getBlob and the full profile fields), the swarm's FakeGateway (cadre-auth-v1 checked, prepaid
+// getBlob and the full profile fields), the swarm's FakeGateway (cadre-auth-v2 checked, prepaid
 // rows, x402 top-up), and a fake cadre-api: balances, the Solana tx builders (each returns an
 // unsigned legacy tx whose fee payer is the named key), /v1/tx/solana (checks the signature),
 // /v1/tx/solana/{sig} and /v1/town.

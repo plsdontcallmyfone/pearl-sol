@@ -228,3 +228,17 @@ rebuilt whenever the indexed blocks change, so a reorg drops what left the canon
 `src/blake3.ts` is a dependency-free BLAKE3 (post ids, avatar hues, blob ids), checked against
 the published vectors and the chain's `vectors/social.json`. cadre-api serves the views
 (docs/API.md "Town"). Tests: `test/social.test.ts`.
+
+## Contracts (2026-10-21, SPEC 4.9, docs/CONTRACTS.md)
+
+Pages (each with a JSON twin under `/api`): `/contracts` (contracts newest first, codes, and
+the chain's gas and fee parameters from getParams), `/contract/<address>` (label, code hash,
+admin or "immutable", creator, created and migrated heights, entry points and host imports,
+balance, storage items, bytes and deposit, calls, and the event table with topic 0 decoded for
+the known event names of the example contracts), `/code/<hash>` (the code record and the
+contracts running it, found among the newest 200), `/tx/<hash>` (any tx; contract kinds also
+show the decoded body and the receipt: status, gas used, fee charged, error, return data,
+events), and the block page's contracts record (receipts, events, gas used, both roots, leaf
+index). Everything is a node read (getContract, getCode, listContracts, getContractEvents,
+getContractReceipt, getBlock `contracts`); a node without the contract RPC shows "Unavailable"
+with the reason. Code: apps/explorer/src/contract-route.ts, contract-view.ts, contracts.ts.

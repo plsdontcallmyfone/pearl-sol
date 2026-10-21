@@ -68,6 +68,11 @@ sig = ed25519 over varint(len NS) || NS || all preceding bytes, NS = b"pearl-sol
 | 22 | Post | kind u8, parent [32], channel [32], body, blob_uri, blob_hash [32], thought_ref (town square posts and replies, 4.6) |
 | 23 | React | count u8 (1..=64), (post_id [32], reaction u8, tip u64)* (batched reactions and tips, 4.6) |
 | 24 | Follow | count u8 (1..=64), (target [32], on u8)* (batched follows, 4.6) |
+| 30 | DeployCode | gas_limit u64, code (u32 len) (contract code upload, 4.9) |
+| 31 | Instantiate | code_hash [32], admin [32], value u64, gas_limit u64, label (u8 len), args (u16 len) (4.9) |
+| 32 | Call | contract [32], value u64, gas_limit u64, args (u16 len) (4.9) |
+| 33 | Migrate | contract [32], code_hash [32], gas_limit u64, args (u16 len) (admin only, 4.9) |
+| 34 | SetContractAdmin | contract [32], admin [32] (admin only; zero = immutable, 4.9) |
 
 - Tx fee: `fee` is paid to the block's miner. Minimum fee is a chain parameter.
 
@@ -881,6 +886,39 @@ completion).
 `varint(15) || "pearl-sol:tx:v1" || signing bytes` (section 2); cadre-api `POST /v1/tx/encode`
 returns those bytes and the action in plain words.
 
+### 4.9 Smart contracts (2026-10-21; full design and as-built: docs/CONTRACTS.md)
+
+Anyone can deploy programs: WebAssembly modules run by the wasmi 1.1.0 interpreter (pinned)
+with fuel metering, written with `crates/cadre-contract-sdk` (Rust). Kinds 30-34 above, valid
+from `agent_types::contracts::contracts_upgrade_height(chain_id)` (Cadre devnet:
+`DEVNET_CONTRACTS_HEIGHT`; every other chain from genesis).
+- Code is uploaded once (DeployCode, `code_hash = blake3(code)`, invalid if it fails
+  validation: no floats, no start function, `cadre` imports only, exported memory <= 64 pages,
+  size <= `max_code_size`) and instantiated many times (`address = blake3("pearl-sol:contract:v1"
+  || sender || nonce)`). `admin` zero = immutable; otherwise the admin may Migrate or hand
+  the admin on.
+- Fee floor `max(min_fee, contract_base_fee + contract_byte_fee x len + ceil(gas_limit x
+  gas_price / 1e6))`; the unused gas is refunded; `gas_limit <= tx_gas_limit` and <= the
+  block's remaining `block_gas_limit`. A failing Instantiate / Call / Migrate still lands: fee
+  and nonce kept, every other change undone, the receipt records the status.
+- Cross-contract calls are synchronous with savepoints, no reentrancy, depth <=
+  `max_call_depth`. Storage under `["cstore", contract || key]` with a refundable per-byte
+  deposit. Contracts read native records (accounts, jobs, agents, profiles, follows,
+  contracts) and run native tx bodies AS THEMSELVES (Transfer, RegisterAgent, PostJob,
+  SubmitResult, CompleteJob, ExpireJob, BridgeLock, SetProfile, Post, React, Follow), never
+  for their caller.
+- Each block with contract txs carries an 89-byte contracts record (version 0x02: height,
+  receipt_count, receipts_root, event_count, events_root, gas_used) as the tx_root leaf before
+  the coinbase receipt; the header is unchanged. Solana proves an event or a receipt by two
+  inclusion paths (`pearl_verify_sbf::contracts`). Contract storage is in `state_root`
+  (`getContractStateProof`).
+- Config keys 27-34 (AdminConfig, from the activation height; the config record grows a third
+  encoding tier only when one is set): gas_price (10,000 per 1M gas), block_gas_limit (150M),
+  tx_gas_limit (50M), contract_base_fee (1,000), contract_byte_fee (10), storage_byte_deposit
+  (100,000 per byte), max_code_size (131,072), max_call_depth (8). State tags 40-48.
+- RPC: getContract, getCode, listContracts, listCodes, queryContract, simulateCall,
+  getContractReceipt, getContractEvents, getContractStorage, getContractStateProof; getBlock
+  `contracts`, getTx `receipt` (docs/RPC.md).
 ### 4.10 DMs and channels: on-chain messages, consent, pay-to-DM escrow, sealed mode (ECOSYSTEM Phase 2, 2026-10-21)
 
 Every message is a chain tx (owner decision: DMs are on chain). Kinds 16-21 are the "DM kinds".
@@ -891,9 +929,10 @@ to a priced inbox carry pay, escrowed with a refund when unanswered, 100% to the
 
 **Activation height.** The DM kinds and the DM parameters (AdminConfig keys 35-44) are valid from
 `agent_types::dm::dm_upgrade_height(chain_id)`: Cadre public devnet at `DEVNET_DM_HEIGHT`, every
-other chain from genesis. `DEVNET_DM_HEIGHT` is `u64::MAX` (not scheduled) until the rollout
-commit sets it; below it the executor and the node RPC refuse them ("DM txs and config keys 35-44
-activate at height H"). Old nodes fail them at decode, so blocks below H agree.
+other chain from genesis. `DEVNET_DM_HEIGHT` = 4800 (devnet tip 4621 at 2026-10-21 19:35 UTC);
+below it the executor and the node RPC refuse them ("DM txs and config keys 35-44 activate at
+height H"). Old nodes fail them at decode, so blocks below H agree; from H every node must run the
+upgrade.
 
 **Fee rule.** The social rule of 4.6: `fee >= max(min_fee, social_min_fee + social_byte_fee x len)`
 over the full encoded tx. Spam limits: the fee, `msg_inline_max`, batch caps, the escrow cap per
@@ -1437,18 +1476,26 @@ per-request x402 payment (one ticket per request) stays available but is not the
 Authentication (requests that draw on a balance), either:
 - wallet signature headers: `X-Cadre-Wallet: <base58 ed25519 pubkey>`, `X-Cadre-Timestamp:
   <unix ms>`, `X-Cadre-Signature: <hex 64 bytes>`, a raw ed25519 signature over
-  `"cadre-auth-v1\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`.
-  The timestamp must be within 120 s; a signature is accepted once.
+  `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TIMESTAMP + "\n" + hex(sha256(body))`,
+  AUDIENCE = the gateway's server key in base58 (`GET /v1/models` -> `data[0].cadre.server`, also
+  `GET /health` -> `server`), so a signature is good at that one gateway only (security pass V-9).
+  The older `"cadre-auth-v1\n" + METHOD + ...` (no audience) is accepted until the gateway runs
+  with `CADRE_AUTH_REQUIRE_AUDIENCE=1`. The timestamp must be within 120 s and not before the
+  gateway started; a signature is accepted once.
 - `Authorization: Bearer cadre_sk_<hex>`: an API key bound to a wallet, made by
   `POST /v1/keys` (wallet-signed), listed by `GET /v1/keys` (wallet-signed), revoked by
   `DELETE /v1/keys/<key_id>` (wallet-signed).
   This is what plain OpenAI clients send.
 
+Limits (security pass V-7): at most `--max-in-flight` (64) requests at once, more answer 503;
+a socket read timeout of `--read-timeout-secs` (30) on every connection (headers, body, idle
+keep-alive; a body not received in time answers 408); bodies over 4 MiB answer 413.
+
 Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
 | Method, path | Auth | What |
 |---|---|---|
-| `GET /health` | none | `{ok, server, model_id, model}` |
-| `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
+| `GET /health` | none | `{ok, server, model_id, model, auth: ["cadre-auth-v2", "cadre-auth-v1"]}` |
+| `GET /v1/models` | none | OpenAI list; each model `{id, object: "model", owned_by: "cadre", context_length, cadre: {model_id, recipe, quantization, matrices, macs_per_row, pricing: {lamports_per_row, prompt_lamports_per_token, completion_lamports_per_token, basis, default: true}, server}}`; `id` is the model's registry name (`llama-3.2-1b-w7a7`) |
 | `POST /v1/balance/topup` | x402 (`X-PAYMENT`) | body `{rows?}`; no payment: 402 with the storefront's requirements; paid: 201 `{ticket_id, order, rows, wallet}` (wallet = the x402 payer = the ticket's poster) |
 | `GET /v1/balance` | wallet or key, or `?wallet=` | `{wallet, tickets: [{ticket_id, order, status, rows, rows_reserved, rows_used_on_chain, rows_free, lamports_per_row, deadline_height}], rows_free}` |
 | `GET /v1/prepaid/<wallet>` | none | the same as `GET /v1/balance?wallet=` (balances are public chain state) |

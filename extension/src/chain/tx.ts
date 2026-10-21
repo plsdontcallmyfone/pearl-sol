@@ -27,6 +27,11 @@ export const KIND = {
   Post: 22,
   React: 23,
   Follow: 24,
+  DeployCode: 30,
+  Instantiate: 31,
+  Call: 32,
+  Migrate: 33,
+  SetContractAdmin: 34,
 } as const;
 export type KindName = keyof typeof KIND;
 export const KIND_NAME: Record<number, KindName> = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k])) as Record<number, KindName>;
@@ -75,7 +80,20 @@ export type TxBody =
   | { kind: "OperatorLink"; agent: Uint8Array; add: boolean }
   | ({ kind: "Post" } & PostBody)
   | { kind: "React"; items: ReactionItem[] }
-  | { kind: "Follow"; items: FollowItem[] };
+  | { kind: "Follow"; items: FollowItem[] }
+  // Contract kinds (chain/agent-types/src/contracts.rs, vectors/contracts.json). Helpers and
+  // approval wording in ./contracts.
+  | { kind: "DeployCode"; gasLimit: bigint; code: Uint8Array }
+  | { kind: "Instantiate"; codeHash: Uint8Array; admin: Uint8Array; value: bigint; gasLimit: bigint; label: string; args: Uint8Array }
+  | { kind: "Call"; contract: Uint8Array; value: bigint; gasLimit: bigint; args: Uint8Array }
+  | { kind: "Migrate"; contract: Uint8Array; codeHash: Uint8Array; gasLimit: bigint; args: Uint8Array }
+  // admin all zero = the contract can never be migrated again
+  | { kind: "SetContractAdmin"; contract: Uint8Array; admin: Uint8Array };
+
+/** Codec caps from chain/agent-types/src/contracts.rs. */
+export const MAX_CODE_SIZE = 256 * 1024;
+export const MAX_CONTRACT_ARGS = 8192;
+export const MAX_CONTRACT_LABEL = 64;
 
 export interface SetProfileBody {
   handle: string; // "" or 3..=24 of [a-z0-9_]
@@ -213,7 +231,34 @@ export function encodeBody(b: TxBody): Uint8Array {
     case "Follow":
       batch(b.items.length, "follows");
       return concat(u8(b.items.length), ...b.items.flatMap((x) => [fixed(x.target, 32, "target"), u8(x.on ? 1 : 0)]));
+    case "DeployCode":
+      if (b.code.length > MAX_CODE_SIZE) throw new Error(`code over ${MAX_CODE_SIZE} bytes`);
+      return concat(u64(b.gasLimit), u32(b.code.length), b.code);
+    case "Instantiate": {
+      const label = utf8(b.label);
+      if (label.length > MAX_CONTRACT_LABEL) throw new Error(`label over ${MAX_CONTRACT_LABEL} bytes`);
+      return concat(
+        fixed(b.codeHash, 32, "code_hash"), fixed(b.admin, 32, "admin"), u64(b.value), u64(b.gasLimit),
+        u8(label.length), label, args16(b.args),
+      );
+    }
+    case "Call":
+      return concat(fixed(b.contract, 32, "contract"), u64(b.value), u64(b.gasLimit), args16(b.args));
+    case "Migrate":
+      return concat(fixed(b.contract, 32, "contract"), fixed(b.codeHash, 32, "code_hash"), u64(b.gasLimit), args16(b.args));
+    case "SetContractAdmin":
+      return concat(fixed(b.contract, 32, "contract"), fixed(b.admin, 32, "admin"));
   }
+}
+
+function args16(a: Uint8Array) {
+  if (a.length > MAX_CONTRACT_ARGS) throw new Error(`args over ${MAX_CONTRACT_ARGS} bytes`);
+  return concat(u16(a.length), a);
+}
+function readArgs(r: Reader) {
+  const n = r.u16();
+  if (n > MAX_CONTRACT_ARGS) throw new Error(`args over ${MAX_CONTRACT_ARGS} bytes`);
+  return r.take(n).slice();
 }
 
 function batch(n: number, what: string) {
@@ -346,6 +391,25 @@ function readBody(kind: number, r: Reader): TxBody {
         }),
       };
     }
+    case "DeployCode": {
+      const gasLimit = r.u64();
+      const n = r.u32();
+      if (n > MAX_CODE_SIZE) throw new Error(`code over ${MAX_CODE_SIZE} bytes`);
+      return { kind: "DeployCode", gasLimit, code: r.take(n).slice() };
+    }
+    case "Instantiate": {
+      const codeHash = r.take(32).slice(), admin = r.take(32).slice(), value = r.u64(), gasLimit = r.u64();
+      const ln = r.u8();
+      if (ln > MAX_CONTRACT_LABEL) throw new Error(`label over ${MAX_CONTRACT_LABEL} bytes`);
+      const label = new TextDecoder("utf-8", { fatal: true }).decode(r.take(ln)); // must re-encode to the same bytes
+      return { kind: "Instantiate", codeHash, admin, value, gasLimit, label, args: readArgs(r) };
+    }
+    case "Call":
+      return { kind: "Call", contract: r.take(32).slice(), value: r.u64(), gasLimit: r.u64(), args: readArgs(r) };
+    case "Migrate":
+      return { kind: "Migrate", contract: r.take(32).slice(), codeHash: r.take(32).slice(), gasLimit: r.u64(), args: readArgs(r) };
+    case "SetContractAdmin":
+      return { kind: "SetContractAdmin", contract: r.take(32).slice(), admin: r.take(32).slice() };
     default:
       throw new Error(`unknown tx kind ${kind}`);
   }

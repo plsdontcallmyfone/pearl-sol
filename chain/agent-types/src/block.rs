@@ -3,7 +3,11 @@
 //! ```text
 //! header [256] || proof_len u32 || proof || tx_count u32 || (tx_len u32 || tx)*
 //!   || has_coinbase u8 (0|1) || [coinbase receipt 97 bytes if 1]
+//!   || [0x01 || contracts record 89 bytes]   (only in a block with contract txs)
 //! ```
+//! The contracts record (contracts.rs, from the contracts activation height) is a tx_root
+//! leaf placed right before the coinbase receipt; a block without contract txs has none and
+//! encodes exactly as before.
 //! Every non-genesis block carries its coinbase receipt (coinbase.rs), committed as the
 //! LAST leaf of `tx_root`; the genesis block carries none (its tx_root commits to the
 //! genesis spec). The receipt travels in the body so `check_commitments` stays
@@ -11,6 +15,7 @@
 
 use crate::codec::{R, W};
 use crate::coinbase::{Coinbase, COINBASE_LEN};
+use crate::contracts::{ContractsRecord, RECORD_LEN};
 use crate::{blake3_hash, merkle, DecodeError, Hash, Header, Tx};
 
 pub const MAX_PROOF_LEN: usize = 4 << 20;
@@ -24,6 +29,8 @@ pub struct Block {
     pub txs: Vec<Tx>,
     /// `None` only for the genesis block.
     pub coinbase: Option<Coinbase>,
+    /// Contracts record of a block with contract txs (docs/CONTRACTS.md).
+    pub contracts: Option<ContractsRecord>,
 }
 
 impl Block {
@@ -42,6 +49,9 @@ impl Block {
             Some(c) => {
                 w.u8(1).bytes(&c.encode());
             }
+        }
+        if let Some(c) = &self.contracts {
+            w.u8(1).bytes(&c.encode());
         }
         w.into_inner()
     }
@@ -63,8 +73,16 @@ impl Block {
             1 => Some(Coinbase::decode(r.take(COINBASE_LEN)?)?),
             _ => return Err(DecodeError::Invalid("coinbase flag")),
         };
+        let contracts = if r.remaining() > 0 {
+            if r.u8()? != 1 {
+                return Err(DecodeError::Invalid("contracts flag"));
+            }
+            Some(ContractsRecord::decode(r.take(RECORD_LEN)?)?)
+        } else {
+            None
+        };
         r.finish()?;
-        Ok(Self { header, proof, txs, coinbase })
+        Ok(Self { header, proof, txs, coinbase, contracts })
     }
 
     pub fn proof_hash(&self) -> Hash {
@@ -72,7 +90,22 @@ impl Block {
     }
 
     pub fn tx_root(&self) -> Hash {
-        tx_root_with(&self.txs, self.coinbase.as_ref())
+        tx_root_full(&self.txs, self.contracts.as_ref(), self.coinbase.as_ref())
+    }
+
+    /// tx_root path of leaf `index` (a tx index; [`Block::contracts_index`]; [`Block::coinbase_index`]).
+    pub fn leaf_path(&self, index: usize) -> Vec<u8> {
+        leaf_path_full(&self.txs, self.contracts.as_ref(), self.coinbase.as_ref(), index)
+    }
+
+    /// Leaf index of the contracts record (when the block has one).
+    pub fn contracts_index(&self) -> usize {
+        self.txs.len()
+    }
+
+    /// Leaf index of the coinbase receipt (the last leaf).
+    pub fn coinbase_index(&self) -> usize {
+        self.txs.len() + self.contracts.is_some() as usize
     }
 
     /// Context-free checks: proof_hash and tx_root match the header.
@@ -83,6 +116,11 @@ impl Block {
         let Some(cb) = &self.coinbase else { return Err("missing coinbase receipt") };
         if cb.height != self.header.height || cb.miner != self.header.miner || cb.job_id != self.header.job_id {
             return Err("coinbase receipt does not match the header");
+        }
+        if let Some(c) = &self.contracts {
+            if c.height != self.header.height {
+                return Err("contracts record does not match the header");
+            }
         }
         if self.header.tx_root != self.tx_root() {
             return Err("tx_root mismatch");
@@ -160,6 +198,28 @@ pub fn leaf_hashes(txs: &[Tx], coinbase: Option<&Coinbase>) -> Vec<Hash> {
 /// A block's `tx_root`: txs then the coinbase receipt as the last leaf.
 pub fn tx_root_with(txs: &[Tx], coinbase: Option<&Coinbase>) -> Hash {
     merkle::root(&leaf_hashes(txs, coinbase))
+}
+
+/// Leaf hashes with the contracts record: txs, the record (if any), the receipt (if any).
+pub fn leaf_hashes_full(txs: &[Tx], contracts: Option<&ContractsRecord>, coinbase: Option<&Coinbase>) -> Vec<Hash> {
+    let mut hs: Vec<Hash> = txs.iter().map(Tx::hash).collect();
+    if let Some(c) = contracts {
+        hs.push(c.hash());
+    }
+    if let Some(c) = coinbase {
+        hs.push(c.hash());
+    }
+    hs
+}
+
+/// A block's `tx_root` with its contracts record (equal to [`tx_root_with`] when none).
+pub fn tx_root_full(txs: &[Tx], contracts: Option<&ContractsRecord>, coinbase: Option<&Coinbase>) -> Hash {
+    merkle::root(&leaf_hashes_full(txs, contracts, coinbase))
+}
+
+/// [`leaf_path`] over [`leaf_hashes_full`].
+pub fn leaf_path_full(txs: &[Tx], contracts: Option<&ContractsRecord>, coinbase: Option<&Coinbase>, index: usize) -> Vec<u8> {
+    crate::contracts::path_bytes(&leaf_hashes_full(txs, contracts, coinbase), index)
 }
 
 /// tx_root path of leaf `index` (a tx index, or `txs.len()` for the receipt) as the

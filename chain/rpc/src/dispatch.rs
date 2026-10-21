@@ -59,15 +59,15 @@ pub fn parse32(s: &str) -> Result<[u8; 32], RpcError> {
     v.try_into().map_err(|_| RpcError::params(format!("{s:?} is not 32 bytes")))
 }
 
-fn p_str<'a>(p: &'a Value, keys: &[&str]) -> Option<&'a str> {
+pub(crate) fn p_str<'a>(p: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|k| p.get(*k).and_then(|v| v.as_str()))
 }
 
-fn p_key(p: &Value, keys: &[&str]) -> Result<[u8; 32], RpcError> {
+pub(crate) fn p_key(p: &Value, keys: &[&str]) -> Result<[u8; 32], RpcError> {
     parse32(p_str(p, keys).ok_or_else(|| RpcError::params(format!("missing {}", keys[0])))?)
 }
 
-fn p_u64(p: &Value, k: &str) -> Option<u64> {
+pub(crate) fn p_u64(p: &Value, k: &str) -> Option<u64> {
     p.get(k).and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
 }
 
@@ -193,6 +193,10 @@ pub fn config_json(c: &Config) -> Value {
         "price_base_lamports": c.price_base_lamports.map(|x| x.to_string()),
         "price_mlamports_per_gflop": c.price_mlamports_per_gflop.map(|x| x.to_string()),
         "price_overhead_lamports": c.price_overhead_lamports.map(|x| x.to_string()),
+        "gas_price": c.gas_price.to_string(), "gas_price_unit": state::config::GAS_PRICE_UNIT.to_string(),
+        "block_gas_limit": c.block_gas_limit.to_string(), "tx_gas_limit": c.tx_gas_limit.to_string(),
+        "contract_base_fee": c.contract_base_fee.to_string(), "contract_byte_fee": c.contract_byte_fee.to_string(),
+        "storage_byte_deposit": c.storage_byte_deposit.to_string(), "max_code_size": c.max_code_size, "max_call_depth": c.max_call_depth,
         "keys": keymap,
     })
 }
@@ -205,13 +209,25 @@ fn tx_summary(t: &Tx) -> Value {
 /// A block's coinbase receipt (R1) with its tx_root path (the last leaf).
 fn coinbase_json(b: &Block) -> Value {
     let Some(c) = &b.coinbase else { return Value::Null };
-    let index = b.txs.len();
+    let index = b.coinbase_index();
     json!({
         "record": hex::encode(c.encode()), "receipt_hash": hex::encode(c.hash()),
         "height": c.height, "miner": b58(&c.miner), "fees": c.fees.to_string(), "subsidy": c.subsidy.to_string(),
         "reward": (c.fees as u128 + c.subsidy as u128).to_string(), "job_id": hex::encode(c.job_id),
         "mature_height": c.mature_height, "leaf_index": index,
-        "path": hex::encode(block::leaf_path(&b.txs, Some(c), index)),
+        "path": hex::encode(b.leaf_path(index)),
+    })
+}
+
+/// A block's contracts record (docs/CONTRACTS.md) with its tx_root path.
+fn contracts_json(b: &Block) -> Value {
+    let Some(c) = &b.contracts else { return Value::Null };
+    let index = b.contracts_index();
+    json!({
+        "record": hex::encode(c.encode()), "record_hash": hex::encode(c.hash()), "height": c.height,
+        "receipt_count": c.receipt_count, "receipts_root": hex::encode(c.receipts_root),
+        "event_count": c.event_count, "events_root": hex::encode(c.events_root), "gas_used": c.gas_used.to_string(),
+        "leaf_index": index, "path": hex::encode(b.leaf_path(index)),
     })
 }
 
@@ -342,10 +358,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         .map_err(|e| RpcError::params(e.to_string()))?;
                     let header = srv(Header::decode(&hb))?;
                     let proof = p_bytes(p, "proof")?;
-                    let Some((txs, coinbase)) = self.template_txs(&header, p_str(p, &["template_id"])) else {
+                    let Some((txs, coinbase, contracts)) = self.template_txs(&header, p_str(p, &["template_id"])) else {
                         return Ok(json!({"accepted": false, "reason": "no template with this parent and tx_root"}));
                     };
-                    Block { header, proof, txs, coinbase: Some(coinbase) }
+                    Block { header, proof, txs, coinbase: Some(coinbase), contracts }
                 };
                 let r = self.add_block(block, now_ms, true).await;
                 let mut v = json!({"accepted": r.accepted, "block_hash": hex::encode(r.hash), "height": r.height, "tip": r.tip});
@@ -375,6 +391,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 v["height"] = json!(b.header.height);
                 v["index"] = json!(idx);
                 v["confirmations"] = json!(self.chain.confirmations(&bh, b.header.height));
+                if t.body.kind().is_contract() {
+                    if let Some(Ok(r)) = self.contract_rpc("getContractReceipt", &json!({"tx_hash": hex::encode(h)})).await {
+                        v["receipt"] = r;
+                    }
+                }
                 Ok(v)
             }
             "getAccount" => {
@@ -532,13 +553,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         .map(|(i, t)| {
                             let mut s = tx_summary(t);
                             if b.coinbase.is_some() {
-                                s["path"] = json!(hex::encode(block::leaf_path(&b.txs, b.coinbase.as_ref(), i)));
+                                s["path"] = json!(hex::encode(b.leaf_path(i)));
                             }
                             s
                         })
                         .collect(),
                 );
                 v["coinbase"] = coinbase_json(&b);
+                v["contracts"] = contracts_json(&b);
                 match srv(self.chain.block_rewards(&b.hash()).await)? {
                     Some(r) => {
                         v["fees"] = json!(r.fees.to_string());
@@ -664,7 +686,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getBlobStats" => {
                 let Some(b) = self.blobs.as_ref() else { return Err(RpcError::server("this node has no blob store")) };
                 let c = b.config();
-                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(),
+                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(), "fetch_in_flight": self.blob_fetch.in_flight(),
                           "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
                           "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune}))
             }
@@ -729,9 +751,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             },
             "getMempool" => Ok(json!({"size": self.mempool.len(), "txs": self.mempool.hashes().iter().map(hex::encode).collect::<Vec<_>>()})),
             "subscribe" => Err(RpcError::server("subscribe is only available over the WebSocket endpoint")),
-            m => match self.dm_dispatch(m, p).await {
+            m => match self.contract_rpc(m, p).await {
                 Some(r) => r,
-                None => Err(RpcError::method(m)),
+                None => match self.dm_dispatch(m, p).await {
+                    Some(r) => r,
+                    None => Err(RpcError::method(m)),
+                },
             },
         }
     }

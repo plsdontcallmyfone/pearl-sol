@@ -14,6 +14,7 @@
 //! `/v1/models` with prices; a receipt (headers + `cadre` object) on every response.
 
 pub mod auth;
+pub mod server;
 pub mod transport;
 
 use std::collections::{BTreeMap, VecDeque};

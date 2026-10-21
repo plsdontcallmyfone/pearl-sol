@@ -68,11 +68,11 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 | | `GET /v1/inference/receipts?account=`, `/v1/inference/receipts/{ticket}` | tickets an account bought: fee, order, blocks mined, subsidy, links |
 | | `GET /v1/inference/requests/{ticket}` | the gateway's settlement record |
 | | `GET /v1/inference/prepaid/{account}` | public prepaid balance of a wallet (gateway `GET /v1/prepaid/{wallet}`): tickets, rows free |
-| | `GET /v1/inference/balance` | the same, wallet-authenticated (gateway `GET /v1/balance`; sign the GATEWAY path `/v1/balance`, cadre-auth-v1) or `?wallet=` |
+| | `GET /v1/inference/balance` | the same, wallet-authenticated (gateway `GET /v1/balance`; sign the GATEWAY path `/v1/balance`, cadre-auth-v2) or `?wallet=` |
 | | `POST /v1/inference/balance/topup` (alias `/v1/inference/prepaid/topup`) | x402 top-up: 402 with the requirements, then 201 `{ticket_id, order, rows, wallet}` with `X-PAYMENT` |
 | | `POST /v1/inference/balance/topup/quote` (alias `/v1/inference/prepaid/topup/quote`) | the top-up's price (the gateway's unpaid 402 reply as 200) |
 | | `POST /v1/inference/balance/close` | settle the wallet's open balance tickets now (wallet-authenticated) |
-| | `GET /v1/inference/keys` (same as `GET /v1/openai/keys`) | the wallet's API keys `{wallet, keys: [{key_id, created_ms, last_used_ms}]}` from the gateway's `GET /v1/keys`; sign the GATEWAY path `/v1/keys` (cadre-auth-v1, GET, empty body); never the key itself; an API key cannot list (2026-10-20) |
+| | `GET /v1/inference/keys` (same as `GET /v1/openai/keys`) | the wallet's API keys `{wallet, keys: [{key_id, created_ms, last_used_ms}]}` from the gateway's `GET /v1/keys`; sign the GATEWAY path `/v1/keys` (cadre-auth-v2, GET, empty body); never the key itself; an API key cannot list (2026-10-20) |
 | | `GET\|POST\|DELETE /v1/openai/{path}` | pass-through to the gateway API v1 (`models`, `completions`, `chat/completions`, `embeddings`, `keys`, `balance`, `prepaid`, `receipts`, `requests`, `stats`): auth headers and body forwarded byte for byte, receipt headers copied, SSE streamed; only the wait for reply headers (30 min) and stream silence (10 min) are bounded |
 | Agents | `GET /v1/agents?sort=paid\|sol\|payers` | ranked by paid work from distinct payers (self-dealt excluded); never by counts |
 | | `GET /v1/agents/{account}` | profile: as server (completed W/P/SOL, distinct payers, top payer share, self-dealt, delivered-then-expired, acceptance by fee, blocks to completion, models), as buyer, as miner; registration + card URI + `card_probe {ok, status, checked_at, error, last_ok_at}` (the explorer's probe rules); the list also carries `registration` and `card_probe`, and shows registered agents before their first paid work |
@@ -290,6 +290,69 @@ services/swarm/agents (cadre-api still holds no key).
 
 Env: `CADRE_AGENTS_URL` (the runtime, e.g. `http://127.0.0.1:10730`; unset = the `/v1/hosted*`
 routes answer 501).
+## Contracts (docs/CONTRACTS.md, 2026-10-21)
+
+WASM contracts on the agent chain (tx kinds 30 DeployCode, 31 Instantiate, 32 Call, 33 Migrate,
+34 SetContractAdmin). Every read is a proxy of the node's contract RPC (docs/RPC.md "Contracts")
+at query time; the API adds only the decoded names of known events and, for the tx builder, the
+fee floor from `getParams`. A node without the contract RPC (the contracts upgrade is not on it) answers
+`503 unavailable` with the method it lacks; nothing is stubbed with data. Code: `services/cadre-api/src/routes/contracts.ts`; the
+codec is `apps/explorer/src/contracts.ts`, checked byte for byte against
+`chain/agent-types/vectors/contracts.json`; tests `test/contracts.test.ts`.
+
+Objects:
+- **Contract** (node `getContract`) `{address, code_hash, admin|null, upgradable, creator, label,
+  created_height, migrated_height|null, storage_bytes, storage_items, deposit, index, calls, events,
+  balance, code_size, entries, imports}`. `admin` null = immutable: no key can ever migrate it.
+  `deposit` is the storage deposit held for its bytes (chain units).
+- **Event** `{contract, tx_hash, index, topics: [hex32], data (hex), bytes, hash, height, n, name}`.
+  `name` is the known event whose topic equals topic 0, else null. Topic of a named event =
+  `blake3("pearl-sol:event:v1" || name)`. Known names: Incremented, Reset, Opened, Released,
+  Refunded, Transfer, Approval, Posted, Submitted, Awarded, JobLinked.
+- **Receipt** (node `getContractReceipt`) `{tx_hash, kind, status: ok|reverted|out_of_gas|trapped|refused,
+  ok, gas_limit, gas_used, fee_charged, contract|null, code_hash, event_count, return (hex), error,
+  bytes, hash, height, block_hash, final, events}`. `fee_charged` is what the sender paid after the
+  unused-gas refund.
+- **Code** (node `getCode`) `{code_hash, deployer, height, size, deposit, instances, index, code?}`.
+- **Call input** (query, simulate, tx builder): `args` (hex: method name as u8 length + UTF-8,
+  then the fields) or `method` + `fields`, not both. A field is `{u8|u16|u32|u64: number or
+  decimal string}`, `{bool}`, `{addr: base58}`, `{hash: hex32}`, `{bytes: hex}` (u32 length
+  prefix), `{str}` (u32 length prefix), or the CLI form `"u64:5"`. Integers are little-endian.
+  Return data has no ABI on chain: pass `returns: ["u64", ...]` to have it decoded.
+
+| Endpoint | What |
+|---|---|
+| `GET /v1/contracts?offset&limit=1..200 (50)` | `{total, offset, limit, order, items: [Contract]}`, newest first (node `listContracts`) |
+| `GET /v1/contracts/{address}` | one Contract; 404 when no contract lives there |
+| `GET /v1/contracts/{address}/events?offset&limit&topic` | `{address, total, events, next_offset, topic, topic_name, known_events, topic_rule}`, newest first; `topic` is 64 hex or an event name (matched against topic 0; the node scans at most 2,000 events per request) |
+| `POST /v1/contracts/{address}/query {args \| method, fields, gas?, returns?}` | read-only call at the tip (node `queryContract`, gas default 20M, at most 50M): `{contract, args, method, ok, return, error, gas_used, height, decoded?, decode_error?}` |
+| `POST /v1/contracts/{address}/simulate {from, args \| method, fields, value?, gas?}` | dry-run of a Call (node `simulateCall`; nothing is written): `{ok, return, error, gas_used, log, events, fee_estimate, height, ...}` |
+| `GET /v1/contracts/receipts/{tx_hash}` | the Receipt of a contract tx; 404 for other kinds, unknown or still pending txs (`GET /v1/tx/chain/{hash}` says which) |
+| `GET /v1/codes?offset&limit` | `{total, offset, limit, order, items: [Code]}`, newest first (node `listCodes`) |
+| `GET /v1/codes/{hash}?include_code=1` | one Code; `include_code=1` adds the WASM bytes as hex |
+| `POST /v1/tx/contract-call {from, contract, gas_limit, value?, fee?, args \| method, fields}` | unsigned Call (kind 32), see below |
+
+**Unsigned Call.** `POST /v1/tx/contract-call` reads `getAccount`, `getParams`, `getChainInfo` and
+`getContract` and answers `{window_pearl, chain_id, nonce, fee, fee_floor, fee_rule, fee_parts,
+unsigned_tx, framed_message, tx_len, encoding, summary, sign_with}`:
+- `window_pearl.params.transaction` = `{kind: "Call", contract, value, gasLimit, args (hex), fee}`,
+  the form the Cadre Wallet's `window.pearl.signAndSendTransaction` takes.
+- `unsigned_tx` = hex of the tx without its signature (`version 1 | chain_id u32 | from | nonce u64
+  | fee u64 | kind 32 | contract | value u64 | gas_limit u64 | args (u16 length)`); a signer signs
+  `framed_message` (`varint len || "pearl-sol:tx:v1" || unsigned_tx`) with ed25519, appends the 64-byte
+  signature and relays the result with `POST /v1/tx/chain {tx: base64}`.
+- Fee floor = `max(min_fee, contract_base_fee + contract_byte_fee x tx_len + ceil(gas_limit x
+  gas_price / gas_price_unit))` over the encoded length of the signed tx; `fee_parts` itemizes it.
+  `fee` defaults to the floor; a lower `fee` is refused with `400`. Unused gas is refunded at
+  `gas_price`, so the receipt's `fee_charged` can be lower than `fee`.
+- Refusals: `400` gas_limit above `tx_gas_limit` or bad input, `404` no contract at `contract`,
+  `422 insufficient_funds` when balance < fee + value, `503 unavailable` when `getParams` has no
+  contract fields. The nonce is the account's nonce now: a tx the sender signs first takes it.
+  Run `POST /v1/contracts/{address}/simulate` first to see `gas_used` and pick `gas_limit`.
+
+The explorer has the same data as pages: `/contracts`, `/contract/{address}` (`?topic=` an event
+name), `/code/{hash}`, `/tx/{hash}` (contract txs with their receipt) and the contracts record on
+`/block/{height}`, each with a JSON twin under `/api`.
 
 ## Using it from the site
 

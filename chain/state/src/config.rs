@@ -39,7 +39,18 @@ pub mod keys {
     pub const PRICE_BASE_LAMPORTS: u8 = 24; // u64 or empty (unset)
     pub const PRICE_MLAMPORTS_PER_GFLOP: u8 = 25; // u64 or empty (unset)
     pub const PRICE_OVERHEAD_LAMPORTS: u8 = 26; // u64 or empty (unset)
-    pub const LAST: u8 = 26;
+    /// Last key of the social extension (keys 19-26). Keys above it (the contracts
+    /// extension, docs/CONTRACTS.md) are appended only when one differs from its default.
+    pub const SOCIAL_LAST: u8 = 26;
+    pub const GAS_PRICE: u8 = 27; // u64 (chain base units per 1,000,000 gas)
+    pub const BLOCK_GAS_LIMIT: u8 = 28; // u64 (sum of the gas limits of a block's contract txs)
+    pub const TX_GAS_LIMIT: u8 = 29; // u64 (largest gas limit of one tx)
+    pub const CONTRACT_BASE_FEE: u8 = 30; // u64 (per contract tx)
+    pub const CONTRACT_BYTE_FEE: u8 = 31; // u64 (per encoded contract tx byte)
+    pub const STORAGE_BYTE_DEPOSIT: u8 = 32; // u64 (per stored byte, refundable)
+    pub const MAX_CODE_SIZE: u8 = 33; // u32 (bytes, <= agent_types::contracts::MAX_CODE_SIZE)
+    pub const MAX_CALL_DEPTH: u8 = 34; // u8 (1..=16)
+    pub const LAST: u8 = 34;
 
     pub fn name(k: u8) -> &'static str {
         match k {
@@ -70,6 +81,14 @@ pub mod keys {
             PRICE_BASE_LAMPORTS => "price_base_lamports",
             PRICE_MLAMPORTS_PER_GFLOP => "price_mlamports_per_gflop",
             PRICE_OVERHEAD_LAMPORTS => "price_overhead_lamports",
+            GAS_PRICE => "gas_price",
+            BLOCK_GAS_LIMIT => "block_gas_limit",
+            TX_GAS_LIMIT => "tx_gas_limit",
+            CONTRACT_BASE_FEE => "contract_base_fee",
+            CONTRACT_BYTE_FEE => "contract_byte_fee",
+            STORAGE_BYTE_DEPOSIT => "storage_byte_deposit",
+            MAX_CODE_SIZE => "max_code_size",
+            MAX_CALL_DEPTH => "max_call_depth",
             _ => "unknown",
         }
     }
@@ -109,7 +128,50 @@ pub struct Config {
     pub price_base_lamports: Option<u64>,
     pub price_mlamports_per_gflop: Option<u64>,
     pub price_overhead_lamports: Option<u64>,
+    /// Contracts (docs/CONTRACTS.md): fee floor of a contract tx is
+    /// `max(min_fee, contract_base_fee + contract_byte_fee x len + ceil(gas_limit x gas_price / 1e6))`;
+    /// what is charged uses gas used instead of the limit, the rest is refunded.
+    pub gas_price: u64,
+    pub block_gas_limit: u64,
+    pub tx_gas_limit: u64,
+    pub contract_base_fee: u64,
+    pub contract_byte_fee: u64,
+    pub storage_byte_deposit: u64,
+    pub max_code_size: u32,
+    pub max_call_depth: u8,
 }
+
+/// Gas price unit: `gas_price` is chain base units per this much gas.
+pub const GAS_PRICE_UNIT: u64 = 1_000_000;
+
+/// Upper bound of `max_call_depth`.
+pub const MAX_CALL_DEPTH_LIMIT: u8 = 16;
+
+/// Default contract parameters (docs/CONTRACTS.md "Gas": measured on the devnet boxes).
+pub struct ContractDefaults {
+    pub gas_price: u64,
+    pub block_gas_limit: u64,
+    pub tx_gas_limit: u64,
+    pub contract_base_fee: u64,
+    pub contract_byte_fee: u64,
+    pub storage_byte_deposit: u64,
+    pub max_code_size: u32,
+    pub max_call_depth: u8,
+}
+
+/// `block_gas_limit` 150M gas is about 1.1 s of the worst measured wasm (call_indirect at 7.36
+/// ns/gas with wasmi's flat cost table) and about 0.13 s of typical code (0.77 ns/gas), so a
+/// full block of contracts fits well inside a 60 s block and leaves room for shorter blocks.
+pub const CONTRACT_DEFAULTS: ContractDefaults = ContractDefaults {
+    gas_price: 10_000,
+    block_gas_limit: 150_000_000,
+    tx_gas_limit: 50_000_000,
+    contract_base_fee: 1000,
+    contract_byte_fee: 10,
+    storage_byte_deposit: 100_000,
+    max_code_size: 128 * 1024,
+    max_call_depth: 8,
+};
 
 /// Most `house_operators`.
 pub const MAX_HOUSE_OPERATORS: usize = 32;
@@ -148,19 +210,36 @@ impl Config {
             price_base_lamports: None,
             price_mlamports_per_gflop: None,
             price_overhead_lamports: None,
+            gas_price: CONTRACT_DEFAULTS.gas_price,
+            block_gas_limit: CONTRACT_DEFAULTS.block_gas_limit,
+            tx_gas_limit: CONTRACT_DEFAULTS.tx_gas_limit,
+            contract_base_fee: CONTRACT_DEFAULTS.contract_base_fee,
+            contract_byte_fee: CONTRACT_DEFAULTS.contract_byte_fee,
+            storage_byte_deposit: CONTRACT_DEFAULTS.storage_byte_deposit,
+            max_code_size: CONTRACT_DEFAULTS.max_code_size,
+            max_call_depth: CONTRACT_DEFAULTS.max_call_depth,
         }
     }
 
-    /// Do the keys above [`keys::LEGACY_LAST`] all hold their defaults?
-    fn extension_is_default(&self) -> bool {
+    /// Do keys `lo..=hi` all hold their defaults?
+    fn range_is_default(&self, lo: u8, hi: u8) -> bool {
         let d = Self::defaults(self.admin);
-        (keys::LEGACY_LAST + 1..=keys::LAST).all(|k| self.value(k) == d.value(k))
+        (lo..=hi).all(|k| self.value(k) == d.value(k))
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
         w.u8(tag::CONFIG).u8(1);
-        let last = if self.extension_is_default() { keys::LEGACY_LAST } else { keys::LAST };
+        // Tiers: the original 19 values, then the social keys, then the contract keys; a tier
+        // is written only when it (or a later one) holds a non-default value, so the record
+        // stays byte-identical to an older node's until an admin sets a newer key.
+        let last = if !self.range_is_default(keys::SOCIAL_LAST + 1, keys::LAST) {
+            keys::LAST
+        } else if !self.range_is_default(keys::LEGACY_LAST + 1, keys::SOCIAL_LAST) {
+            keys::SOCIAL_LAST
+        } else {
+            keys::LEGACY_LAST
+        };
         for k in 0..=last {
             w.bytes16(&self.value(k));
         }
@@ -177,10 +256,12 @@ impl Config {
             let v = r.bytes16(usize::MAX, "config value")?;
             c.set(k, &v).map_err(|_| DecodeError::Invalid("config value"))?;
         }
-        if r.pos < r.b.len() {
-            for k in keys::LEGACY_LAST + 1..=keys::LAST {
-                let v = r.bytes16(usize::MAX, "config value")?;
-                c.set(k, &v).map_err(|_| DecodeError::Invalid("config value"))?;
+        for (lo, hi) in [(keys::LEGACY_LAST + 1, keys::SOCIAL_LAST), (keys::SOCIAL_LAST + 1, keys::LAST)] {
+            if r.pos < r.b.len() {
+                for k in lo..=hi {
+                    let v = r.bytes16(usize::MAX, "config value")?;
+                    c.set(k, &v).map_err(|_| DecodeError::Invalid("config value"))?;
+                }
             }
         }
         r.finish()?;
@@ -230,6 +311,14 @@ impl Config {
             PRICE_BASE_LAMPORTS => self.price_base_lamports.map(|x| x.to_le_bytes().to_vec()).unwrap_or_default(),
             PRICE_MLAMPORTS_PER_GFLOP => self.price_mlamports_per_gflop.map(|x| x.to_le_bytes().to_vec()).unwrap_or_default(),
             PRICE_OVERHEAD_LAMPORTS => self.price_overhead_lamports.map(|x| x.to_le_bytes().to_vec()).unwrap_or_default(),
+            GAS_PRICE => self.gas_price.to_le_bytes().to_vec(),
+            BLOCK_GAS_LIMIT => self.block_gas_limit.to_le_bytes().to_vec(),
+            TX_GAS_LIMIT => self.tx_gas_limit.to_le_bytes().to_vec(),
+            CONTRACT_BASE_FEE => self.contract_base_fee.to_le_bytes().to_vec(),
+            CONTRACT_BYTE_FEE => self.contract_byte_fee.to_le_bytes().to_vec(),
+            STORAGE_BYTE_DEPOSIT => self.storage_byte_deposit.to_le_bytes().to_vec(),
+            MAX_CODE_SIZE => self.max_code_size.to_le_bytes().to_vec(),
+            MAX_CALL_DEPTH => vec![self.max_call_depth],
             _ => Vec::new(),
         }
     }
@@ -300,6 +389,19 @@ impl Config {
             PRICE_BASE_LAMPORTS => self.price_base_lamports = opt_u64(v)?,
             PRICE_MLAMPORTS_PER_GFLOP => self.price_mlamports_per_gflop = opt_u64(v)?,
             PRICE_OVERHEAD_LAMPORTS => self.price_overhead_lamports = opt_u64(v)?,
+            GAS_PRICE => self.gas_price = u64v(v)?,
+            BLOCK_GAS_LIMIT => self.block_gas_limit = u64v(v)?,
+            TX_GAS_LIMIT => self.tx_gas_limit = u64v(v)?,
+            CONTRACT_BASE_FEE => self.contract_base_fee = u64v(v)?,
+            CONTRACT_BYTE_FEE => self.contract_byte_fee = u64v(v)?,
+            STORAGE_BYTE_DEPOSIT => self.storage_byte_deposit = u64v(v)?,
+            MAX_CODE_SIZE => self.max_code_size = u32v(v)?,
+            MAX_CALL_DEPTH => {
+                if v.len() != 1 {
+                    return Err("expected u8".into());
+                }
+                self.max_call_depth = v[0];
+            }
             _ => return Err(format!("unknown config key {k}")),
         }
         Ok(())
@@ -348,6 +450,15 @@ impl Config {
         }
         if !(MIN_BALANCE_ROWS_LIMIT..=MAX_BALANCE_ROWS_LIMIT).contains(&self.max_balance_rows) {
             return Err(format!("max_balance_rows must be {MIN_BALANCE_ROWS_LIMIT}..={MAX_BALANCE_ROWS_LIMIT}"));
+        }
+        if self.tx_gas_limit > self.block_gas_limit {
+            return Err("tx_gas_limit must not exceed block_gas_limit".into());
+        }
+        if self.max_code_size == 0 || self.max_code_size as usize > agent_types::contracts::MAX_CODE_SIZE {
+            return Err(format!("max_code_size must be 1..={}", agent_types::contracts::MAX_CODE_SIZE));
+        }
+        if !(1..=MAX_CALL_DEPTH_LIMIT).contains(&self.max_call_depth) {
+            return Err(format!("max_call_depth must be 1..={MAX_CALL_DEPTH_LIMIT}"));
         }
         let fc = pearl_job::MiningConfig::from_bytes(&self.fallback_config).map_err(|e| e.to_string())?;
         pearl_job::job::check_shape(&fc, self.fallback_m as usize, self.fallback_n as usize).map_err(|e| e.to_string())?;

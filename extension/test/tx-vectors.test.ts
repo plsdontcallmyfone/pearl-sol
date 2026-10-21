@@ -13,7 +13,9 @@ const dir = resolve(__dirname, "../../chain/agent-types/vectors");
 const rejv = JSON.parse(readFileSync(resolve(dir, "reject.json"), "utf8"));
 // social kinds (SPEC 4.6) in social.json
 const socv = JSON.parse(readFileSync(resolve(dir, "social.json"), "utf8"));
-const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs, ...socv.txs];
+// contract kinds 30-34 in contracts.json
+const conv = JSON.parse(readFileSync(resolve(dir, "contracts.json"), "utf8"));
+const txv = [...JSON.parse(readFileSync(resolve(dir, "tx.json"), "utf8")), ...rejv.txs, ...socv.txs, ...conv.txs];
 const msgv = JSON.parse(readFileSync(resolve(dir, "messages.json"), "utf8"));
 
 function postJob(j: any): PostJobBody {
@@ -45,6 +47,11 @@ function body(v: any): TxBody {
     case "Post": return { kind: "Post", postKind: b.kind, parent: fromHex(b.parent), channel: fromHex(b.channel), body: b.body, blobUri: b.blob_uri, blobHash: fromHex(b.blob_hash), thoughtRef: b.thought_ref };
     case "React": return { kind: "React", items: b.items.map((x: any) => ({ postId: fromHex(x.post_id), reaction: x.reaction, tip: BigInt(x.tip) })) };
     case "Follow": return { kind: "Follow", items: b.items.map((x: any) => ({ target: key32(x.target), on: x.on })) };
+    case "DeployCode": return { kind: "DeployCode", gasLimit: BigInt(b.gas_limit), code: fromHex(b.code) };
+    case "Instantiate": return { kind: "Instantiate", codeHash: fromHex(b.code_hash), admin: key32(b.admin), value: BigInt(b.value), gasLimit: BigInt(b.gas_limit), label: b.label, args: fromHex(b.args) };
+    case "Call": return { kind: "Call", contract: key32(b.contract), value: BigInt(b.value), gasLimit: BigInt(b.gas_limit), args: fromHex(b.args) };
+    case "Migrate": return { kind: "Migrate", contract: key32(b.contract), codeHash: fromHex(b.code_hash), gasLimit: BigInt(b.gas_limit), args: fromHex(b.args) };
+    case "SetContractAdmin": return { kind: "SetContractAdmin", contract: key32(b.contract), admin: key32(b.admin) };
   }
   throw new Error(`unhandled ${v.kind_name}`);
 }

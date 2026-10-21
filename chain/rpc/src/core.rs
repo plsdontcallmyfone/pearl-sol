@@ -38,7 +38,8 @@ pub type PeerInfoFn = Arc<dyn Fn() -> Value + Send + Sync>;
 pub const BLOB_PRUNE_EVERY: u64 = 10;
 /// Jobs scanned (newest first) for blob references when pruning.
 pub const BLOB_SCAN_JOBS: u64 = 100_000;
-/// At most this many blob fetches in flight.
+/// At most this many blobs wanted at once (queued or in flight; at most
+/// `blobfetch::BLOB_FETCH_WINDOW` of them in flight). The prune pass wants the rest later.
 pub const MAX_WANTED_BLOBS: usize = 1024;
 /// Unsolicited blob pushes stop once the store is `1 / PUSH_SHARE_DIVISOR` full.
 pub const PUSH_SHARE_DIVISOR: u64 = 2;
@@ -64,8 +65,10 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     pub txs_accepted: u64,
     /// Data availability: job data and results by blob id (None: no blob support).
     pub blobs: Option<BlobStore<E>>,
-    /// Blobs being fetched from peers, with the tip height when first wanted.
+    /// Blobs wanted from peers (queued or in flight), with the tip height when first wanted.
     pub blob_wanted: HashMap<BlobId, u64>,
+    /// Which wanted blobs are asked for now (bounded; see `blobfetch`).
+    pub blob_fetch: crate::blobfetch::BlobFetches,
     pub last_blob_prune: u64,
     /// getPeers in open mode.
     pub peer_info: Option<PeerInfoFn>,
@@ -129,6 +132,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             txs_accepted: 0,
             blobs: None,
             blob_wanted: HashMap::new(),
+            blob_fetch: Default::default(),
             last_blob_prune: 0,
             peer_info: None,
             static_peers: Vec::new(),
@@ -158,7 +162,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             return;
         }
         self.blob_wanted.insert(id, self.chain.tip_height());
-        self.outbox.push(Outbound::FetchBlob(id));
+        self.blob_fetch.push(id);
+    }
+
+    /// No longer want `id`: cancel its fetch if one is in flight. Returns true if it was wanted.
+    pub fn unwant_blob(&mut self, id: BlobId) -> bool {
+        let was = self.blob_wanted.remove(&id).is_some();
+        if self.blob_fetch.remove(&id) {
+            self.outbox.push(Outbound::CancelBlob(id));
+        }
+        was
     }
 
     /// putBlob: rate limit, store, push to peers.
@@ -181,9 +194,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let r = store.put(data, height).await?;
         // a blob this node was fetching itself (a registered model's manifest that nobody had yet):
         // stop the resolver asking peers for it
-        if self.blob_wanted.remove(&id).is_some() {
-            self.outbox.push(Outbound::CancelBlob(id));
-        }
+        self.unwant_blob(id);
         if push {
             self.outbox.push(Outbound::Blob(data.to_vec()));
         }
@@ -215,9 +226,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         }
         match store.put(data, height).await {
             Ok(_) => {
-                if self.blob_wanted.remove(&id).is_some() {
-                    self.outbox.push(Outbound::CancelBlob(id));
-                }
+                self.unwant_blob(id);
             }
             Err(e) => debug!("pushed blob not stored: {e}"),
         }
@@ -232,6 +241,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             return false;
         }
         self.blob_wanted.remove(&id);
+        self.blob_fetch.remove(&id);
         if let Err(e) = store.put(data, height).await {
             // usually the store is full (max_total_bytes): an operator needs to see this, the
             // fetch is dropped and only a later want retries it
@@ -409,8 +419,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             .map(|(id, _)| *id)
             .collect();
         for id in stale {
-            self.blob_wanted.remove(&id);
-            self.outbox.push(Outbound::CancelBlob(id));
+            self.unwant_blob(id);
         }
         removed
     }
@@ -448,6 +457,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         // DM kinds (SPEC 4.10): activation, fee floor, then the executor's own rules on the tip
         executor::precheck_dm(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
         self.admit_dm(&tx, acc.nonce).await?;
+        // contract kinds (docs/CONTRACTS.md): activation, gas limits, fee floor, code validation
+        executor::precheck_contract(&tx, &self.chain.tip().config, self.chain.tip_height() + 1)?;
         // BridgeUnlock pays no fee: only attester-signed, unprocessed deposits are pooled
         if let TxBody::BridgeUnlock { solana_nonce, .. } = &tx.body {
             executor::precheck_bridge_unlock(&tx, &self.chain.tip().config)?;
@@ -484,6 +495,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
             Ok((Accept::Known, _)) => SubmitResult { accepted: true, hash, height, tip: false, reason: Some("already known".into()) },
             Ok((Accept::Orphan { missing }, _)) => {
+                tracing::debug!(block = %hex::encode(&hash[..6]), height, missing = %hex::encode(&missing[..6]), "orphan block: fetching its parent's header");
                 self.outbox.push(Outbound::FetchHeader(missing));
                 SubmitResult { accepted: true, hash, height, tip: false, reason: Some("orphan: parent unknown, fetching".into()) }
             }
@@ -614,16 +626,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     /// Txs and coinbase receipt for a mined header: from the named template or any
     /// template with the same parent and tx_root.
-    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase)> {
+    pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>)> {
         let m = |t: &Template| t.header.prev_hash == header.prev_hash && t.header.tx_root == header.tx_root;
         if let Some(id) = template_id {
             if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
                 if m(t) {
-                    return Some((t.txs.clone(), t.summary.coinbase));
+                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts));
                 }
             }
         }
-        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase))
+        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts))
     }
 
     pub fn notify(&mut self, topic: &str, data: Value) {
@@ -645,9 +657,18 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     /// Ask peers for the next bodies headers-first sync can use (lowest height first, a window
     /// above the tip; consensus_pow::BODY_WINDOW). The node calls this after every event.
-    pub fn schedule_bodies(&mut self) {
+    /// Hand out the fetches due now: block bodies in height order, and blobs at most
+    /// `BLOB_FETCH_WINDOW` at a time (stale blob fetches cancelled and queued again).
+    pub fn schedule_fetches(&mut self) {
         for h in self.chain.next_bodies(consensus_pow::BODY_WINDOW) {
             self.outbox.push(Outbound::FetchBody(h));
+        }
+        let (start, cancel) = self.blob_fetch.pump(self.chain.tip_height(), crate::blobfetch::BLOB_FETCH_WINDOW);
+        for id in cancel {
+            self.outbox.push(Outbound::CancelBlob(id));
+        }
+        for id in start {
+            self.outbox.push(Outbound::FetchBlob(id));
         }
     }
 }

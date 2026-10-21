@@ -48,7 +48,7 @@ fn junk_orphan(i: u64, height: u64, proof_len: usize) -> Block {
         proof_hash: block::proof_hash(&proof),
         ..Default::default()
     };
-    Block { header, proof, txs: vec![], coinbase: Some(cb) }
+    Block { header, proof, txs: vec![], coinbase: Some(cb), contracts: None }
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn seal(t: &consensus_pow::Template) -> Block {
     let mut h = t.header;
     let proof = MockVerifier::proof_for(&h);
     h.proof_hash = block::proof_hash(&proof);
-    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) }
+    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts }
 }
 
 /// A block a little too far in the future is refused now and accepted once the clock

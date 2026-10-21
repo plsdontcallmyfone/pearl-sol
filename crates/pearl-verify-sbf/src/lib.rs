@@ -13,6 +13,7 @@ pub mod acc;
 pub mod blake3;
 pub mod chaintx;
 pub mod config;
+pub mod contracts;
 pub mod difficulty;
 pub mod fallback;
 pub mod header;

@@ -1,8 +1,9 @@
 // The swarm's Gateway client (services/swarm/src/clients.ts) pointed either at the inference
 // gateway itself (house setup on box 0) or at cadre-api's pass-through /v1/openai/* (a hosted
 // runtime elsewhere, or a self-hosted runner on someone's laptop). The signed path is always the
-// gateway's own path (/v1/chat/completions, /v1/balance), as SPEC 5.4 requires.
-import { authMessage, Gateway } from "../../src/clients.ts";
+// gateway's own path (/v1/chat/completions, /v1/balance), as SPEC 5.4 requires, in cadre-auth-v2
+// naming the gateway's server key (read once from /v1/models through the same base URL).
+import { Gateway } from "../../src/clients.ts";
 import type { Wallet } from "../../src/wallet.ts";
 
 async function fetchJson(url: string, init: RequestInit, timeoutMs: number) {
@@ -25,17 +26,12 @@ export class GatewayAt extends Gateway {
   at(path: string) {
     return this.viaApi ? this.base + path.replace(/^\/v1/, "") : this.base + path;
   }
-  private signed(method: string, path: string, body: string): Record<string, string> {
-    const ts = Date.now();
-    const sig = this.wallet.sign(authMessage(method, path, ts, body));
-    return { "content-type": "application/json", "x-cadre-wallet": this.wallet.address, "x-cadre-timestamp": String(ts), "x-cadre-signature": Buffer.from(sig).toString("hex") };
-  }
   override async chat(model: string | undefined, messages: { role: string; content: string }[], maxTokens: number) {
     const body = JSON.stringify({ ...(model ? { model } : {}), messages, max_tokens: maxTokens });
-    return fetchJson(this.at("/v1/chat/completions"), { method: "POST", headers: this.signed("POST", "/v1/chat/completions", body), body }, 900_000);
+    return fetchJson(this.at("/v1/chat/completions"), { method: "POST", headers: await this.signedHeaders("POST", "/v1/chat/completions", body), body }, 900_000);
   }
   override async balance() {
-    return fetchJson(this.at("/v1/balance"), { method: "GET", headers: this.signed("GET", "/v1/balance", "") }, 30_000);
+    return fetchJson(this.at("/v1/balance"), { method: "GET", headers: await this.signedHeaders("GET", "/v1/balance", "") }, 30_000);
   }
   override async topup(body: Record<string, unknown>, xPayment?: string) {
     const b = JSON.stringify(body);

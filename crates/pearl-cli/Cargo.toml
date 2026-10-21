@@ -22,6 +22,8 @@ pearl-node = { path = "../pearl-node" }
 pearl-job = { path = "../pearl-job" }
 # PostJob job id / terms hash / job header from the encoded tx (light-client code).
 pearl-verify-sbf = { path = "../pearl-verify-sbf" }
+# Local module checks before DeployCode (the chain's own validator).
+contracts = { path = "../../chain/contracts" }
 anyhow = "1.0"
 serde_json = "1.0"
 hex = "0.4"

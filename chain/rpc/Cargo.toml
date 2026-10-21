@@ -9,6 +9,7 @@ version.workspace = true
 agent-types.workspace = true
 state.workspace = true
 executor.workspace = true
+contracts.workspace = true
 consensus-pow.workspace = true
 mempool.workspace = true
 blobs.workspace = true

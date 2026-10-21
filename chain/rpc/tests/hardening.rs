@@ -45,7 +45,7 @@ async fn mine(k: &mut K, now: u64) {
     let mut h = t.header;
     let proof = MockVerifier::proof_for(&h);
     h.proof_hash = block::proof_hash(&proof);
-    let b = Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase) };
+    let b = Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts };
     let r = k.add_block(b, now, false).await;
     assert!(r.accepted && r.tip, "{:?}", r.reason);
 }
