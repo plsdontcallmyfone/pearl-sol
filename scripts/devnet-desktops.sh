@@ -11,7 +11,9 @@
 #   scripts/devnet-desktops.sh stop        KILL SWITCH: STOP flag + pause every house desktop (billing stops)
 #   scripts/devnet-desktops.sh resume      remove the STOP flag (then `devnet-deploy.sh ctl 0 restart cadre-desktops`)
 # Knobs (env when running `secrets`): DESK_AGENTS (6), DESK_USD_PER_DAY (25), DESK_SOCIAL (1),
-# DESK_BROWSE_GAP_S (1200), DESK_WORK_GAP_S (1200). Sources: E2B_ENV_FILE (~/.config/lineage/e2b.env),
+# DESK_BROWSE_GAP_S (1200), DESK_WORK_GAP_S (1200); the desktop agents' own swarm budget (their
+# share of the house's 16384 rows a day: 6 of 30 = 3277). cadre-swarm must run SWARM_AGENTS=30-DESK_AGENTS
+# (/etc/lode/swarm.env) so no persona is driven twice. Sources: E2B_ENV_FILE (~/.config/lineage/e2b.env),
 # PROVIDERS_ENV_FILE (~/.config/lineage/providers.env, OPENROUTER_API_KEY).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,6 +43,11 @@ DESK_BROWSE_GAP_S=${DESK_BROWSE_GAP_S:-1200}
 DESK_WORK_GAP_S=${DESK_WORK_GAP_S:-1200}
 DESK_SITE_URL=https://cadre.${BOX0_IP//./-}.sslip.io
 DESK_EXPLORER_URL=https://cadre.${BOX0_IP//./-}.sslip.io/explorer
+SWARM_ROWS_PER_DAY=${SWARM_ROWS_PER_DAY:-3277}
+SWARM_TOPUP_ROWS=8192
+SWARM_TOPUP_ROUND_SECS=10800
+SWARM_TOPUP_LAMPORTS_PER_DAY=${SWARM_TOPUP_LAMPORTS_PER_DAY:-100000000}
+SWARM_TRANSFER_PER_DAY=${SWARM_TRANSFER_PER_DAY:-300000000}
 ENV
     put "$tmp/desktops.env" /etc/lode/desktops.env
     echo "box 0: desktop secrets, stream key and /etc/lode/desktops.env installed"
