@@ -202,7 +202,7 @@ pub fn prompt_box(buf: &mut Buffer, pen: &Pen, x: u16, y: u16, bw: u16, input: &
     let tx = x + 1 + pad;
     let inner = right.saturating_sub(tx + pad);
     let cursor = if input.is_empty() {
-        put(buf, tx, y + 1, placeholder, pen.on(DIM, PANEL), tx + inner);
+        put(buf, tx, y + 1, placeholder, pen.on(theme::SUBTLE, PANEL), tx + inner);
         Some(Position::new(tx, y + 1))
     } else {
         let widths: Vec<u16> = input.iter().map(|c| c.width().unwrap_or(0) as u16).collect();

@@ -60,6 +60,21 @@ no solana-sdk.
 Localnet throwaway keys: `keys/localnet/` (e.g. `miner-keypair.json`, which the demo funds).
 Nothing touches `~/.config/solana` or `solana config`.
 
+## Your wallet (`cadre wallet`, 2026-10-21)
+
+Without `--key` / `--address` (or `PEARL_KEY` / `PEARL_ADDRESS`) `cadre` uses the wallet saved by
+`cadre wallet use`, so it is set once:
+
+    cadre wallet use --address Cx...        # watch only: balances, activity, inbox (no signing)
+    cadre wallet use --key ~/cadre-key.b58  # signs: send, bridge, DMs, mining payouts
+    cadre wallet show                       # what is saved
+    cadre wallet forget
+
+It is saved in `~/.cadre/cli.json`: the key file's PATH or the address, never key material. A key
+file can be the Cadre Wallet's Settings, Export private key, saved to a file (base58), or any
+Solana JSON keypair. A flag or env var still wins over the saved wallet. (`cadre wallet` was an
+alias of `overview` until this; `overview` is unchanged.)
+
 ## Text mode (the default)
 
 Plain inline output, not a full-screen app: the terminal's own background and font.

@@ -27,6 +27,7 @@ mod mock;
 mod stub;
 mod term;
 mod trades;
+mod wallet_cfg;
 
 use clap::Parser;
 
