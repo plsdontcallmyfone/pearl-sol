@@ -69,6 +69,11 @@ export class Budget {
     this.st.reserved += est;
     return true;
   }
+  /** Would `reserve` admit `est` rows for `agent` now? (no side effects; the DM decline check) */
+  admits(agent: string, est: number, now: number): boolean {
+    if (this.st.day !== dayOf(now)) return est <= this.cfg.rowsPerDay && this.agentCap(agent) > 0;
+    return this.st.rows + this.st.reserved + est <= this.cfg.rowsPerDay && (this.st.agentRows[agent] ?? 0) < this.agentCap(agent);
+  }
   /** Book the receipt's rows (release the reservation). */
   commit(agent: string, est: number, actual: number) {
     this.st.reserved = Math.max(0, this.st.reserved - est);

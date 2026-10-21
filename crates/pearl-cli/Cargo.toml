@@ -1,6 +1,6 @@
 [package]
 name = "pearl-cli"
-description = "pearl: terminal dashboard (ratatui) and plain/JSON CLI for the agent chain and its Solana side"
+description = "cadre (also pearl): health of every Cadre component, txs in words on both chains, agents, plus the wallet CLI and the ratatui dashboard"
 edition = "2021"
 license = "ISC"
 version = "0.1.0"
@@ -9,9 +9,20 @@ version = "0.1.0"
 # workspace builds on the machine default. Pinned in rust-toolchain.toml here.
 [workspace]
 
+[lib]
+name = "pearl_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pearl"
 path = "src/main.rs"
+test = false
+
+# The same program under the product name (docs/CLI.md); `pearl` stays for existing scripts.
+[[bin]]
+name = "cadre"
+path = "src/bin/cadre.rs"
+test = false
 
 [dependencies]
 # Wire types and signing: the chain's own crate (SPEC 2), not a re-implementation.
@@ -22,6 +33,8 @@ pearl-node = { path = "../pearl-node" }
 pearl-job = { path = "../pearl-job" }
 # PostJob job id / terms hash / job header from the encoded tx (light-client code).
 pearl-verify-sbf = { path = "../pearl-verify-sbf" }
+# `cadre verify --run`: the evaluator's own ticket check (cadre-glue-v1 replay), read-only.
+pearl-attester = { path = "../../services/attester" }
 # Local module checks before DeployCode (the chain's own validator).
 contracts = { path = "../../chain/contracts" }
 anyhow = "1.0"
@@ -36,6 +49,12 @@ ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 clap = { version = "4", features = ["derive", "env"] }
 ratatui = "0.29"
 crossterm = "0.28"
+# entry screen: cell widths for wrapping (ratatui's own version)
+unicode-width = "0.2"
+
+# entry screen: ignore SIGINT while a palette command runs in the foreground
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.dev]
 opt-level = 1

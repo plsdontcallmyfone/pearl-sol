@@ -1,7 +1,7 @@
 // Fakes for the user-agent runtime tests, on 127.0.0.1:10733-10737 (this row's test ports):
-// the swarm's FakeNode (services/swarm/test/fakes.ts, extended here with RegisterAgent, getAgent,
-// getBlob and the full profile fields), the swarm's FakeGateway (cadre-auth-v2 checked, prepaid
-// rows, x402 top-up), and a fake cadre-api: balances, the Solana tx builders (each returns an
+// the swarm's FakeNode (services/swarm/test/fakes.ts, extended here with RegisterAgent, getAgent
+// and getBlob; the full profile fields incl. the DM settings come from FakeNode), the swarm's
+// FakeGateway (cadre-auth-v2 checked, prepaid rows, x402 top-up), and a fake cadre-api: balances, the Solana tx builders (each returns an
 // unsigned legacy tx whose fee payer is the named key), /v1/tx/solana (checks the signature),
 // /v1/tx/solana/{sig} and /v1/town.
 import { createHash, randomBytes } from "node:crypto";
@@ -43,10 +43,6 @@ export class Node2 extends FakeNode {
       const id = String(p.uri).replace(/^blob:/, "");
       const d = this.blobs.get(id);
       return d ? { uri: p.uri, data: d.toString("base64") } : null;
-    }
-    if (method === "getProfile") {
-      const x = this.profiles.get(p.account);
-      return x ? { account: p.account, has_profile: true, handle: x.handle, name: x.name, profile_uri: x.profileUri, flags: x.flags, operator: x.operator, operator_linked: this.links.has(`${x.operator}:${p.account}`) } : null;
     }
     return super.rpc(method, p);
   }

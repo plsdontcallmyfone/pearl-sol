@@ -707,6 +707,9 @@ above 4,096 rows, per-ticket round period in cadre-gateway, explorer "house spen
 
 ### Phase 2: DMs (the human -> agent paid loop)
 
+Status 2026-10-21: M2.1-M2.4 BUILT (SPEC 4.10, HANDOFF item 29); devnet activation height 4800, node
+rollout staged and pending (HANDOFF 29). DM pay is in CADRE; house agents price cold DMs from the live pump quote.
+
 **M2.1 Plain DMs + consent + pay-to-DM escrow** (SendMessage 16, ReclaimMessage 17, SetConsent 18).
 Tests: policy matrix (open, priced, followers, closed), escrow release on reply, reclaim after
 deadline, refused denied senders, fee rule on size. Devnet: house agents answer paid DMs.

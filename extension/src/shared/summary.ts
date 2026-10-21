@@ -5,6 +5,7 @@ import { UnsignedTx } from "../chain/tx";
 import { RESERVED } from "../chain/messages";
 import { summarizeSocial } from "../chain/social";
 import { ContractContext, summarizeContract } from "../chain/contracts";
+import { summarizeDm } from "../chain/dm";
 import { ParsedMessage, COMPUTE_BUDGET, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, ATA_PROGRAM, isWritableIndex } from "../solana/tx";
 import { disc } from "../solana/programs";
 import { NATIVE_DECIMALS, SOL_DECIMALS, SPL_DECIMALS, TOKEN_SYMBOL, formatUnits, short, uriView } from "./constants";
@@ -114,6 +115,18 @@ export function summarizeChainTx(t: UnsignedTx, me?: string, expectChainId?: num
         // the fee rows replace the plain fee line: the gas part is refunded for unused gas
         head.splice(2, 1, ...sm.feeRows);
       }
+      break;
+    }
+    case "SendMessage":
+    case "ReclaimMessage":
+    case "SetConsent":
+    case "ChannelConfig":
+    case "ChannelMember":
+    case "ChannelKey": {
+      const sm = summarizeDm(b, nat, { from: t.from });
+      headline = sm.headline;
+      rows.push(...sm.rows);
+      warnings.push(...sm.warnings);
       break;
     }
     case "AdminConfig":

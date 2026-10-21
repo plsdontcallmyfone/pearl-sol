@@ -880,6 +880,9 @@ CLAUDE.md "Who is working on what".
      around 19:05 UTC, agent-node.pre-fix3 kept on each box; after each, equal tip and finalized hash
      (4599 149d4ca0681f, 4 peers); RSS about 1 min after restart 153 / 196 / 171 MB. Rollback:
      `cp -p agent-node.pre-fix3 agent-node.new && mv -f agent-node.new agent-node`, restart cadre-node.
+     The contracts row then rolled main bc4a6ef (contracts + this fix + the full-store check) over it
+     19:32-19:41 UTC. Soak: two fixed followers on the test box held the tip 19:14-20:15 UTC with 0
+     dropped frames; devnet agent-node RSS 178-244 MB and flat through 20:13 (TEST-REPORT).
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
@@ -996,8 +999,98 @@ CLAUDE.md "Who is working on what".
    - OPEN: a wallet release with f7753402b, then CADRE_AUTH_REQUIRE_AUDIENCE=1 on the gateways (box 0, test box); chain
      C-1..C-12 wait for the next cadre-node rollout; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
      multisig + timelock before mainnet; attester/evaluator messages carry no chain_id (fresh mainnet keys).
+29. CADRE CLI: STATUS, PING, TXS AND AGENTS IN WORDS (owner 2026-10-21 "a CLI that pings everything", "Cadre CLI"
+   row): DONE. crates/pearl-cli now builds two binaries from one library: `cadre` (the product name; no command = `status`)
+   and `pearl` (unchanged for scripts; no command = the overview box, the old `status` is now `overview`). New, all
+   read-only: `status` (one screen, PASS / WARN / FAIL / SKIP over 3 nodes with finalized-hash agreement, the 4 Solana
+   programs, mint, relay payers, light-client lag, cadre-api, explorer, storefront, relayer, gateway, site, settle,
+   verifiable AI, house swarm, desktops, user-agent runtime, buyback / reserve / supply / orders, mining rate and paid
+   share, bridge invariant; `--local` adds box 0's 127.0.0.1 services; exit 1 on FAIL, `--strict` on WARN; `--json`,
+   `--health`), `ping <target> [-c N]`, `tx` (Cadre hash or Solana signature, every kind in words incl. social, DMs,
+   contracts), `account`, `block`, `agent @handle`, `agents`, `job <id>`, `ticket` (+ replay verdict), `verify
+   [--run]` (the evaluator's own check_ticket, read-only), `model`, `watch`. scripts/install-miner.sh `--cli` (default
+   unchanged); scripts/devnet-health.sh adds the CLI's lines when /opt/lode/bin/cadre exists (NOT installed on box 0:
+   needs a build there + the health script reinstalled; no restart). Docs: docs/CLI.md "Health and lookups",
+   ~/cadre-docs guides/cli. Tests 56 (mock network in src/mock.rs). Live: TEST-REPORT "Cadre CLI".
+   Found live: box 0's IP is rate limited by the public Solana RPC (cadre-api not ready, relayer unhealthy for seconds
+   at a time, buyback / reserve / supply missing from the summary): the dedicated RPC URL (/etc/lode/solana-rpc-url,
+   absent) fixes it, and `--local` uses it when present; the house swarm used 15,706 of its 16,384 rows by 20:00 UTC
+   and went 2 h without a house post before posting again.
 
-29. DESKTOPS PHASE A + SELF-HOSTED DENSITY TEST + FAST-LOOKING DESKTOPS (owner 2026-10-21; "desktops Phase A" row;
+29. ECOSYSTEM PHASE 2: ON-CHAIN DMs (M2.1-M2.4, 2026-10-21, "ecosystem Phase 2: on-chain DMs" row; SPEC 4.10,
+   API.md "DMs and channels", RPC.md "DM reads", cadre-docs protocol/messages):
+   - Owner decisions: DMs on the Cadre chain (each message a tx); D4 sealed (X25519 + XChaCha20-Poly1305) for
+     human-agent, public for agent-agent (client defaults; the chain takes both); D5 priced cold DMs with escrow,
+     refund if unanswered, 100% to the agent (`dm_protocol_bps` key exists, 0); every DM parameter is AdminConfig.
+   - Chain (main): kinds 16 SendMessage (with thought_ref), 17 ReclaimMessage, 18 SetConsent, 19 ChannelConfig,
+     20 ChannelMember, 21 ChannelKey (agent-types/executor/state/rpc dm.rs, separate files); state tags 26-35;
+     DM params keys 35-42 in their own record `["dm-params"]` (43-44 reserved), so the config record and the
+     contracts tiers never change; escrow counted by the supply invariant; sendTx runs a next-nonce DM through the
+     executor on the tip so refused DMs never enter the mempool; getAccountTxs roles `message` / `member`. Devnet
+     activation DEVNET_DM_HEIGHT = 4800. Vectors chain/agent-types/vectors/dm.json + dm-crypto.json (Rust reference
+     tests/dm_crypto.rs; the explorer, cadre-api, swarm, extension and wallet codecs and crypto check against them).
+   - Services (main): apps/explorer/src/dm.ts index (threads, boxes, escrows and how they settled, consent,
+     channels, key epochs); cadre-api routes/dms.ts (inbox, threads, messages, escrows, consent, channels, keys,
+     SSE stream, 6 builders, /v1/tx/encode DM kinds; set-profile takes enc_key and the DM settings); services/swarm
+     dmcrypto.ts + dms.ts (house agents publish enc_key + priced inbox, answer paid escrowed DMs first as one paid
+     thought each, same mode as the incoming DM, decline with a refund when over budget or out of time; dm_price =
+     the pump quote of 2 x rows per answer x lamports per row, kept when an input is unavailable; README "DMs");
+     user agents answer when actions.reply is true, inside their spec budgets.
+   - Site ~/cadre-web d14cd9d (main): /inbox (Primary, Requests, Blocked, Channels, sending lane, escrows),
+     /inbox/[peer] (gate and price before signing, sealed toggle, metadata note, escrow countdown, reclaim and
+     decline, block / allow / clear, Enable sealed DMs), /channels, /channels/[id] (joins, sealed epochs, admin
+     keys); sidebar Inbox, profile Message button. Wallet ~/pearl-wallet bf7f2113e (dev + danishseal cadre-chain):
+     codecs, dm-crypto (@noble/ciphers 1.3.0), window.pearl.dm (encKey, seal, open, channelKeys, channelSeal,
+     channelOpen; per-origin "Read sealed messages" permission), approvals in words, profile DM settings, Inbox.
+   - Tests: chain workspace 184/184 on the test box (executor dm 13 incl. policy matrix, escrow release/refund
+     timing, decline, limits, protocol share, sealed framing, channels and key epochs; node RPC dm_rpc 2 incl. reorg
+     rollback; dm_crypto 2); explorer 60, cadre-api 59 (+9 skipped), swarm 41, agents 20, extension tx-vectors 67,
+     wallet unit 280 (+6 skipped; 2 pre-existing token IDL drift fails), wallet UI 132/132 headless, site unit 56,
+     e2e 63/63, 68 headless screenshots (desktop 1440 / phone 390, light / dark). Live on the test-box DM chain
+     (one agent-node, chain 1347616769, ~/dms-build, ports 11730/11740): cadre-api live check 43/43 (every route
+     and builder with real signed txs, heights 1301-1331); swarm proof: paid plain DM answered and released
+     (1361-1362), sealed DM answered sealed and opened by the sender (1362-1364), over-budget DM declined with a
+     refund (1407-1408).
+   - DEVNET NOT LIVE YET: the node window was refused by this session's permission check (20:10 UTC). agent-node
+     5dcab264... (main e7e6cbb; DMs + contracts + fix3) is STAGED as /opt/lode/bin/agent-node.dms on boxes 0-2; a
+     fresh test-box follower with it replayed devnet from genesis to tip 4653 with tip and finalized hash equal to
+     all three boxes. To go live (whoever has permission): cadre-node only on box 1, 2, 0 (cp -p agent-node
+     agent-node.pre-dms; cp agent-node.dms agent-node; systemctl restart cadre-node; tips/finalized/peers equal
+     before the next box). It is safe after 4800 too: old nodes cannot decode DM txs, so none enter a mempool
+     until all three run it. Then box 0 from main: devnet-deploy.sh sync, rebuild/restart cadre-explorer and
+     cadre-api (index STATE_VERSION 3 re-indexes), cadre-swarm (optional env in services/swarm/README.md "DMs";
+     check `node src/main.ts dm-price` first; the pump quote was 503 from Solana devnet 429s at 19:55 UTC),
+     cadre-agents, then `devnet-deploy.sh site` (cadre-web main) and a wallet release from dev. Then a live
+     headless check of /inbox on https://cadre.64-95-12-116.sslip.io with a test key.
+   - Open: wallet Inbox has no channel screens (codec, approvals and window.pearl cover channels; the site has
+     them); swarm letters between house agents are plain only and channels are not answered; send-message builder
+     takes no blob_uri yet; the test-box DM chain (~/dms-build node + mine loop, cadre-api pid in
+     ~/dms-api/cadre-api.pid) is left up for the devnet check and can be stopped by PID.
+
+30. SMART CONTRACTS (owner 2026-10-21 "allow for smart contract builds"; docs/CONTRACTS.md, SPEC 4.9,
+    "smart contracts" row): anyone can deploy WebAssembly contracts, run by wasmi 1.1.0 (interpreter,
+    fuel-metered, pinned). Tx kinds 30-34 DeployCode / Instantiate / Call / Migrate / SetContractAdmin;
+    config keys 27-34; state tags 40-48; an 89-byte contracts record (receipts_root, events_root) as a
+    tx_root leaf before the coinbase receipt, so Solana proves events and receipts by inclusion
+    (pearl_verify_sbf::contracts); contract storage under state_root (getContractStateProof).
+    Rust SDK crates/cadre-contract-sdk + examples counter, escrow, token, bounty; `pearl contract ...`;
+    RPC getContract, getCode, listContracts, listCodes, queryContract, simulateCall,
+    getContractReceipt, getContractEvents, getContractStorage, getContractStateProof; explorer
+    /contracts, /contract/<addr>, /code/<hash>, /tx/<hash>; cadre-api /v1/contracts..., /v1/codes,
+    /v1/tx/contract-call; extension and Cadre Wallet decode the five kinds in plain words; cadre-docs
+    "Contracts" tab. Devnet activation DEVNET_CONTRACTS_HEIGHT = 4700, inert until the first contract
+    tx. Gas defaults sized from measurements (block 150M gas = about 1.1 s of the worst wasm found).
+    Next: per-operator fuel table (wasmi 2.0), a Solana verifier for QMDB storage proofs, outside
+    audit + host-ABI fuzzing before mainnet (CONTRACTS.md 12).
+    LIVE ON DEVNET since block 4703 (2026-10-21 ~20:45 UTC): every node runs agent-node 327d167b... (main
+    bc4a6ef; a fresh follower replayed devnet from genesis with it first, hash and state_root equal), relays
+    run header-relay 4bb4f670... (devnet feature). Example contracts (our key keys/devnet/contracts-keypair.json,
+    all immutable): counter DEgjVUmWddeiDduF2HpXR1z2rtXB7kLvyhvGb7YBAbgb, escrow
+    ETyaKSLTxhsqZpqfX85rVTrM2Pt1B5j9svbiuxivXYng, token BfaxysW2erS1dPc37z4rsCQwobPrAknQ5A6q5o6P6aLB,
+    bounty 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 (explorer /contract/<address>; docs/DEVNET.md "Contracts").
+
+
+31. DESKTOPS PHASE A + SELF-HOSTED DENSITY TEST + FAST-LOOKING DESKTOPS (owner 2026-10-21; "desktops Phase A" row;
    docs/DESKTOPS-AT-SCALE.md sections 5.1, 9, 10):
    - Code (services/swarm/desktop): per-agent layout (`DESK_TWO_DESK_AGENTS`: the first N keep Social + Work, the rest
      one desktop) and the Phase A mode scheduler (one desktop, Social/Work every `DESK_MODE_SLOT_S` 1800 s, staggered;

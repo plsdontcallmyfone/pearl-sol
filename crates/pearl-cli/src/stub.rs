@@ -203,8 +203,15 @@ pub fn ctx(url: &str, text_mode: bool) -> Ctx {
         json: !text_mode,
         wait: false,
         no_wait: false,
+        endpoint: vec![],
+        local: false,
+        strict: false,
     };
     let mut c = Ctx::new(opts).unwrap();
+    // nothing off the stub node (cadre-api, explorer, ...): tests never reach a real service
+    c.eps.urls.clear();
+    c.eps.urls.insert("explorer".into(), "http://127.0.0.1:9".into());
+    c.eps.nodes = vec![url.into()];
     if text_mode {
         c.ui = Ui::plain(Style::plain());
     }

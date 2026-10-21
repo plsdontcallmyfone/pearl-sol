@@ -511,6 +511,13 @@ an idle work account close; they come back with `close-works` when a relay is re
 relay box 1 4.4469, relay box 2 4.5020 (about 0.02 SOL/h each in fees), ops 17.2289, deployer 45.9612
 SOL (unchanged).
 
+## DMs (2026-10-21, "ecosystem Phase 2: on-chain DMs" row)
+
+DM kinds 16-21 activate at height 4800 (SPEC 4.10). STATUS: agent-node 5dcab264... (main e7e6cbb) is staged as
+/opt/lode/bin/agent-node.dms on boxes 0-2 and NOT running; the node rollout and the box 0 service redeploys are
+listed in HANDOFF item 29. Until all three nodes run it, no DM tx can enter any mempool (old nodes cannot decode
+the kinds), so the height passing first is harmless.
+
 ## Ops hardening (2026-10-21, security pass)
 
 Audited on all three boxes on 2026-10-21 (security + robustness row, docs/SECURITY-REVIEW.md lists the
@@ -573,6 +580,8 @@ OK/WARN/FAIL, failing checks) and `/var/log/cadre-health/health.log` (one line p
 20,000 lines). Thresholds can be overridden in /etc/lode/health.env. No external messaging (owner decision
 needed for any alert channel). Boxes 1-2 are covered through their public RPC and the relay balances;
 their unit states are not read from box 0.
+When /opt/lode/bin/cadre exists the script also runs `cadre status --health --local --network devnet` and logs
+its lines as `cli:<check>` (docs/CLI.md "status"; not installed yet: build it on box 0 and reinstall the script).
 
 ### Backups
 
@@ -602,6 +611,32 @@ entries). Nothing is uploaded anywhere; where an offline copy lives is the owner
 - caddy's admin API on 127.0.0.1:2019 is reachable by any local process (all services run as lode);
   moving it to a unix socket changes `systemctl reload caddy`, left as is.
 - no rate limit at caddy in front of the node RPC (the node's own limits apply; chain review item).
+
+## Contracts (2026-10-21, "smart contracts" row; docs/CONTRACTS.md)
+
+Activation: devnet height 4700 (`DEVNET_CONTRACTS_HEIGHT`); the first contract tx landed in block 4703.
+Nodes: agent-node 327d167b... from main bc4a6ef on boxes 1 (19:32 UTC), 2 (19:38), 0 (19:40), cadre-node only,
+tips, finalized hash and peers equal after each (agent-node.pre-contracts kept); before that a fresh
+follower on the test box replayed the whole devnet with the new binary (block 4587 hash c187d06a... and
+state_root equal to all three boxes). Relays: header-relay 4bb4f670... (`--features devnet`; it keeps the
+contracts record leaf in tx_root paths) on box 1, box 2 and box 0 cadre-settle, 19:05-19:10 UTC.
+Explorer and cadre-api restarted on box 0 21:01 UTC (contract pages, /v1/contracts).
+
+Example contracts, deployed and called with our own key (keys/devnet/contracts-keypair.json, funded with
+200 CADRE from miner0), all with no admin (immutable):
+
+| contract | address | created | calls made (block, gas, fee charged) |
+|---|---|---|---|
+| counter | DEgjVUmWddeiDduF2HpXR1z2rtXB7kLvyhvGb7YBAbgb | 4703 | increment 1 (4709, 150,670 gas, 4,368), increment 41 (4710); query get = 42 |
+| escrow | ETyaKSLTxhsqZpqfX85rVTrM2Pt1B5j9svbiuxivXYng | 4705 | open with 1 CADRE for miner0 (4714, 249,617 gas, 5,947), release (4715, 290,180 gas, 5,743) |
+| token "Cadre Demo Token" CDT | BfaxysW2erS1dPc37z4rsCQwobPrAknQ5A6q5o6P6aLB | 4707 | transfer 12,345 to miner0 (4711, 285,934 gas, 6,031); balance_of(miner0) = 12345 |
+| bounty | 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 | 4713 | post with 2 CADRE and a town announcement as the contract (4717, 618,348 gas, 9,805), submit (4718), award (4719) |
+
+Explorer: https://explorer.64-95-12-116.sslip.io/contracts and /contract/<address>; API:
+https://api.64-95-12-116.sslip.io/v1/contracts. Screenshots: screenshots/explorer/devnet-*.png.
+Use: `pearl --rpc https://rpc.64-95-12-22.sslip.io --key K contract call <address> <method> TYPE:VALUE ...`
+(docs/CLI.md). `agent-node.pre-contracts` stays on each box but is no rollback target any more: blocks from 4703 carry
+contract txs that it cannot decode.
 
 ## Files
 

@@ -304,6 +304,10 @@ fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot
             }
         }
     }
+    gather_bridge_events(ctx, sn, err);
+}
+
+fn gather_bridge_events(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot, &str, anyhow::Error)) {
     match ctx.call("getBridgeEvents", json!({"limit": 1})) {
         Ok(v) => {
             sn.withdrawal_count = u(&v, "withdrawal_count");
@@ -316,6 +320,26 @@ fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot
         }
         Err(e) => err(sn, "getBridgeEvents", e),
     }
+}
+
+/// Only what the bridge invariant needs (`status`): chain info, escrow, the recent
+/// withdrawals and the Solana side (vault, releases, deposits in flight).
+pub fn gather_bridge(ctx: &Ctx) -> Snapshot {
+    let mut sn = Snapshot { taken_ms: now_ms(), ..Default::default() };
+    let mut err = |sn: &mut Snapshot, what: &str, e: anyhow::Error| sn.errors.push(format!("{what}: {e}"));
+    match ctx.call("getChainInfo", json!({})) {
+        Ok(v) => sn.info = v,
+        Err(e) => err(&mut sn, "agent chain", e),
+    }
+    if sn.chain_ok() {
+        match ctx.call("getEscrow", json!({})) {
+            Ok(v) => sn.escrow = v,
+            Err(e) => err(&mut sn, "getEscrow", e),
+        }
+        gather_bridge_events(ctx, &mut sn, &mut err);
+    }
+    gather_solana(ctx, &mut sn);
+    sn
 }
 
 fn gather_solana(ctx: &Ctx, sn: &mut Snapshot) {
