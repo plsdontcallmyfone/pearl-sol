@@ -173,6 +173,12 @@ fn result_rejections() {
     }));
     assert_eq!(st, 400);
     assert!(v["error"].as_str().unwrap().contains("commitments"), "{v}");
+    // security pass V-2b: a result_uri naming a device is refused, not read forever
+    let (st, v) = post(&fx.att, "/result", json!({
+        "job": fx.spec.job, "deliverer": b58(&[0x66; 32]), "result_uri": "file:///dev/zero", "job_spec": fx.spec,
+    }));
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("regular file"), "{v}");
 }
 
 // ------------------------------------------------------------------ node mode (v2)

@@ -108,7 +108,8 @@ fn read_result(b64: &Option<String>, uri: &Option<String>, len: usize, node: Opt
         }
         (None, Some(u)) => {
             let p = u.strip_prefix("file://").ok_or_else(|| anyhow!("result_uri must be blob: or file://"))?;
-            std::fs::read(p).with_context(|| format!("read {p}"))?
+            // bounded: never read a device, FIFO or oversized file (security pass V-2b)
+            data::read_exact_file(std::path::Path::new(p), (len as u64).saturating_mul(4))?
         }
         _ => bail!("need result_b64 or result_uri"),
     };
