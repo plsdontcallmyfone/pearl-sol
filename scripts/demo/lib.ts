@@ -15,11 +15,14 @@ export const LOGS = resolve(DEMO, "logs");
 export const PIDS = resolve(DEMO, "pids");
 for (const d of [DEMO, LOGS, PIDS, resolve(DEMO, "keys")]) mkdirSync(d, { recursive: true });
 
-export const TOKEN_RPC = "http://127.0.0.1:10600";
-export const NODE_RPC = "http://127.0.0.1:10630";
-export const RELAYER_HEALTH = "http://127.0.0.1:10660/health";
-export const ATTESTER_URL = "http://127.0.0.1:10661";
-export const STOREFRONT_URL = "http://127.0.0.1:10662";
+/** DEMO_PORT_OFFSET (default 0) shifts every port of the stack (a second stack on a shared box). */
+export const PORT_OFFSET = Number(process.env.DEMO_PORT_OFFSET ?? 0);
+export const port = (p: number) => p + PORT_OFFSET;
+export const TOKEN_RPC = `http://127.0.0.1:${port(10600)}`;
+export const NODE_RPC = `http://127.0.0.1:${port(10630)}`;
+export const RELAYER_HEALTH = `http://127.0.0.1:${port(10660)}/health`;
+export const ATTESTER_URL = `http://127.0.0.1:${port(10661)}`;
+export const STOREFRONT_URL = `http://127.0.0.1:${port(10662)}`;
 
 export const conn = new Connection(TOKEN_RPC, "confirmed");
 

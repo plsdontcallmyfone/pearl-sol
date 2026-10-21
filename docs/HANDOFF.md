@@ -750,8 +750,7 @@ CLAUDE.md "Who is working on what".
      the header sync path needs a look (not this row's change: the old deployed binary does the same).
      Closed by item 24 (the orphan pool cap, not a commit; fixed in the sync-fix commit).
    - Not done (owner, 2026-10-20): no 8B registration on devnet, no GPU; devnet stays on the 1B and the
-     CPU worker. Open for an 8B: the gateway's balance ticket budget (`max_blocks_balance`, capped at 10,000
-     blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
+     CPU worker. Open for an 8B: the ticket budget and the per-segment register_job cost are DONE in item 27,
      and quantize.py's equal-shard rule for vocabularies like Qwen3-8B's (MAINNET.md section 11 item 11).
 
 22. ECOSYSTEM PHASE 1, "THE TOWN IS ALIVE" (M1.1-M1.5, 2026-10-20/21, "ecosystem Phase 1" row):
@@ -850,7 +849,17 @@ CLAUDE.md "Who is working on what".
      three devnet nodes, 3 peers, no "orphan pool full", no bans. NODE.md recipe re-run from a fresh public
      clone of main (2ccfba4, `--locked`): build 555 s, 4,402 blocks in about 50 s, equal finalized hash.
    - Devnet boxes: an already-synced node is not affected, so the rollout only matters when a box resyncs.
-     Rollout status is in DEVNET.md "binaries" and the CLAUDE.md row.
+     Rollout PAUSED 2026-10-21: box 1 cadre-node ran the fix (agent-node 91cb50d7..., public main 2ccfba4)
+     17:16-17:24 UTC with tip and finalized hash equal to boxes 0 and 2, then went back to 7ce3d9a1... (all
+     three boxes run 7ce3d9a1... again). Reason: on the test box a fixed follower stopped taking new blocks at
+     4442 after about 25 min (resumed on restart, then followed within 1 block for 16 min). A pre-fix main
+     (6cf43b92...) started on a copy of the same synced data took NO block at all in 13 min (0% CPU, listed
+     as a peer by all three boxes; also with the fixed node stopped), so the follow stall is older than this
+     fix and not the same-IP limit. Open: why a test-box follower stops receiving gossip and tips (box
+     journals show nothing). Both binaries report `peers` 0 for minutes after a restart (the count is only
+     refreshed in the tip-timer branch of a biased select). agent-node.aa5 (the fix) is staged in
+     /opt/lode/bin on boxes 0-2, not running; to resume: rename it over agent-node and restart cadre-node,
+     box 1, 2, 0, in a posted window.
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
@@ -912,6 +921,40 @@ CLAUDE.md "Who is working on what".
      (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
      data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
      GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
+
+27. SERVE THE 8B: UPLOAD ORDER, TICKET BLOCK BUDGET, JOB CHECK AT MINING (owner-approved 2026-10-21, "serve the
+   8B" row; follows item 21; no GPU, no 8B on devnet):
+   - Upload (SPEC 4.5 "Upload order"): `pearl model register` uploads the manifest, sends RegisterModel and
+     waits, then uploads the chunks (`--parallel 4`, byte-range reads); a registered manifest pins its chunks
+     on arrival, so the upload may outlast `grace_blocks`; a rerun resumes. No consensus change.
+   - Ticket budget (SPEC 5.4 "Ticket block budget"): `max_blocks = max_rounds x matrices x blocks_per_segment`,
+     rounds from the deadline, round period and rows, cut to `min(--max-ticket-blocks (10,000, = the
+     storefront's initial max_blocks_cap), max_job_blocks)`; the gateway never posts more rounds than that
+     (last round admits only what it can stack, then the balance completes). 8B: 15 rounds at 10,000.
+   - Light client (SPEC 5.3 "Job check at mining"): new instruction `begin_verify_job` proves the posting
+     tx inline when a job block is verified; header-relay no longer registers posted jobs (indexes them,
+     holds posting headers open until their jobs' deadline, restores a closed one from the accumulator),
+     keeps the security pass's replace_job for the oversized-tx fallback. Before (devnet, measured): 0.0022
+     SOL per POSTED segment (register tx + 2,240,280-lamport JobCommit, never returned), 1.437 SOL per 8B
+     round; after: nothing per posted segment, no rent per mined one, same tx count per job header.
+   - Found in the e2e and fixed: block templates scanned only the newest 512 jobs, so the oldest segments
+     of a 640-segment round were never offered; now `TEMPLATE_JOB_SCAN = 4096` (node policy, chain/
+     consensus-pow). Devnet nodes still run 512 (fine for the 1B) until the next node rollout.
+   - E2E (test box, ~/serve8b, ports 11600-11665 via DEMO_PORT_OFFSET=1000, demo steps 1-6 + 11, synthetic
+     Llama-3.1-8B-shape model: 640 matrices, k 2048, n 8; scripts/serve8b/): PASS. Registration via node 2
+     throttled to 64 KiB/s with a 20-block grace: 1,280 chunks (10.5 MB) in 102.7 s, all held 1,427 blocks
+     later. One paid round (256-row balance, x402 25,707,635 lamports, 2 requests, 32 rows): 640 segments
+     posted in blocks 381-426 (20 batches of 32 txs), all 640 mined (382-1796, the stall before the template
+     fix included), ticket completed, Order finalized by finalize_order_proof, 2,208 s from payment to
+     settlement (a rerun on the tree merged with main, template fix from the start: 7/7 PASS, segments mined
+     in blocks 340-979, settled 1,000 s after payment). Light client over the whole first run: 1,572 headers, 641 begin_verify_job (87.8k CU average),
+     0 register_job, 0 JobCommit accounts, 61,662 txs, 0 failed, 0.308 SOL fees, lag at most 21 blocks.
+   - Devnet: lightclient 47mav... upgraded 2026-10-21 (slot 513580446; .so 665,536 B sha256 2017132c...;
+     programdata 718,124 B so no extend; buffer rent 3.38157312 SOL held during the deploy and returned;
+     deployer 43.961159746 -> 43.957719746 SOL, 0.00344 SOL in fees incl. one failed buffer write closed
+     and redone). header-relay rollout: see DEVNET.md "Header relay build".
+   - Open for an 8B: the GPU worker (item 20), an upload node with >= 10 GB blob quota and a faster put rate,
+     raising the storefront max_blocks_cap for long-lived 8B balances, the node rollout with the template fix.
 
 ## M1 components (SPEC v2, all DONE)
 

@@ -157,6 +157,10 @@ pub const BODY_WINDOW: usize = 512;
 /// count or bytes the pool drops its oldest orphan, and that orphan's header goes back to the
 /// body queue so its body is asked for again.
 pub const MAX_ORPHAN_BYTES: usize = 256 << 20;
+/// Newest jobs an auto-choice block template looks at (node policy, not consensus). It must
+/// exceed the open jobs of the busiest moment: one 8B round alone is 640 segment jobs, and at
+/// 512 the oldest segments of a round were never offered (scripts/serve8b run, 2026-10-21).
+pub const TEMPLATE_JOB_SCAN: u64 = 4096;
 
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
@@ -1282,7 +1286,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 Some(j)
             }
             JobChoice::Auto => {
-                let mut jobs = self.mineable_jobs_at(&parent, 512).await?;
+                let mut jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
                 jobs.retain(|j| available(j));
                 jobs.sort_by(|a, b| b.cap_remaining.cmp(&a.cap_remaining).then(a.index.cmp(&b.index)));
                 jobs.into_iter().next()

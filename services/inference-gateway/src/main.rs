@@ -66,6 +66,11 @@ struct Args {
     min_free_rows: u64,
     #[arg(long, default_value_t = 50)]
     close_margin_blocks: u64,
+    /// Largest max_blocks a balance ticket asks for: keep it at or below the storefront's
+    /// on-chain max_blocks_cap (10,000 at initialize). A ticket's rounds are this / (matrices x
+    /// blocks per segment), cut further by its deadline and round period (SPEC 5.4).
+    #[arg(long, default_value_t = 10_000)]
+    max_ticket_blocks: u32,
     #[arg(long, default_value = "http://127.0.0.1:10670")]
     explorer_url: String,
     #[arg(long)]
@@ -123,6 +128,7 @@ fn main() -> Result<()> {
         max_round_rows: a.max_round_rows,
         min_free_rows: a.min_free_rows,
         close_margin_blocks: a.close_margin_blocks,
+        max_ticket_blocks: a.max_ticket_blocks,
         explorer_url: a.explorer_url.clone(),
         public_url: a.public_url.clone().unwrap_or(format!("http://{}:{}", a.host, a.port)),
         public_api_root: a.public_api_root.clone(),

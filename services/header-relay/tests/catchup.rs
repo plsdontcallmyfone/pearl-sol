@@ -492,6 +492,128 @@ fn two_lanes_send_each_shared_step_once() {
     assert_eq!(failed, 0, "errors {errors:?}");
 }
 
+/// The chain of `job_round_is_proven_at_mining_and_its_posting_header_is_held`: block 1 posts
+/// a round of 8 segments (8 PostSegments txs), blocks 3, 5, .. are mined on them.
+struct JobChain {
+    blocks: Vec<Blk>,
+    visible: Rc<Cell<usize>>,
+    posting: Vec<Vec<u8>>,
+    jobs: HashMap<[u8; 32], (u64, u64)>,
+}
+
+impl Src for JobChain {
+    fn tip(&self) -> Result<(u64, [u8; 32])> {
+        let n = self.visible.get();
+        Ok(((n - 1) as u64, self.blocks[n - 1].hash))
+    }
+    fn header_at(&self, h: u64) -> Result<Option<ChainHeader>> {
+        if h as usize >= self.visible.get() {
+            return Ok(None);
+        }
+        let b = &self.blocks[h as usize];
+        Ok(Some(ChainHeader { bytes: b.bytes, hash: b.hash, height: h, proof: b.proof.clone(), cum_work: None }))
+    }
+    fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
+        Ok((if *hash == self.blocks[1].hash { self.posting.clone() } else { vec![] }, None))
+    }
+    fn job_heights(&self, job_id: &[u8; 32]) -> Result<Option<(u64, u64)>> {
+        Ok(self.jobs.get(job_id).copied())
+    }
+}
+
+/// SPEC 5.3 "job check at mining" (2026-10-21): the relay posts nothing to Solana when a round
+/// is posted; each block mined on a segment starts with begin_verify_job (the posting tx proven
+/// inline), no JobCommit is created, and the posting header's record stays open while its jobs
+/// can still be mined although `retain_final` would close it (a fallback header as deep is closed).
+#[test]
+fn job_round_is_proven_at_mining_and_its_posting_header_is_held() {
+    use pearl_job::standing;
+    use rand::{Rng, SeedableRng};
+    let p = small_params();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(8);
+    let (k, n, m) = (LOCAL_K, 64u32, 8u32);
+    let base = pearl_job::MiningConfig::localnet_default();
+    let model = standing::model_id(&[0x21; 32], b"relay-test");
+    let ticket = [0x22u8; 32];
+    let mut posting = vec![];
+    let mut preps = vec![];
+    for matrix in 0..8u16 {
+        let a: Vec<i8> = (0..m as usize * k as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+        let bt: Vec<i8> = (0..k as usize * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+        let key = standing::matrix_job_key(&model, matrix, k, n, &base);
+        let (hash_a, hash_b) = (pearl_job::job::commit_a(&key, &a), standing::commit_bt(&key, &bt));
+        let mut body = ticket.to_vec();
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&model);
+        body.extend_from_slice(&base.rank.to_le_bytes());
+        body.extend_from_slice(&base.rows_pattern.to_bytes());
+        body.extend_from_slice(&base.cols_pattern.to_bytes());
+        body.push(1);
+        body.extend_from_slice(&matrix.to_le_bytes());
+        for x in [m, k, n, 1u32] {
+            body.extend_from_slice(&x.to_le_bytes());
+        }
+        body.extend_from_slice(&hash_a);
+        body.extend_from_slice(&hash_b);
+        body.extend_from_slice(&[0x77; 32]);
+        let uri = format!("blob:{}", hex::encode([matrix as u8; 32]));
+        body.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+        body.extend_from_slice(uri.as_bytes());
+        posting.push(tx_bytes(&[0x31; 32], matrix as u64, 12, &body));
+        let cfg = standing::matrix_config(&base, k);
+        let job = pearl_job::Job { header: standing::matrix_job_header(&model, matrix, k, n), config: cfg, m, n, hash_a, hash_b };
+        preps.push((pearl_job::PreparedJob::new_bt(job, &a, bt).unwrap(), standing::segment_id(&ticket, matrix, 0)));
+    }
+    let (root, _) = tx_root(&posting);
+    let mut blocks = vec![genesis(0x1e100000)];
+    blocks.push(child(&p, &blocks[0], &Work::Fallback, ChildOpts { tx_root: root, ..Default::default() }));
+    for (prep, seg) in &preps {
+        let parent = blocks.last().unwrap().clone();
+        blocks.push(child(&p, &parent, &Work::Fallback, ChildOpts::default()));
+        let parent = blocks.last().unwrap().clone();
+        blocks.push(child(&p, &parent, &Work::Job(prep, *seg), ChildOpts::default()));
+    }
+    for _ in 0..12 {
+        let parent = blocks.last().unwrap().clone();
+        blocks.push(child(&p, &parent, &Work::Fallback, ChildOpts::default()));
+    }
+    let jobs: HashMap<[u8; 32], (u64, u64)> = preps.iter().map(|(_, s)| (*s, (1, 10_000))).collect();
+    let total = blocks.len();
+    let env = Env::new(p, &blocks[0]);
+    let mut sim = Sim::new(env.svm, env.payer, 0x51);
+    let chain = JobChain { blocks: blocks.clone(), visible: Rc::new(Cell::new(2)), posting, jobs };
+    let visible = chain.visible.clone();
+    let works = (0..4).map(|_| Keypair::new()).collect();
+    let mut r = Relay::new(chain, &mut sim, works, Opts { parallel: 4, exact_cu: true, resend_after: Duration::ZERO, shared_grace: Duration::ZERO });
+    r.ensure_works().unwrap();
+    for slot in 0..2000u64 {
+        if slot % 3 == 0 && visible.get() < total {
+            visible.set(visible.get() + 1);
+        }
+        r.pass().unwrap();
+        r.ledger.pause(0);
+        let c = r.config().unwrap();
+        if visible.get() == total && c.tip_height as usize == total - 1 && c.final_floor > 1 + c.params.retain_final + 8 {
+            break;
+        }
+    }
+    for _ in 0..12 {
+        r.pass().unwrap();
+        r.ledger.pause(0);
+    }
+    let c = r.config().unwrap();
+    assert_eq!(c.tip_height as usize, total - 1, "every header verified, the 8 segment blocks included");
+    for (_, seg) in &preps {
+        assert!(r.ledger.svm.get_account(&lightclient::client::job_addr(seg)).is_none(), "no JobCommit");
+    }
+    let rec = |h: usize| r.ledger.svm.get_account(&lightclient::client::header_addr(&blocks[h].hash)).filter(|a| a.lamports > 0).is_some();
+    assert!(rec(1), "the posting header is held while its jobs are open");
+    assert!(!rec(2), "a fallback header as deep is closed");
+    let errors: Vec<String> = r.ledger.results.values().filter_map(|s| if let TxState::Failed(e) = s { Some(e.clone()) } else { None }).collect();
+    assert!(errors.is_empty(), "failed txs: {errors:?}");
+    println!("job round: {} headers, {} txs, max tx {} bytes, final {} (posting header 1 held)", total - 1, r.stats.txs, r.ledger.max_tx, c.final_height);
+}
+
 /// Security pass 2026-10-21, L-2 (docs/SECURITY-REVIEW.md): someone else verified a long run
 /// of headers and connected them in one burst, so the light-client tip jumped more than the
 /// 256-entry canonical ring past the last header marked final. The relay fills that gap top

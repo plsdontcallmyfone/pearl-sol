@@ -14,7 +14,7 @@ import {
 } from "@solana/web3.js";
 import {
   ATTESTER_URL, DEMO, KEYS, NODE_RPC, RELAYER_HEALTH, ROOT, STOREFRONT_URL, TOKEN_RPC, conn, demoKey, httpJson, lastJson,
-  loadKp, nodeCall, portBusy, procs, run, sleep, start, waitFor,
+  loadKp, nodeCall, port, portBusy, procs, run, sleep, start, waitFor,
 } from "./lib.ts";
 import {
   BRIDGE_PROGRAM_ID, ORDER_LAYOUT, ORDER_STATUS_FINALIZED, ORDER_STATUS_REFUNDED, STOREFRONT_PROGRAM_ID, ata, bridgeRefundPda, bridgeConfigPda, decodeBridgeConfig,
@@ -65,7 +65,7 @@ const MINT = mintKey.kp.publicKey;
 const RESERVE_ID = loadKp("keys/localnet/reserve-keypair.json").publicKey;
 const node = NodeRpc.http(NODE_RPC);
 /** Devnet node 1: takes the job data putBlob (the miner and attester use node 0). */
-const DA_RPC = "http://127.0.0.1:10632";
+const DA_RPC = `http://127.0.0.1:${port(10632)}`;
 
 const BIN = {
   node: resolve(ROOT, "chain/target/release/agent-node"),
@@ -81,14 +81,17 @@ const BIN = {
 const CADRE_MODEL_DIR = process.env.CADRE_MODEL_DIR ?? resolve(homedir(), "cadre-models/llama-3.2-1b-instruct-w7a7-k2048");
 const CADRE_PYTHON = process.env.CADRE_PYTHON ?? resolve(homedir(), "int7-exp/venv/bin/python");
 const MODEL_STORE = resolve(DEMO, "models");
-const GATEWAY_URL = "http://127.0.0.1:10664";
-const WORKER_URL = "http://127.0.0.1:10665";
+const GATEWAY_URL = `http://127.0.0.1:${port(10664)}`;
+const WORKER_URL = `http://127.0.0.1:${port(10665)}`;
 // node blob limits: room for a registered model (about 1.7 GB for Llama-3.2-1B) and a fast local upload
 const DEVNET_BLOBS = { max_total_bytes: 8_000_000_000, put_rate_bytes_per_s: 2_000_000_000, put_burst_bytes: 256 << 20 };
 const HR_ARGS = ["--node", NODE_RPC, "--solana", TOKEN_RPC, "--payer", resolve(ROOT, KEYS.payer)];
 const CRANK = resolve(ROOT, "services/crank");
 const RELAYER = resolve(ROOT, "services/relayer");
-const DEVNET_ENV = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS), DEVNET_BLOBS: JSON.stringify(DEVNET_BLOBS) };
+// DEMO_BLOBS_NODE2: node 2's own blob limits (scripts/serve8b: a short grace and a slow put rate on the
+// node the model is uploaded to, so the upload outlasts the grace period many times over)
+const DEVNET_ENV: Record<string, string> = { DEVNET_DIR: resolve(DEMO, "devnet"), DEVNET_PARAMS: JSON.stringify(GENESIS_PARAMS), DEVNET_BLOBS: JSON.stringify(DEVNET_BLOBS),
+  ...(process.env.DEMO_BLOBS_NODE2 ? { DEVNET_BLOBS_2: process.env.DEMO_BLOBS_NODE2 } : {}) };
 
 const crank = (args: string[]) => run("node", ["src/main.ts", ...args], { cwd: CRANK, env: { RPC_URL: TOKEN_RPC, KEYPAIR: resolve(ROOT, KEYS.payer) } });
 /** The crank CLI signed by another key (fund_mining is permissionless since 2026-10-19). */
@@ -98,7 +101,7 @@ const relayerCli = (args: string[]) => run("node", ["src/cli.ts", ...args], { cw
 function relayerEnv(): Record<string, string> {
   return {
     TOKEN_RPC, NODE_RPC, SIGNER_KEYS: resolve(ROOT, KEYS.attester), TOKEN_PAYER: resolve(ROOT, KEYS.payer),
-    AGENT_KEY: resolve(ROOT, KEYS.payer), STATE_FILE: resolve(DEMO, "relayer-state.json"), POLL_MS: "1000", HEALTH_PORT: "10660",
+    AGENT_KEY: resolve(ROOT, KEYS.payer), STATE_FILE: resolve(DEMO, "relayer-state.json"), POLL_MS: "1000", HEALTH_PORT: String(port(10660)),
     // held-back orders are refunded on Solana this long after they were first held back (step 8)
     REFUND_GRACE_MS: process.env.DEMO_REFUND_GRACE_MS ?? "5000",
   };
@@ -276,7 +279,7 @@ async function step1(): Promise<string> {
 
   // services that do not need Solana state yet
   mkdirSync(MODEL_STORE, { recursive: true });
-  start("attester", BIN.attester, ["--keypair", KEYS.attester, "--port", "10661", "--rpc", NODE_RPC, "--mode", "node", "--models", MODEL_STORE]);
+  start("attester", BIN.attester, ["--keypair", KEYS.attester, "--port", String(port(10661)), "--rpc", NODE_RPC, "--mode", "node", "--models", MODEL_STORE]);
   start("miner", BIN.miner, ["--rpc", NODE_RPC, "--payout", KEYS.miner, "--deliver", "--attester", ATTESTER_URL,
     "--results-dir", resolve(DEMO, "results"), "--threads", MINER_THREADS, "--stats-secs", "30", "--models", MODEL_STORE]);
   await waitFor("attester /health", async () => (await httpJson(`${ATTESTER_URL}/health`)).body?.ok === true, 30_000);
@@ -321,11 +324,11 @@ async function step1(): Promise<string> {
   // relayer + storefront service
   start("relayer", "node", ["src/main.ts"], { cwd: RELAYER, env: relayerEnv() });
   start("storefront-x402", "node", ["src/main.ts"], { cwd: resolve(ROOT, "services/storefront-x402"), env: {
-    TOKEN_RPC, STOREFRONT_PORT: "10662", STOREFRONT_WALLET: sfWallet.file, STATE_FILE: resolve(DEMO, "storefront-state.json"), AGENT_RPC: NODE_RPC } });
+    TOKEN_RPC, STOREFRONT_PORT: String(port(10662)), STOREFRONT_WALLET: sfWallet.file, STATE_FILE: resolve(DEMO, "storefront-state.json"), AGENT_RPC: NODE_RPC } });
   await waitFor("relayer /health ok", async () => (await httpJson(RELAYER_HEALTH)).body?.ok === true, 60_000);
   await waitFor("storefront /health", async () => (await httpJson(`${STOREFRONT_URL}/health`)).body?.ok === true, 30_000);
   const ci = await node.getChainInfo();
-  return `token :10600, devnet 3 nodes (height ${ci.height}, peers ${(await nodeCall("getChainInfo")).peers}), mint ${MINT.toBase58()}, ` +
+  return `token :${port(10600)}, devnet 3 nodes (height ${ci.height}, peers ${(await nodeCall("getChainInfo")).peers}), mint ${MINT.toBase58()}, ` +
     `pool ${pool.toBase58()}, services up (relayer, attester, miner, storefront-x402)`;
 }
 
@@ -810,19 +813,27 @@ async function stepInference(): Promise<string> {
   await sendChainTx(user.kp, KIND.Transfer, transferBody(registrant.publicKey, 1_000_000_000n));
   await sendChainTx(user.kp, KIND.Transfer, transferBody(gwKey.kp.publicKey, 1_000_000_000n));
   const pearl = (args: string[], key: string, timeoutMs = 300_000) => lastJson(run(BIN.pearl, ["--network", "localnet", "--rpc", NODE_RPC, "--key", key, "--json", "--wait", ...args], { timeoutMs }));
-  const reg = pearl(["model", "register", modelDir, "--store", MODEL_STORE], resolve(ROOT, KEYS.payer), 3_600_000);
+  // CADRE_REGISTER_RPC: register and upload through another node (scripts/serve8b uses node 2 with a
+  // short blob grace and a slow put rate); CADRE_UPLOAD_PARALLEL: chunk uploads in flight
+  const regRpc = process.env.CADRE_REGISTER_RPC ?? NODE_RPC;
+  const reg = lastJson(run(BIN.pearl, ["--network", "localnet", "--rpc", regRpc, "--key", resolve(ROOT, KEYS.payer), "--json", "--wait", "model", "register", modelDir,
+    "--store", MODEL_STORE, "--parallel", process.env.CADRE_UPLOAD_PARALLEL ?? "4"], { timeoutMs: 3_600_000 }));
+  const regHeight = (await node.getChainInfo()).height;
   info("model registered", { model_id: reg.model_id, matrices: reg.matrices, macs_per_row: reg.macs_per_row, chunks: reg.chunks, bytes: reg.bytes, upload_s: reg.upload_s, height: reg.included_height });
   const model = await nodeCall("getModel", { model_id: reg.model_id });
   if (!model || model.matrix_count !== reg.matrices) throw new Error(`getModel ${JSON.stringify(model)?.slice(0, 300)}`);
   // worker + gateway
   // torch threads: the miner keeps every core busy, and an oversubscribed torch pool collapses
   // (measured on the 4-core test box under the demo's miner: 0.41 tok/s at 4 threads, 1.33 at 2)
-  start("cadre-worker", CADRE_PYTHON, [resolve(ROOT, "tools/cadre/worker.py"), "--model", modelDir, "--port", "10665", "--threads", WORKER_THREADS], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
+  // CADRE_WORKER_SCRIPT: another worker with the same HTTP API (scripts/serve8b/synth_worker.py for a synthetic model)
+  const workerScript = process.env.CADRE_WORKER_SCRIPT ? resolve(process.env.CADRE_WORKER_SCRIPT) : resolve(ROOT, "tools/cadre/worker.py");
+  start("cadre-worker", CADRE_PYTHON, [workerScript, "--model", modelDir, "--port", String(port(10665)), ...(process.env.CADRE_WORKER_SCRIPT ? [] : ["--threads", WORKER_THREADS])], { env: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" } });
   await waitFor("worker /health", async () => (await httpJson(`${WORKER_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 180_000);
-  start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL,
+  start("cadre-gateway", BIN.gateway, ["--key", gwKey.file, "--model-id", reg.model_id, "--rpc", NODE_RPC, "--storefront", STOREFRONT_URL, "--worker", WORKER_URL, "--port", String(port(10664)),
     "--attester", ATTESTER_URL, "--work-dir", resolve(DEMO, "gateway"), "--deadline-blocks", "400", "--round-secs", "5", "--balance-deadline-blocks", "2000",
     // receipt links through a public cadre-api (the test box: https://cadre-api.64-95-13-106.sslip.io/v1/openai)
-    ...(process.env.GATEWAY_PUBLIC_API_ROOT ? ["--public-api-root", process.env.GATEWAY_PUBLIC_API_ROOT] : [])]);
+    ...(process.env.GATEWAY_PUBLIC_API_ROOT ? ["--public-api-root", process.env.GATEWAY_PUBLIC_API_ROOT] : []),
+    ...(process.env.GATEWAY_EXTRA ? process.env.GATEWAY_EXTRA.split(" ").filter((x) => x) : [])]);
   await waitFor("gateway /health", async () => (await httpJson(`${GATEWAY_URL}/health`).catch(() => ({ body: null }))).body?.ok === true, 60_000);
   // prepaid balance (owner decision 2026-10-18): one x402 top-up, then wallet-signed requests
   const rowsBudget = Number(process.env.CADRE_BALANCE_ROWS ?? 256);
@@ -937,10 +948,23 @@ async function stepInference(): Promise<string> {
   const cliTicket = pearl(["ticket", ticket], resolve(ROOT, KEYS.payer));
   const cliModel = pearl(["model", "show", reg.model_id], resolve(ROOT, KEYS.payer));
   if (cliTicket.standing.blocks_mined !== tk.standing.blocks_mined || cliModel.tickets < 1) throw new Error("pearl ticket / model show disagree with the node");
+  // every model blob is still on the node it was uploaded to, however long ago (pinned by the
+  // registered manifest, SPEC 4.5 "Upload order")
+  const regNode = NodeRpc.http(regRpc);
+  const manBlob = await regNode.call("getBlob", { uri: model.manifest_uri });
+  const man = JSON.parse(Buffer.from(manBlob.data, "base64").toString());
+  const chunkIds: string[] = Object.values(man.files as Record<string, any>).flatMap((f: any) => f.blobs.map((b: string) => b.slice(5)));
+  let held = 0;
+  for (const id of chunkIds) if ((await regNode.call("hasBlob", { blob_id: id })).present) held++;
+  const blobCfg = (await regNode.call("getBlobStats", {}).catch(() => null)) as any;
+  const sinceReg = (await node.getChainInfo()).height - regHeight;
+  info("model blobs on the upload node", { chunks: chunkIds.length, held, blocks_since_registration: sinceReg, grace_blocks: blobCfg?.grace_blocks, put_rate_bytes_per_s: blobCfg?.put_rate_bytes_per_s });
+  if (held !== chunkIds.length) throw new Error(`upload node holds ${held} of ${chunkIds.length} model chunks`);
   const mined = BigInt(model.macs_per_row) * BigInt(tk.standing.rows_used);
   writeFileSync(resolve(DEMO, "inference.json"), JSON.stringify({ model_id: reg.model_id, ticket, order: nonce.toString(), text: r.body.text, output_ids: r.body.output_ids,
     rows: r.body.rows, chat: j1, streamed: { text: streamed, last: lastEv }, models, stats, answer_s: answerS, settle_s: settleS, blocks, heights,
-    subsidy: sub.toString(), cap_total: capTotal.toString(), rows_used: tk.standing.rows_used, rows_budget: tk.standing.rows, price_lamports: req.maxAmountRequired, registration: reg }, null, 1));
+    subsidy: sub.toString(), cap_total: capTotal.toString(), rows_used: tk.standing.rows_used, rows_budget: tk.standing.rows, price_lamports: req.maxAmountRequired, registration: reg,
+    reg_height: regHeight, chunks_held_after: held, blocks_since_registration: sinceReg, top_up: top.body, ticket_rounds: tk.standing.rounds, segments: segIds.size }, null, 1));
   return `model ${reg.model_id.slice(0, 12)} registered (${reg.matrices} matrices, ${reg.chunks} blobs in ${Number(reg.upload_s).toFixed(1)} s); balance of ${rowsBudget} rows ` +
     `topped up for ${req.maxAmountRequired} lamports over x402; signed chat completion -> "${r.body.text}" (${r.body.output_ids.length} tokens in ${answerS.toFixed(1)} s), ` +
     `streamed completion "${streamed}"; ticket ${ticket.slice(0, 12)}: ${tk.standing.rounds} round(s), ${segIds.size} standing jobs ` +
@@ -984,7 +1008,7 @@ async function teardown(): Promise<string> {
   } catch (e) {
     console.log(String(e).slice(0, 300));
   }
-  const ports = [10600, 10601, 10602, 10603, 10630, 10631, 10632, 10633, 10634, 10635, 10640, 10641, 10642, 10660, 10661, 10662, 10664, 10665];
+  const ports = [10600, 10601, 10602, 10603, 10630, 10631, 10632, 10633, 10634, 10635, 10640, 10641, 10642, 10660, 10661, 10662, 10664, 10665].map(port);
   const busy = await waitFor("ports free", async () => {
     const b = ports.filter((p) => portBusy(p));
     return b.length === 0 ? [] : null;

@@ -164,6 +164,7 @@ signature); priority fees are not (mainnet needs them under load; not measured h
 | header records (refundable on close) | 0.0042 per live header | SPEC 5.3 "Relay cost on real Solana" |
 | relay fees per fallback header | 0.000185 base (37 signatures) + priority fees on about 12.2M CU | SPEC 5.3 (measured CU); 1,440 headers/day at 60 s = 0.27 SOL/day base |
 | relay spend measured on devnet, no paid work (2026-10-20 05:33-06:18 UTC, 38 headers, both lanes) | 0.0140 net | relay payer balances XQUUCs5t... and E66ekRjf... (net of rent returned by closes) |
+| register_job per posted segment, measured on devnet 2026-10-21 (434 JobCommit accounts of the 1B's rounds; gone since the 2026-10-21 light-client upgrade, SPEC 5.3) | 0.00224528 (5,000 fee + 2,240,280 rent, never returned) | getProgramAccounts of 313-byte JobCommits + their creating txs (90.9k-103.6k CU, 973-1,006 bytes) |
 | relay spend measured on devnet, window with one inference round (06:18-08:53 UTC, 208 headers, 144 of them segment blocks whose jobs the relay registered with register_job) | 0.3544 net | same balances (4.66708 -> 4.47174 and 4.71261 -> 4.55359); if the no-paid-work rate above held for the other headers, the 144 segments cost about 0.28 SOL, about 0.0019 each (derived, rent of JobCommit accounts included) |
 | one full e2e run on devnet (bridge in/out, x402 order, buyback, refund) | 0.0827 (ops) | DEVNET.md run 2: ops 17.9743 -> 17.8916 |
 | one prepaid AI top-up of 256 rows (buyer) | 0.0954 | devnet paid flow 2026-10-20: 95,411,375 lamports (DEVNET.md "Inference") |
@@ -267,9 +268,30 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
     or both. Facts for the choice: the 8B runs at 8.0-8.6 tok/s per worker on an A40 against 25 tok/s
     for the 1B (section 7), so it needs a GPU worker (the CPU worker is not usable for it); its registered
     weights are 7,504,658,432 int8 entries (7.5 GB of B files, = its MACs per token row) that every miner
-    serving it stores; each round posts 640 segments
-    (10 PostSegments txs of 64) instead of 144, and on Solana each segment the light client registers is
-    one register_job tx and one JobCommit account (SPEC 4.5), so 640 per round; the gateway's balance
-    ticket budget is capped at 10,000 blocks (`max_blocks_balance`), which is 15 rounds of 640 segments
-    against 64 rounds of 144 (budget 9,216 there) (raise the cap or segment fewer matrices per round before serving an 8B
-    with prepaid balances). Devnet stays on the 1B and the CPU worker (owner, 2026-10-20).
+    serving it stores; each round posts 640 segments (640 PostSegments txs, one segment each)
+    instead of 144. Readiness for the 8B (owner-approved 2026-10-21, "serve the 8B" row; SPEC 4.5,
+    5.3, 5.4; measured figures only):
+    (a) Upload: `pearl model register` now uploads the manifest, registers, then the chunks, so the
+    chunks are pinned on arrival and the upload may outlast `grace_blocks` any number of times
+    (e2e: a 10.5 MB synthetic 640-matrix model uploaded in 102.7 s through a node throttled to 64
+    KiB/s with a 20-block grace; all 1,280 chunks still held 1,427 blocks later). The 8B's 7.5 GB at
+    the default 1 MiB/s put rate is about 2 h; the upload node needs `max_total_bytes` of 10 GB or
+    more and a higher `put_rate_bytes_per_s` if that is too slow (not measured at 7.5 GB).
+    (b) Ticket budget: `max_blocks = max_rounds x 640`, cut to `min(--max-ticket-blocks, the
+    storefront's max_blocks_cap, the chain's max_job_blocks)`; at the storefront's initial cap of
+    10,000 an 8B balance holds 15 rounds, after which it completes and the wallet tops up again.
+    To give an 8B balance more rounds, raise the storefront `max_blocks_cap` (admin set_config) and
+    `--max-ticket-blocks` together, up to 100,000 (156 rounds of 60 s, or 61 rounds for an 8,192-row
+    balance at the 3 h period).
+    (c) Solana: the light client proves each segment's posting tx inline when its block is
+    verified (`begin_verify_job`), so a round costs nothing on Solana when it is posted and a mined
+    segment costs no JobCommit rent. Before (measured on devnet, 434 JobCommit accounts): per posted
+    segment one register_job tx (5,000 lamports, 90.9k-103.6k CU) and 2,240,280 lamports of rent
+    never returned, so 1.437 SOL per 8B round (0.323 per 1B round). After: per mined segment block
+    one begin_verify_job tx (87.8k CU on average in the e2e, 101k in LiteSVM) in place of the
+    begin + first chunk tx, the same tx count per job header as before minus the register tx, and
+    no rent. The e2e's whole light-client run (1,572 headers incl. 641 job blocks, 61,662 txs at
+    5,000 lamports, no priority fees on a test validator) paid 0.308 SOL in fees.
+    (d) Nodes: block templates must see the whole round (TEMPLATE_JOB_SCAN 4096, was 512); devnet
+    nodes run the old 512 (fine for the 1B's 144) until the next node rollout.
+    Devnet stays on the 1B and the CPU worker (owner, 2026-10-20).

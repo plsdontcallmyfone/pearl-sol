@@ -17,7 +17,14 @@
 //!   whose parent is already Verified is Verified at once);
 //! - global ops (fire and forget, one batch in flight at a time): `connect` runs of
 //!   WorkDone headers, reorg to a heavier verified branch, `mark_final`, `accumulate`,
-//!   `close_header` of our old final headers, job registration for new canonical blocks.
+//!   `close_header` of our old final headers (not those that posted jobs still open).
+//!
+//! Job blocks (SPEC 5.3 "job check at mining", 2026-10-21): the relay indexes the jobs posted
+//! in each new canonical block (no Solana tx) and, when a block mined on a job comes up,
+//! starts its flight with `begin_verify_job`, which proves the job's posting tx inline
+//! against the posting header. So a round of 640 segments costs nothing on Solana until its
+//! segments are mined, and then one tx and no JobCommit rent per mined block. A job that
+//! already has a JobCommit (older relays registered every job) still uses it.
 //!
 //! All progress lives on Solana, so restarts resume (a half-verified header is simply
 //! begun again on a fresh pass). Every status poll and account read is batched.
@@ -44,6 +51,12 @@ const CANON_LEN: usize = lightclient::CANON_LEN;
 /// chunk 24.9k, a 950-byte chunk 1.5k; with headroom).
 const CU_SUBMIT2: u32 = 90_000;
 const CU_BEGIN: u32 = 45_000;
+/// begin_verify_job: 101k CU measured in LiteSVM (a PostSegments tx of 384 bytes, 8 path levels).
+const CU_BEGIN_JOB: u32 = 160_000;
+/// Largest posting tx + path proven inline; above it the job is registered (register_job) the
+/// old way. A Solana tx holds about 830 bytes of instruction data next to begin_verify_job's
+/// six accounts and the compute-budget instruction.
+const BIND_MAX: usize = 800;
 const CU_WRITE: u32 = 6_000;
 const CU_CONNECT_EACH: u32 = 25_000;
 const CU_FINAL_EACH: u32 = 15_000;
@@ -115,6 +128,8 @@ struct Flight {
     txs: Vec<Tx>,
     plan: Vec<(Vec<Step>, u64)>,
     job: Option<[u8; 32]>,
+    /// The job proven inline instead (begin_verify_job): posting block, tx, path.
+    bind: Option<Bind>,
     /// The header record's relayer (its submitter): the jackpot pays the relay reward
     /// to it, and the program refuses any other recipient (WrongRelayer 6021). With lanes
     /// the submitter may be another lane's relay.
@@ -123,6 +138,13 @@ struct Flight {
     sent: u32,
     fails: u32,
     failed: Option<String>,
+}
+
+#[derive(Clone)]
+struct Bind {
+    block: [u8; 32],
+    tx: Vec<u8>,
+    path: Vec<u8>,
 }
 
 /// Lag and throughput, for the log line and the tests.
@@ -190,9 +212,16 @@ pub struct Relay<'a, L: Ledger, S: Src> {
     skip: HashMap<[u8; 32], Instant>,
     /// Shared steps another lane owns, by (kind, height): when first seen needed.
     shared_seen: HashMap<(u8, u64), Instant>,
-    /// Blocks whose jobs another lane registers: (height, hash, seen); registered here
-    /// (only the jobs still missing) once `shared_grace` has passed.
-    jobs_pending: Vec<(u64, [u8; 32], Instant)>,
+    /// Jobs posted in canonical blocks this relay indexed: job id -> (height, block hash).
+    postings: HashMap<[u8; 32], (u64, [u8; 32])>,
+    /// Recent block bodies with their tx_root paths (a round's segments share one block).
+    bodies: Vec<([u8; 32], std::rc::Rc<(Vec<Vec<u8>>, Vec<Vec<u8>>)>)>,
+    /// Posting headers kept open: hash -> (height, deadline of its jobs).
+    held: BTreeMap<[u8; 32], (u64, u64)>,
+    /// Hash -> deadline of the jobs it posted (0: none), so each block is looked at once.
+    hold_seen: HashMap<[u8; 32], u64>,
+    /// Final-header hashes from the accumulator's start (for restore_header proofs).
+    acc_hashes: Vec<[u8; 32]>,
     closed_upto: Option<u64>,
     jobs_upto: Option<u64>,
     opts: Opts,
@@ -228,7 +257,11 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             lane: (0, 1),
             skip: HashMap::new(),
             shared_seen: HashMap::new(),
-            jobs_pending: vec![],
+            postings: HashMap::new(),
+            bodies: vec![],
+            held: BTreeMap::new(),
+            hold_seen: HashMap::new(),
+            acc_hashes: vec![],
             closed_upto: None,
             jobs_upto: None,
             opts,
@@ -497,15 +530,22 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             if self.skip.contains_key(&hd.hash) || self.flights.iter().any(|f| f.hd.hash == hd.hash) {
                 continue;
             }
-            let (job, config) = if hd.is_fallback() {
-                (None, p.fallback_config)
+            let (job, config, bind) = if hd.is_fallback() {
+                (None, p.fallback_config, None)
             } else {
                 let j = hd.job_id();
-                let Some(data) = self.ledger.account(&client::job_addr(&j))? else {
-                    continue; // its job is registered once the posting block is canonical
-                };
-                let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut data.as_slice())?;
-                (Some(j), jc.config)
+                // inline whenever possible (a JobCommit from a dead block, finding L-1, can not
+                // stall it); an existing JobCommit only for a posting tx too large to go inline
+                match self.bind_for(&j, hd.height, &cfg, &canon)? {
+                    Some((b, config)) => (None, config, Some(b)),
+                    None => match self.ledger.account(&client::job_addr(&j))? {
+                        Some(data) if self.posting_too_large(&j)? => {
+                            let jc = <lightclient::JobCommit as anchor_lang::AccountDeserialize>::try_deserialize(&mut data.as_slice())?;
+                            (Some(j), jc.config, None)
+                        }
+                        _ => continue, // the posting block is not Verified on the light client yet
+                    },
+                }
             };
             let shape = client::Shape::new(hd.is_fallback(), p.fallback_m, p.fallback_n, &config, hd.proof.len());
             let slot = self.free.pop().unwrap();
@@ -516,6 +556,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                 txs: vec![],
                 plan: client::plan_costed(&shape, client::TX_CU_BUDGET),
                 job,
+                bind,
                 relayer,
                 started: Instant::now(),
                 sent: 0,
@@ -534,13 +575,20 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let w = self.works[f.slot].pubkey();
             let hash = f.hd.hash;
             let (next, txs): (Stage, Vec<Tx>) = match (f.stage, f.txs.is_empty()) {
-                (Stage::Begin, true) => {
-                    let first = client::FIRST_CHUNK.min(f.hd.proof.len());
-                    let ixs = vec![client::begin_verify(pk, w, &hash, f.job.as_ref(), f.hd.proof.len() as u32), client::write_proof(pk, w, 0, f.hd.proof[..first].to_vec())];
-                    (Stage::Begin, vec![Tx::new(ixs, self.cu(CU_BEGIN))])
-                }
+                (Stage::Begin, true) => match &f.bind {
+                    // the job proven inline: the tx carries the posting tx, no first chunk
+                    Some(b) => {
+                        let ix = client::begin_verify_job(pk, w, &hash, &b.block, f.hd.proof.len() as u32, b.tx.clone(), b.path.clone());
+                        (Stage::Begin, vec![Tx::new(vec![ix], self.cu(CU_BEGIN_JOB))])
+                    }
+                    None => {
+                        let first = client::FIRST_CHUNK.min(f.hd.proof.len());
+                        let ixs = vec![client::begin_verify(pk, w, &hash, f.job.as_ref(), f.hd.proof.len() as u32), client::write_proof(pk, w, 0, f.hd.proof[..first].to_vec())];
+                        (Stage::Begin, vec![Tx::new(ixs, self.cu(CU_BEGIN))])
+                    }
+                },
                 (Stage::Begin, false) => {
-                    let mut off = client::FIRST_CHUNK.min(f.hd.proof.len());
+                    let mut off = if f.bind.is_some() { 0 } else { client::FIRST_CHUNK.min(f.hd.proof.len()) };
                     let mut txs = vec![];
                     while off < f.hd.proof.len() {
                         let n = client::WRITE_CHUNK.min(f.hd.proof.len() - off);
@@ -837,6 +885,24 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             let hash = if cfg.tip_height - h < CANON_LEN as u64 { Some(canon[(h as usize) % CANON_LEN]) } else { self.node_hash(h)? };
             cands.extend(hash);
         }
+        // a header that posted jobs still open stays (a block mined on one of them proves the
+        // job against it); held ones come back once their jobs' deadline has passed
+        let node_tip = self.stats.node_tip.max(cfg.tip_height);
+        let mut finals = Vec::with_capacity(cands.len());
+        for (i, x) in cands.iter().enumerate() {
+            let until = self.posting_deadline(x)?;
+            if until >= node_tip {
+                self.held.insert(*x, (from + i as u64, until));
+            } else {
+                finals.push(*x);
+            }
+        }
+        let due: Vec<[u8; 32]> = self.held.iter().filter(|(_, (_, until))| *until < node_tip).map(|(x, _)| *x).collect();
+        for x in &due {
+            self.held.remove(x);
+        }
+        finals.extend(due);
+        let mut cands = finals;
         let n_final = cands.len();
         let (dead, keep): (Vec<_>, Vec<_>) = self.abandoned.drain(..).partition(|(h, _)| *h <= cfg.final_floor);
         self.abandoned = keep;
@@ -858,28 +924,25 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         let next_closed = end;
         self.closed_upto = Some(next_closed);
-        // 6. register jobs posted in new canonical blocks (rare; blocking)
+        // 6. index the jobs posted in new canonical blocks (no Solana tx: a job is proven when
+        //    a block mined on it is relayed, SPEC 5.3)
         let from = self.jobs_upto.unwrap_or(cfg.tip_height);
         let end = cfg.tip_height.min(from + 32);
         for h in from + 1..=end {
             let hash = if cfg.tip_height - h < CANON_LEN as u64 { Some(canon[(h as usize) % CANON_LEN]) } else { self.node_hash(h)? };
             if let Some(hash) = hash {
-                // shared: the lane that owns the posting height registers at once (both
-                // lanes registering every job doubled the blocking sends and one copy of
-                // each failed with AccountAlreadyInUse, Custom(0))
-                if self.lane.1 <= 1 || h % self.lane.1 == self.lane.0 {
-                    self.register_jobs(h, &hash)?;
-                } else {
-                    self.jobs_pending.push((h, hash, Instant::now()));
+                let (txs, _) = self.src.block_body(&hash)?;
+                for (job_id, _) in chain::jobs_in(&txs) {
+                    self.postings.insert(job_id, (h, hash));
                 }
             }
         }
         self.jobs_upto = Some(end.max(from));
-        let grace = self.opts.shared_grace;
-        let due: Vec<(u64, [u8; 32])> = self.jobs_pending.iter().filter(|(.., t)| t.elapsed() >= grace).map(|(h, x, _)| (*h, *x)).collect();
-        self.jobs_pending.retain(|(.., t)| t.elapsed() < grace);
-        for (h, hash) in due {
-            self.register_jobs(h, &hash)?;
+        // forget postings far below the tip (their deadlines are at most 100,000 blocks out;
+        // a later job block is looked up again with getJob)
+        if self.postings.len() > 200_000 {
+            let floor = cfg.tip_height.saturating_sub(100_000);
+            self.postings.retain(|_, (h, _)| *h >= floor);
         }
         // a blocking send above (jobs, accumulator start) may have outlived `bh`
         let bh = self.ledger.blockhash()?;
@@ -890,25 +953,139 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         Ok(())
     }
 
-    fn register_jobs(&mut self, height: u64, hash: &[u8; 32]) -> Result<()> {
-        let (txs, cb) = self.src.block_body(hash)?;
-        let jobs = chain::jobs_in(&txs);
-        if jobs.is_empty() {
-            return Ok(());
+    /// A block body and its tx_root paths, from a small cache.
+    fn body(&mut self, hash: &[u8; 32]) -> Result<std::rc::Rc<(Vec<Vec<u8>>, Vec<Vec<u8>>)>> {
+        if let Some((_, b)) = self.bodies.iter().find(|(h, _)| h == hash) {
+            return Ok(b.clone());
         }
+        let (txs, cb) = self.src.block_body(hash)?;
         let (_, paths) = chain::tx_root_paths(&txs, cb.as_deref());
-        for (job_id, i) in jobs {
-            if let Some(data) = self.ledger.account(&client::job_addr(&job_id))? {
-                self.replace_dead_job(&job_id, &data, hash, &txs[i], &paths[i])?;
-                continue;
+        let b = std::rc::Rc::new((txs, paths));
+        if self.bodies.len() >= 4 {
+            self.bodies.remove(0);
+        }
+        self.bodies.push((*hash, b.clone()));
+        Ok(b)
+    }
+
+    /// The posting tx of `job_id` for `begin_verify_job`, once its posting header is Verified
+    /// and final or canonical on the light client (None: not yet). Restores the posting
+    /// header's record from the accumulator if it was closed. A posting tx too large to go
+    /// inline is registered with register_job instead (the next pass then uses the JobCommit).
+    fn bind_for(&mut self, job_id: &[u8; 32], job_height: u64, cfg: &lightclient::Config, canon: &[[u8; 32]]) -> Result<Option<(Bind, [u8; 52])>> {
+        // an indexed posting block the node has since reorged away is looked up again
+        let indexed = match self.postings.get(job_id).copied() {
+            Some((h, x)) if self.node_hash(h)? == Some(x) => Some((h, x)),
+            _ => None,
+        };
+        let (ph, phash) = match indexed {
+            Some(x) => x,
+            None => {
+                let Some((ph, _)) = self.src.job_heights(job_id)? else { return Ok(None) };
+                let Some(phash) = self.node_hash(ph)? else { return Ok(None) };
+                self.postings.insert(*job_id, (ph, phash));
+                (ph, phash)
+            }
+        };
+        if ph >= job_height {
+            return Ok(None);
+        }
+        let rec = match self.ledger.account(&client::header_addr(&phash))?.as_deref().and_then(rec_of) {
+            Some(r) => r,
+            None => {
+                // closed (or never relayed): a final header is restored from the accumulator
+                if ph > cfg.final_floor || !self.restore(ph, &phash)? {
+                    return Ok(None);
+                }
+                match self.ledger.account(&client::header_addr(&phash))?.as_deref().and_then(rec_of) {
+                    Some(r) => r,
+                    None => return Ok(None),
+                }
+            }
+        };
+        let canonical = ph <= cfg.tip_height && cfg.tip_height - ph < CANON_LEN as u64 && canon[(ph as usize) % CANON_LEN] == phash;
+        if rec.0 != lightclient::STATUS_VERIFIED || !(rec.1 || canonical) {
+            return Ok(None);
+        }
+        let body = self.body(&phash)?;
+        let (txs, paths) = (&body.0, &body.1);
+        let Some(i) = chain::jobs_in(txs).into_iter().find(|(j, _)| j == job_id).map(|(_, i)| i) else {
+            crate::rlog!("relay: job {} is not in its posting block {ph}", hex::encode(job_id));
+            return Ok(None);
+        };
+        let view = pearl_verify_sbf::chaintx::TxView::any_chain(&txs[i]).map_err(|e| anyhow::anyhow!("posting tx: {e:?}"))?;
+        let jc = pearl_verify_sbf::chaintx::job_by_id(&view, job_id, chain::sha256).map_err(|e| anyhow::anyhow!("posting tx: {e:?}"))?;
+        if txs[i].len() + paths[i].len() > BIND_MAX {
+            // a commit from a dead block (L-1) is replaced; a missing one is registered
+            if let Some(data) = self.ledger.account(&client::job_addr(job_id))? {
+                self.replace_dead_job(job_id, &data, &phash, &txs[i], &paths[i])?;
+                return Ok(None);
             }
             let pk = self.ledger.pk();
-            match ledger::send_wait(self.ledger, &[client::register_job(pk, hash, job_id, txs[i].clone(), paths[i].clone())], &[], MAX_CU) {
-                Ok(_) => println!("registered job {} (posted at {height})", hex::encode(job_id)),
+            match ledger::send_wait(self.ledger, &[client::register_job(pk, &phash, *job_id, txs[i].clone(), paths[i].clone())], &[], MAX_CU) {
+                Ok(_) => println!("registered job {} (posted at {ph}; posting tx too large to prove inline)", hex::encode(job_id)),
                 Err(e) => crate::rlog!("register job {}: {e:#}", hex::encode(job_id)),
             }
+            return Ok(None);
         }
-        Ok(())
+        Ok(Some((Bind { block: phash, tx: txs[i].clone(), path: paths[i].clone() }, jc.config)))
+    }
+
+    /// Whether the indexed posting tx of `job_id` is too large for `begin_verify_job`.
+    fn posting_too_large(&mut self, job_id: &[u8; 32]) -> Result<bool> {
+        let Some((_, phash)) = self.postings.get(job_id).copied() else { return Ok(false) };
+        let body = self.body(&phash)?;
+        Ok(chain::jobs_in(&body.0).into_iter().find(|(j, _)| j == job_id).is_some_and(|(_, i)| body.0[i].len() + body.1[i].len() > BIND_MAX))
+    }
+
+    /// Re-create the closed record of final header `height` from the accumulator (blocking).
+    fn restore(&mut self, height: u64, hash: &[u8; 32]) -> Result<bool> {
+        let Some((start, count, last)) = self.ledger.account(&client::acc_addr())?.and_then(|d| client::acc_state(&d)) else { return Ok(false) };
+        if height < start || height >= start + count {
+            return Ok(false);
+        }
+        if self.acc_hashes.len() as u64 > count {
+            self.acc_hashes.clear();
+        }
+        while (self.acc_hashes.len() as u64) < count {
+            let h = start + self.acc_hashes.len() as u64;
+            let Some(x) = self.node_hash(h)? else { return Ok(false) };
+            self.acc_hashes.push(x);
+        }
+        if self.acc_hashes.last() != Some(&last) || self.acc_hashes[(height - start) as usize] != *hash {
+            self.acc_hashes.clear(); // the node's chain does not match the accumulator
+            return Ok(false);
+        }
+        let Some(hd) = self.src.header_at(height)? else { return Ok(false) };
+        let proof = pearl_verify_sbf::acc::prove_short(chain::sha256, &self.acc_hashes, height - start).context("accumulator proof")?;
+        let pk = self.ledger.pk();
+        ledger::send_wait(self.ledger, &[client::restore_header(pk, hd.bytes, count, proof)], &[], 200_000)?;
+        println!("restored header {height} {} (a job posted there was mined)", hex::encode(hash));
+        Ok(true)
+    }
+
+    /// The latest deadline of the jobs `hash` posted (0: none), looked up once per block.
+    fn posting_deadline(&mut self, hash: &[u8; 32]) -> Result<u64> {
+        if let Some(d) = self.hold_seen.get(hash) {
+            return Ok(*d);
+        }
+        let (txs, _) = self.src.block_body(hash)?;
+        let mut until = 0u64;
+        let mut seen_tx = std::collections::HashSet::new();
+        for (job_id, i) in chain::jobs_in(&txs) {
+            // the segments of one PostSegments tx share their ticket's deadline
+            if !seen_tx.insert(i) {
+                continue;
+            }
+            if let Some((_, d)) = self.src.job_heights(&job_id)? {
+                until = until.max(d);
+            }
+        }
+        if self.hold_seen.len() > 100_000 {
+            self.hold_seen.clear();
+        }
+        self.hold_seen.insert(*hash, until);
+        Ok(until)
     }
 
     /// L-2 (docs/SECURITY-REVIEW.md): a run of canonical headers more than CANON_LEN below the
