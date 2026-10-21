@@ -6,6 +6,7 @@ import { CHAIN_DP, SOL_DP, SPL_DP, big, fmtInt, formatUnits, pct } from "./math.
 import type { BlockRow, Summary } from "./models.ts";
 import type { SolTx } from "./indexer.ts";
 import { blockContractsCard } from "./contract-view.ts";
+import { displayCx, shortCx } from "../../../packages/cx-address/src/index.ts";
 
 function waitNote(w: any) {
   if (!w) return "";
@@ -33,6 +34,16 @@ export function id(v: string | null | undefined, opts: { href?: string; head?: n
   const text = opts.full ? esc(v) : esc(short(v, opts.head ?? 6, opts.tail ?? 6));
   const inner = opts.href ? `<a class="hash" href="${esc(opts.href)}" title="${esc(v)}">${text}</a>` : `<span class="hash" title="${esc(v)}">${text}</span>`;
   return `<span class="idwrap${opts.full ? " full" : ""}">${inner}<button class="copy" type="button" data-copy="${esc(v)}" aria-label="Copy ${esc(v)}">${ICON.copy}</button></span>`;
+}
+
+/** A Cadre-chain address (SPEC 2.1): short Cx (Cxa380...7d06) with the full checksummed Cx in the
+ *  title and the copy button; `full` shows the whole Cx. Solana keys keep id() and base58. */
+export function addr(v: string | null | undefined, opts: { href?: string; full?: boolean; head?: number; tail?: number } = {}) {
+  const cx = v ? displayCx(v) : null;
+  if (!v || !cx) return id(v, opts);
+  const text = esc(opts.full ? cx : shortCx(cx));
+  const inner = opts.href ? `<a class="hash" href="${esc(opts.href)}" title="${esc(cx)}">${text}</a>` : `<span class="hash" title="${esc(cx)}">${text}</span>`;
+  return `<span class="idwrap${opts.full ? " full" : ""}">${inner}<button class="copy" type="button" data-copy="${esc(cx)}" aria-label="Copy ${esc(cx)}">${ICON.copy}</button></span>`;
 }
 
 const solTxHref = (sig: string) => `/sol/tx/${encodeURIComponent(sig)}`;
@@ -400,7 +411,7 @@ export function blockPage(sm: Summary, b: any) {
     ["Tile proof hash", id(b.proof_hash, { head: 10, tail: 10 })],
     ["Proof size", `<span class="num">${fmtInt(b.proof_len)}</span> bytes`],
     ["Raw proof", `<a href="${esc(b.proof_raw)}">base64</a> · <a href="${esc(b.proof_raw)}?format=bin">binary</a>`],
-    ["Miner", id(b.miner, { head: 8, tail: 8 })],
+    ["Miner", addr(b.miner, { full: true })],
     ["Target bits", `<span class="num">0x${(b.target_bits >>> 0).toString(16)}</span>`],
     ["Block hash", id(b.hash, { head: 10, tail: 10 })],
     ["Parent", b.height > 1 ? id(b.prev_hash, { href: `/block/${b.height - 1}`, head: 10, tail: 10 }) : id(b.prev_hash)],
@@ -417,7 +428,7 @@ export function blockPage(sm: Summary, b: any) {
     ? `<ul class="chaintx">${b.txs
         .map(
           (t: any) =>
-            `<li><span class="ix">${esc(t.kind)}</span>${t.links.job ? `<a href="/job/${esc(t.links.job)}">job ${esc(short(t.links.job, 6, 4))}</a>` : ""}${t.links.order ? `<a href="/order/${esc(t.links.order)}">order #${esc(t.links.order)}</a>` : ""}<span class="faint">from</span> ${id(t.from, { head: 4, tail: 4 })}${id(t.hash, { href: `/tx/${t.hash}`, head: 6, tail: 6 })}</li>`,
+            `<li><span class="ix">${esc(t.kind)}</span>${t.links.job ? `<a href="/job/${esc(t.links.job)}">job ${esc(short(t.links.job, 6, 4))}</a>` : ""}${t.links.order ? `<a href="/order/${esc(t.links.order)}">order #${esc(t.links.order)}</a>` : ""}<span class="faint">from</span> ${addr(t.from, { head: 4, tail: 4 })}${id(t.hash, { href: `/tx/${t.hash}`, head: 6, tail: 6 })}</li>`,
         )
         .join("")}</ul>`
     : `<p class="note">No transactions besides the coinbase receipt.</p>`;
@@ -462,7 +473,7 @@ export function jobPage(sm: Summary, j: any) {
     <div class="bound-legend"><span><i class="sw sw-paid"></i>Subsidy paid <span class="num">${capPct}%</span> of P</span><span><i class="sw sw-cap"></i>Cap alpha x P <span class="num">${alphaPct}%</span></span><span><i class="sw sw-fb"></i>Kept by the pool</span></div>
   </div>`;
   const terms = kv([
-    ["Paid by", id(j.poster, { head: 8, tail: 8 })],
+    ["Paid by", addr(j.poster, { head: 8, tail: 8 })],
     ["Worker pay W", `<span class="num">${tok(j.worker_pay)}</span> ${T()}`],
     ["Protocol fee P", `<span class="num">${tok(j.protocol_fee)}</span> ${T()} <span class="faint">to the mining pool</span>`],
     ["Subsidy paid", `<span class="num">${tok(j.subsidy_paid)}</span> ${T()}`],
@@ -494,7 +505,7 @@ export function jobPage(sm: Summary, j: any) {
     : `<p class="note">${j.blocks_mined > 0 ? "Its blocks are not indexed yet (backfill in progress)." : "Not mined yet. Miners pick the open job with the most subsidy left."}</p>`;
   const txs = j.chain_txs.length
     ? `<ul class="chaintx">${j.chain_txs
-        .map((t: any) => `<li><span class="ix">${esc(t.kind === "BridgeUnlock" ? "BridgeUnlock (order)" : t.kind)}</span><a class="num" href="/block/${t.height}">#${fmtInt(t.height)}</a><span class="faint">from</span> ${id(t.from, { head: 4, tail: 4 })}${id(t.hash, { head: 6, tail: 6 })}</li>`)
+        .map((t: any) => `<li><span class="ix">${esc(t.kind === "BridgeUnlock" ? "BridgeUnlock (order)" : t.kind)}</span><a class="num" href="/block/${t.height}">#${fmtInt(t.height)}</a><span class="faint">from</span> ${addr(t.from, { head: 4, tail: 4 })}${id(t.hash, { head: 6, tail: 6 })}</li>`)
         .join("")}</ul>`
     : `<p class="note">No chain txs indexed for this job yet.</p>`;
   const data = kv([
@@ -502,10 +513,10 @@ export function jobPage(sm: Summary, j: any) {
     ["hash_a", id(j.hash_a, { head: 8, tail: 8 })],
     ["hash_b", id(j.hash_b, { head: 8, tail: 8 })],
     ["Job key", id(j.job_key, { head: 8, tail: 8 })],
-    ["Deliverer", id(j.deliverer, { head: 6, tail: 6 })],
+    ["Deliverer", addr(j.deliverer, { head: 6, tail: 6 })],
     ["Result hash", id(j.result_hash, { head: 8, tail: 8 })],
     ["Result", esc(j.result_uri) || `<span class="faint">none yet</span>`],
-    ["Evaluators", j.evaluators.map((e: string) => id(e, { head: 4, tail: 4 })).join(" ") + ` <span class="faint">threshold ${j.threshold}</span>`],
+    ["Evaluators", j.evaluators.map((e: string) => addr(e, { head: 4, tail: 4 })).join(" ") + ` <span class="faint">threshold ${j.threshold}</span>`],
   ]);
   return page(
     `Job ${j.job_id.slice(0, 8)}`,
@@ -609,6 +620,10 @@ export function apiPage(sm: Summary) {
 <section class="card"><ul class="api">${eps.map(([p, d]) => `<li><a href="${esc(p.replace(/\{.*$|\?.*$/, ""))}">${esc(p)}</a><span>${esc(d)}</span></li>`).join("")}</ul></section>`,
     { active: "api", summary: sm },
   );
+}
+
+export function badAddress(sm: Summary | null, message: string) {
+  return page("Bad address", `<div class="empty big"><strong>That address did not check out.</strong><span>${esc(message)} <a href="/">Back to the latest blocks</a>.</span></div>`, { summary: sm });
 }
 
 export function notFound(sm: Summary | null, what: string) {

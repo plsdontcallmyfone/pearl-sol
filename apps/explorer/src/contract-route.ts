@@ -3,6 +3,7 @@
 // getContract, getContractEvents, getCode, getTx with its receipt) or the codec in contracts.ts
 // over those bytes. A node without the contract RPC shows "Unavailable" with the reason.
 
+import { addCx } from "./cxjson.ts";
 import type { Indexer } from "./indexer.ts";
 import type { Summary } from "./models.ts";
 import { KNOWN_EVENTS, decodeContractTx, eventTopic, isContractKind, isUnknownMethod, splitMethod, withTopicNames } from "./contracts.ts";
@@ -10,7 +11,7 @@ import { codePage, contractPage, contractsPage, txPage } from "./contract-view.t
 import { notFound } from "./views.ts";
 
 type Res = { status: number; type: string; body: string | Buffer; headers?: Record<string, string> };
-const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(v, null, 1) });
+const json = (v: unknown, status = 200): Res => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(addCx(v), null, 1) });
 const html = (body: string, status = 200): Res => ({ status, type: "text/html; charset=utf-8", body });
 
 export type Read<T = any> = { ok: true; v: T } | { ok: false; reason: string };
