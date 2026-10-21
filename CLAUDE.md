@@ -82,6 +82,9 @@ The wallet reads only cadre-api for these and says "unavailable" with the API's 
 
 **Test box 64.95.13.106 (2026-10-21 16:26 UTC):** resized to 8 vCPU / 32 GB (owner-approved) and rebooted. The manual demo stack (scripts/demo.sh: localnet validators, gateway, worker) is DOWN after the reboot; cadre-api, caddy and x-agents came back. Build with -j 4. Restart the demo stack with `scripts/demo.sh up` on the box only if you need it, and note it in your row.
 
+
+**Owner authorization (2026-10-21, answered directly by the owner in the orchestrator session f2b59a9f):** "Yes, allow deploy restarts": agents may restart Cadre services on devnet boxes 0-2 and the test box 64.95.13.106 for deploys, in windows announced in their row, one box at a time, with health checks between. Verifiable AI (cadre-glue-v1 workers) is approved to go live on devnet and the test box. Live desktops stay at 6 agents / $25 per day.
+
 ## Who is working on what
 
 | Who | Started | Scope |
