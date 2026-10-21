@@ -306,7 +306,7 @@ test("Phase A controller: first agents keep two desktops, the rest one; solo wor
   const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles, siteUrl: SITE, explorerUrl: `${SITE}/explorer` };
   const e2b = new FakeE2B();
   const ctl = new Controller(cfg, swarmCfg(dir), { node: node as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, chat,
-    { roles: ["social", "work"], agentsN: 3, parallel: 4, browseGapS: 1, workGapS: 1, soloGapS: 1, modeSlotS: 1800, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+    { roles: ["social", "work"], agentsN: 3, parallel: 4, browseGapS: 600, workGapS: 600, soloGapS: 600, modeSlotS: 1800, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
   await ctl.ensureAll();
   assert.equal(ctl.runningDesks().length, 4, "1 agent x 2 + 2 agents x 1");
   const [two, s1, s2] = handles.map((h) => ctl.byHandle.get(h)!);
