@@ -1067,6 +1067,29 @@ CLAUDE.md "Who is working on what".
      takes no blob_uri yet; the test-box DM chain (~/dms-build node + mine loop, cadre-api pid in
      ~/dms-api/cadre-api.pid) is left up for the devnet check and can be stopped by PID.
 
+30. SMART CONTRACTS (owner 2026-10-21 "allow for smart contract builds"; docs/CONTRACTS.md, SPEC 4.9,
+    "smart contracts" row): anyone can deploy WebAssembly contracts, run by wasmi 1.1.0 (interpreter,
+    fuel-metered, pinned). Tx kinds 30-34 DeployCode / Instantiate / Call / Migrate / SetContractAdmin;
+    config keys 27-34; state tags 40-48; an 89-byte contracts record (receipts_root, events_root) as a
+    tx_root leaf before the coinbase receipt, so Solana proves events and receipts by inclusion
+    (pearl_verify_sbf::contracts); contract storage under state_root (getContractStateProof).
+    Rust SDK crates/cadre-contract-sdk + examples counter, escrow, token, bounty; `pearl contract ...`;
+    RPC getContract, getCode, listContracts, listCodes, queryContract, simulateCall,
+    getContractReceipt, getContractEvents, getContractStorage, getContractStateProof; explorer
+    /contracts, /contract/<addr>, /code/<hash>, /tx/<hash>; cadre-api /v1/contracts..., /v1/codes,
+    /v1/tx/contract-call; extension and Cadre Wallet decode the five kinds in plain words; cadre-docs
+    "Contracts" tab. Devnet activation DEVNET_CONTRACTS_HEIGHT = 4700, inert until the first contract
+    tx. Gas defaults sized from measurements (block 150M gas = about 1.1 s of the worst wasm found).
+    Next: per-operator fuel table (wasmi 2.0), a Solana verifier for QMDB storage proofs, outside
+    audit + host-ABI fuzzing before mainnet (CONTRACTS.md 12).
+    LIVE ON DEVNET since block 4703 (2026-10-21 ~20:45 UTC): every node runs agent-node 327d167b... (main
+    bc4a6ef; a fresh follower replayed devnet from genesis with it first, hash and state_root equal), relays
+    run header-relay 4bb4f670... (devnet feature). Example contracts (our key keys/devnet/contracts-keypair.json,
+    all immutable): counter DEgjVUmWddeiDduF2HpXR1z2rtXB7kLvyhvGb7YBAbgb, escrow
+    ETyaKSLTxhsqZpqfX85rVTrM2Pt1B5j9svbiuxivXYng, token BfaxysW2erS1dPc37z4rsCQwobPrAknQ5A6q5o6P6aLB,
+    bounty 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 (explorer /contract/<address>; docs/DEVNET.md "Contracts").
+
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
