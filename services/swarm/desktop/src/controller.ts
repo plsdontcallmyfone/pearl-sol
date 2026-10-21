@@ -27,6 +27,11 @@ import { type Chat, runTask, systemPrompt } from "./vision.ts";
 
 export class DeskFailed extends Error {}
 
+/** Desktop agents are taken from the END of the house persona list (persona 30 first), so the
+ * headless cadre-swarm keeps the first 30 - N personas with SWARM_AGENTS=30-N and no agent is
+ * ever driven by both. */
+export const DEFAULT_HANDLES = () => PERSONAS.slice(10).reverse().map((p) => p.handle);
+
 export interface LogEntry { t: string; desk: Role | "agent"; kind: string; text: string; ref?: string; tx?: string; ok?: boolean }
 export interface ThoughtEntry { t: string; purpose: string; request_id: string; rows: number; text_sha256: string; charged_lamports: string | null }
 
@@ -106,7 +111,7 @@ export class Controller {
     this.cfg = cfg; this.chat = chat; this.o = o;
     this.usdPerS = usdPerSecond(cfg.vcpu, cfg.ramGib);
     this.ledger = new Ledger(resolve(cfg.stateDir, "spend.json"), cfg.usdPerDay);
-    const handles = cfg.handles ?? PERSONAS.slice(10, 30).map((p) => p.handle);
+    const handles = cfg.handles ?? DEFAULT_HANDLES();
     const chosen = handles.slice(0, o.agentsN).map((h) => {
       const p = PERSONAS.find((x) => x.handle === h);
       if (!p) throw new Error(`unknown persona ${h}`);
@@ -260,7 +265,7 @@ export class Controller {
     try {
       const [w, h] = this.cfg.resolution;
       const r = await runTask(d.sbx, this.chat, {
-        model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, maxSteps: this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
+        model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
         onStep: (s) => {
           if (s.note) da.current[role] = s.note;
           this.push(da, { t: s.t, desk: role, kind: "step", text: s.note ? `${s.action}: ${s.note}` : s.action });
@@ -370,7 +375,7 @@ export class Controller {
       desktops_running: this.runningDesks().length,
       roles: this.o.roles,
       agents: this.agents.map((a) => this.agentCard(a)),
-      personas_waiting: (this.cfg.handles ?? PERSONAS.slice(10, 30).map((p) => p.handle)).slice(this.o.agentsN),
+      personas_waiting: (this.cfg.handles ?? DEFAULT_HANDLES()).slice(this.o.agentsN),
     };
   }
 

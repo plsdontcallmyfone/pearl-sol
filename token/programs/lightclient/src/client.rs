@@ -168,6 +168,29 @@ pub fn mark_final(hash: &[u8; 32]) -> Instruction {
     ix(accounts::MarkFinal { config: config_pda(), canon: canon_pda(), header: header_addr(hash) }, instruction::MarkFinal {})
 }
 
+/// `mark_final` of a header that left the canonical ring: `child` is its final child.
+pub fn mark_final_linked(hash: &[u8; 32], child: &[u8; 32]) -> Instruction {
+    let mut i = mark_final(hash);
+    i.accounts.push(AccountMeta::new_readonly(header_addr(child), false));
+    i
+}
+
+/// Re-register `job_id` from `tx` in `block` when its current commit's block is dead;
+/// `witness` = the final or canonical header at the old commit's posted height.
+pub fn replace_job(payer: Pubkey, block: &[u8; 32], witness: &[u8; 32], job_id: [u8; 32], tx: Vec<u8>, path: Vec<u8>) -> Instruction {
+    ix(
+        accounts::ReplaceJob {
+            payer,
+            config: config_pda(),
+            canon: canon_pda(),
+            block: header_addr(block),
+            witness: header_addr(witness),
+            job: job_addr(&job_id),
+        },
+        instruction::ReplaceJob { job_id, tx, path },
+    )
+}
+
 pub fn register_job(payer: Pubkey, block: &[u8; 32], job_id: [u8; 32], tx: Vec<u8>, path: Vec<u8>) -> Instruction {
     ix(
         accounts::RegisterJob {

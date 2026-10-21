@@ -31,7 +31,10 @@ export const WITHDRAW_DOMAIN = Buffer.from("pearl-sol:withdraw:v1");
 export const RESULT_DOMAIN = Buffer.from("pearl-sol:result:v1");
 export const EXPIRED_DOMAIN = Buffer.from("pearl-sol:expired:v1");
 export const ORDER_JOB_DOMAIN = Buffer.from("pearl-sol:order-job:v1");
+/** v1 refund domain: no longer accepted by the bridge (security pass 2026-10-21, B-2). */
 export const REFUND_DOMAIN = Buffer.from("pearl-sol:refund:v1");
+/** v2: bound to the bridge program id (token/programs/bridge `refund_message`). */
+export const REFUND_DOMAIN_V2 = Buffer.from("pearl-sol:refund:v2");
 
 // ---------- primitives ----------
 
@@ -99,9 +102,9 @@ export const depositOrderMessage = (nonce: bigint, recipient: PublicKey, amountS
 /** Bridge release on Solana (unchanged). */
 export const withdrawMessage = (nonce: bigint, recipient: PublicKey, amountSpl: bigint): Buffer =>
   bridgeMessage(WITHDRAW_DOMAIN, nonce, recipient, amountSpl);
-/** Bridge refund_deposit: `pearl-sol:refund:v1 || nonce || buyer || amount_spl` (all of the deposit). */
-export const refundMessage = (nonce: bigint, buyer: PublicKey, amountSpl: bigint): Buffer =>
-  bridgeMessage(REFUND_DOMAIN, nonce, buyer, amountSpl);
+/** Bridge refund_deposit: `pearl-sol:refund:v2 || bridge program id || nonce || buyer || amount_spl` (all of the deposit). */
+export const refundMessage = (nonce: bigint, buyer: PublicKey, amountSpl: bigint, bridgeProgram = BRIDGE_PROGRAM_ID): Buffer =>
+  Buffer.concat([REFUND_DOMAIN_V2, bridgeProgram.toBuffer(), u64le(nonce), buyer.toBuffer(), u64le(amountSpl)]);
 export const resultMessage = (jobId: Buffer, deliverer: PublicKey, resultHash: Buffer): Buffer =>
   Buffer.concat([RESULT_DOMAIN, jobId, deliverer.toBuffer(), resultHash]);
 export const expiredMessage = (jobId: Buffer): Buffer => Buffer.concat([EXPIRED_DOMAIN, jobId]);
@@ -375,14 +378,16 @@ export function bridgeReleaseIx(a: { payer: PublicKey; mint: PublicKey; nonce: b
   });
 }
 
-/** bridge `refund_deposit(nonce, buyer)`: the deposit's full amount from the vault to `buyerToken` (owned by buyer). */
+/** bridge `refund_deposit(nonce, buyer)`: the deposit's full amount from the vault to `buyerToken` (owned by buyer).
+ *  `order` = the deposit's storefront Order (default: `orderPda(nonce)`): the bridge refunds only an order deposit,
+ *  only to that order's buyer (security pass 2026-10-21, B-1). */
 export function bridgeRefundIx(a: { payer: PublicKey; mint: PublicKey; nonce: bigint; buyer: PublicKey; buyerToken: PublicKey;
-  tokenProgram?: PublicKey }): TransactionInstruction {
+  tokenProgram?: PublicKey; order?: PublicKey }): TransactionInstruction {
   const tp = a.tokenProgram ?? TOKEN_2022_PROGRAM_ID;
   return new TransactionInstruction({
     programId: BRIDGE_PROGRAM_ID,
     keys: [w(a.payer, true), r(bridgeConfigPda()), r(a.mint), w(vaultAta(a.mint, tp)), r(depositPda(a.nonce)), w(a.buyerToken),
-      w(bridgeRefundPda(a.nonce)), r(INSTRUCTIONS_SYSVAR_ID), r(tp), r(SystemProgram.programId)],
+      w(bridgeRefundPda(a.nonce)), r(INSTRUCTIONS_SYSVAR_ID), r(tp), r(SystemProgram.programId), r(a.order ?? orderPda(a.nonce))],
     data: Buffer.concat([ixDisc("refund_deposit"), u64le(a.nonce), a.buyer.toBuffer()]),
   });
 }

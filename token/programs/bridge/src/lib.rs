@@ -13,8 +13,11 @@
 //!   so a withdrawal is paid once whichever path is used.
 //! - `refund_deposit` (owner decision 2026-10-17) returns a Deposit's tokens from the
 //!   vault to the original buyer when the agent chain will never unlock it (a held-back
-//!   storefront order). M-of-N configured signers sign `b"pearl-sol:refund:v1" ||
-//!   nonce || buyer || amount_spl` through the ed25519 precompile. It writes a
+//!   storefront order). M-of-N configured signers sign `b"pearl-sol:refund:v2" ||
+//!   bridge program id || nonce || buyer || amount_spl` through the ed25519 precompile
+//!   (v2 since the 2026-10-21 security pass), and the order itself is passed: only an
+//!   order deposit (sender = the depositing program's `["trader"]` PDA) can be refunded,
+//!   only to that order's buyer, only while it is Pending or Expired. It writes a
 //!   `Processed` PDA `["processed", [CHAIN_TOKEN], deposit nonce]` (the refund record):
 //!   a deposit is refunded at most once, and relayers never unlock a deposit that has
 //!   one. The chain cannot see Solana, so "never both unlocked and refunded" rests on
@@ -54,8 +57,63 @@ pub const WITHDRAWAL_ENTRY_LEN: usize = 88;
 
 pub const DEPOSIT_DOMAIN: &[u8] = b"pearl-sol:deposit:v1";
 pub const WITHDRAW_DOMAIN: &[u8] = b"pearl-sol:withdraw:v1";
-/// `refund_deposit`: `domain || deposit nonce u64 LE || buyer [32] || amount_spl u64 LE`.
+/// The refund domain before the 2026-10-21 security pass (no longer accepted; see
+/// [`refund_message`]).
 pub const REFUND_DOMAIN: &[u8] = b"pearl-sol:refund:v1";
+
+/// `refund_deposit` since the 2026-10-21 security pass (B-2): bound to this bridge program,
+/// `domain || bridge program id [32] || deposit nonce u64 LE || buyer [32] || amount_spl u64 LE`,
+/// so a refund signed for one deployment (devnet) can never be replayed on another.
+pub const REFUND_DOMAIN_V2: &[u8] = b"pearl-sol:refund:v2";
+
+/// Seeds and layout of the depositing program's order (token/programs/storefront `Order`,
+/// `layout` module there): refunds are only for order deposits, to the order's buyer (B-1).
+pub const TRADER_SEED: &[u8] = b"trader";
+pub const ORDER_SEED: &[u8] = b"order";
+pub mod order_layout {
+    pub const STATUS: usize = 9;
+    pub const DEPOSIT_NONCE: usize = 12;
+    pub const BUYER: usize = 52;
+    pub const TOKENS: usize = 156;
+    pub const MIN_LEN: usize = TOKENS + 8;
+    /// Order status values a refund may follow: Pending (never unlocked) and Expired.
+    pub const PENDING: u8 = 1;
+    pub const EXPIRED: u8 = 3;
+}
+
+/// The refund message (v2) for deposit `nonce`.
+pub fn refund_message(nonce: u64, buyer: &Pubkey, amount_spl: u64) -> Vec<u8> {
+    let mut m = Vec::with_capacity(REFUND_DOMAIN_V2.len() + 80);
+    m.extend_from_slice(REFUND_DOMAIN_V2);
+    m.extend_from_slice(ID.as_ref());
+    m.extend_from_slice(&nonce.to_le_bytes());
+    m.extend_from_slice(buyer.as_ref());
+    m.extend_from_slice(&amount_spl.to_le_bytes());
+    m
+}
+
+/// B-1: `order` must be the Order of deposit `d` in the program that made it: the deposit's
+/// sender is that program's `["trader"]` PDA (only that program can sign for it), the order
+/// sits at its `["order", nonce]` PDA with the Anchor `Order` discriminator, is Pending or
+/// Expired, has this nonce and amount, and names `buyer`. Before this, the signer set could
+/// send ANY deposit (reserve fund_mining, plain user deposits) to ANY address.
+fn check_order(order: &AccountInfo, d: &Deposit, nonce: u64, buyer: &Pubkey) -> Result<()> {
+    use order_layout::*;
+    let prog = *order.owner;
+    let (trader, _) = Pubkey::find_program_address(&[TRADER_SEED], &prog);
+    require_keys_eq!(d.sender, trader, BridgeError::NotAnOrder);
+    let (addr, _) = Pubkey::find_program_address(&[ORDER_SEED, &nonce.to_le_bytes()], &prog);
+    require_keys_eq!(order.key(), addr, BridgeError::NotAnOrder);
+    let data = order.try_borrow_data()?;
+    require!(data.len() >= MIN_LEN, BridgeError::NotAnOrder);
+    let disc = anchor_lang::solana_program::hash::hash(b"account:Order").to_bytes();
+    require!(data[..8] == disc[..8], BridgeError::NotAnOrder);
+    require!(data[STATUS] == PENDING || data[STATUS] == EXPIRED, BridgeError::NotAnOrder);
+    let rd = |o: usize| u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
+    require!(rd(DEPOSIT_NONCE) == nonce && rd(TOKENS) == d.amount, BridgeError::NotAnOrder);
+    require!(data[BUYER..BUYER + 32] == buyer.to_bytes(), BridgeError::WrongRecipient);
+    Ok(())
+}
 
 /// Refund record of Solana deposit `nonce`: `Processed ["processed", [CHAIN_TOKEN], nonce]`.
 pub fn refund_record_address(nonce: u64) -> Pubkey {
@@ -212,19 +270,24 @@ pub mod bridge {
     /// Returns Solana deposit `nonce` (its full amount) from the vault to `buyer`, who
     /// must own `buyer_token`. The transaction must carry ed25519 precompile
     /// instruction(s) with at least `threshold` configured signers over
-    /// `bridge_message(REFUND_DOMAIN, nonce, buyer, deposit.amount)`. Open whatever
+    /// `refund_message(nonce, buyer, deposit.amount)`; remaining account 0 is the
+    /// deposit's order (see `check_order`). Open whatever
     /// `release_modes` says (inbound stays attested in M2). The refund record PDA is
     /// the replay guard; signers must never sign this for a nonce they signed an
     /// unlock for (and vice versa).
-    pub fn refund_deposit(ctx: Context<RefundDeposit>, nonce: u64, buyer: Pubkey) -> Result<()> {
+    pub fn refund_deposit<'info>(ctx: Context<'_, '_, 'info, 'info, RefundDeposit<'info>>, nonce: u64, buyer: Pubkey) -> Result<()> {
         let d = &ctx.accounts.deposit;
         require!(d.nonce == nonce, BridgeError::WrongDeposit);
         let amount = d.amount;
         require!(amount > 0, BridgeError::ZeroAmount);
         require_keys_eq!(ctx.accounts.buyer_token.owner, buyer, BridgeError::WrongRecipient);
+        // B-1: only an order deposit, only to its order's buyer (the order is the one
+        // remaining account).
+        let order = ctx.remaining_accounts.first().ok_or(error!(BridgeError::NotAnOrder))?;
+        check_order(order, d, nonce, &buyer)?;
 
         let config = &ctx.accounts.config;
-        let msg = bridge_message(REFUND_DOMAIN, nonce, &buyer, amount);
+        let msg = refund_message(nonce, &buyer, amount);
         let n = sigverify::count_signers(&ctx.accounts.instructions.to_account_info(), &msg, &config.signers)?;
         require!(n >= config.threshold as usize, BridgeError::NotEnoughSignatures);
 
@@ -564,4 +627,6 @@ pub enum BridgeError {
     BadProof,
     #[msg("deposit record does not match the nonce")]
     WrongDeposit,
+    #[msg("refunds are only for an order deposit, with its Pending or Expired order")]
+    NotAnOrder,
 }

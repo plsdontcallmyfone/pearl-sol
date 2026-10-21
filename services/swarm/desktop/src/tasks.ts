@@ -9,7 +9,7 @@ import { REACTION } from "../../src/chaintx.ts";
 const hex = (u: Uint8Array) => Buffer.from(u).toString("hex");
 const q = encodeURIComponent;
 
-export interface Task { text: string; signs: boolean; kind: string; url?: string }
+export interface Task { text: string; signs: boolean; kind: string; url?: string; verbatim?: string }
 
 const CONNECT = "If the site is not connected to your wallet yet (a Connect button at the top right, or a button reading Connect the Cadre Wallet), first click Connect at the top right, choose the Cadre Wallet, and click Approve in the wallet window that opens.";
 
@@ -21,14 +21,14 @@ export function chainTask(site: string, body: Body, tipCadre?: string): Task | n
     if (body.postKind === 1 && body.parent) {
       const url = `${site}/town?reply=${hex(body.parent)}&thought=${q(ref)}`;
       return {
-        kind: "reply", signs: true, url,
-        text: `Reply on the Cadre town square. Open ${url} . The post you answer is shown with a reply box under it. ${CONNECT} Click the reply box (it reads "Reply to ...") and type exactly this text (nothing more, nothing less):\n<text>${text}</text>\nThen click the Sign reply button. A Cadre Wallet approval window opens for a reply: click Approve. Call done when the page says "Reply sent".`,
+        kind: "reply", signs: true, url, verbatim: text,
+        text: `Reply on the Cadre town square. Open ${url} . The post you answer is shown with a reply box under it. ${CONNECT} Click the reply box (it reads "Reply to ...") and enter exactly this text with the type_given_text tool (do not type it yourself):\n<text>${text}</text>\nThen click the Sign reply button. A Cadre Wallet approval window opens for a reply: click Approve. Call done when the page says "Reply sent".`,
       };
     }
     const url = `${site}/town?thought=${q(ref)}`;
     return {
-      kind: "post", signs: true, url,
-      text: `Post on the Cadre town square. Open ${url} . ${CONNECT} Click the "Say something to the town" box and type exactly this text (nothing more, nothing less):\n<text>${text}</text>\nThen click the Sign post button. A Cadre Wallet approval window opens for a post: click Approve. Call done when the page says "Posted".`,
+      kind: "post", signs: true, url, verbatim: text,
+      text: `Post on the Cadre town square. Open ${url} . ${CONNECT} Click the "Say something to the town" box and enter exactly this text with the type_given_text tool (do not type it yourself):\n<text>${text}</text>\nThen click the Sign post button. A Cadre Wallet approval window opens for a post: click Approve. Call done when the page says "Posted".`,
     };
   }
   if (body.kind === "React" && body.items.length === 1) {
@@ -71,7 +71,7 @@ export function browseTask(site: string, pick: number, others: { handle: string 
 export function workTask(site: string, explorer: string, address: string, pick: number): Task {
   const list: Task[] = [
     { kind: "wallet", signs: false, text: `Click the browser tab of the Cadre Wallet (the first tab) and read the CADRE balance on its home screen. Do not send, swap or open settings. Call done with the balance you see.` },
-    { kind: "explorer_account", signs: false, url: `${explorer}/account/${address}`, text: `Open ${explorer}/account/${address} (your own account in the Cadre explorer) and look at your balance and latest transactions. Call done with one sentence: balance and the newest transaction kind.` },
+    { kind: "explorer_account", signs: false, url: `${explorer}/account/${address}`, text: `Open ${explorer}/account/${address} (your own account in the Cadre explorer) and read your balance and nonce at the top of the page. Do not scroll more than twice. Call done with one sentence: the balance and the nonce.` },
     { kind: "explorer_blocks", signs: false, url: explorer, text: `Open ${explorer} and look at the newest blocks: who mined them and whether they carried paid jobs. Call done with one sentence about the newest block.` },
     { kind: "market", signs: false, url: `${site}/buy`, text: `Open ${site}/buy (the Buy & bridge page, the CADRE trading terminal on PumpSwap). Type 0.01 in the SOL amount field to see the quote. Do not click Buy, do not sign anything. Call done with the CADRE amount quoted for 0.01 SOL.` },
     { kind: "jobs", signs: false, url: `${site}/ai`, text: `Open ${site}/ai and look at the models and paid jobs on Cadre. Do not buy or sign anything. Call done with one sentence about what is being served.` },

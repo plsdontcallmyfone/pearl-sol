@@ -459,14 +459,15 @@ test('admin rotates the attester set; old attesters no longer count', async () =
 });
 
 // Refund (owner decision 2026-10-17): a held-back order's deposit goes back to the buyer
-// through bridge refund_deposit (bridge signers over pearl-sol:refund:v1), then anyone
-// marks the Order Refunded from the bridge's refund record (no CPI).
-const refundMsg = (n, who, amount) => Buffer.concat([Buffer.from('pearl-sol:refund:v1'), le64(n), who.toBuffer(), le64(amount)]);
+// through bridge refund_deposit (bridge signers over pearl-sol:refund:v2 || bridge id, with the
+// Order passed: security pass 2026-10-21 B-1/B-2), then anyone marks the Order Refunded from the
+// bridge's refund record (no CPI).
+const refundMsg = (n, who, amount) => Buffer.concat([Buffer.from('pearl-sol:refund:v2'), BRIDGE.toBuffer(), le64(n), who.toBuffer(), le64(amount)]);
 const refundRecord = (n) => pda(['processed', Buffer.from([0]), le64(n)], BRIDGE);
 const refundIx = (n, who, whoToken) => br.methods.refundDeposit(bn(n), who).accountsStrict({
   payer: buyer.publicKey, config: BCFG, mint: MINT, vault: VAULT, deposit: pda(['deposit', le64(n)], BRIDGE), buyerToken: whoToken,
   refund: refundRecord(n), instructions: SYSVAR_INSTRUCTIONS_PUBKEY, tokenProgram: T22, systemProgram: SystemProgram.programId,
-}).instruction();
+}).remainingAccounts([{ pubkey: orderPda(n), isSigner: false, isWritable: false }]).instruction();
 const markIx = (n, rec = refundRecord(n)) => sf.methods.markRefunded().accountsStrict({ config: CONFIG, order: orderPda(n), refundRecord: rec }).instruction();
 
 test('refund: bridge refund_deposit returns the order tokens to the buyer; mark_refunded closes the Order', async () => {
@@ -509,17 +510,20 @@ test('refund: bridge refund_deposit returns the order tokens to the buyer; mark_
   fails([edIx(bridgeSigner, refundMsg(n, buyer.publicKey, tokens)), await refundIx(n, buyer.publicKey, bAta)], [buyer], /already in use|custom program error: 0x0/, 'refund twice');
 });
 
-test('refund: an Expired order can be refunded too; a refund to someone else is not a refund of the order', async () => {
+test('refund: an Expired order can be refunded too; a refund to someone else is refused by the bridge', async () => {
   const n2 = nonce0 + 1n; // expired above
   assert.equal(order(n2).status, 3);
   const tokens = BigInt(order(n2).tokens.toString());
   const other = Keypair.generate().publicKey;
   const oAta = ata(other, MINT, T22);
   ok([spl.createAssociatedTokenAccountIdempotentInstruction(buyer.publicKey, oAta, other, MINT, T22)], [buyer], 'other ata');
-  // the bridge pays whoever the signers named; the storefront only accepts its own buyer
-  ok([edIx(bridgeSigner, refundMsg(n2, other, tokens)), await refundIx(n2, other, oAta)], [buyer], 'refund to other');
-  fails([await markIx(n2)], [buyer], /BadAccount/, 'record names another buyer');
+  // since the 2026-10-21 security pass (B-1) the bridge pays only the order's buyer, even
+  // when the signers name someone else
+  fails([edIx(bridgeSigner, refundMsg(n2, other, tokens)), await refundIx(n2, other, oAta)], [buyer], /WrongRecipient/, 'refund to other');
   assert.equal(order(n2).status, 3);
+  const bAta = ata(buyer.publicKey, MINT, T22);
+  ok([edIx(bridgeSigner, refundMsg(n2, buyer.publicKey, tokens)), await refundIx(n2, buyer.publicKey, bAta), await markIx(n2)], [buyer], 'refund expired to its buyer');
+  assert.equal(order(n2).status, 4);
 });
 
 

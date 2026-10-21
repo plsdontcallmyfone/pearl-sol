@@ -101,7 +101,7 @@ export function registerDesktops(api: Api, _d: Deps, env: NodeJS.ProcessEnv = pr
         const j = await r.json().catch(() => null);
         throw new ApiError(r.status === 403 ? 403 : r.status === 410 ? 410 : 404, r.status === 403 ? "forbidden" : "not_found", j?.error ?? `stream HTTP ${r.status}`);
       }
-      return reply({ upstream: r, headers: { "cache-control": file.endsWith(".ts") ? "public, max-age=60" : "no-store" } });
+      return reply({ upstream: r, headers: { "cache-control": file.endsWith(".ts") ? "public, max-age=60" : file === "thumb.jpg" ? "private, max-age=10" : "no-store" } });
     },
     { cost: 0.05 },
   );

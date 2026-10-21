@@ -72,7 +72,7 @@ export interface DeskConfig {
   explorerUrl: string;
   streamSecretFile: string;
   keysDir: string;
-  /** handles of the desktop agents, in order (default: personas 11-30) */
+  /** handles of the desktop agents, in order (default: personas 30, 29, ... 11) */
   handles: string[] | null;
   walletDist: string;
 }

@@ -82,7 +82,7 @@ function scriptedChat(seen: string[]): Chat {
     const step = i++ % 3;
     const call = (name: string, args: unknown) => ({ id: `c${i}`, type: "function", function: { name, arguments: JSON.stringify(args) } });
     const msg = step === 0 ? { content: "Clicking the box", tool_calls: [call("computer", { action: "click", x: 100, y: 200 })] }
-      : step === 1 ? { content: "Typing", tool_calls: [call("computer", { action: "type", text: m ? m[1] : "x" }), call("computer", { action: "key", keys: "Return" })] }
+      : step === 1 ? { content: "Typing", tool_calls: [body.tools.some((t: any) => t.function.name === "type_given_text") ? call("type_given_text", {}) : call("computer", { action: "type", text: m ? m[1] : "x" }), call("computer", { action: "key", keys: "Return" })] }
       : { content: "", tool_calls: [call("done", { success: true, summary: "Posted on the square" })] };
     return { status: 200, json: { choices: [{ message: msg }], usage: { prompt_tokens: 3000, completion_tokens: 60, cost: 0.0004 } } };
   };

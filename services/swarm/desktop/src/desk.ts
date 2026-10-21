@@ -44,7 +44,9 @@ export async function sdkApi(apiKey: string): Promise<E2BApi> {
     create: (t, o) => Sandbox.create(t, { ...o, apiKey }),
     connect: (id, o) => Sandbox.connect(id, { ...o, apiKey }),
     list: async (metadata) => {
-      const p = Sandbox.list({ apiKey, query: { metadata, state: ["running", "paused"] } });
+      // E2B refuses an empty metadata filter ("Error parsing metadata"): leave it out for "all"
+      const query = Object.keys(metadata).length ? { metadata, state: ["running", "paused"] } : { state: ["running", "paused"] };
+      const p = Sandbox.list({ apiKey, query });
       const all: E2BInfo[] = [];
       while (p.hasNext) all.push(...(await p.nextItems()).map(pick));
       return all;

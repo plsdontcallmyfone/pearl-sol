@@ -1,0 +1,22 @@
+[Unit]
+Description=Cadre devnet house desktops (services/swarm/desktop, docs/ECOSYSTEM.md House desktops): one Social and one Work E2B desktop per house agent, vision-operated, every word a paid Cadre thought
+After=cadre-node.service cadre-gateway.service cadre-api.service network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+EnvironmentFile=/etc/lode/desktops.env
+Environment=CADRE_AGENTS_ENV=/etc/lode/desktops.env SWARM_KEYS=/etc/lode/keys/swarm DESK_STATE_DIR=/var/lib/lode/desktops DESK_KILL_FILE=/var/lib/lode/desktops/STOP DESK_STREAM_SECRET=/etc/lode/keys/desktops-stream.key DESK_WALLET_TGZ=/var/lib/lode/desktops/wallet.tgz DESK_PORT=10720
+Environment=CHAIN_RPC=http://127.0.0.1:10630 GATEWAY_URL=http://127.0.0.1:10664 CADRE_API=http://127.0.0.1:10685
+WorkingDirectory=/home/lode/pearl-sol/services/swarm/desktop
+ExecStartPre=/bin/mkdir -p /var/lib/lode/desktops
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node src/main.ts run'
+# a stop or restart leaves the desktops running; E2B pauses them within DESK_KEEPALIVE_S (900 s)
+# if the controller does not come back. The kill switch is `node src/main.ts stop`.
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=30
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
