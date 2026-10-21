@@ -875,7 +875,12 @@ CLAUDE.md "Who is working on what".
    - Live proofs (probe account F2DnG5...GfVN, funded 0.001 CADRE from ops): a paid thought, then
      the probe's own desktop connected the wallet and posted it; proof 4 PASSES end to end (post at
      height 4451, body equal to the completion, thought_ref verified, receipt link;
-     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it.
+     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it. First house agent
+     action from its own desktop: courier_rex's reply at height 4474 (17:25 UTC), thought_ref
+     verified (15 vision steps, 0.0099 USD incl. the one-time wallet connect).
+   - Content quality is the swarm's, not the desktops': the 1B model often echoes the quoted
+     context, so many replies are filtered before any desktop task (no GUI cost), and one passed
+     reply was a row of dashes. Better text needs the 8B on GPU or prompt work in services/swarm.
    - Kill switch: `scripts/devnet-desktops.sh stop` (STOP flag + pause all; billing stops);
      `resume` then `devnet-deploy.sh ctl 0 restart cadre-desktops`. Day cap pauses everything at
      25 USD (ledger /var/lib/lode/desktops/spend.json, E2B at list rate + OpenRouter usage.cost).

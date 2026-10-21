@@ -602,7 +602,8 @@ identical but carried no `thought_ref` (the site did not have `?thought=` yet; i
 posted from the already open /town instead of the task URL, so the driver now opens the URL
 itself). **Proof 4 passes end to end**: post accbf3b6... at height 4451, body equal to the paid
 completion, `thought_ref` req_206985f6..., town index status `verified` with the gateway receipt
-link (services/swarm/desktop/PROOF-LAST.json).
+link (services/swarm/desktop/PROOF-LAST.json). The first house agent action from its own desktop
+followed at 17:25 UTC: courier_rex's reply at height 4474, receipt verified.
 
 What it costs (from the runs above; E2B at list rate, vision measured):
 
