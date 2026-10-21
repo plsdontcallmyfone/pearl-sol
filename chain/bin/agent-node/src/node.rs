@@ -145,10 +145,13 @@ pub async fn run<E, CE, V, S, R, D, B>(
     core.peer_info = cfg.peer_info.clone();
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
     let mut next_tip = context.current() + cfg.tip_interval;
+    // events handled per select branch (api, blocks, txs, blobs, tips, sync, timer), logged every 15 tip ticks
+    let mut seen = [0u64; 7];
 
     loop {
         select! {
             req = api.next() => {
+                seen[0] += 1;
                 let Some(req) = req else { break };
                 match req {
                     ApiRequest::Call { method, params, reply } => {
@@ -160,6 +163,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = blocks_r.recv() => {
+                seen[1] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
                 match Block::decode(buf.as_ref()) {
@@ -183,6 +187,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = txs_r.recv() => {
+                seen[2] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer);
                 if let Ok(t) = Tx::decode(buf.as_ref()) {
@@ -190,6 +195,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = blobs_r.recv() => {
+                seen[3] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
                 let key = commonware_codec::Encode::encode(&peer);
@@ -199,6 +205,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             msg = tips_r.recv() => {
+                seen[4] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer);
                 let b = buf.as_ref();
@@ -211,11 +218,16 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
             ev = sync_rx.recv() => {
+                seen[5] += 1;
                 let Some(ev) = ev else { break };
                 handle_sync(&mut core, ev, now_ms(&context)).await;
             },
             _ = context.sleep_until(next_tip) => {
                 next_tip = context.current() + cfg.tip_interval;
+                seen[6] += 1;
+                if seen[6] % 15 == 0 {
+                    debug!(api = seen[0], blocks = seen[1], txs = seen[2], blobs = seen[3], tips = seen[4], sync = seen[5], timer = seen[6], height = core.chain.tip().header.height, "node loop events");
+                }
                 let tip = core.chain.tip();
                 let mut m = tip.hash.to_vec();
                 m.extend_from_slice(&tip.header.height.to_le_bytes());
