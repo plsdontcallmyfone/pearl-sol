@@ -439,3 +439,25 @@ GPU: one RunPod A40 at $0.59/hr, 15:49-16:55 UTC, $0.66 spent, terminated (API s
 spend $0/hr). Not covered: the live devnet / test-box gateways still run workers started before
 this change (fp32 glue); no live paid ticket has been replayed end to end on a chain yet (the
 evaluator path is tested on a mock node with real model data).
+
+## Serve the 8B (2026-10-21, "serve the 8B" row)
+
+| suite | where | result |
+|---|---|---|
+| light client LiteSVM (token/tests/lightclient-litesvm), incl. new `segment_of_a_640_matrix_round_verifies_with_its_job_proven_inline` | Mac, then the test box after the merge with main | 17 + 2 fixture PASS (Mac); box: see below |
+| header-relay `cargo test --release` (catchup.rs), incl. new `job_round_is_proven_at_mining_and_its_posting_header_is_held` | test box | 7 PASS before the merge; after: see below |
+| cadre-gateway (tests/budget.rs new: 2; tests/gateway.rs 9) | Mac | 11 PASS |
+| consensus-pow (new `template_offers_the_oldest_of_700_open_jobs`) | test box | 14 PASS |
+| e2e scripts/demo.sh steps 1-6 + 11, synthetic 640-matrix model (scripts/serve8b), DEMO_PORT_OFFSET=1000 | test box ~/serve8b | 7/7 PASS (step 11 2,334.5 s) |
+
+Measured (no estimates): LiteSVM 640-tx posting block: PostSegments 384 bytes, path 264 bytes, begin_verify_job
+101,257 CU, segment block 35 txs / 7.34M CU (with a JobCommit: register_job 53,163 CU + 34 txs / 7.24M CU).
+Devnet before the change: 434 JobCommit accounts, each 2,240,280 lamports, created by register_job txs of 5,000
+lamports fee, 90.9k-103.6k CU, 973-1,006 bytes. E2E: registration 1,280 chunks / 10,536,960 bytes in 102.7 s through
+a node at 64 KiB/s and a 20-block grace, 1,280 of 1,280 held 1,427 blocks later; the 640-segment round posted in
+blocks 381-426, mined 382-1796, settled 2,208 s after payment; light client: 61,662 txs (WriteProof 41,513), 641
+BeginVerifyJob (56,289,474 CU), 0 RegisterJob, 0 JobCommit, 0 failed, 308,350,000 lamports fees, lag max 21.
+Found and fixed in the run: block templates scanned the newest 512 jobs only, so 83 of the round's 640 segments
+were never offered until the three nodes were restarted with TEMPLATE_JOB_SCAN = 4096 (mid-run, same data).
+The test box was resized and rebooted (owner) during the first attempt, which died in step 6; the second
+attempt is the one above.
