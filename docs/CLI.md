@@ -1,24 +1,34 @@
-# `pearl` CLI and terminal dashboard
+# `cadre` CLI (also `pearl`) and terminal dashboard
 
-`crates/pearl-cli`, binary `pearl`. Inline terminal output by default (steps, progress,
+`crates/pearl-cli`, binaries `cadre` and `pearl`: the same program (src/lib.rs), two names.
+`cadre` with no command runs `status`, the health of every part of Cadre; `pearl` with no
+command keeps printing the wallet overview box, so existing scripts see no change. Every other
+command is identical under both names. The health and lookup commands (`status`, `ping`, `tx`,
+`account`, `block`, `agent`, `agents`, `job`, `ticket`, `verify`, `model`, `watch`) are
+read-only: they never sign or send anything. See "Health and lookups" below.
+
+Inline terminal output by default (steps, progress,
 info boxes; owner's Daytona-CLI reference, 2026-10-17), `--json` for scripts and agents, and
 a full-screen retro blue dashboard (ratatui) as `pearl dashboard`. Every number on screen is an RPC
 read from the agent-chain node, the Solana validator or the pool, or arithmetic over such
-reads (named in `pearl status --json` under `derived`). There is no price source, so no
+reads (named in `pearl overview --json` under `derived`). There is no price source, so no
 price is shown.
 
 **Naming.** The product name is a placeholder. Everything user-visible (name, ticker, the
 block wordmark, the `<name>` corner mark) comes from `crates/pearl-cli/src/brand.rs`
 (`NAME`, `TICKER`); the wordmark is generated from `NAME` by a built-in block font, so a
-rename is a one-line change. The crate (`pearl-cli`) and binary (`pearl`) names will change
-with the rename.
+rename is a one-line change. The crate is still `pearl-cli`; the product binary is `cadre`.
 
 ## Build
 
 ```
 cd crates/pearl-cli && cargo build --release      # Rust 1.95.0 (rust-toolchain.toml here)
-crates/pearl-cli/target/release/pearl --help
+crates/pearl-cli/target/release/cadre             # status of the public devnet
+crates/pearl-cli/target/release/cadre --help      # (target/release/pearl is the same program)
 ```
+
+Or with the miner installer: `install-miner.sh --cli` also builds both and puts them in
+`~/.cadre/bin` (the default install is unchanged without the flag).
 
 Own Cargo workspace (excluded from `crates/`): it depends on `chain/agent-types` (Commonware,
 needs Rust 1.95) for transaction encoding and signing, `crates/pearl-verify-sbf` for the job id
@@ -39,7 +49,11 @@ no solana-sdk.
 | `--pool URL` | `PEARL_POOL` | `http://127.0.0.1:10663` | services/pool, read for /Mining |
 | `--credit-url URL` | `PEARL_CREDIT_URL` | none | Agent Credit endpoint (GET 2xx = reachable); unset = "not connected" |
 | `--miner-bin PATH` | `PEARL_MINER_BIN` | `crates/target/release/pearl-miner` | for `mine start` |
-| `--json` | | | plain mode: one JSON object (`"ok": true/false`) |
+| `--network` | `PEARL_NETWORK` | `devnet` | `devnet`, `testbox` (the test box demo stack: localnet program ids, node on 127.0.0.1, its public cadre-api; run it on that box) or `localnet` (alias `local`) |
+| `--endpoint NAME=URL` | `CADRE_<NAME>` | the network's | override one endpoint (repeatable; `NAME=none` leaves it out); names in `cadre ping --list`: nodes (comma list), solana, api, explorer, storefront, relayer, site, docs, gateway, worker, attester, swarm, desktops, agents, pool |
+| `--local` | | off | also check the 127.0.0.1 services of the box it runs on (devnet box 0: gateway 10664, worker 10665, attester 10661, swarm 10668, desktops 10720, user-agent runtime 10730) and use `/etc/lode/solana-rpc-url` when present (shown by file name only, never printed) |
+| `--strict` | | off | `status` / `ping`: exit 1 on a warning too |
+| `--json` | | | plain mode: one JSON object (`"ok": true/false`; false exactly when the exit code is not 0) |
 | `--wait` | | | `--json`: wait for the effect: tx included; `bridge in` also waits for the unlock on the chain |
 | `--no-wait` | | | text mode: return once submitted instead of following the write to its end |
 
@@ -108,6 +122,110 @@ Screenshots of the real ANSI output from the live demo stack: `screenshots/cli/i
 background (`tools/ansi2html.py`; the prompt line `user@host ~/pearl-sol <command>` is added
 there) and captured by Playwright's headless_shell).
 
+## Health and lookups
+
+### `cadre status` (also `cadre` alone)
+
+One screen, one table per group, a state per check: PASS, WARN, FAIL or SKIP (an endpoint the
+network does not have, never a guess). Everything runs in parallel; on the public devnet it takes
+2 to 3 s. Exit code 0 unless a check FAILs (1); `--strict` also exits 1 on a WARN, so it works in
+cron and CI. `--json`: `{ok, result, network, elapsed_ms, counts, checks: [{group, name, state,
+detail, ms, target, data}], endpoints}`. `--health`: one line per check, `OK|WARN|FAIL cli:<check>
+<detail>` (SKIP lines left out), the box 0 health log's shape.
+
+| group | checks (source) |
+|---|---|
+| Chain | every node's `getChainInfo` (height, final, peers, syncing, mempool, latency); `agreement`: same genesis, heights within 3 blocks, and the same block hash at the lowest node's finalized height on every node (`getHeader`); `tip`: age of the tip's timestamp. Node memory is not exposed by the node RPC, so it is not shown |
+| Solana | `getSlot`; the four programs (reserve, bridge, storefront, lightclient) exist and are executable; the header-relay payers hold at least 1 SOL; the CADRE mint (owner, supply, decimals); the light client's lag (cadre-api summary: tip and final behind the chain, WARN over 120) |
+| Services | cadre-api `/v1/ready` (its failing checks named) and upstreams; explorer index; storefront-x402 `/health`; relayer `/health` (its own verdict: WARN when its last good tick is under 5 min old, else FAIL); gateway through cadre-api (models served, requests, rounds, its own decode rate); site and `/install-miner.sh`; docs site; pool; `settle`: a pending storefront order whose job is already completed or expired on the chain; `verifiable AI`: whether the newest completed ticket's response blob carries the cadre-glue-v1 replay bundle |
+| Agents | house swarm (newest house post and its age, WARN after 2 h; verified thoughts; paid rows behind today's posts); house desktops (running, spend today against the day cap; WARN when stopped, capped or at 90% of the cap); user-agent runtime (`/v1/hosted`, agents running, runtime errors) |
+| Economy | buyback (buys, SOL spent, burned, to the reserve, vault, waiting orders, last buy), reserve (held, funded to mining, last crank), supply (mint, burned, bridge vault, chain escrow), storefront orders by status, mining (blocks per hour and paid-job blocks over the last 60 headers, and all time), bridge invariant (the dashboard's rule `vault SPL x 1000 == 1e18 - escrow`, in-flight transfers allowed) with deposit and withdrawal counts. A figure cadre-api could not read (for example while Solana answers 429) is a WARN saying so, never a 0 |
+| Box (`--local`) | gateway `/health` (model, auth domains), worker `/health` (glue), attester `/health`, swarm `/status` (rows today against the day cap, WARN at 90%), desktops controller, user-agent runtime |
+
+Thresholds are CLI policy, set in `src/health.rs`: the box 0 health check's defaults where it has
+one (height spread 3, light client 120 blocks, relay payers 1 SOL), tip older than 10 min WARN and
+30 min FAIL (60 s blocks), under 30 blocks per hour WARN, house post older than 2 h WARN.
+
+**On box 0's timer.** scripts/devnet-health.sh (cadre-health.timer) runs
+`/opt/lode/bin/cadre status --health --local --network devnet` when that binary exists and adds
+its lines (`cli:<check>`) to the same health log and status line; without the binary nothing
+changes. To turn it on: build `cadre` on box 0, copy it to /opt/lode/bin/cadre and reinstall the
+health script (`devnet-deploy.sh install 0` or copy it to /opt/lode/bin/cadre-health). No unit
+restart is needed; the next timer run picks it up.
+
+### `cadre ping <target> [-c N]`
+
+The checks of one component with their latency; `-c N` repeats and adds min / avg / max.
+Targets: `nodes`, `node0` .. `nodeN`, `solana`, `programs`, `relays`, `lightclient`, `api`,
+`economy`, `explorer`, `storefront`, `relayer`, `gateway`, `settle`, `replay`, `site`, `docs`,
+`pool`, `swarm`, `desktops`, `agents`, `bridge`, `mining`, `box`, or any `http(s)://` URL (GET).
+`cadre ping --list` (or no target) prints the endpoints this network uses.
+
+### Lookups
+
+```
+cadre tx <hash|signature>        # a Cadre tx (64 hex) or a Solana signature (base58), auto-detected
+cadre account <address|@handle>  # both chains: balance, nonce, lien, agent, profile, SOL + CADRE SPL, recent txs in words
+cadre block <height|hash>        # header, miner, paid job or fallback, reward, every tx in words
+cadre agent <address|@handle>    # registration, lien, town profile + operator link, balances on both
+                                 # chains, recent posts with thought receipts, desktops, hosting, explorer record (jobs)
+cadre agents [--limit 100]       # house and user agents: last post, desktops, hosted state, health
+cadre job <id>                   # = job show <id> (a unique prefix is enough)
+cadre ticket <id>                # the ticket, its segments and the replay verdict
+cadre verify <ticket> [--run [--models DIR]]
+cadre model                      # = model ls
+cadre watch [--count N] [--from H] [--pending]
+```
+
+- `tx`: Cadre txs are decoded with the chain's own codec (`agent_types::tx::Tx::decode`), so
+  every kind is named in plain words: transfers, jobs, results, bridge lock / unlock (with the
+  order job id), admin config (key names from `getParams`), liens, RegisterModel, PostSegments,
+  RejectResult, the social kinds (profile, operator link, post with its thought receipt,
+  reactions and tips, follows; the author's @handle), DMs and channels (SendMessage: plain bodies
+  quoted, sealed bodies only by size, never opened; ReclaimMessage, SetConsent, ChannelConfig,
+  ChannelMember, ChannelKey) and contracts (DeployCode with its code hash, Instantiate with the new
+  contract address, Call, Migrate, SetContractAdmin; the receipt's status and gas when the node
+  has one). A kind added to the chain later and not yet described here still shows its kind
+  name. Then the state (pending, included, final), block, confirmations and explorer links.
+  Solana signatures are read with `getTransaction` (`jsonParsed`): system, SPL token and memo
+  instructions come parsed from the RPC; our four programs' instructions are named from their
+  Anchor discriminators with the arguments that matter (bridge deposit amount and chain
+  recipient, release nonce, storefront order number and SOL, crank amounts, fund_mining);
+  pump.fun and PumpSwap are named; inner instructions and the storefront's buyback events are
+  listed; status, slot, fee, signer and the Solana explorer link (devnet).
+- `verify`: without `--run` the verdict comes from what is already public: the ticket's status,
+  its RejectResults, whether its response blob carries the cadre-glue-v1 bundle, and (with
+  `--local`) the attester's `/proofs/<ticket>`. `accepted` means completed by the evaluators'
+  signatures, and says whether the answer itself is replayable. `--run` replays it here with
+  the evaluator's own code (`pearl_attester::Attester::check_ticket`, read-only; a fixed dummy
+  key is passed and never used to sign): every round's activations rebuilt from the token ids,
+  every segment's C checked. The model files come from `--models DIR` (default `~/.cadre/models`,
+  `<dir>/<model_id hex>/`) or are fetched from the node's blobs on first use (about 1.7 GB for the
+  1B). Exit 1 when fraud is found or the replay could not run.
+- `watch` polls the node every 2 s and prints each new block and its txs in words (posts with the
+  author's @handle); `--pending` adds txs as they enter the mempool; `--json` prints one JSON
+  object per line (`event`: block, tx, pending).
+
+### Sample (`cadre`, public devnet, 2026-10-21 19:45 UTC, from the test box)
+
+```
+[ Chain ]
+node 64-95-12-116   PASS   height 4632 final 4602 peers 4 mempool 0
+node 64-95-13-213   PASS   height 4632 final 4602 peers 4 mempool 0
+node 64-95-12-22    PASS   height 4632 final 4602 peers 4 mempool 0
+agreement           PASS   finalized block 4602 f92e...855a on 3 of 3 nodes, heights spread 0
+tip                 PASS   block 4632 57s ago by timestamp, 0616...eda8
+[ Solana ]          programs PASS, relay payers 2.698 / 2.7209 SOL, mint supply 972,262,263.3533 CADRE,
+                    light client 3 behind the tip, final 33 behind
+[ Services ]        cadre-api WARN (solana: HTTP 429), relayer WARN (token rpc http 429, last OK 18s ago),
+                    explorer, storefront-x402, gateway, site, settle, verifiable AI PASS
+[ Agents ]          house swarm, house desktops (12 running, 3.42 of 25 USD), user-agent runtime PASS
+[ Economy ]         buyback, reserve, supply, orders, mining (71.8 blocks/h), bridge OK PASS
+29 pass · 2 warn · 0 fail · 3 skip in 2.4 s · devnet
+```
+
+(abridged; the full screens are in docs/TEST-REPORT.md "Cadre CLI").
+
 ## Dashboard (`pearl dashboard`)
 
 `pearl --key keys/localnet/miner-keypair.json dashboard` (alias `tui`) opens it. Screenshot of the live
@@ -143,21 +261,23 @@ Data refreshes every 2 s and right after each command. Commands run in the backg
 ## Commands (text mode, `--json`, and the dashboard's shell line)
 
 ```
-pearl                                       # overview box (no command)
+pearl                                       # overview box (no command); `cadre` alone runs status
 pearl dashboard                             # full-screen dashboard
-pearl balance | address | status            # status = everything the dashboard reads
+pearl balance | address | overview          # overview = everything the dashboard reads (was `status`)
+pearl status [--health] | ping <target>     # health of everything (see above)
 pearl send <to> <amount> [--fee T]
 pearl jobs [--status open] [--limit 20]
 pearl job show <id>                         # any unique id prefix
 pearl job post --pay W --fee P [--m 64 --n 64 --k 2048 --deadline 500 --max-blocks 10
                --evaluator ADDR --threshold 1 --seed S | --data job.blob]
-pearl blocks [n] | activity [--limit 20] | tx <hash>
+pearl blocks [n] | activity [--limit 20] | tx <hash|Solana signature>
+pearl account <a> | block <n|hash> | agents | job <id> | verify <ticket> [--run] | watch
 pearl bridge in <amount>                    # Solana deposit for your chain address
 pearl bridge out <amount> [--to SOLANA]     # BridgeLock; released when K deep
 pearl bridge status
 pearl lien set <solana-recipient> <bps> [--until H --cap T --release-key ADDR]
 pearl lien clear --release-key-file F [--account A] | lien show
-pearl register <name> [uri] | agent [address] [--explorer URL]
+pearl register <name> [uri] | agent [address|@handle] [--explorer URL]
 pearl mine start [--threads 2] | mine stop | mine status
 pearl buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
 pearl snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
@@ -211,7 +331,19 @@ and past the last one this process used.
 
 ## Tests
 
-`cd crates/pearl-cli && cargo test` (35): box / table / step / progress renderers with and
+`cd crates/pearl-cli && cargo test` (56, 2026-10-21). The health and lookup commands run
+against `src/mock.rs`: one loopback server that plays a whole network (node JSON-RPC and Solana
+JSON-RPC on POST; cadre-api, explorer, storefront, relayer and site on GET), with knobs for a
+forked node, a dead relayer, an unreachable node and a cadre-api summary without its Solana
+parts: `status` all green but the rate-limited API, exit 0 and exit 1 with `--strict`; FAIL and
+exit 1 on a fork, a dead relayer and a dead node; `--health` lines; missing figures as WARN, not
+zeros; the text screen (groups, states, equal table widths, no em dash); `ping` (latency over
+`-c 3`, a URL, an unknown target, `--list`, exit 1 on a FAIL); `tx` on both chains in words;
+`account` / `block` / `agent` / `agents` by @handle; `verify` and `watch`. `decode.rs` tests:
+transfers, posts with receipts, sealed and paid DMs, AdminConfig key names, a bridge deposit and
+a SOL transfer on Solana, and the fallback for a kind this build cannot decode.
+
+Before 2026-10-21 (35 tests): box / table / step / progress renderers with and
 without color (`term.rs`), every command's text and JSON output path against a canned
 JSON-RPC node on a loopback ephemeral port (`stub.rs`: balance, address, status, jobs, job
 show by prefix, blocks, activity, agent, lien show, tx, bridge status, mine status, send

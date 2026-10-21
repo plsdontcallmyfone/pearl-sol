@@ -84,7 +84,7 @@ impl Style {
         self.sgr("38;5;240", s)
     }
 
-    fn bold(&self, s: &str) -> String {
+    pub fn bold(&self, s: &str) -> String {
         self.sgr("1;97", s)
     }
 

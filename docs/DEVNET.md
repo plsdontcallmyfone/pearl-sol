@@ -564,6 +564,8 @@ OK/WARN/FAIL, failing checks) and `/var/log/cadre-health/health.log` (one line p
 20,000 lines). Thresholds can be overridden in /etc/lode/health.env. No external messaging (owner decision
 needed for any alert channel). Boxes 1-2 are covered through their public RPC and the relay balances;
 their unit states are not read from box 0.
+When /opt/lode/bin/cadre exists the script also runs `cadre status --health --local --network devnet` and logs
+its lines as `cli:<check>` (docs/CLI.md "status"; not installed yet: build it on box 0 and reinstall the script).
 
 ### Backups
 

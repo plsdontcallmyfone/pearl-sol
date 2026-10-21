@@ -492,4 +492,115 @@ Cause and fix in HANDOFF item 24. Test box 64.95.13.106, own dir ~/follow-stall.
 | rpc blobfetch unit tests (window, stale slot, removed while queued) | test box (workspace) | pass |
 | live, instrumented pre-fix follower (blobs on) | test box | 77,974 blob "requester timeout" in 2.5 min over exactly 1024 keys; a node stuck on a one-block fork (4515) got gossiped blocks as orphans but no header delivery for minutes |
 | live, devnet boxes after the test-box followers stopped (18:35:58 UTC) | devnet | agent-node RSS flat (168 / 76 / 131 MB at 18:39), swap not growing |
-| live soak, fix3 followers with blobs on: s1 (from synced data, since 18:44 UTC) and s2 (fresh, since 19:13 UTC) | test box | see the soak line in HANDOFF item 24 |
+| live soak, fix3 followers with blobs on: s1 (from synced data, 18:44-20:15 UTC) and s2 (fresh sync, 19:13-20:15 UTC), watched every 30 s from 19:14 | test box | never more than 3 blocks behind devnet node 0 (last 4663 = 4663), RSS 149-169 MB flat, queue_dropped 0, bulk_dropped 0, bans 0. No fork happened in the window, so the live fork-repair path was not exercised under load (the lane test covers the mechanism) |
+| devnet agent-node RSS after the fix (fix3 from about 19:05, then main bc4a6ef from 19:32-19:41, both with the fix), every 5 min to 20:13 | devnet | 178-244 MB on all three boxes, flat over the last 20 min (box 0 208, box 1 235, box 2 239 MB at 20:13) |
+
+## Cadre CLI (2026-10-21, "Cadre CLI" row)
+
+`crates/pearl-cli`: binaries `cadre` and `pearl` (docs/CLI.md "Health and lookups"). Built and tested on the
+test box (own dir ~/cadre-cli, `-j 4`), live runs against the public devnet from the test box; one read-only run
+on devnet box 0 (binary copied to /tmp, run as lode with `--local`, removed after; no unit touched).
+
+| check | where | result |
+|---|---|---|
+| `cargo test --release` | test box | 56 pass (13 new in mock.rs / decode.rs / health.rs / inspect.rs, existing tests updated for `overview` and the `Transaction: <kind>` chip) |
+| `cadre` (= `status`), public devnet, 20:14 UTC | test box | 27 pass, 4 warn, 0 fail, 3 skip in 1.0 s, exit 0 (full screen below) |
+| `cadre status --local` on box 0, 20:00 UTC | devnet box 0 | 25 pass, 6 warn, 0 fail; box-local: gateway (auth v2 + v1), worker glue cadre-glue-v1, attester, swarm rows 15,706 of 16,384, 12 desktops, user-agent runtime; box 0's IP got 429 from the public Solana RPC on programs, mint and the bridge invariant |
+| `cadre ping node1 -c 3` | test box | PASS, latency min 10 avg 263 max 531 ms |
+| `cadre tx 77e76496...` (a house Post) | test box | Post in words with the thought receipt, FINAL at 4506, explorer link |
+| `cadre tx 3XhAW5JY...` (Solana) | test box | `storefront buy_job_amm: bought AI job order #35 for 0.0114 SOL`, 21 inner instructions, OK, slot 513586907 |
+| `cadre agent @ferry_nan`, `cadre agents`, `cadre block 4600`, `cadre job ecb7a659`, `cadre model`, `cadre watch --count 2` | test box | all answered from devnet; 32 agent profiles (30 house, 2 user) |
+| `cadre verify ecb7a659... --run --models ~/cadre-cli-models` (model copied from ~/cadre-models) | test box | real replay of a devnet ticket: 1 round, 1 request, 48 rows, 144 segments in 12.4 s (GEMM 5.9 s): honest, verdict ACCEPTED |
+| `scripts/devnet-health.sh` with `CADRE_CLI` set (scratch LOG_DIR / STATE_DIR) | test box | 37 `cli:` lines in the log; on a box without box 0's services the `--local` checks FAIL as they should |
+| `install-miner.sh --cli --no-service` (fresh CADRE_HOME, CADRE_SRC = this tree) | test box | done in 170 s: bin/cadre, bin/pearl, bin/pearl-miner; `cadre ping api` ran; scratch home removed |
+| ~/cadre-docs `node scripts/check.mjs` with the new CLI page | Mac | 46 pages x 2 viewports, 1542 links, OK |
+
+`cadre`, public devnet, 2026-10-21 20:14 UTC (non-TTY, so details are not cut):
+
+```
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                                │
+│   [ Chain ]                                                                                                                                                                                                                    │
+│                                                                                                                                                                                                                                │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                    MS   │
+│   node 64-95-12-116     PASS    height 4669 final 4639 peers 5 mempool 0                                                                                                                                                  78   │
+│   node 64-95-13-213     PASS    height 4669 final 4639 peers 5 mempool 0                                                                                                                                                 118   │
+│   node 64-95-12-22      PASS    height 4669 final 4639 peers 5 mempool 0                                                                                                                                                  25   │
+│   agreement             PASS    finalized block 4639 2d98...312c on 3 of 3 nodes, heights spread 0                                                                                                                             │
+│   tip                   PASS    block 4669 64s ago by timestamp, 7a62...a796                                                                                                                                                   │
+│                                                                                                                                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                                │
+│   [ Solana ]                                                                                                                                                                                                                   │
+│                                                                                                                                                                                                                                │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                    MS   │
+│   solana rpc            PASS    slot 513639795                                                                                                                                                                           127   │
+│   program reserve       PASS    8m1R...hVzi deployed, executable                                                                                                                                                         116   │
+│   program bridge        PASS    3S22...GFoN deployed, executable                                                                                                                                                         116   │
+│   program storefront    PASS    9Xjv...vAKu deployed, executable                                                                                                                                                         116   │
+│   program lightclient   PASS    47ma...ie4m deployed, executable                                                                                                                                                         116   │
+│   relay payer XQUUCs    PASS    2.6853 SOL (min 1)                                                                                                                                                                             │
+│   relay payer E66ekR    PASS    2.7141 SOL (min 1)                                                                                                                                                                             │
+│   CADRE mint            PASS    BwJq...Eu5e supply 972,262,263.3533 CADRE (6 decimals, Token-2022)                                                                                                                       116   │
+│   light client          PASS    tip 4669 final 4639 chain 4669: 0 behind the tip, final 30 behind (max 120)                                                                                                              326   │
+│                                                                                                                                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                                │
+│   [ Services ]                                                                                                                                                                                                                 │
+│                                                                                                                                                                                                                                │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                    MS   │
+│   cadre-api             WARN    not ready: solana: https://api.devnet.solana.com: HTTP 429; gateway up, storefront up                                                                                                     81   │
+│   explorer              PASS    indexed 4669 of 4669 blocks                                                                                                                                                               30   │
+│   storefront-x402       PASS    wallet 9kwg...A5bP on solana-devnet                                                                                                                                                       60   │
+│   relayer               PASS    healthy; deposit cursor 37, withdrawal cursor 9                                                                                                                                          249   │
+│   gateway               PASS    serves llama-3.2-1b-instruct-w7a7; 79 requests, 16 rounds posted, decode 1.55 tok/s (gateway's own measure)                                                                               88   │
+│   site                  PASS    HTTP 200 (54 KB); /install-miner.sh 200                                                                                                                                                   92   │
+│   docs site             SKIP    no public docs site for this network (set CADRE_DOCS)                                                                                                                                          │
+│   pool                  SKIP    this network runs no mining pool                                                                                                                                                               │
+│   settle                PASS    2 pending orders, none waiting on a closed job                                                                                                                                           108   │
+│   verifiable AI         PASS    newest completed ticket ecb7...49e0 (closed at 4560) carries the cadre-glue-v1 replay bundle (anyone can replay it: cadre verify)                                                        101   │
+│                                                                                                                                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                               │
+│   [ Agents ]                                                                                                                                                                                                                  │
+│                                                                                                                                                                                                                               │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                   MS   │
+│   house swarm           PASS    newest house post @chef_ottoline at 4662 (10m ago); 13 of the newest 19 town posts are house posts, 13 with a verified thought; today 13 posts, 4,741 paid rows behind them; 0 pending   84   │
+│   house desktops        PASS    12 desktops running for 6 agents; spend today 3.85 of 25 USD cap                                                                                                                         90   │
+│   user-agent runtime    PASS    cadre-agents 0.1.0 answers; 1 hosted agents, 1 running                                                                                                                                   89   │
+│                                                                                                                                                                                                                               │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                                │
+│   [ Economy ]                                                                                                                                                                                                                  │
+│                                                                                                                                                                                                                                │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                    MS   │
+│   buyback               WARN    not in the cadre-api summary now (it reads Solana; status: https://api.devnet.solana.com: HTTP 429)                                                                                            │
+│   reserve               WARN    not in the cadre-api summary now (it reads Solana; status: https://api.devnet.solana.com: HTTP 429)                                                                                            │
+│   supply                WARN    not in the cadre-api summary now (it reads Solana; status: https://api.devnet.solana.com: HTTP 429)                                                                                            │
+│   orders                PASS    22 storefront orders (finalized 14, pending 2, refunded 6), 0.2669 SOL settled, 0.0205 SOL pending                                                                                             │
+│   mining                PASS    73.5 blocks/h over the last 60 (60 s target = 60/h); paid-job blocks 60 of 60 (100%); all time 708 of 4669 (15.2%)                                                                       472   │
+│   bridge                PASS    OK: vault 38,709,110.122 CADRE = outside escrow 38,709,110.122 CADRE; 31 deposits unlocked on the chain, 9 withdrawals (9 released on Solana)                                            448   │
+│                                                                                                                                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                                                                                               │
+│   [ Box ]                                                                                                                                                                                                                     │
+│                                                                                                                                                                                                                               │
+│   CHECK                 STATE   DETAIL                                                                                                                                                                                   MS   │
+│   box-local services    SKIP    gateway, worker, attester, swarm, desktops, user-agent runtime: run on box 0 with --local                                                                                                     │
+│                                                                                                                                                                                                                               │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+27 pass · 4 warn · 0 fail · 3 skip in 1.0 s · devnet
+warn cadre-api, warn buyback, warn reserve, warn supply
+result WARN
+```

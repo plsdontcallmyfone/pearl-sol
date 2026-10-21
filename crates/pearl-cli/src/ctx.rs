@@ -19,7 +19,8 @@ use crate::term::Ui;
 #[derive(Args, Debug, Clone)]
 pub struct Opts {
     /// Network profile: endpoint defaults and Solana program ids (docs/DEVNET.md).
-    /// `devnet` = the public Cadre devnet, `localnet` = scripts/demo.sh on this machine.
+    /// `devnet` = the public Cadre devnet, `testbox` = the demo stack on the test box (run
+    /// there), `localnet` (or `local`) = scripts/demo.sh on this machine.
     #[arg(long, env = "PEARL_NETWORK", value_enum, default_value_t = Network::Devnet, global = true)]
     pub network: Network,
     /// Agent-chain node JSON-RPC (default: the network's).
@@ -58,6 +59,17 @@ pub struct Opts {
     /// (inclusion, K-deep finality, unlock / release, job completion).
     #[arg(long, global = true)]
     pub no_wait: bool,
+    /// Override one endpoint: NAME=URL (repeatable; `cadre ping --list` shows the names),
+    /// or NAME=none to leave it out. Env: CADRE_<NAME>, e.g. CADRE_API.
+    #[arg(long, global = true, value_parser = crate::endpoints::parse_endpoint)]
+    pub endpoint: Vec<String>,
+    /// Also check the 127.0.0.1 services of the box this runs on (gateway, worker,
+    /// attester, swarm, desktops, user-agent runtime): for devnet box 0 and the test box.
+    #[arg(long, global = true)]
+    pub local: bool,
+    /// `status` / `ping`: exit 1 on a warning too (default: only on a failure).
+    #[arg(long, global = true)]
+    pub strict: bool,
 }
 
 pub struct Ctx {
@@ -66,6 +78,8 @@ pub struct Ctx {
     pub rpc: String,
     pub sol_rpc: String,
     pub pool: Option<String>,
+    /// Every endpoint `status`, `ping` and the read commands use (endpoints.rs).
+    pub eps: crate::endpoints::Endpoints,
     pub node: HttpNode,
     pub sol: SolRpc,
     key: Option<SigningKey>,
@@ -96,9 +110,14 @@ impl Ctx {
         let rpc = opts.rpc.clone().unwrap_or_else(|| p.rpc.into());
         let sol_rpc = opts.sol_rpc.clone().unwrap_or_else(|| p.sol_rpc.into());
         let pool = opts.pool.clone().or(p.pool.map(String::from));
+        let eps = crate::endpoints::Endpoints::resolve(&opts, &rpc, &sol_rpc, pool.as_deref());
+        // the Solana endpoint after overrides (a dedicated RPC on a box); sol_rpc is what may be printed
+        let sol = SolRpc::new(&eps.solana);
+        let sol_rpc = eps.solana_shown.clone();
         Ok(Self {
+            eps,
             node: HttpNode::new(&rpc),
-            sol: SolRpc::new(&sol_rpc),
+            sol,
             rpc,
             sol_rpc,
             pool,

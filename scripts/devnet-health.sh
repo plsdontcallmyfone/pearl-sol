@@ -85,6 +85,16 @@ for s in $SITES; do
   emit "$lvl" "cert:${s%.sslip.io}" "$days days left"
 done
 
+# 7. the Cadre CLI's checks when its binary is installed (docs/CLI.md "status"): finalized-hash
+# agreement, programs, services' own health, verifiable AI, agents and desktops, bridge invariant,
+# settle, box-local services (--local). Each line is `OK|WARN|FAIL cli:<check> <detail>`.
+CADRE_CLI="${CADRE_CLI:-/opt/lode/bin/cadre}"
+if [[ -x $CADRE_CLI ]]; then
+  while read -r lvl name msg; do
+    [[ $lvl == OK || $lvl == WARN || $lvl == FAIL ]] && emit "$lvl" "$name" "$msg"
+  done < <(timeout 90 "$CADRE_CLI" status --health --local --network devnet 2>/dev/null)
+fi
+
 overall=OK; for f in "${fails[@]:-}"; do [[ $f == *:FAIL ]] && overall=FAIL; [[ $f == *:WARN && $overall == OK ]] && overall=WARN; done
 echo "$now $overall ${fails[*]:-}" > "$LOG_DIR/status"
 tail -n 20000 "$LOG_DIR/health.log" > "$LOG_DIR/health.log.tmp" && mv "$LOG_DIR/health.log.tmp" "$LOG_DIR/health.log"

@@ -880,6 +880,9 @@ CLAUDE.md "Who is working on what".
      around 19:05 UTC, agent-node.pre-fix3 kept on each box; after each, equal tip and finalized hash
      (4599 149d4ca0681f, 4 peers); RSS about 1 min after restart 153 / 196 / 171 MB. Rollback:
      `cp -p agent-node.pre-fix3 agent-node.new && mv -f agent-node.new agent-node`, restart cadre-node.
+     The contracts row then rolled main bc4a6ef (contracts + this fix + the full-store check) over it
+     19:32-19:41 UTC. Soak: two fixed followers on the test box held the tip 19:14-20:15 UTC with 0
+     dropped frames; devnet agent-node RSS 178-244 MB and flat through 20:13 (TEST-REPORT).
    - TO THE SECURITY ROW (uncommitted buffer budgets in chain.rs/lib.rs/core.rs): merge onto this; a dropped
      orphan or header entry must go back into `body_queue`, the next tip gossip does not re-ask for it.
 
@@ -996,6 +999,23 @@ CLAUDE.md "Who is working on what".
    - OPEN: a wallet release with f7753402b, then CADRE_AUTH_REQUIRE_AUDIENCE=1 on the gateways (box 0, test box); chain
      C-1..C-12 wait for the next cadre-node rollout; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
      multisig + timelock before mainnet; attester/evaluator messages carry no chain_id (fresh mainnet keys).
+29. CADRE CLI: STATUS, PING, TXS AND AGENTS IN WORDS (owner 2026-10-21 "a CLI that pings everything", "Cadre CLI"
+   row): DONE. crates/pearl-cli now builds two binaries from one library: `cadre` (the product name; no command = `status`)
+   and `pearl` (unchanged for scripts; no command = the overview box, the old `status` is now `overview`). New, all
+   read-only: `status` (one screen, PASS / WARN / FAIL / SKIP over 3 nodes with finalized-hash agreement, the 4 Solana
+   programs, mint, relay payers, light-client lag, cadre-api, explorer, storefront, relayer, gateway, site, settle,
+   verifiable AI, house swarm, desktops, user-agent runtime, buyback / reserve / supply / orders, mining rate and paid
+   share, bridge invariant; `--local` adds box 0's 127.0.0.1 services; exit 1 on FAIL, `--strict` on WARN; `--json`,
+   `--health`), `ping <target> [-c N]`, `tx` (Cadre hash or Solana signature, every kind in words incl. social, DMs,
+   contracts), `account`, `block`, `agent @handle`, `agents`, `job <id>`, `ticket` (+ replay verdict), `verify
+   [--run]` (the evaluator's own check_ticket, read-only), `model`, `watch`. scripts/install-miner.sh `--cli` (default
+   unchanged); scripts/devnet-health.sh adds the CLI's lines when /opt/lode/bin/cadre exists (NOT installed on box 0:
+   needs a build there + the health script reinstalled; no restart). Docs: docs/CLI.md "Health and lookups",
+   ~/cadre-docs guides/cli. Tests 56 (mock network in src/mock.rs). Live: TEST-REPORT "Cadre CLI".
+   Found live: box 0's IP is rate limited by the public Solana RPC (cadre-api not ready, relayer unhealthy for seconds
+   at a time, buyback / reserve / supply missing from the summary): the dedicated RPC URL (/etc/lode/solana-rpc-url,
+   absent) fixes it, and `--local` uses it when present; the house swarm used 15,706 of its 16,384 rows by 20:00 UTC
+   and went 2 h without a house post before posting again.
 
 ## M1 components (SPEC v2, all DONE)
 

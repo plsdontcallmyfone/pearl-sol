@@ -18,9 +18,13 @@ pub fn explorer_url(ctx: &Ctx, flag: &Option<String>) -> String {
     if let Some(f) = flag {
         return f.trim_end_matches('/').to_string();
     }
+    // PEARL_EXPLORER, CADRE_EXPLORER and --endpoint explorer=URL land here (endpoints.rs)
+    if let Some(e) = ctx.eps.get("explorer") {
+        return e.to_string();
+    }
     match ctx.opts.network {
         Network::Devnet => "https://explorer.64-95-12-116.sslip.io".into(),
-        Network::Localnet => "http://127.0.0.1:10670".into(),
+        Network::Testbox | Network::Localnet => "http://127.0.0.1:10670".into(),
     }
 }
 
