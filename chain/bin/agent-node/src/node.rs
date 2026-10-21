@@ -151,7 +151,28 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let mut seen = [0u64; 7];
 
     loop {
+        // biased select: the tip timer comes first so a busy branch below cannot starve it
+        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21)
         select! {
+            _ = context.sleep_until(next_tip) => {
+                next_tip = context.current() + cfg.tip_interval;
+                seen[6] += 1;
+                if seen[6] % 15 == 0 {
+                    debug!(api = seen[0], blocks = seen[1], txs = seen[2], blobs = seen[3], tips = seen[4], sync = seen[5], timer = seen[6], height = core.chain.tip().header.height, "node loop events");
+                }
+                let tip = core.chain.tip();
+                let mut m = tip.hash.to_vec();
+                m.extend_from_slice(&tip.header.height.to_le_bytes());
+                let _ = net.tips.send(Recipients::All, IoBuf::from(m), false);
+                core.peers = match &cfg.peer_count {
+                    Some(f) => (f.0)(),
+                    None => seen_peers.len(),
+                };
+                if cfg.peer_info.is_none() {
+                    core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
+                    core.static_peers.sort();
+                }
+            },
             req = api.next() => {
                 seen[0] += 1;
                 let Some(req) = req else { break };
@@ -224,27 +245,8 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 let Some(ev) = ev else { break };
                 handle_sync(&mut core, ev, now_ms(&context)).await;
             },
-            _ = context.sleep_until(next_tip) => {
-                next_tip = context.current() + cfg.tip_interval;
-                seen[6] += 1;
-                if seen[6] % 15 == 0 {
-                    debug!(api = seen[0], blocks = seen[1], txs = seen[2], blobs = seen[3], tips = seen[4], sync = seen[5], timer = seen[6], height = core.chain.tip().header.height, "node loop events");
-                }
-                let tip = core.chain.tip();
-                let mut m = tip.hash.to_vec();
-                m.extend_from_slice(&tip.header.height.to_le_bytes());
-                let _ = net.tips.send(Recipients::All, IoBuf::from(m), false);
-                core.peers = match &cfg.peer_count {
-                    Some(f) => (f.0)(),
-                    None => seen_peers.len(),
-                };
-                if cfg.peer_info.is_none() {
-                    core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
-                    core.static_peers.sort();
-                }
-            },
         }
-        core.schedule_bodies();
+        core.schedule_fetches();
         let outs = core.take_outbox();
         if !outs.is_empty() {
             net.send(outs);
@@ -259,7 +261,7 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
                 Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
                     Ok(HeaderAccept::Stored { need_parent }) => {
-                        // the body is asked for by Core::schedule_bodies, in height order
+                        // the body is asked for by Core::schedule_fetches, in height order
                         if let Some(p) = need_parent {
                             core.outbox.push(Outbound::FetchHeader(p));
                         }
@@ -338,7 +340,7 @@ pub fn open_peers_json(o: &net::open::Oracle) -> serde_json::Value {
             "inbound": s.inbound, "outbound": s.outbound, "book_new": s.book_new, "book_tried": s.book_tried,
             "banned": s.banned, "bans_total": s.bans_total, "inbound_full": s.inbound_full,
             "inbound_refused": s.inbound_refused, "dials": s.dials, "dial_failures": s.dial_failures,
-            "rate_dropped": s.rate_dropped,
+            "rate_dropped": s.rate_dropped, "queue_dropped": s.queue_dropped, "bulk_dropped": s.bulk_dropped,
         },
     })
 }

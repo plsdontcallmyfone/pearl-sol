@@ -53,6 +53,9 @@ pub struct NetStats {
     pub dials: u64,
     pub dial_failures: u64,
     pub rate_dropped: u64,
+    /// Frames not sent because a peer's send queue was full (normal lane, bulk lane).
+    pub queue_dropped: u64,
+    pub bulk_dropped: u64,
 }
 
 pub(crate) fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -124,6 +127,8 @@ impl Oracle {
             dials: s.counters.dials,
             dial_failures: s.counters.dial_failures,
             rate_dropped: s.counters.rate_dropped,
+            queue_dropped: s.counters.queue_dropped,
+            bulk_dropped: s.counters.bulk_dropped,
         }
     }
 }
@@ -186,6 +191,7 @@ impl Connected for Oracle {
 pub struct ChannelSender {
     channel: u64,
     max: u32,
+    bulk: bool,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -210,9 +216,20 @@ impl commonware_p2p::UnlimitedSender for ChannelSender {
             Recipients::Some(v) => v,
             Recipients::One(p) => vec![p],
         };
+        let mut dropped = 0u64;
         for k in targets {
             if let Some(p) = s.peers.get_mut(&k) {
-                let _ = p.queue.try_send(bufs.clone());
+                let q = if self.bulk { &mut p.bulk } else { &mut p.queue };
+                if q.try_send(bufs.clone()).is_err() {
+                    dropped += 1;
+                }
+            }
+        }
+        if dropped > 0 {
+            if self.bulk {
+                s.counters.bulk_dropped += dropped;
+            } else {
+                s.counters.queue_dropped += dropped;
             }
         }
         Unreliable::new(Feedback::Ok)
@@ -237,8 +254,8 @@ impl<E: Clock> fmt::Debug for Sender<E> {
 }
 
 impl<E: Clock> Sender<E> {
-    pub(crate) fn new(channel: u64, max: u32, oracle: Oracle, clock: E, quota: Quota) -> Self {
-        let cs = ChannelSender { channel, max, shared: oracle.shared().clone() };
+    pub(crate) fn new(channel: u64, max: u32, bulk: bool, oracle: Oracle, clock: E, quota: Quota) -> Self {
+        let cs = ChannelSender { channel, max, bulk, shared: oracle.shared().clone() };
         Self { inner: limited::LimitedSender::new(cs, quota, clock, oracle) }
     }
 }

@@ -421,8 +421,9 @@ that holds it can also serve it).
 `{"blob_id", "present": true, "size": 131088 | null, "fetching": false}`.
 
 ### getBlobStats `{}`
-`{"count", "total_bytes", "fetching", "max_blob_bytes", "max_total_bytes", "grace_blocks",
-"put_rate_bytes_per_s", "last_prune_height"}`.
+`{"count", "total_bytes", "fetching", "fetch_in_flight", "max_blob_bytes", "max_total_bytes", "grace_blocks",
+"put_rate_bytes_per_s", "last_prune_height"}`. `fetching` counts blobs wanted from peers (at most
+1024); `fetch_in_flight` the ones asked for right now (at most 16, the rest wait their turn).
 
 ## Storefront orders and the protocol fee floor
 
