@@ -1,0 +1,5 @@
+# Commonware 2026.9.0 needs rustc >= 1.95 (AtomicX::try_update). Pinned here only;
+# the machine default toolchain is left alone.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
