@@ -395,6 +395,8 @@ where
     s.next_conn += 1;
     let (mut qtx, qrx) = futures::channel::mpsc::channel::<IoBufs>(cfg.queue_size);
     let (btx, brx) = futures::channel::mpsc::channel::<IoBufs>(cfg.bulk_queue_size);
+    let bulk_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bulk_total = s.bulk_total.clone();
     let _ = qtx.try_send(IoBufs::from(wire::encode(&Msg::Hello { version: wire::VERSION, listen: cfg.advertised() })));
     if !inbound {
         let _ = qtx.try_send(IoBufs::from(wire::encode(&Msg::GetAddr)));
@@ -410,6 +412,7 @@ where
             listen: dialed,
             queue: qtx,
             bulk: btx,
+            bulk_bytes: bulk_bytes.clone(),
             handle: None,
             last_getaddr: None,
             addr_tokens: cfg.addr_burst,
@@ -420,12 +423,21 @@ where
     s.changed();
     drop(s);
     let (sh, ch, c2, k2) = (shared.clone(), channels.clone(), cfg.clone(), key.clone());
-    let handle = ctx.child("peer").spawn(move |c| conn_task(c, sh, ch, c2, k2, conn_id, sender, receiver, qrx, brx));
+    let lanes = Lanes { queue: qrx, bulk: brx, bulk_bytes, bulk_total };
+    let handle = ctx.child("peer").spawn(move |c| conn_task(c, sh, ch, c2, k2, conn_id, sender, receiver, lanes));
     let mut s = lock(shared);
     match s.peers.get_mut(&key) {
         Some(p) if p.conn_id == conn_id => p.handle = Some(handle),
         _ => handle.abort(),
     }
+}
+
+/// A connection's two send lanes and the bulk byte accounting (see `Config::bulk_peer_bytes`).
+struct Lanes {
+    queue: futures::channel::mpsc::Receiver<IoBufs>,
+    bulk: futures::channel::mpsc::Receiver<IoBufs>,
+    bulk_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    bulk_total: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -438,8 +450,7 @@ async fn conn_task<E, Si, St>(
     conn_id: u64,
     mut sender: encrypted::Sender<Si>,
     receiver: encrypted::Receiver<St>,
-    mut queue: futures::channel::mpsc::Receiver<IoBufs>,
-    mut bulk: futures::channel::mpsc::Receiver<IoBufs>,
+    lanes: Lanes,
 ) where
     E: Spawner + Clock + Send + Sync + 'static,
     Si: commonware_runtime::Sink,
@@ -452,6 +463,7 @@ async fn conn_task<E, Si, St>(
     };
     let mut next_ping = ctx.current() + cfg.ping_interval;
     let mut nonce = 0u64;
+    let Lanes { mut queue, mut bulk, bulk_bytes, bulk_total } = lanes;
     loop {
         // biased: the normal lane first, the bulk lane only when it is empty
         select! {
@@ -468,7 +480,11 @@ async fn conn_task<E, Si, St>(
             m = bulk.next() => {
                 match m {
                     Some(b) => {
-                        if sender.send(b).await.is_err() {
+                        let len = b.len();
+                        let r = sender.send(b).await;
+                        let n = super::state::release(&bulk_bytes, len);
+                        super::state::release(&bulk_total, n);
+                        if r.is_err() {
                             break;
                         }
                     }
@@ -549,6 +565,13 @@ async fn reader_task<E, St>(
                 }
                 b.0 -= 1.0;
                 let tx = senders.get_mut(&channel).unwrap();
+                if ch.bulk {
+                    // never block the reader on a bulk consumer (blobs): drop and count
+                    if tx.try_send((key.clone(), payload)).is_err() {
+                        lock(&shared).counters.bulk_in_dropped += 1;
+                    }
+                    continue;
+                }
                 let t0 = std::time::Instant::now();
                 let _ = tx.send((key.clone(), payload)).await;
                 let waited = t0.elapsed();

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,8 @@ pub(crate) struct PeerEntry {
     pub queue: futures::channel::mpsc::Sender<IoBufs>,
     /// Bulk lane (see `Config::bulk_queue_size`).
     pub bulk: futures::channel::mpsc::Sender<IoBufs>,
+    /// Bytes queued on this peer's bulk lane (see `Config::bulk_peer_bytes`).
+    pub bulk_bytes: Arc<AtomicUsize>,
     pub handle: Option<Handle<()>>,
     pub last_getaddr: Option<SystemTime>,
     pub addr_tokens: f64,
@@ -42,6 +45,18 @@ pub(crate) struct Counters {
     pub rate_dropped: u64,
     pub queue_dropped: u64,
     pub bulk_dropped: u64,
+    /// Inbound bulk frames dropped because the local consumer's channel was full.
+    pub bulk_in_dropped: u64,
+}
+
+/// Subtract up to `n` from `a` (never below zero).
+pub(crate) fn release(a: &AtomicUsize, n: usize) -> usize {
+    let mut took = 0;
+    let _ = a.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+        took = v.min(n);
+        Some(v - took)
+    });
+    took
 }
 
 pub(crate) struct Shared {
@@ -62,6 +77,8 @@ pub(crate) struct Shared {
     pub next_conn: u64,
     pub rng: Rand,
     pub counters: Counters,
+    /// Bytes queued on every peer's bulk lane together (see `Config::bulk_total_bytes`).
+    pub bulk_total: Arc<AtomicUsize>,
 }
 
 pub(crate) fn ms(t: SystemTime) -> u64 {
@@ -107,6 +124,7 @@ impl Shared {
             next_conn: 0,
             rng: Rand::new(seed),
             counters: Counters::default(),
+            bulk_total: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -230,6 +248,9 @@ impl Shared {
         if let Some(h) = &p.handle {
             h.abort();
         }
+        // its queued bulk frames go with the connection
+        let left = p.bulk_bytes.swap(0, Ordering::SeqCst);
+        release(&self.bulk_total, left);
         if !p.inbound {
             if let Some(a) = p.listen {
                 let d = self.cfg.backoff_base;

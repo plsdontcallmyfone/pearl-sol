@@ -29,6 +29,8 @@ pub const CH_HEADERS: u64 = 3;
 pub const CH_BODIES: u64 = 4;
 /// Blob pushes (`id [32] || bytes`) from the node that took the putBlob (one hop).
 pub const CH_BLOBS: u64 = 5;
+/// Inbound frames waiting per bulk channel (blob pushes, blob fetch traffic).
+pub const BULK_BACKLOG: usize = 64;
 /// Blob fetch on demand (resolver keyed by blob id).
 pub const CH_BLOB_FETCH: u64 = 6;
 
@@ -132,8 +134,9 @@ where
         headers: network.register(CH_HEADERS, quota(), backlog),
         bodies: network.register(CH_BODIES, quota(), backlog),
         // bulk lane: multi-MB blob frames must not delay or crowd out block and tip gossip
-        blobs: network.register_bulk(CH_BLOBS, quota(), backlog),
-        blob_fetch: network.register_bulk(CH_BLOB_FETCH, quota(), backlog),
+        // (inbound: at most 64 frames of up to 4 MiB waiting per bulk channel; more are dropped)
+        blobs: network.register_bulk(CH_BLOBS, quota(), BULK_BACKLOG),
+        blob_fetch: network.register_bulk(CH_BLOB_FETCH, quota(), BULK_BACKLOG),
     };
     let handle = network.start();
     StartedOpen { oracle, channels, handle }
