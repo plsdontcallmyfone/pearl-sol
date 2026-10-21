@@ -385,6 +385,24 @@ Two consecutive passes were not reached on the public RPC. The fix is the dedica
 section) for the boxes AND the Mac-side scripts, or running the e2e from a host whose IP nothing
 else uses.
 
+### Runs off the Mac (2026-10-20, "Cadre leftovers" agent)
+
+The Mac's IP shares the public Solana devnet RPC limit with other work, so these ran on hosts with
+their own IP, our own devnet ops key only (copied for the runs, removed after).
+
+- Devnet box 0 (`E2E_ON_BOX0=1`): run box0-1 7/7 PASS (96.7 min). Run box0-2 right after it FAILED
+  preflight: box 0's own services (relayer, storefront-x402, explorer, cadre-api, settle, crank) plus the
+  e2e's calls had pushed box 0's IP into 429s, so the relayer reported unhealthy. Box 0 is a poor e2e
+  host for that reason.
+- Test box 64.95.13.106 (`E2E_HEADER_RELAY=<box 0's devnet header-relay build>`, status read against the
+  public node RPC): tb-1 FAILED step 3 with a 502 from storefront-x402 (it crashed on an unhandled
+  Solana 429 while box 0 was still throttled and systemd restarted it; tb-2 then failed preflight on the
+  same throttle). After box 0 recovered (10 min later: relayer 3 and storefront 13 lines with 429, then
+  healthy), two runs in a row both PASSED 7/7: tb-3 140.3 min (bridge in 35.3, bridge out + paid job
+  40.3, refund 64.5) and tb-4 131.4 min (32.3, 36.1, 62.7). Ops SOL 15.8668 -> 14.6823 over tb-3 and tb-4.
+- Open: storefront-x402 exits on an unhandled 429 rejection (services/storefront-x402, not changed here);
+  the dedicated RPC below removes the cause.
+
 ### Dedicated Solana RPC (owner decision 2026-10-20)
 
 The devnet services use a dedicated RPC from keys/devnet/solana-rpc-url (one line, gitignored, 0600,
