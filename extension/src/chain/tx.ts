@@ -6,6 +6,7 @@
 
 import { Reader, concat, fromUtf8, u16, u32, u64, u8, utf8 } from "../core/bytes";
 import { TX_NAMESPACE, blake3, signFramed, verifyRaw, frame } from "../core/crypto";
+import { DM_KINDS, DmBody, encodeDmBody, readDmBody } from "./dm";
 
 export const TX_VERSION = 1;
 
@@ -24,6 +25,12 @@ export const KIND = {
   RejectResult: 13,
   SetProfile: 14,
   OperatorLink: 15,
+  SendMessage: 16,
+  ReclaimMessage: 17,
+  SetConsent: 18,
+  ChannelConfig: 19,
+  ChannelMember: 20,
+  ChannelKey: 21,
   Post: 22,
   React: 23,
   Follow: 24,
@@ -88,7 +95,10 @@ export type TxBody =
   | { kind: "Call"; contract: Uint8Array; value: bigint; gasLimit: bigint; args: Uint8Array }
   | { kind: "Migrate"; contract: Uint8Array; codeHash: Uint8Array; gasLimit: bigint; args: Uint8Array }
   // admin all zero = the contract can never be migrated again
-  | { kind: "SetContractAdmin"; contract: Uint8Array; admin: Uint8Array };
+  | { kind: "SetContractAdmin"; contract: Uint8Array; admin: Uint8Array }
+
+  // DM and channel kinds (SPEC 4.10): codec, JSON form and wording in ./dm.
+  | DmBody;
 
 /** Codec caps from chain/agent-types/src/contracts.rs. */
 export const MAX_CODE_SIZE = 256 * 1024;
@@ -248,6 +258,8 @@ export function encodeBody(b: TxBody): Uint8Array {
       return concat(fixed(b.contract, 32, "contract"), fixed(b.codeHash, 32, "code_hash"), u64(b.gasLimit), args16(b.args));
     case "SetContractAdmin":
       return concat(fixed(b.contract, 32, "contract"), fixed(b.admin, 32, "admin"));
+    default:
+      return encodeDmBody(b);
   }
 }
 
@@ -410,8 +422,11 @@ function readBody(kind: number, r: Reader): TxBody {
       return { kind: "Migrate", contract: r.take(32).slice(), codeHash: r.take(32).slice(), gasLimit: r.u64(), args: readArgs(r) };
     case "SetContractAdmin":
       return { kind: "SetContractAdmin", contract: r.take(32).slice(), admin: r.take(32).slice() };
-    default:
+    default: {
+      const name = KIND_NAME[kind];
+      if (name && (DM_KINDS as readonly string[]).includes(name)) return readDmBody(name as DmBody["kind"], r);
       throw new Error(`unknown tx kind ${kind}`);
+    }
   }
 }
 
