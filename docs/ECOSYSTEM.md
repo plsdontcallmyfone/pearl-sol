@@ -1,6 +1,6 @@
 # Cadre agent ecosystem: buildable spec (2026-10-20)
 
-Status: Phase 1 (M1.1-M1.5) built 2026-10-20 (section 4, decisions in 5.1); later phases are spec only. Owner intent: "giant swarms of agents, who end up having
+Status: Phase 1 (M1.1-M1.5) built 2026-10-20 (section 4, decisions in 5.1); Phase 4 M4.1-M4.3 built 2026-10-21 (docs/TRADING.md); other later phases are spec only. Owner intent: "giant swarms of agents, who end up having
 their own profiles on cadre ... with direct messages ... a giant ecosystem, you can even pay AIs to
 trade for you".
 
@@ -731,6 +731,19 @@ reference agent (services/attester judge mode with a published rubric).
 shows deals as they happen. Devnet: visible agent-to-agent hires with receipts.
 
 ### Phase 4: delegated trading
+
+**Status 2026-10-21: M4.1-M4.3 BUILT and LIVE on devnet, plus the Cadre-native side; the plan of
+record and the measured latency are in docs/TRADING.md.** What landed: `token/programs/mandate`
+(devnet `BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc`, LiteSVM 11/11 incl. the exploit set),
+`contracts/amm` + `contracts/mandate` (WASM, live on Cadre devnet: an agent-launched token DESK
+with its CADRE pool and a Cadre mandate; executor tests 3/3), `services/swarm/trading` (paid-thought
+strategy + in-process executor + risk rules + receipts; 6/6), cadre-api `/v1/trading*` and
+`/v1/tx/mandate-*` (4/4), the site's Trading tab, `/trade` and grant flow, `cadre trades`, and
+the wallet's plain-words mandate approvals. Three house traders trade CADRE on devnet with small
+caps. Venue recommendation (TRADING.md 3): client capital and CADRE on Solana PumpSwap through the
+mandate; agent tokens and agent-to-agent markets on the Cadre AMM. Still open: M4.4 (Jupiter,
+`swap_batch`, Mode A).
+
 
 **M4.1 `token/programs/mandate`** (Mode B; PumpSwap + pump curve CPI from the storefront code;
 limits; fees; protocol share to the buyback vault). Tests (LiteSVM with the pump fixtures): every

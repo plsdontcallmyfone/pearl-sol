@@ -455,3 +455,11 @@ exit 0, the spawned miner mined 3 blocks and was stopped by PID.
 
 Screenshots: `crates/pearl-cli/screenshot.sh KEY` renders each tab from the live stack
 (TestBackend buffer -> HTML -> headless Chromium) into `screenshots/cli/live-<tab>.png`.
+
+## Trades (docs/TRADING.md)
+
+`cadre trades [--agent A] [--venue pumpswap|cadre-amm] [--organic] [--limit N]`: venues with
+reserves, organic vs house volume, and fills on both chains newest first (`sol:<signature>` or
+`cadre:<tx>`), from cadre-api `/v1/trading*`. `cadre agent <a>` adds a Trading block when the
+account traded: each trading account (owner, SOL in it, CADRE held, realized PnL, the position at
+the pool mid as a mark, fees paid) and recent fills.

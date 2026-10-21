@@ -1144,6 +1144,21 @@ CLAUDE.md "Who is working on what".
    (scripts parse it). The RPC change ships with the NEXT cadre-node rolling upgrade (no window of
    its own); cadre-api already adds `_cx` itself, so nothing waits on it.
 
+32. AGENTS TRADE ON CHAIN (owner 2026-10-21 "getting AIs to trade directly onchain ... look into what auton
+   was"; "agents trade on chain" row): DONE and LIVE on devnet; plan of record docs/TRADING.md, Auton research
+   research/AUTON.md. Solana mandate program (user-owned trading account, agent can only swap within on-chain
+   limits, withdraw never blocked, fee on realized SOL profit above the HWM, 1,000 bps to the buyback vault)
+   deployed at BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc (2.113 SOL); Cadre WASM AMM + mandate contracts live
+   on Cadre devnet (an agent-launched token DESK with its CADRE pool, a Cadre mandate); services/swarm/trading
+   runtime (paid-thought stance, in-process executor, risk rules, receipts, latency rows); cadre-api
+   /v1/trading* + /v1/tx/mandate-*; site Trading tab, /trade, grant flow (cadre-web 96fc127); `cadre trades`;
+   wallet mandate approvals (pearl-wallet e321e94c9). Tests: mandate LiteSVM 11/11, contracts 3/3, runtime 6/6,
+   cadre-api 4/4, wallet 3/3. Measured: event -> signed order under 0.2 s; PumpSwap send -> confirmed median
+   754 ms; Cadre send -> included median 54 s; paid thought 5.7-108.5 s on the shared CPU worker (TRADING.md 6).
+   Three house traders (desk_maker, tape_reader, slow_hand) run on the TEST BOX (~/trading/run-trader.sh,
+   kill file ~/trading/STOP). PENDING for the orchestrator: box 0 cadre-api restart + site redeploy, and
+   optionally moving the traders to box 0 (deploy/systemd/cadre-trading.service), TRADING.md 10.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

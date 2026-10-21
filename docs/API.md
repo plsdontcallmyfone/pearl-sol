@@ -374,6 +374,31 @@ The explorer has the same data as pages: `/contracts`, `/contract/{address}` (`?
 name), `/code/{hash}`, `/tx/{hash}` (contract txs with their receipt) and the contracts record on
 `/block/{height}`, each with a JSON twin under `/api`.
 
+## Trading (docs/TRADING.md, ECOSYSTEM Phase 4, 2026-10-21)
+
+Read-only views computed only from chain data (the Solana mandate program's accounts and
+`MandateSwap` events, the CADRE PumpSwap pool, the Cadre AMM's `Swap` events and the Cadre mandate
+contract), plus unsigned Solana txs for the grant flow. Config: `deploy/trading-devnet.json`,
+`deploy/trading-devnet-solana.json`, `deploy/trading-house.json` (or `TRADING_CADRE_CONFIG`,
+`TRADING_SOLANA_CONFIG`, `TRADING_HOUSE`); without them every route is 503 `unavailable`.
+
+| Route | What |
+|---|---|
+| `GET /v1/trading` | Venues with reserves, house traders, organic vs house volume (quote side, per venue unit), fill counts |
+| `GET /v1/trading/trades?agent=&venue=pumpswap\|cadre-amm&organic=1&limit=` | Fills, newest first: `chain, venue, agent, account, via (mandate\|wallet), side, amount_in, amount_out, ref (sol:<sig>\|cadre:<tx>), house, flags` |
+| `GET /v1/trading/agents/{account}` | Positions (Solana mandates, Cadre wallet, Cadre mandates) with realized PnL, the position at the pool mid (`marked_at_mid_*`, a mark, not profit), fills; 404 when the account never traded |
+| `GET /v1/trading/leaderboard` | Per venue unit (SOL, CADRE), by realized PnL; revoked and losing agents kept; `house`, `client_capital` |
+| `GET /v1/trading/mandates?user=\|agent=` | Solana mandates with vault equity, CADRE position, limits, fees |
+| `POST /v1/tx/mandate-open {user, agent, deposit_lamports, limits?, perf_fee_bps?, settle_interval_secs?, mandate_id?}` | open + the vault's PumpSwap volume accumulator + its CADRE token account; next free id by default; `in_words` states the grant |
+| `POST /v1/tx/mandate-revoke {user, mandate}` | revoke (400 when the user does not own it) |
+| `POST /v1/tx/mandate-withdraw {user, mandate, lamports?: "all", tokens?: "none"}` | withdraw_token (all CADRE) + withdraw_sol (all above rent) |
+| `POST /v1/tx/mandate-limits {user, mandate, limits}` | set_limits; `limits.paused = true` pauses |
+
+Limits fields (snake case, decimal strings for lamports): `max_in_per_trade` (default 0.02 SOL),
+`window_cap` (0.2 SOL), `window_secs` (86,400), `max_trades_per_window` (24), `max_slippage_bps` (300,
+at most 2,000), `min_pool_quote_reserve` (1 SOL), `max_trade_share_bps` (100), `expiry_ts`, `paused`.
+All four builders were simulated against the devnet program (TRADING.md 5.5).
+
 ## Using it from the site
 
 Copy `services/cadre-api/client/index.ts` into the site (no dependencies; browser and Node).
