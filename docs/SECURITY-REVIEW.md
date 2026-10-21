@@ -62,9 +62,9 @@ key and check right after init); relay reward and header rent go to the submitte
 | V-4 | low/medium | cadre-api routes/market.ts | tx builders accepted 50% slippage and any min-out override | slippage capped at `CADRE_MAX_SLIPPAGE_BPS` (default 1000), looser min-out answers 422 | 88ad2de |
 | V-5 | medium | apps/explorer profile-view.ts | `RegisterAgent.uri` rendered as a link with any scheme (stored XSS on click) | links only http(s) | 52247dd |
 | V-6 | high (proxy users) | services/cadre-proxy | on loopback without `--token`, any web page could spend the proxy wallet | foreign Origin and non-loopback Host refused (`CADRE_PROXY_ALLOW_ORIGINS`) | ec2c80f |
-| V-7 | medium (DoS) | inference-gateway main.rs | one thread per connection, no cap, no read timeout; bodies over 4 MiB silently truncated | **open**: the serve-8B row (owner of main.rs) finished without it. Fix: connection cap (semaphore ~64, 503 above), per-connection read timeout, 413 above 4 MiB. Today the gateway binds 127.0.0.1 behind cadre-api's rate limit | |
+| V-7 | medium (DoS) | inference-gateway main.rs | one thread per connection, no cap, no read timeout; bodies over 4 MiB silently truncated | new `server.rs` front: at most `--max-in-flight` (64) requests at once, 503 above; SO_RCVTIMEO `--read-timeout-secs` (30) on the listener, inherited by every connection (headers, body, idle keep-alive; 408 for a late body); 413 above 4 MiB. The timeout also bounds accept(), whose error ends tiny_http's accept thread, so a ticker connects every timeout / 8 (at most 2 s) and the gateway exits non-zero if the listener stops anyway (unit Restart=always) | 24a5ff3 |
 | V-8 | low | inference-gateway lib.rs | anonymous `GET /v1/prepaid/{w}` and `/v1/balance?wallet=` each fanned out into node calls | anonymous reads rescan a wallet at most once per 15 s (cache capped at 10,000 wallets); signed reads always rescan | see section 7 |
-| V-9 | low | inference-gateway auth.rs | cadre-auth-v1 names no gateway, so a request signed for one gateway could be replayed to another inside the 120 s window | **cadre-auth-v2**: `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TS + "\n" + hex(sha256(body))`, AUDIENCE = the gateway's server key in base58 (`GET /health` -> `server`, `auth` lists the accepted versions). v1 stays accepted until `CADRE_AUTH_REQUIRE_AUDIENCE=1` | see section 7 |
+| V-9 | low | inference-gateway auth.rs | cadre-auth-v1 names no gateway, so a request signed for one gateway could be replayed to another inside the 120 s window | **cadre-auth-v2**: `"cadre-auth-v2\n" + AUDIENCE + "\n" + METHOD + "\n" + PATH + "\n" + TS + "\n" + hex(sha256(body))`, AUDIENCE = the gateway's server key in base58 (`GET /health` -> `server`, `auth` lists the accepted versions). v1 stays accepted until `CADRE_AUTH_REQUIRE_AUDIENCE=1`. Every client moved (see below) | 9bae779, 6a5294a |
 | V-10 | low (DoS) | services/pool lib.rs | unauthenticated registration rewrote the whole state file each time and consumed nonce ranges; every rejected share also rewrote it | unproven registrations stay in memory (at most 4096, dropped after 30 min idle, ids reused), saved with the first accepted share; rejected shares no longer write | see section 7 |
 | V-11 | info | services/relayer config.ts | `COMMITMENT` defaults to `confirmed` | not changed; mainnet units must set `finalized` (the devnet unit does) | |
 
@@ -76,13 +76,26 @@ storefront-x402 64 KiB body cap, gateway API keys stored as sha256 of 24 random 
 Not reviewed in depth: relayer internals beyond config and health, crank flows, miner
 HTTP, the storefront-x402 paid-job path beyond x402 verification.
 
-### Clients still signing cadre-auth-v1
+### cadre-auth-v2 clients
 
-V-9 protects only once clients sign v2 and gateways run with
-`CADRE_AUTH_REQUIRE_AUDIENCE=1`. Clients to move, each by its owning row: cadre-proxy,
-services/swarm, services/swarm/agents, ~/cadre-web lib/gateway.ts, ~/pearl-wallet
-(background/pearl/ai.ts and the W-2 `/v1/keys` origin check), scripts/devnet-e2e,
-scripts/demo. Each fetches `server` from the gateway's `/health` once and signs v2.
+Every gateway client signs v2 now, reading the audience once from the gateway's
+`/v1/models` (`data[0].cadre.server`, also served through cadre-api's `/v1/openai/models`):
+cadre-proxy, services/swarm (`Gateway` in src/clients.ts, so the house swarm, the house
+desktops and the hosted/self-hosted user agents), scripts/devnet-e2e, scripts/demo
+(pearl-sol 6a5294a), ~/cadre-web lib/gateway.ts `gatewaySignedHeaders` (2428699), and the
+Cadre Wallet (pearl-wallet f7753402b): its AI keys and balance calls sign v2, and its
+approval decoder reads v1 and v2, so the W-2 refusal of a foreign site's `POST /v1/keys`
+covers v2 too. Test fakes and the wallet's mock gateway verify v2 strictly. The hosted
+agent runtime's own operator auth (`/v1/hosted/...`, not a gateway) keeps v1.
+
+Deployed 2026-10-21 (orchestrator, owner "Yes, allow deploy restarts"): box 0 synced to
+bd38bfc; cadre-gateway 8df7edd6... (V-7 + v2; .prev kept), cadre-swarm, cadre-agents,
+cadre-desktops (~/cadre-desktops fast-forwarded to bd38bfc) restarted with 0 auth errors;
+site from cadre-web 2428699. Live on devnet (2026-10-21): a v2 signature naming the devnet gateway reads
+`/v1/inference/balance` (200), the same request naming another gateway is refused (401),
+v1 still works (lenient mode). Strict mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1` on the
+gateway) only after the swarm units, the site and a wallet release carrying f7753402b
+are deployed: older wallet installs sign v1 and would lose AI keys and balance close.
 
 ## 4. Cadre Wallet (pearl-wallet dev, d3b3f05d0, deps 448ae16ce)
 
@@ -180,5 +193,17 @@ session): test box cadre-api restarted (health and summary 200); devnet box 0 sy
 restarted, nodes active. Miners installed with install-miner.sh pick up V-2 on their
 next install. The cadre-proxy fix (V-6) reaches users through the repo.
 
-Still open from the services area: V-7, the V-9 client migration and strict mode, and
-the crates/Cargo.lock webpki bumps (another row's uncommitted lockfile).
+Round 2 (2026-10-21): V-7 (24a5ff3), every client on cadre-auth-v2 (6a5294a, cadre-web
+2428699, pearl-wallet f7753402b), crates/Cargo.lock rustls-webpki 0.103.16 / webpki-roots
+1.0.10 (24a5ff3). Tests: cadre-gateway server_limits 5 + gateway 10 + auth 4 + budget 2 +
+discover 1, crates workspace 128, cadre-proxy 10, swarm 17, swarm/agents 18, desktop 7,
+cadre-web 29 + lint + typecheck, pearl-wallet unit 211 (2 unrelated IDL drift failures)
+and the headless UI check 102/103 on the test box (the one failure, a /jobs page-sweep
+screenshot timeout, happens on the pre-change build too).
+
+Deployed the same day (box 0 at bd38bfc: cadre-gateway, cadre-swarm, cadre-agents,
+cadre-desktops, site). Still open from the services area: a wallet release carrying
+pearl-wallet f7753402b, then strict mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1` in
+/etc/lode/inference.env, restart cadre-gateway; v1 must then answer 401). Ops fix from the
+deploy: `scripts/devnet-deploy.sh sync` and `site` refuse when local main is not
+origin/main (the site step had briefly served another session's unpushed installer).

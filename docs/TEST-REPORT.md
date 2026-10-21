@@ -478,3 +478,18 @@ start): 7/7 PASS, step 11 1,116.0 s, upload 104.5 s, all 640 segments mined in b
 
 Deployed after the tests: test box cadre-api; devnet box 0 cadre-gateway, cadre-attester, cadre-miner, cadre-explorer,
 cadre-api (main 154a819); boxes 1-2 cadre-miner (same pearl-miner, sha256 295bfca2...). Public API answered 200 after.
+
+## Follower stall + agent-node memory (2026-10-21, "fresh node p2p sync stall" row, round 2)
+
+Cause and fix in HANDOFF item 24. Test box 64.95.13.106, own dir ~/follow-stall.
+
+| Suite / run | Where | Result |
+|---|---|---|
+| chain workspace (`cargo test --release --locked --workspace`) on branch follow-stall (fix3 source) | test box | 144 passed, 0 failed |
+| chain workspace on main with the fix and the contracts merge (0dc64a9), and again with the full-store want check | test box | 164 passed, 0 failed (both) |
+| net `normal_lane_is_not_held_behind_bulk_frames` | Mac | passes; with `register_bulk` forced onto the normal lane it fails: "normal lane waited 52.9 s behind bulk frames" |
+| net `bulk_queue_bytes_are_bounded_per_peer_and_in_total` (2 GB offered to 3 peers over 1 MB/s links) | Mac | queued bulk bytes stay within 8 MiB per peer / 20 MiB total, links stay up, bytes drain to 0 |
+| rpc blobfetch unit tests (window, stale slot, removed while queued) | test box (workspace) | pass |
+| live, instrumented pre-fix follower (blobs on) | test box | 77,974 blob "requester timeout" in 2.5 min over exactly 1024 keys; a node stuck on a one-block fork (4515) got gossiped blocks as orphans but no header delivery for minutes |
+| live, devnet boxes after the test-box followers stopped (18:35:58 UTC) | devnet | agent-node RSS flat (168 / 76 / 131 MB at 18:39), swap not growing |
+| live soak, fix3 followers with blobs on: s1 (from synced data, since 18:44 UTC) and s2 (fresh, since 19:13 UTC) | test box | see the soak line in HANDOFF item 24 |

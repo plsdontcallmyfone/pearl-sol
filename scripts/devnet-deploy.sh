@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cadre public devnet operations from the Mac (docs/DEVNET.md). Boxes: deploy/devnet.env.
-#   scripts/devnet-deploy.sh sync              committed history -> box 0 (~/pearl-sol, git bundle)
+#   scripts/devnet-deploy.sh sync              pushed main -> box 0 (~/pearl-sol, git bundle); refuses if local main != origin/main
 #   scripts/devnet-deploy.sh build             on box 0: binaries + devnet .so + IDLs (deploy/build.sh)
 #   scripts/devnet-deploy.sh ship              copy agent-node + pearl-miner from box 0 to boxes 1-2 (via the Mac)
 #   scripts/devnet-deploy.sh install N         units, configs, Caddyfile on box N (root)
@@ -31,10 +31,26 @@ UNITSN="cadre-node cadre-miner"
 relay_boxes() { echo "${HEADER_RELAY_BOX:-1}"; }
 is_relay_box() { local b; for b in $(relay_boxes); do [[ $b == "$1" ]] && return 0; done; return 1; }
 relay_lane() { local b i=0 n; n=$(echo $(relay_boxes) | wc -w | tr -d ' '); for b in $(relay_boxes); do [[ $b == "$1" ]] && { echo "$i/$n"; return; }; i=$((i + 1)); done; echo "0/1"; }
+# Only PUSHED history goes to the boxes: refuse when a checkout's local main is not exactly
+# origin/main (another session's unpushed commit, or one of yours), after a fetch. Several
+# sessions share ~/pearl-sol; 2026-10-21 a sync and a site deploy almost shipped another
+# session's unpushed commit. ALLOW_UNPUSHED_MAIN=1 overrides (say why in your CLAUDE.md row).
+pushed_main() {
+  local repo=$1 l o
+  git -C "$repo" fetch -q origin main 2>/dev/null || { echo "$repo: git fetch origin main failed" >&2; exit 1; }
+  l="$(git -C "$repo" rev-parse main)"; o="$(git -C "$repo" rev-parse origin/main)"
+  if [[ $l != "$o" && ${ALLOW_UNPUSHED_MAIN:-0} != 1 ]]; then
+    echo "$repo: local main ${l:0:9} is not origin/main ${o:0:9}; push or merge first (or ALLOW_UNPUSHED_MAIN=1)" >&2
+    git -C "$repo" log --oneline origin/main..main | head -20 | sed 's/^/  unpushed: /' >&2
+    git -C "$repo" log --oneline main..origin/main | head -20 | sed 's/^/  not pulled: /' >&2
+    exit 1
+  fi
+}
 units_of() { local u; [[ $1 == 0 ]] && u="$UNITS0" || u="$UNITSN"; is_relay_box "$1" && u="$u cadre-header-relay"; echo "$u"; }
 
 case "${1:-}" in
   sync)
+    pushed_main "$ROOT"
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     git -C "$ROOT" bundle create "$tmp/repo.bundle" main 2>/dev/null
     scpb 0 "$tmp/repo.bundle" "lode@$BOX0_IP:repo.bundle"
@@ -146,6 +162,7 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     # checkout's main (sent as ~/site-installer/scripts/install-miner.sh, PEARL_SOL for the
     # prebuild), so the site does not depend on what box 0's ~/pearl-sol build tree is at
     web="${CADRE_WEB:-$HOME/cadre-web}"; dash="${BOX0_IP//./-}"
+    pushed_main "$web"; pushed_main "$ROOT"
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     git -C "$web" bundle create "$tmp/web.bundle" main 2>/dev/null
     git -C "$ROOT" show main:scripts/install-miner.sh > "$tmp/install-miner.sh"
