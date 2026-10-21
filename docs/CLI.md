@@ -161,7 +161,21 @@ pearl register <name> [uri] | agent [address] [--explorer URL]
 pearl mine start [--threads 2] | mine stop | mine status
 pearl buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
 pearl snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
+pearl contract build [DIR]                  # cargo build --target wasm32-unknown-unknown + chain checks
+pearl contract deploy FILE.wasm|DIR         # DeployCode (skipped when the code is already deployed)
+pearl contract instantiate CODE_HASH [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE --gas G]
+pearl contract new FILE.wasm|DIR [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE]
+pearl contract call ADDR METHOD [TYPE:VALUE ...] [--value CADRE --gas G --dry-run --decode TYPES]
+pearl contract query ADDR METHOD [TYPE:VALUE ...] [--decode u64,addr,str]
+pearl contract show ADDR | ls [--limit 20] | events ADDR | receipt TX
+pearl contract migrate ADDR CODE_HASH [TYPE:VALUE ...] | admin ADDR NEW|none
 ```
+
+Contract arguments are `TYPE:VALUE` with TYPE u8 u16 u32 u64 bool addr hash bytes (hex) str
+cadre (a CADRE amount sent as u64 base units), encoded as docs/CONTRACTS.md "ABI". `call`
+simulates first (simulateCall) and sets the gas limit to the simulated gas plus 25% unless
+`--gas` is given; the fee is the chain's contract fee floor for that limit, and the unused gas
+comes back. `--dry-run` only simulates and shows the contract's debug log.
 
 Amounts are decimal tokens (`1.5`); chain units are 9 dp, SPL 6 dp (bridge amounts take at
 most 6 decimals). `job post` generates random int7 matrices (or reads a PSD1 blob), puts the

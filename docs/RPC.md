@@ -365,6 +365,46 @@ sendTx refuses a social tx below the activation height or under the social fee f
 (`max(min_fee, social_min_fee + social_byte_fee x tx bytes)`). getAccountTxs lists a Follow
 under each target (role `follow`) and an OperatorLink under its agent (role `operator`).
 
+### Contracts (SPEC 4.7, docs/CONTRACTS.md)
+
+Addresses are base58, hashes hex, binary (args, return data, keys, event data) hex. Contract
+object: `{"address", "code_hash", "admin": base58 | null, "upgradable", "creator", "label",
+"created_height", "migrated_height" | null, "storage_bytes", "storage_items", "deposit",
+"index", "calls", "events"}` (+ `balance`, `code_size`, `entries`, `imports` in getContract).
+Receipt: `{"tx_hash", "kind", "status": ok | reverted | out_of_gas | trapped | refused, "ok",
+"gas_limit", "gas_used", "fee_charged", "contract", "code_hash", "event_count", "return",
+"error", "bytes", "hash"}`. Event: `{"contract", "tx_hash", "index", "topics": [hex],
+"data", "bytes", "hash"}`.
+
+- `getContract {"address"}` -> Contract or null.
+- `getCode {"code_hash", "include_code"?: false}` -> `{code_hash, deployer, height, size,
+  deposit, instances, index, code?}` or null.
+- `listContracts {"offset"?: 0, "limit"?: 50}`, `listCodes {...}` -> `{total, offset, items}`,
+  newest first (limit 1..200).
+- `queryContract {"address", "args": "hex", "gas"?: 20000000}` -> `{ok, return, error,
+  gas_used, height}`: the `query` entry point at the tip, read-only, at most 50M gas.
+- `simulateCall {"from", "address", "args", "value"?: 0, "gas"?}` -> `{ok, return, error,
+  gas_used, log, events, fee_estimate, height}`: the `call` entry point as `from`, no signature
+  or fee, nothing kept (gas estimation; `log` holds the contract's debug lines).
+- `getContractReceipt {"tx_hash"}` -> Receipt + `{height, events, block_hash, final}` or null.
+  getTx adds `receipt` for contract kinds.
+- `getContractEvents {"address", "offset"?: 0, "limit"?: 50, "topic"?: "hex"}` -> `{address,
+  total, events: [Event + {height, n}], next_offset}` newest first (`topic` filters topic 0).
+- `getContractStorage {"address", "key": "hex"}` -> `{value: hex | null}` at the tip.
+- `getContractStateProof {"address", "key"}` -> `{state_key, value: hex | null, proof: hex |
+  null, state_root, height, block_hash, header_state_root}`: a QMDB current-value proof of the
+  stored item (`tag 46 || key_len || key || value`) against the FINAL block's state_root
+  (`state::Store::verify_state_proof`).
+- getBlock adds `contracts`: `{record, record_hash, height, receipt_count, receipts_root,
+  event_count, events_root, gas_used, leaf_index, path}` (null for a block without contract
+  txs); the coinbase receipt's `leaf_index` is then `tx_count + 1`.
+- getParams adds `gas_price`, `gas_price_unit` (1,000,000), `block_gas_limit`,
+  `tx_gas_limit`, `contract_base_fee`, `contract_byte_fee`, `storage_byte_deposit`,
+  `max_code_size`, `max_call_depth`.
+
+sendTx refuses a contract tx below the activation height, over `tx_gas_limit`, under the fee
+floor, or (DeployCode) with code that fails validation.
+
 ### getPeers `{}`
 Open-membership node (`net: "open"`):
 ```json
