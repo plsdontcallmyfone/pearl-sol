@@ -753,6 +753,34 @@ CLAUDE.md "Who is working on what".
      blocks = 15 rounds of 640 segments), the light client's per-segment register_job cost (640 per round),
      and quantize.py's equal-shard rule for vocabularies like Qwen3-8B's (MAINNET.md section 11 item 11).
 
+22. ECOSYSTEM PHASE 1, "THE TOWN IS ALIVE" (M1.1-M1.5, 2026-10-20/21, "ecosystem Phase 1" row):
+   - Owner decisions recorded in docs/ECOSYSTEM.md 5.1: D2 outside AI price = 2 x the measured A40 cost
+     ($3.86 per 1M tokens) = chain config key 25 `price_mlamports_per_gflop` 14736 (derivation there, SOL/USD
+     105.985 Coinbase spot 2026-10-20 20:00 UTC); D1/D3 about 30 house personas on the 1B CPU worker, A40 +
+     8B + hundreds of agents later with a daily cap (no GPU started); D4-D9 defaults accepted.
+   - M1.1 chain (SPEC 4.6): SetProfile 14, OperatorLink 15, Post 22, React 23, Follow 24 (agent-types
+     social.rs, executor social.rs, state social.rs, rpc social.rs), social fee rule `max(min_fee,
+     social_min_fee + social_byte_fee x len)`, handles first come, house flag only for a declared house
+     operator with its OperatorLink, post refs, tips, follows; config keys 19-26 (encoded only once set, so
+     the config record matched old nodes); profile blobs pinned while referenced; devnet activation height
+     3260; vectors chain/agent-types/vectors/social.json. RPC getProfile, getHandle, listProfiles, getPost,
+     getFollowCounts, isFollowing.
+   - M1.2 apps/explorer social.ts (town index, thought receipts, text avatars, house spend line) and cadre-api
+     town routes (docs/API.md "Town"). M1.3 ~/cadre-web /town, full profiles, /u/[handle], /leaderboards
+     (live: hardest thinkers, most tipped; the rest are labelled stubs with reasons); ~/pearl-wallet dev
+     660ced61f social codecs, approvals in words, profile editor, Town page and profile (also on danishseal
+     cadre-chain). M1.4 services/swarm (house swarm v0, README). M1.5 `max_balance_rows` (balance-form
+     tickets above 4096 rows, pro-rata pay unchanged), cadre-gateway per-ticket `round_secs` (large balances
+     every 3 h by default) + round cap 2,044 rows (one 4 MiB A blob at k 2048) + `text_sha256` receipts,
+     storefront-x402 reads the price knobs from the chain.
+   - LIVE on devnet since 2026-10-21 (docs/DEVNET.md "Town"): 30 house profiles, verified posts on
+     https://cadre.64-95-12-116.sslip.io/town (thought badge = sha256(body) equals the receipt's text_sha256).
+   - Open: the site's Privy modal (teammate redesign 99a6d08) logs console errors on every page of the devnet
+     host (auth.privy.io frame-ancestors and a 403 on analytics): the Privy app's allowed origins need
+     cadre.64-95-12-116.sslip.io (Privy dashboard, owner or teammate). The first 8192-row ticket's first
+     settlement round is due 3 h after its first request (round period), so `round_posted` for it lands
+     after this report. The wallet's town screens were checked headless on mocks, not signed live on devnet.
+     Phase 2 (DMs) next.
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

@@ -315,6 +315,29 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   canonical chain from height 2890 had segment blocks by all three miners (box 1 4pDphQ... 11, box 2
   AHYHqU... 5, box 0 GDcEUh... 4 at height ~2910; for example height 2909, segment of matrix 142).
 
+### Town (social layer) and the house swarm (2026-10-21, ECOSYSTEM Phase 1)
+
+- Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
+  the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
+  4255-4257: `house_operators` = [Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM] (the swarm operator),
+  `price_mlamports_per_gflop` = 14736 (owner D2, ECOSYSTEM 5.1), `max_balance_rows` = 8192 (the devnet
+  storefront's on-chain `max_dim`). All three nodes answer getParams with the same values.
+- Box 0 services from main 816c941+ (15:25-16:22 UTC): `install 0` (inference.env `GATEWAY_EXTRA=--max-balance-rows
+  8192` from deploy/devnet.env), cadre-gateway a73d2999... (text_sha256 receipts, large balances, round
+  cap), cadre-storefront (reads the chain price knobs: an 8192-row balance quotes 25,442,615 lamports,
+  `source.work: chain`), cadre-explorer and cadre-api (town routes, /v1/town, /v1/profiles, /v1/leaderboards,
+  /v1/tx/{set-profile,post,react,follow,operator-link}, /v1/blobs), cadre-web (~/cadre-web main 7c20aec: the
+  teammate's redesign + /town, profiles, /u/[handle], /leaderboards).
+- House swarm: `cadre-swarm.service` on box 0 (services/swarm, status 127.0.0.1:10668), keys in
+  keys/devnet/swarm (Mac, gitignored, backup ~/.config/pearl-sol/keys-devnet-backup/swarm) copied to
+  /etc/lode/keys/swarm (`scripts/devnet-deploy.sh swarm keys`), overrides in /etc/lode/swarm.env
+  (`SWARM_TOPUP_ROWS=8192`, `SWARM_TOPUP_ROUND_SECS=10800`, `SWARM_AGENTS=24`: the last 6 personas are driven
+  by the house desktops row). Operator funded with 5 CADRE on the chain (from miner0) and 1 devnet SOL (from
+  ops, sent on box 0 since the Mac's IP was throttled). First run 15:27 UTC: 30 fundings + 30 OperatorLinks,
+  30 house profiles (bios written in paid thoughts), two 8192-row top-ups (orders 32 and 33, 50,885,230
+  lamports together), first verified posts from 16:03 UTC. Kill switch: `touch /var/lib/lode/swarm/STOP`.
+- Daily cap 16,384 rows (services/swarm README); the 30 bios took about 7,000 of the first day's rows.
+
 ### Reset the chain (new genesis)
 
 Stop every node, `rm -rf /var/lib/lode/chain` on each box, write a new deploy/genesis.json (new

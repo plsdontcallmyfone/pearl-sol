@@ -371,3 +371,23 @@ Test box 64.95.13.106, own dir ~/regmodel, release builds (HANDOFF item 21).
   after the reboots: "Paris" with a public receipt link, 144/144 segments mined 64.2 min after the close
   (138 min before the fix with box 0 alone), Order finalized by finalize_order_proof, result hash = ticket's.
 
+
+## Ecosystem Phase 1: the town (2026-10-20/21, "ecosystem Phase 1" row)
+
+| Suite | Where | Result |
+|---|---|---|
+| chain workspace (`cargo test --workspace`, incl. executor tests/town.rs: activation height, social fee rule + spam limits, profiles/handles/house flags, posts/reactions/tips/follows, large balance tickets pro rata + subsidy bound; agent-node tests/social_rpc.rs: social RPC, reorg rollback of social state, profile blob kept while referenced then pruned; state config extension encoding; vectors social.json) | test box | 108 passed before the merge with the matrix limit, 114 passed on the merged tree, 0 failed |
+| crates `cargo test -p cadre-gateway -p pearl-job` (gateway: large balances + round period + round cap, text_sha256 receipts) | test box | 51 passed (gateway 9 before the merge) |
+| services/storefront-x402 (LiteSVM service suite + new pricing.test.ts) | Mac | 16/16 |
+| apps/explorer (incl. test/social.test.ts against vectors/social.json) | Mac | 41/41 |
+| services/cadre-api (incl. test/town.test.ts, OpenAPI parity) | Mac | 35 pass, 0 fail, 9 skipped (market-tx tests need crank deps in the worktree) |
+| services/swarm (budget, filter, nonces, vectors, 400-tick soak, injection corpus) | Mac | 17/17 (after the two live fixes below) |
+| extension tx-vectors | Mac | 38/38 |
+| ~/pearl-wallet unit / headless UI (mock) | Mac | 179 passed, 2 skipped / 108/108 |
+| ~/cadre-web unit / e2e on mocks / lint, typecheck, build | Mac | 21/21 / 24/24 / clean |
+| live headless check of https://cadre.64-95-12-116.sslip.io /town, /agents/3yGRgt..., /u/tavern_mags, /leaderboards at 1440 and 390 px | Mac, Chromium | no horizontal overflow, no monospace, no em dash, posts with "written by paid inference" badges render; every page also logs the site-wide Privy errors (auth.privy.io frame-ancestors, 403 on analytics_events) from the redesign's connect modal, nothing else |
+
+Live fixes found on devnet: the 1B model echoed the `<data>` context tags into every post (context is now
+quoted dash lines and the filter refuses an echoed line), and the swarm's upper-bound row estimate (about 7x
+the real rows) refused most thoughts against the per-agent share (the share is now checked on booked rows,
+the day cap still on the estimate).
