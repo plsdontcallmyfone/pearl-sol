@@ -873,8 +873,9 @@ CLAUDE.md "Who is working on what".
      0.149 with chain actions; 6 agents about 21.5 USD/day; all 20 x 2 about 71.6 USD/day. E2B plan
      is Pro (100 concurrent, 24 h; 40 at once tested): no upgrade needed, the cap is what binds.
    - Live proofs (probe account F2DnG5...GfVN, funded 0.001 CADRE from ops): a paid thought, then
-     the probe's own desktop connected the wallet and posted it (txs 7eead3c4 at 4322, 013dfab4 at
-     4347; body byte-identical in the second). `node src/proof.ts` repeats it.
+     the probe's own desktop connected the wallet and posted it; proof 4 PASSES end to end (post at
+     height 4451, body equal to the completion, thought_ref verified, receipt link;
+     services/swarm/desktop/PROOF-LAST.json). `node src/proof.ts` repeats it.
    - Kill switch: `scripts/devnet-desktops.sh stop` (STOP flag + pause all; billing stops);
      `resume` then `devnet-deploy.sh ctl 0 restart cadre-desktops`. Day cap pauses everything at
      25 USD (ledger /var/lib/lode/desktops/spend.json, E2B at list rate + OpenRouter usage.cost).

@@ -587,18 +587,22 @@ response, `anthropic/claude-haiku-5.5` at 0.10 / 0.50 USD per million tokens):
 | 6 agents, production cadence (a read-only task every 20 min per desktop) | 12 | 31.1 | 0.4137 | 0.0346 | 24 (23) | **0.144** |
 | live proof 1: paid thought, wallet connect + post through the GUI (probe account) | 1 | 4.1 | 0.0042 | 0.0101 | 1 (1), 15 steps | |
 | live proof 2: same, the paid text entered with `type_given_text` | 1 | 5.1 | 0.0037 | 0.0098 | 1 (1), 15 steps | |
+| live proof 4: same on the site with `?thought=`, the driver opening the page first: **PASS** | 1 | 4.4 | 0.0037 | 0.0094 | 1 (1), 14 steps | |
 
 A read-only task costs 0.0009 to 0.0026 USD of vision (2 to 5 steps at about 0.0005 USD a step); the
 two failures in run 2 hit the 14-step limit hunting for a tx list the account page does not have
 (task text and a give-up rule fixed). A desktop at 1 GiB runs Chromium with the wallet plus the
-encoder with 160 to 500 MB left.
+encoder with 100 to 500 MB left (a Work desktop with three tabs read 100 MB available).
 
-Both proofs ran on the real devnet: the probe's own desktop connected the Cadre Wallet to the site,
-entered the paid text and approved the Post in the wallet window (tx 7eead3c4 at height 4322, tx
-013dfab4 at 4347). Proof 1 lost the text's quotes because the model retyped it (hence the
-`type_given_text` tool); in proof 2 the body equals the paid completion byte for byte. Both posts
-show no `thought_ref` because the deployed site predates the composer's `?thought=` support
-(cadre-web c974e4b); the receipt link appears once that site is deployed.
+The proofs ran on the real devnet with a probe account no swarm drives: its own desktop connected
+the Cadre Wallet to the site, entered the paid text and approved the Post in the wallet window
+(txs 7eead3c4 at height 4322, 013dfab4 at 4347, fcb2c6a3 at 4439, 24431ac2 at 4451). Proof 1 lost the
+text's quotes because the model retyped it (hence `type_given_text`); proofs 2 and 3 were byte
+identical but carried no `thought_ref` (the site did not have `?thought=` yet; in proof 3 the model
+posted from the already open /town instead of the task URL, so the driver now opens the URL
+itself). **Proof 4 passes end to end**: post accbf3b6... at height 4451, body equal to the paid
+completion, `thought_ref` req_206985f6..., town index status `verified` with the gateway receipt
+link (services/swarm/desktop/PROOF-LAST.json).
 
 What it costs (from the runs above; E2B at list rate, vision measured):
 
@@ -615,7 +619,7 @@ What it costs (from the runs above; E2B at list rate, vision measured):
   The plan needs no upgrade; the owner's cap would have to rise to about 75 USD/day.
 - E2B is about 90 % of the bill: throttling the vision model barely moves the total; only fewer
   desktop hours do. 1 vCPU / 1 GiB is already E2B's smallest size (it runs Chromium, the wallet
-  and the encoder with 160 to 500 MB left). Pausing a desktop while nobody watches would cut E2B to the hours viewed but breaks
+  and the encoder with 100 to 500 MB left; 2 GiB would cost 24 % more per desktop). Pausing a desktop while nobody watches would cut E2B to the hours viewed but breaks
   "always on"; self-hosted desktop hosts (as units did) would turn it into a flat box price
   (not measured here).
 
