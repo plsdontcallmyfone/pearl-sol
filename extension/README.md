@@ -99,6 +99,18 @@ await window.pearl.signAndSendTransaction({ transaction: { kind: "Transfer", to:
                                               // { txHash: hex }
 // JSON kinds: Transfer {to, amount}, RegisterAgent {name, uri}, BridgeLock {amount, solanaRecipient?},
 //             SubmitResult {jobId, resultHash, uri}, ExpireJob {jobId}; optional fee. Other kinds: pass bytes.
+// Contract kinds (30-34, chain/agent-types/src/contracts.rs); the default fee is the contract floor
+// max(min_fee, contract_base_fee + contract_byte_fee x tx len + ceil(gasLimit x gas_price / gas_price_unit)):
+//   DeployCode {gasLimit, code (hex or base64 or Uint8Array)}
+//   Instantiate {codeHash, admin (base58, or null = immutable), value?, gasLimit, label?, fields? | args?}
+//   Call {contract, value?, gasLimit, method, fields?}  or  {contract, value?, gasLimit, args}
+//   Migrate {contract, codeHash, gasLimit, fields? | args?}
+//   SetContractAdmin {contract, admin (base58, or null = make immutable; required)}
+// fields: [{u64: "5"}, {addr: "<base58>"}, {str: "hi"}, ...] (u8 u16 u32 u64 bool addr hash bytes str)
+window.pearl.contracts.encodeCallArgs("increment", [{ u64: 5 }])   // Uint8Array: method (u8 len) | fields
+window.pearl.contracts.encodeFields([{ u64: 10 }])                  // fields only (instantiate / migrate input)
+// The approval decodes these in words ("Call increment on contract counter (Ad49...wcZ) with 5 (u64), ...")
+// and warns when a site sends value into a contract or asks for Migrate / SetContractAdmin.
 
 await window.pearl.signMessage("hello")       // { signature: Uint8Array, address, namespace: "pearl-sol:message:v1" }
 window.pearl.on("accountChanged", ({ address }) => {}); window.pearl.on("disconnect", () => {});

@@ -295,6 +295,17 @@ try {
   }, !live);
   check("window.pearl signAndSendTransaction returns a tx hash", /^[0-9a-f]{64}$/.test(t1.result), t1.result);
 
+  // contract Call through window.pearl: method decoded from the ABI, label from getContract, site warning for value
+  const cc = await approve("19b-approve-contract-call", async () => {
+    const args = window.pearl.contracts.encodeCallArgs("increment", [{ u64: 5 }]);
+    const r = await window.pearl.signTransaction({ transaction: { kind: "Call", contract: "Ad49vfymLfb1oY4veT8yudCHGL6DM6aUpTMZuPbM7wcZ", value: "1000000000", gasLimit: "1000000", args } });
+    return r.txHash;
+  });
+  check("contract Call approval decodes method, label, value and gas", cc.headline === "Call increment on contract counter (Ad49...wcZ) with 5 (u64), sending 1 PEARL, gas up to 1,000,000", cc.headline);
+  check("contract Call returns a tx hash", /^[0-9a-f]{64}$/.test(cc.result), cc.result);
+  const sa = await approve("19c-approve-contract-immutable", async () => (await window.pearl.signTransaction({ transaction: { kind: "SetContractAdmin", contract: "Ad49vfymLfb1oY4veT8yudCHGL6DM6aUpTMZuPbM7wcZ", admin: null } })).txHash);
+  check("SetContractAdmin approval says immutable", sa.headline === "Make contract counter (Ad49...wcZ) immutable", sa.headline);
+
   const pm = await approve("20-approve-pearl-message", async () => Array.from((await window.pearl.signMessage("hello agent chain")).signature));
   const framed = new Uint8Array([20, ...new TextEncoder().encode("pearl-sol:message:v1"), ...new TextEncoder().encode("hello agent chain")]);
   check("window.pearl.signMessage uses Commonware framing", ed25519.verify(Uint8Array.from(pm.result), framed, pub));

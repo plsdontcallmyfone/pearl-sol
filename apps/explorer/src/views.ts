@@ -5,6 +5,7 @@ import { BRAND } from "./brand.ts";
 import { CHAIN_DP, SOL_DP, SPL_DP, big, fmtInt, formatUnits, pct } from "./math.ts";
 import type { BlockRow, Summary } from "./models.ts";
 import type { SolTx } from "./indexer.ts";
+import { blockContractsCard } from "./contract-view.ts";
 
 function waitNote(w: any) {
   if (!w) return "";
@@ -105,6 +106,7 @@ export function page(title: string, body: string, opts: { active?: string; summa
     ["orders", "/orders", "Orders"],
     ["revenue", "/revenue", "Revenue"],
     ["agents", "/agents", "Agents"],
+    ["contracts", "/contracts", "Contracts"],
     ["api", "/docs", "API"],
   ]
     .map(([k, href, label]) => `<a href="${href}"${opts.active === k ? ' aria-current="page"' : ""}>${label}</a>`)
@@ -415,7 +417,7 @@ export function blockPage(sm: Summary, b: any) {
     ? `<ul class="chaintx">${b.txs
         .map(
           (t: any) =>
-            `<li><span class="ix">${esc(t.kind)}</span>${t.links.job ? `<a href="/job/${esc(t.links.job)}">job ${esc(short(t.links.job, 6, 4))}</a>` : ""}${t.links.order ? `<a href="/order/${esc(t.links.order)}">order #${esc(t.links.order)}</a>` : ""}<span class="faint">from</span> ${id(t.from, { head: 4, tail: 4 })}${id(t.hash, { head: 6, tail: 6 })}</li>`,
+            `<li><span class="ix">${esc(t.kind)}</span>${t.links.job ? `<a href="/job/${esc(t.links.job)}">job ${esc(short(t.links.job, 6, 4))}</a>` : ""}${t.links.order ? `<a href="/order/${esc(t.links.order)}">order #${esc(t.links.order)}</a>` : ""}<span class="faint">from</span> ${id(t.from, { head: 4, tail: 4 })}${id(t.hash, { href: `/tx/${t.hash}`, head: 6, tail: 6 })}</li>`,
         )
         .join("")}</ul>`
     : `<p class="note">No transactions besides the coinbase receipt.</p>`;
@@ -442,6 +444,7 @@ export function blockPage(sm: Summary, b: any) {
   ${card("Solana light client", lc)}
   ${o ? card("Result settlement on Solana", settle) : ""}
   ${card(`Transactions (${b.txs.length})`, txs)}
+  ${blockContractsCard(b.contracts)}
   ${wd}
 </div>`,
     { active: "feed", summary: sm },
@@ -594,6 +597,10 @@ export function apiPage(sm: Summary) {
     ["/api/supply/total", "Total supply (Solana mint supply after burns) as a bare number of whole tokens (text/plain)."],
     ["/api/agents", "Agents ranked by protocol fees P behind completed work signed by an evaluator other than its buyer and seller; stale profiles hidden (?all=1 lists them)."],
     ["/api/agent/{address}", "One agent's record from chain state: P and storefront SOL behind completed work, distinct payers, self-dealing excluded, rejected and delivered-then-expired work, acceptance by P, who signed, mining, buying, evaluating, agent card health."],
+    ["/api/contracts", "WASM contracts and deployed code, newest first (node listContracts / listCodes), with the gas and fee params; ?offset and ?codes_offset page them."],
+    ["/api/contract/{address}", "One contract: code hash, admin or immutable, creator, created height, balance, storage items, bytes and deposit, calls, and its events (?offset, ?topic=hex or an event name) with known topic names decoded."],
+    ["/api/code/{hash}", "One deployed code: deployer, height, size, deposit, instances, and the contracts running it among the newest 200."],
+    ["/api/tx/{hash}", "Any chain tx (getTx); contract kinds carry the decoded body and the receipt: status, gas used, fee charged, error, return data, events."],
   ];
   return page(
     "API",

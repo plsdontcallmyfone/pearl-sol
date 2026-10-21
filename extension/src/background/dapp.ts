@@ -3,17 +3,18 @@
 // The origin always comes from chrome's MessageSender, never from the page.
 
 import { isSocialKind, socialBodyFromJson } from "../chain/social";
+import { contractBodyFromJson, dappContractWarnings, isContractKind } from "../chain/contracts";
 import { b58, b64, fromB64, hex, key32 } from "../core/bytes";
 import { decodeEither, TxBody, UnsignedTx } from "../chain/tx";
 import { signPearlMessage, signSolanaMessage } from "../core/sign";
 import { signRaw } from "../core/crypto";
 import { insertSignature, parseTransaction, pk } from "../solana/tx";
 import { summarizeChainTx, summarizeMessage, summarizeSolanaTx, Summary } from "../shared/summary";
-import { MESSAGE_NAMESPACE } from "../shared/constants";
+import { MESSAGE_NAMESPACE, NATIVE_DECIMALS, TOKEN_SYMBOL, formatUnits } from "../shared/constants";
 import type { ApprovalKind, ApprovalRequest, ChainSide, Permission } from "../shared/types";
 import { isUnlocked, seedFor, selectedAccount, touch } from "./keyring";
 import { activeNetwork, getLocal, setLocal } from "./store";
-import { bridgeConfig, ctx, prepareChainTx, recordActivity, sendChainTx, signChainTx } from "./wallet";
+import { bridgeConfig, contractSummaryContext, ctx, prepareChainTx, recordActivity, sendChainTx, signChainTx } from "./wallet";
 
 interface Pending {
   req: ApprovalRequest;
@@ -161,6 +162,14 @@ function pearlTxFromParams(params: any, account: string): Promise<UnsignedTx> | 
       body = { kind: "ExpireJob", jobId: key32(t.jobId) };
       break;
     default:
+      if (isContractKind(t.kind)) {
+        try {
+          body = contractBodyFromJson(t);
+        } catch (e) {
+          throw new ProviderError(-32602, `transaction ${t.kind}: ${(e as Error).message}`);
+        }
+        break;
+      }
       if (isSocialKind(t.kind)) {
         try {
           body = socialBodyFromJson(t);
@@ -245,8 +254,10 @@ export async function handleDapp(origin: string, method: string, params: any): P
       if (b58(t.from) !== account) throw new ProviderError(4100, "transaction.from is not the connected account");
       const c = await ctx();
       const info = await c.chain.chainInfo();
-      const summary = summarizeChainTx(t, account, info.chain_id);
+      const summary = summarizeChainTx(t, account, info.chain_id, isContractKind(t.body.kind) ? await contractSummaryContext(account, t) : undefined);
       if (t.chainId !== info.chain_id) throw new ProviderError(4901, summary.warnings.join(" "));
+      // a site asking to move value into a contract or for an admin action gets a warning up front
+      summary.warnings.unshift(...dappContractWarnings(t.body, (v) => `${formatUnits(v, NATIVE_DECIMALS, 9)} ${TOKEN_SYMBOL}`));
       const send = method === "pearl:signAndSendTransaction";
       await ensureUnlockedOrAsk(origin, account, send ? "pearl-sign-send" : "pearl-sign", summary);
       if (!send) {
