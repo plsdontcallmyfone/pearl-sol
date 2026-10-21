@@ -987,10 +987,12 @@ CLAUDE.md "Who is working on what".
      synced to 154a819, cadre-gateway + pearl-attester installed and restarted, pearl-miner rebuilt (sha256 295bfca2...)
      and restarted, cadre-explorer + cadre-api restarted (public API 200); boxes 1-2 the same pearl-miner (.prev kept),
      cadre-miner restarted.
-   - OPEN: V-7 gateway connection cap / read timeout / 413 (main.rs; the serve-8B row finished without it); V-9 clients
-     still sign cadre-auth-v1 (cadre-proxy, swarm, swarm/agents, cadre-web, pearl-wallet, devnet-e2e, demo), then set
-     CADRE_AUTH_REQUIRE_AUDIENCE=1 on gateways; chain C-1..C-12 wait for the next cadre-node rollout; crates/Cargo.lock
-     webpki bumps; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
+   - Round 2 (2026-10-21): V-7 gateway front (64 in flight / 503, 30 s socket read timeout / 408, 413 over 4 MiB;
+     24a5ff3) + crates/Cargo.lock webpki bumps; every gateway client on cadre-auth-v2 (pearl-sol 6a5294a, cadre-web
+     2428699, pearl-wallet f7753402b on dev + danishseal cadre-chain); live v2 check on devnet 200 / wrong gateway 401.
+   - OPEN: deploy of 24a5ff3 / 6a5294a (box 0 cadre-gateway, cadre-swarm, cadre-agents, cadre-desktops, cadre-web) and a
+     wallet release with f7753402b, then CADRE_AUTH_REQUIRE_AUDIENCE=1 on the gateways (box 0, test box); chain
+     C-1..C-12 wait for the next cadre-node rollout; admin keys (AdminConfig, bridge set_signers/set_release_modes, lightclient set_params) need
      multisig + timelock before mainnet; attester/evaluator messages carry no chain_id (fresh mainnet keys).
 
 ## M1 components (SPEC v2, all DONE)
