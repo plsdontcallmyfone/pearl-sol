@@ -584,6 +584,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     pub fn take_outbox(&mut self) -> Vec<Outbound> {
         std::mem::take(&mut self.outbox)
     }
+
+    /// Ask peers for the next bodies headers-first sync can use (lowest height first, a window
+    /// above the tip; consensus_pow::BODY_WINDOW). The node calls this after every event.
+    pub fn schedule_bodies(&mut self) {
+        for h in self.chain.next_bodies(consensus_pow::BODY_WINDOW) {
+            self.outbox.push(Outbound::FetchBody(h));
+        }
+    }
 }
 
 /// `blake3(header with nonce, proof_hash and timestamp zeroed)`, hex.

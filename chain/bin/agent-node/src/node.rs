@@ -230,6 +230,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
         }
+        core.schedule_bodies();
         let outs = core.take_outbox();
         if !outs.is_empty() {
             net.send(outs);
@@ -243,7 +244,7 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
             let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
                 Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
                     Ok(HeaderAccept::Stored { need_parent }) => {
-                        core.outbox.push(Outbound::FetchBody(key));
+                        // the body is asked for by Core::schedule_bodies, in height order
                         if let Some(p) = need_parent {
                             core.outbox.push(Outbound::FetchHeader(p));
                         }
