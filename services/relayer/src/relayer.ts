@@ -40,7 +40,7 @@
 // it) is held back the same way.
 // Refunds (owner decision 2026-10-17, SPEC 5.1): a held-back order still held back
 // `refundGraceMs` after it was first seen is refunded on Solana: bridge
-// `refund_deposit` (bridge signers over `pearl-sol:refund:v1 || nonce || buyer ||
+// `refund_deposit` (bridge signers over `pearl-sol:refund:v2 || bridge id || nonce || buyer ||
 // amount_spl`) returns the deposit's tokens to the Order's buyer and writes the refund
 // record Processed["processed", [0], nonce]; storefront `mark_refunded` in the same tx
 // flips the Order to Refunded. The chain cannot see Solana, so "never both unlocked and
@@ -597,7 +597,8 @@ export class Relayer {
           createAtaIdempotentIx(this.o.tokenPayer.publicKey, buyer, s.bcfg.mint, s.bcfg.tokenProgram),
           ed25519Instruction(signEntries(keys, refundMessage(d.nonce, buyer, d.amount))),
           bridgeRefundIx({ payer: this.o.tokenPayer.publicKey, mint: s.bcfg.mint, nonce: d.nonce, buyer,
-            buyerToken: ata(buyer, s.bcfg.mint, s.bcfg.tokenProgram), tokenProgram: s.bcfg.tokenProgram }),
+            buyerToken: ata(buyer, s.bcfg.mint, s.bcfg.tokenProgram), tokenProgram: s.bcfg.tokenProgram,
+            order: orderPda(d.nonce, this.o.storefrontProgram) }),
         ];
         if (order.status === ORDER_STATUS_PENDING || order.status === ORDER_STATUS_EXPIRED) ixs.push(markRefundedIx(d.nonce, this.o.storefrontProgram));
         // the order's held buyback share goes back to the buyer in the same tx (owner 2026-10-18)
