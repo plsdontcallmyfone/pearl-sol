@@ -28,6 +28,8 @@ import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
 import { PracticeHost, practiceConfig } from "./practice.ts";
 import { checkChoices, type Planner } from "./plan.ts";
+import { TokenStore } from "./tokens.ts";
+import { connectRoute, mintToken } from "./connect-routes.ts";
 
 // 0.2.0 (2026-10-22): trade.take_profit_bps / stop_loss_bps accepted
 // 0.3.0 (2026-10-22): practice trading (spec.practice; trade sections without trade.real_swaps run as
@@ -90,6 +92,8 @@ export class Runtime {
   practice: PracticeHost | null = null;
   practiceOff = "";
   planner: Planner | null = null;
+  /** Agent tokens + OAuth grants (docs/CONNECT.md "Hosted mode"), hashed at rest. */
+  tokens: TokenStore;
   private makeDeps: (w: Wallet) => Deps;
   private wake: (() => void) | null = null;
 
@@ -107,6 +111,7 @@ export class Runtime {
     mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
     this.store = new KeyStore(`${cfg.stateDir}/keys`, cfg.masterKeyFile);
     this.api = new ApiClient(cfg.apiUrl);
+    this.tokens = new TokenStore(`${cfg.stateDir}/tokens.json`);
     if (cfg.haltContract) {
       const node = new NodeRpc(cfg.nodeRpc);
       this.halt = new HaltWatch({ contract: cfg.haltContract, query: (address, args) => node.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) });
@@ -267,6 +272,7 @@ export class Runtime {
     const sov = isSovereign(e.doc.spec);
     return {
       ...r.statusJson(), sovereign: sov, legacy: !sov,
+      driven_externally: this.tokens.has(agent), driver: this.tokens.has(agent) ? "driven by an external AI (agent token; it steers decisions, it cannot withdraw, export, change limits, pause or delete)" : null,
       controls: sov ? { creator: "none (attribution only)", stop: "the protocol-wide kill switch only" } : { creator: "legacy v1: the operator may send a new spec, pause, resume, withdraw, export and delete" },
       hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION, custody: "the runtime holds the key (custodial to the runtime, not the creator)" },
     };
@@ -355,7 +361,12 @@ export class Runtime {
       if (method === "POST") {
         const b = json();
         const op = h["x-cadre-signature"] ? this.verifyAuth(method, path, h, body) : this.specAuth(b.spec);
-        return { status: 201, body: this.create(op, b.sealed, b.spec) };
+        const st = this.create(op, b.sealed, b.spec);
+        if (b.agent_token === true) {
+          const at = mintToken(this, st.agent, op, false);
+          return { status: 201, body: { ...this.status(st.agent), agent_token: at } };
+        }
+        return { status: 201, body: st };
       }
     }
     if (method === "POST" && path === "/v1/hosted/plan") {
@@ -368,6 +379,8 @@ export class Runtime {
       if (!out) throw new HttpError(503, "plan_unavailable", "the planner thought did not answer in time or named no listed id; match keywords instead");
       return { status: 200, body: { ...out, source: "model", note: "one paid Cadre inference thought picked the template id; numbers come from the text on the site" } };
     }
+    const conn = await connectRoute(this, method, path, h, body, json);
+    if (conn) return conn;
     // the agent may be named by its Cx address (SPEC 2.1); signatures still cover the path as sent
     const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
     if (m) {
@@ -417,7 +430,7 @@ export class Runtime {
 }
 
 /** A Cx address (or base58) as its base58 key; a bad Cx checksum is a 400. */
-function cadreAddr(v: string | null, name: string): string | null {
+export function cadreAddr(v: string | null, name: string): string | null {
   if (v === null) return null;
   const r = cxInput(v);
   if ("error" in r) throw new HttpError(400, "bad_address", `${name}: ${r.error}`);
