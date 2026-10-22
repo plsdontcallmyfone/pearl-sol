@@ -562,3 +562,16 @@ fn gas_table_large_swarms() {
         assert_eq!(swarm(&c, &s, 1).active, n as u32);
     }
 }
+
+/// The definition hash and creator message the TypeScript side computes
+/// (services/swarm/agents/test/swarmabi.test.ts pins the same values).
+#[test]
+fn definition_vector_matches_typescript() {
+    let (c, s) = setup(0);
+    let d = Def::new(3);
+    let (h, cmsg) = def_hash(&c, &s, &d);
+    let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    assert_eq!(hexs(&s), "312bf99bb0880c26c7e4cbe26399f25acbd7d5160ecdf5c480dfebc17d9d1bc8");
+    assert_eq!(hexs(&h), "1744351920b0244169489519c095d632cbdc3df519bcc06d6572fe4fe2ec12e8");
+    assert_eq!(String::from_utf8(cmsg).unwrap(), "Cadre swarm v1\ncontract: 312bf99bb0880c26c7e4cbe26399f25acbd7d5160ecdf5c480dfebc17d9d1bc8\ndefinition: 1744351920b0244169489519c095d632cbdc3df519bcc06d6572fe4fe2ec12e8\nThis creates a public grouping of sovereign agents. It gives you no control over them and moves no funds.");
+}

@@ -34,6 +34,7 @@ import type { UserTrading } from "../../trading/src/useragent.ts";
 import { AgentMarket } from "./market.ts";
 import type { HaltWatch } from "./halt.ts";
 import { type LaunchHost, type LaunchRec, maybeLaunch } from "./launch.ts";
+import type { SwarmCtx } from "./swarms.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error" | "halted";
 
@@ -41,14 +42,22 @@ export interface LogLine { t: string; kind: string; text: string; tx?: string; s
 
 export class BudgetRefused extends Error {}
 
-export function personaOf(s: AgentSpec, self: AgentSelf | null = null): Persona {
+/** The swarm line every member's persona carries (docs/SWARMS.md 4): name, role, shared goal, who leads. */
+export function swarmLine(w: SwarmCtx | null | undefined): string {
+  if (!w) return "";
+  const lead = w.isLead ? "You lead it: hire your members' services on the market when they advance the goal." : `Its lead is @${w.members.find((m) => m.agent === w.lead)?.handle ?? "unknown"}.`;
+  const others = w.members.filter((m) => m.role && m.handle).map((m) => `@${m.handle} (${m.role})`).join(", ");
+  return ` You are a member of the swarm "${w.name}" as ${w.role}. Shared goal: ${w.goal.slice(0, 600)} ${lead} Members: ${others.slice(0, 600)}. You stay your own boss: the swarm is a shared goal, not orders.`;
+}
+
+export function personaOf(s: AgentSpec, self: AgentSelf | null = null, swarm: SwarmCtx | null = null): Persona {
   const g = self?.goals && s.evolve?.goals ? self.goals : s.goals;
   const goals = g.length ? ` Your goals: ${g.join("; ")}.` : "";
   const notes = self?.persona_notes && s.evolve?.persona ? ` In your own words: ${self.persona_notes}` : "";
   const ins = s.instructions.trim() ? ` Standing instructions from your operator: ${s.instructions.trim()}` : "";
   const q = s.schedule.quiet_utc ?? [0, 0]; // [h, h] is never quiet (personas.ts isQuiet)
   return {
-    handle: s.handle, name: s.name, archetype: "agent", persona: `${s.persona.trim()}${notes}${goals}${ins}`.slice(0, 3000), appearance: s.appearance,
+    handle: s.handle, name: s.name, archetype: "agent", persona: `${s.persona.trim()}${notes}${goals}${ins}${swarmLine(swarm)}`.slice(0, 3600), appearance: s.appearance,
     topics: s.topics.length ? s.topics : s.goals.length ? s.goals : ["what you are working on"], quiet: [q[0], q[1]], cadenceMin: s.schedule.cadence_min, tags: s.topics,
   };
 }
@@ -108,6 +117,10 @@ export class AgentRunner extends Swarm {
   launches: LaunchRec[] = [];
   launchConsideredAt = 0;
   sendChain: Promise<unknown> = Promise.resolve();
+  /** The swarm this agent is a member of (swarms.ts), or null. */
+  swarm: SwarmCtx | null = null;
+  /** The lead's kickoff decision (swarms.ts kickoff): the member to hire first and the task. */
+  swarmPlan: { member: string; task: string; request_id: string } | null = null;
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -132,6 +145,12 @@ export class AgentRunner extends Swarm {
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
     if (this.self) this.me.persona = personaOf(doc.spec, this.self);
+  }
+
+  /** Attach the swarm context (the runtime calls it after start and after registration). */
+  joinSwarm(w: SwarmCtx) {
+    this.swarm = w;
+    this.me.persona = personaOf(this.spec, this.self, w);
   }
 
   get sovereign() { return isSovereign(this.doc.spec); }
@@ -266,7 +285,11 @@ export class AgentRunner extends Swarm {
     const legacyLinked = isTownSolana(this.d.node) && !(prof?.operator === this.spec.operator && prof?.operator_linked)
       ? await (this.d.node as TownNode).chainCall("getProfile", { account: this.address }).then((p: any) => p?.operator === this.spec.operator && !!p?.operator_linked).catch(() => false)
       : false;
-    if (!legacyLinked && !(prof?.operator === this.spec.operator && prof?.operator_linked)) {
+    // a swarm member's creator attribution is the creator's one signature over the whole swarm
+    // (doc.swarm, verified before the runtime hosts it, and registered on the swarms contract), so it
+    // does not wait for a per-agent OperatorLink (docs/SWARMS.md 3)
+    const swarmLinked = !!this.doc.swarm && prof?.operator === this.spec.operator;
+    if (!swarmLinked && !legacyLinked && !(prof?.operator === this.spec.operator && prof?.operator_linked)) {
       this.state = "waiting_link";
       this.why = "the creator's OperatorLink (attribution) to this agent is not on the chain yet";
       // an operator new to the Cadre chain holds no CADRE for the link's fee: the agent sends it once
@@ -285,7 +308,7 @@ export class AgentRunner extends Swarm {
     if (!s.profileDone) {
       s.profileDone = true;
       s.nextAt = this.d.now();
-      this.note("live", `running spec v${this.spec.version}; creator link verified on the chain`);
+      this.note("live", swarmLinked ? `running spec v${this.spec.version}; creator attribution by the swarm signature` : `running spec v${this.spec.version}; creator link verified on the chain`);
     }
     if (!this.paused) this.state = "running";
     return true;
@@ -425,7 +448,7 @@ export class AgentRunner extends Swarm {
     });
     this.self = self;
     this.blobUri = put.uri;
-    this.me.persona = personaOf(this.spec, self);
+    this.me.persona = personaOf(this.spec, self, this.swarm);
     this.save();
     this.note("evolve", `rewrote its own plan${strategy ? `; strategy: ${strategy}` : ""}`, { tx: h, request_id: t.requestId, ok: true });
     return "evolved";
@@ -461,8 +484,10 @@ export class AgentRunner extends Swarm {
     // services market (opt-in, docs/MARKET.md 7): paid work and own verdicts come first
     const mk = (await this.market.work(a)) ?? (await this.market.judgeOwn(a)) ?? (await this.market.ensureOffers());
     if (mk) return mk;
+    // a swarm lead acts on its kickoff plan first: hire the member it chose for the goal
+    if (this.swarmPlan && A.hire) { const h = await this.market.hire(a); if (h && h !== "idle") return h; }
     const opts: [string, number][] = [];
-    if (A.hire) opts.push(["hire", 0.05]);
+    if (A.hire) opts.push(["hire", this.swarm?.isLead && this.swarm.members.length > 1 ? 0.2 : 0.05]); // a swarm lead hires its members more often (docs/SWARMS.md 4)
     if ((A.react || A.tip) && others.length) opts.push(["react", 0.2]);
     if (A.follow && others.length) opts.push(["follow", 0.1]);
     if (A.reply && others.length) opts.push(["reply", 0.25]);
@@ -656,6 +681,7 @@ export class AgentRunner extends Swarm {
       trading: this.trading ? this.trading.status() : this.spec.trade ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
       launches: this.spec.launch ? { bounds: this.spec.launch, launched: this.launches, considered_at: this.launchConsideredAt || null, label: "agent-launched (pump.fun create_v2 by this agent's key)" } : null,
       halt: this.o.halt ? this.o.halt.status() : null,
+      swarm: this.swarm ? { key: this.swarm.key, id: this.swarm.id, name: this.swarm.name, role: this.swarm.role, is_lead: this.swarm.isLead } : null,
       log: this.log2.slice(-60).reverse(),
     };
   }

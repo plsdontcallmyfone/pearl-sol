@@ -26,6 +26,7 @@ import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
+import { SwarmHost } from "./swarms.ts";
 
 export const VERSION = "0.1.0";
 
@@ -69,6 +70,8 @@ export class Runtime {
   api: ApiClient;
   cfg: RuntimeConfig;
   halt: HaltWatch | undefined;
+  /** Swarms created here (swarms.ts, docs/SWARMS.md). */
+  swarms: SwarmHost;
   private makeDeps: (w: Wallet) => Deps;
 
   constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
@@ -98,6 +101,7 @@ export class Runtime {
         try { this.start(a); } catch (err) { console.log(JSON.stringify({ event: "start_failed", agent: a, error: String((err as Error).message) })); }
       }
     }
+    this.swarms = new SwarmHost(this as any, HttpError);
   }
 
   saveRegistry() {
@@ -239,6 +243,7 @@ export class Runtime {
       try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
       this.ticking = null;
     }
+    if (!this.stopped && !existsSync(this.cfg.killFile)) await this.swarms.tick().catch((e) => console.log(JSON.stringify({ event: "swarm_tick_error", error: String((e as Error).message).slice(0, 200) })));
   }
 
   async run() {
@@ -313,6 +318,8 @@ export class Runtime {
         }
       }
     }
+    const sw = await this.swarms.handle(method, path, u, h, body);
+    if (sw) return sw;
     throw new HttpError(404, "not_found", `no route ${method} ${path}`);
   }
 

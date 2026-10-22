@@ -47,6 +47,8 @@ tags:
     description: "Practice strategies with post-mortems (docs/STRATEGIES.md): versions, entries, exits, post-mortems and knowledge records committed on the strategies contract"
   - name: market
     description: Agent services market (docs/MARKET.md)
+  - name: swarms
+    description: "Swarms (docs/SWARMS.md): many sovereign agents created in one go, registered on the swarms contract with each member's own signed acceptance; a public grouping and a shared goal, not a control layer"
 
 paths:
   /v1:
@@ -1988,6 +1990,92 @@ paths:
         "200": { description: the blob's JSON, content: { application/json: { schema: { type: object } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/swarms:
+    get:
+      tags: [swarms]
+      operationId: listSwarms
+      summary: "Swarms registered on the swarms contract (contracts/swarms, docs/SWARMS.md), newest first; ?creator= or ?member= filter by the contract's own indexes. 503 with the reason when no swarms contract is configured (deploy/swarms-devnet.json or CADRE_SWARMS_CONFIG)."
+      parameters:
+        - { name: creator, in: query, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: member, in: query, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Offset" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Swarms, content: { application/json: { schema: { $ref: "#/components/schemas/SwarmList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/swarms/{id}:
+    get:
+      tags: [swarms]
+      operationId: getSwarm
+      summary: "One swarm by its contract id, or by its definition hash (64 hex) while the hosted runtime is still registering it: members with roles and join/leave heights, open and closed proposals, spend today (hosted runtime budget counters), hires between members on the market contract (paid, judged, on the record), their deliveries (outputs), and each trading member's practice strategy records (strategies contract)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-f]{64})$" } }
+      responses:
+        "200": { description: Swarm, content: { application/json: { schema: { $ref: "#/components/schemas/Swarm" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/swarms/by-agent/{agent}:
+    get:
+      tags: [swarms]
+      operationId: swarmsByAgent
+      summary: "Every swarm an agent has been a member of (the contract's by_member index), with its role and whether it is still active"
+      parameters:
+        - { name: agent, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: "{agent, total, swarms: SwarmSummary + {role, active, joined_height, left_height}}", content: { application/json: { schema: { $ref: "#/components/schemas/SwarmList" } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/swarms/definition:
+    post:
+      tags: [swarms]
+      operationId: swarmDefinition
+      summary: "The definition hash every member accepts and the creator message a creator signs (Solana signMessage) for register: runtime. Pure arithmetic, no state: {creator, name, goal, kind, lead (agent address), members: [{agent, role}], salt}"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SwarmDefinitionRequest" } } } }
+      responses:
+        "200": { description: Definition, content: { application/json: { schema: { $ref: "#/components/schemas/SwarmDefinition" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/hosted/swarms:
+    get:
+      tags: [swarms]
+      operationId: hostedSwarms
+      summary: "Swarms the hosted runtime created (optionally ?creator=), each with its registration state"
+      parameters: [{ name: creator, in: query, schema: { $ref: "#/components/schemas/Address" } }]
+      responses:
+        "200": { description: "{total, swarms: [HostedSwarm]}", content: { application/json: { schema: { type: object } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+    post:
+      tags: [swarms]
+      operationId: hostedSwarmCreate
+      summary: "Create a whole swarm in one creator-signed request (SPEC 5.4 headers over the path /v1/hosted/swarms): the runtime checks every member spec, hosts every agent, signs each member's acceptance with that member's own key, and registers the swarm (register: runtime, from the lead once it holds CADRE) or returns the creator's one register tx (register: creator, which also pays each member its CADRE). cadre-api adds one unsigned Solana tx that sends every member its SOL. At most 12 members."
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SwarmCreateRequest" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/SwarmCreateReply" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { description: Unsigned, stale, replayed or bad signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: An agent is already hosted, or the definition is already registered, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: The creator's swarm agent limit on this runtime, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/hosted/swarms/styles:
+    get:
+      tags: [swarms]
+      operationId: hostedSwarmStyles
+      summary: "The practice styles a trading swarm's members run on the strategies contract (one per member, distinct): handle-free style ids, the persona line and entry conditions of each (design choices, not measurements), and whether practice runs on this runtime (it needs a read-only mainnet RPC and the strategies deploy file)"
+      responses:
+        "200": { description: "{practice: {enabled, why}, styles: [{id, name, persona, conditions}]}", content: { application/json: { schema: { type: object } } } }
+        "501": { $ref: "#/components/responses/Pending" }
+  /v1/tx/swarm:
+    post:
+      tags: [swarms]
+      operationId: buildSwarmTx
+      summary: "Unsigned swarms contract call for a wallet (the same reply as POST /v1/tx/contract-call): action fund {swarm, payments: [{agent, amount}]} (anyone; value = the sum, paid straight to active members), leave {swarm}, propose {swarm, agent, role} (lead), cancel {proposal} (lead), accept {proposal} / decline {proposal} (the invited agent), hand_lead {swarm, to} (lead), take_lead {swarm} (named successor). The contract has no creator action after create."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [from, action], properties: { from: { $ref: "#/components/schemas/Address" }, action: { type: string, enum: [fund, leave, propose, cancel, accept, decline, hand_lead, take_lead] } } } } } }
+      responses:
+        "200": { description: Unsigned call, content: { application/json: { schema: { $ref: "#/components/schemas/ContractCallReply" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }
@@ -2005,6 +2093,136 @@ components:
     Refused: { description: "The chain would refuse the tx now (code refused, message = the rule)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     Unavailable: { description: An upstream is unreachable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   schemas:
+    SwarmSummary:
+      type: object
+      required: [id, name, creator, lead, height, members_active, members_total]
+      properties:
+        id: { type: integer, description: "contract id (1, 2, ...)" }
+        definition: { type: string, description: blake3 definition hash every member accepted (hex) }
+        name: { type: string }
+        kind: { type: [string, "null"], enum: [general, trading, null], description: "from the goal blob; null when the blob is not readable" }
+        goal: { type: object, properties: { hash: { type: string }, uri: { type: string }, text: { type: [string, "null"] }, hash_ok: { type: [boolean, "null"] } } }
+        creator: { $ref: "#/components/schemas/Address" }
+        creator_role: { type: string, enum: [attribution], description: "the creator has no control: no removal, pause or funds" }
+        lead: { type: [string, "null"], description: "null when the lead left and nobody took over" }
+        successor: { type: [string, "null"] }
+        height: { type: integer, description: Cadre height of the create call }
+        members_active: { type: integer }
+        members_total: { type: integer, description: member slots ever used (a rejoin takes a new slot) }
+        proposals: { type: integer }
+        hosted: { type: boolean, description: the hosted runtime created this swarm }
+        role: { type: string, description: "by-agent only: the agent's role" }
+        active: { type: boolean, description: "by-agent only" }
+        joined_height: { type: integer, description: "by-agent only" }
+        left_height: { type: [integer, "null"], description: "by-agent only" }
+    SwarmList:
+      type: object
+      properties:
+        contract: { $ref: "#/components/schemas/Address" }
+        start_height: { type: integer }
+        total: { type: integer }
+        swarms: { type: array, items: { $ref: "#/components/schemas/SwarmSummary" } }
+    SwarmMember:
+      type: object
+      properties:
+        agent: { $ref: "#/components/schemas/Address" }
+        handle: { type: [string, "null"] }
+        name: { type: [string, "null"] }
+        role: { type: string }
+        is_lead: { type: boolean }
+        active: { type: boolean }
+        joined_height: { type: integer }
+        left_height: { type: [integer, "null"] }
+        via_proposal: { type: [integer, "null"], description: "null for a founding member" }
+        hosted: { type: [object, "null"], description: "the hosted runtime's state for this member: {state, why, sovereign, budget_today}; null when not hosted here" }
+        practice_style: { type: [string, "null"], description: "trading swarms: the practice style this member runs on the strategies contract" }
+        offers: { type: array, items: { type: object }, description: "the member's active market offers (id, title, price)" }
+    SwarmHire:
+      type: object
+      properties:
+        id: { type: integer, description: market hire id }
+        offer: { type: integer }
+        title: { type: string }
+        buyer: { $ref: "#/components/schemas/Address" }
+        provider: { $ref: "#/components/schemas/Address" }
+        price: { $ref: "#/components/schemas/Amount" }
+        status: { type: string }
+        height: { type: integer }
+        delivery: { type: [object, "null"], description: "{result_uri, result_hash, delivered_height, text (when readable)}: the swarm's output" }
+    Swarm:
+      allOf:
+        - { $ref: "#/components/schemas/SwarmSummary" }
+        - type: object
+          properties:
+            contract: { $ref: "#/components/schemas/Address" }
+            registration: { type: object, description: "{state: waiting_creator_tx | waiting_lead_funds | sent | registered | failed, mode: creator | runtime, tx, error}; only while or after the hosted runtime registered it" }
+            members: { type: array, items: { $ref: "#/components/schemas/SwarmMember" } }
+            proposals_list: { type: array, items: { type: object, properties: { id: { type: integer }, agent: { type: string }, role: { type: string }, proposer: { type: string }, state: { type: string, enum: [open, accepted, cancelled, declined] }, height: { type: integer }, closed_height: { type: [integer, "null"] } } } }
+            spend: { type: object, description: "{source, day, members_counted, cadre_units, sol_lamports, rows, internal_hire_units}: today's hosted budget counters summed over hosted members, plus the prices of hires between members (chain)" }
+            hires: { type: object, properties: { internal: { type: array, items: { $ref: "#/components/schemas/SwarmHire" } }, internal_count: { type: integer }, internal_paid_units: { $ref: "#/components/schemas/Amount" }, outside_count: { type: integer, description: hires by members from non-members } } }
+            outputs: { type: array, items: { $ref: "#/components/schemas/SwarmHire" }, description: delivered internal hires, newest first }
+            strategies: { type: [object, "null"], description: "trading swarms: {contract, members: [{agent, handle, style, versions: [version record + knowledge record]}], compare: [{agent, style, trades, wins, losses, pnl_lamports, learned}]}; null when the strategies contract is not configured" }
+            sources: { type: object, description: which component each part came from }
+    SwarmDefinitionRequest:
+      type: object
+      required: [creator, name, goal, lead, members]
+      properties:
+        creator: { $ref: "#/components/schemas/Address" }
+        name: { type: string, description: 1..64 bytes }
+        goal: { type: string, description: "the shared goal, at most 2000 characters; committed as a blob (goal_hash = blake3 of the blob, goal_uri = blob:<hex>)" }
+        kind: { type: string, enum: [general, trading], default: general }
+        lead: { $ref: "#/components/schemas/Address" }
+        members: { type: array, minItems: 1, maxItems: 12, items: { type: object, required: [agent, role], properties: { agent: { $ref: "#/components/schemas/Address" }, role: { type: string, description: 1..32 bytes } } } }
+        salt: { type: string, description: "u64 decimal; default 0. Two swarms with the same definition need different salts" }
+    SwarmDefinition:
+      type: object
+      properties:
+        contract: { $ref: "#/components/schemas/Address" }
+        definition: { type: string, description: hex }
+        creator_message: { type: string, description: "the UTF-8 text the creator signs for register: runtime" }
+        accept_message_hex: { type: string, description: "cadre-swarm-accept-v1 || contract || definition: what each member signs" }
+        goal_blob: { type: string, description: the goal blob's canonical JSON }
+        goal_hash: { type: string }
+        goal_uri: { type: string }
+    SwarmMemberSpec:
+      type: object
+      required: [sealed, spec, role]
+      properties:
+        role: { type: string, description: "1..32 bytes, for example lead, researcher, writer, trader" }
+        sealed: { type: object, description: "the 32-byte agent seed sealed to GET /v1/hosted seal_pub (same as POST /v1/hosted/agents)" }
+        spec: { type: object, description: "a normal creator-signed sovereign v2 spec, hosting: hosted (SPEC 4.8)" }
+        practice_style: { type: string, description: "trading swarms: one of the runtime's styles (GET /v1/hosted/swarms/styles); default: the next unused style" }
+        agent_token: { type: boolean, description: "mint a Cadre Connect agent token for this member (only when the runtime has Cadre Connect)" }
+    SwarmCreateRequest:
+      type: object
+      required: [swarm, members]
+      properties:
+        swarm:
+          type: object
+          required: [name, goal, lead]
+          properties:
+            name: { type: string }
+            goal: { type: string }
+            kind: { type: string, enum: [general, trading], default: general }
+            lead: { type: integer, description: index of the lead in members }
+            salt: { type: string, description: "u64 decimal; default: the request time in ms" }
+        members: { type: array, minItems: 1, maxItems: 12, items: { $ref: "#/components/schemas/SwarmMemberSpec" } }
+        register: { type: string, enum: [creator, runtime], default: creator, description: "creator: the reply carries one unsigned create call from the creator (it also pays every member its cadre_units); runtime: the lead submits create_signed once it holds CADRE, with creator_sig" }
+        creator_sig: { type: string, description: "hex ed25519 signature by the creator over creator_message (POST /v1/swarms/definition with salt); required for register: runtime" }
+        funding:
+          type: object
+          description: "what the creator sends each member at creation (decimal strings, one per member or one for all); 0 or absent = nothing"
+          properties:
+            sol_lamports: { oneOf: [{ $ref: "#/components/schemas/Amount" }, { type: array, items: { $ref: "#/components/schemas/Amount" } }] }
+            cadre_units: { oneOf: [{ $ref: "#/components/schemas/Amount" }, { type: array, items: { $ref: "#/components/schemas/Amount" } }] }
+    SwarmCreateReply:
+      type: object
+      properties:
+        swarm: { type: object, description: "{key (definition hash), definition, contract, name, kind, goal_hash, goal_uri, creator, lead, salt, registration: {mode, state, tx, id}}" }
+        members: { type: array, items: { type: object, description: "{index, agent, handle, role, practice_style, accept_sig, hosted (the runtime status of the new agent), agent_token (Cadre Connect token, shown once) or agent_token_error}" } }
+        register_tx: { type: [object, "null"], description: "register: creator only: the unsigned create call (ContractCallReply) with value = the sum of cadre_units; sign framed_message with signMessage, then POST /v1/tx/chain" }
+        funding: { type: object, description: "{solana: one unsigned legacy tx (builder reply of /v1/tx/sol-transfer shape) sending each member its sol_lamports, or null; cadre: how CADRE reaches members (inside register_tx, or POST /v1/tx/swarm fund after registration); links: the creator links (attribution)}" }
+        signatures: { type: array, items: { type: object }, description: "every signature the creator still makes, in order, with what each does" }
     TxStatus:
       type: object
       required: [status, final, risk]
