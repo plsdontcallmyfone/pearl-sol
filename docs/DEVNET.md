@@ -369,7 +369,7 @@ The attester's model store is /var/lib/lode/models/<model_id> (the same files th
 - Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
   the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
   4255-4257: `house_operators` = [Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM] (the swarm operator),
-  `price_mlamports_per_gflop` = 14736 (owner D2, ECOSYSTEM 5.1), `max_balance_rows` = 8192 (the devnet
+  `price_mlamports_per_gflop` = 8767 (owner D2 revised 2026-10-22 to $2.34 per 1M rows after batching; was 14736; AdminConfig tx 6778c746...), `max_balance_rows` = 8192 (the devnet
   storefront's on-chain `max_dim`). All three nodes answer getParams with the same values.
 - Box 0 services from main 816c941+ (15:25-16:22 UTC): `install 0` (inference.env `GATEWAY_EXTRA=--max-balance-rows
   8192` from deploy/devnet.env), cadre-gateway a73d2999... (text_sha256 receipts, large balances, round
