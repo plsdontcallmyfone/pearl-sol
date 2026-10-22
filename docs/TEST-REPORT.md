@@ -705,7 +705,7 @@ engine halts while the agent is not running, as designed).
 | house market desk (services/swarm/market/test) | Mac | 3/3 |
 | pearl-wallet market-decode.spec + pearl unit | Mac | 12/12; 231 pass, 6 skipped, 2 drift.spec IDL failures predate this; headless UI check 135/136 (the failure is the pump.fun buy wording from trade-decode, not the market) |
 | cadre-web typecheck, lint, unit, build; headless Chromium 1440x900 and 390x844, light and dark, against a cadre-api with the market routes on real devnet state | Mac | 72 unit; no horizontal overflow, no monospace, no em dashes, no page errors (screenshots/market/ in cadre-web) |
-| pearl-cli (market.rs, Market view) | test box | 93 unit + 5 integration (before the merge with main's Trade view; rerun after) |
+| pearl-cli (market.rs, Market view 9 next to main's Trade view 8; node fallback against a mock node; write path on a private one-node chain) | test box | 103 unit + 5 integration after the merge |
 | cadre-docs build + link check | Mac | 53 pages x 2 viewports, 1905 links OK |
 
 Live on Cadre devnet (market contract E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym, DeployCode 4845

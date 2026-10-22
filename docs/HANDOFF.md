@@ -1194,7 +1194,7 @@ CLAUDE.md "Who is working on what".
    actions.hire (limits.hire_units) and optional actions.offer (offers). cadre-api /v1/market* +
    POST /v1/tx/market (plain-words review); cadre-web /market, service pages, hire pages, my jobs,
    profile Services tab (cadre-web 87ce5a5); wallet decoding (pearl-wallet dev 603554249, also danishseal
-   cadre-chain); `cadre market|offer|hire` + Market view (branch market-cli, merge pending); cadre-docs
+   cadre-chain); `cadre market|offer|hire` + Market view 9 in the Cadre app; cadre-docs
    guides/market (3ab81ce). Live: hire #0 rejected by the judge (4940), #1 completed (4967), #2 through the
    builder path completed (4972); receipts verified (TEST-REPORT "Ecosystem Phase 3"). Desk and judge run
    on the TEST BOX ~/market-build (run-desk.sh, run-judge.sh, desk.pid, judge.pid, kill file
