@@ -233,6 +233,33 @@ caller**: no host function takes another account's authority, and a caller's CAD
 contract only as `value` the caller signed. A native call that fails returns status 1 with the
 reason and undoes only itself; the contract decides whether to revert.
 
+**Paying the mining pool (2026-10-22).** The services market asked for a way to send its fee to
+the mining pool, so it funds miners like a job's protocol fee. The `transfer` host function
+refuses reserved accounts (escrow and pool, status 2), but a native `Transfer` sent by the
+contract as itself already credits the pool: `exec_body` refuses only the escrow as a Transfer
+target, and the pool is an ordinary account record. So no new host function, activation height or
+node rollout was needed: the capability is the existing native-call rule, now named and pinned.
+
+- SDK: `native::mining_pool()` (`blake3("pearl-sol:mining-pool:v1")`, computed in the contract,
+  checked against the chain's `pool_address()` in the tests) and `native::pay_mining_pool(amount)`
+  (a Transfer body `pool [32] | amount u64` through `native_call`). Measured: 328,019 gas for a
+  probe call that pays the pool (fee 6,131 base units); in the market, a completing verdict that
+  pays the fee to the pool costs 1,005,503 gas against 922,182 for a plain fee_to (fee 14,106
+  against 13,272 base units).
+- Pay in only, never out. Every way a contract could move CADRE is checked against the pool in
+  `contracts/tests/tests/pool.rs` (probe contract `contracts/poolprobe`, test-only, never
+  deployed): `transfer` to the pool or the escrow is refused; a native Transfer moves only the
+  contract's own balance (asking for more than it holds fails and the pool is untouched); a native
+  Transfer to the escrow is refused; the pool is not a contract (calls to it fail); a tx signed
+  from the pool address is refused (reserved address cannot send); AdminConfig, BridgeUnlock and
+  the other kinds a contract may not run natively stay refused. The pool's only debits remain the
+  executor's own: block subsidy (emission) and the refund of a job's unpaid protocol fee to its
+  poster.
+- Supply invariant: checked after every block in those tests; a pool credit on a branch that a
+  reorg drops is undone with the branch's write set, and the same verdict on the winning branch
+  pays once (`pool_credit_on_a_dropped_branch_is_undone`). The chain's multi-node reorg test for
+  contract calls (`chain/bin/agent-node/tests/contracts_rpc.rs`) covers the node path.
+
 ## 7. State commitment and proofs (Solana light client)
 
 The 256-byte header is unchanged (the deployed Solana light client parses it). Two
@@ -345,6 +372,12 @@ first. A finality committee only if fast irreversible finality becomes a product
   linked to a bounty and a town post by a contract; block gas limit and fee floor; migrate and
   admin rules; devnet activation height and the config encoding; a determinism digest; the gas
   table. The supply invariant is checked after every block.
+- `contracts/tests/tests/pool.rs` (2026-10-22, 6 tests): paying the mining pool from a contract
+  (6): the SDK pool address is the chain's, the market fee lands in the pool, fee_to switches to the
+  pool and back (never the escrow), the deployed devnet v1 market (fixture, code hash 1647ce24...)
+  migrates with an open hire intact, no contract path debits the pool, a dropped branch undoes the
+  credit; supply invariant every block. `contracts/tests/tests/halt.rs` (3): the protocol halt
+  record (authority only, scope bits, immutable code, status layout).
 - `chain/state/tests/contract_proof.rs`: a contract storage item proves against the committed
   state_root; wrong value, key or root fail; an old proof fails after an overwrite.
 - `chain/bin/agent-node/tests/contracts_rpc.rs`: three node actors; deploy, instantiate and
@@ -391,3 +424,6 @@ second), so these are upper-side figures.
 - Receipt and event pruning (they live in state for good today; gas covers their size).
 - An EVM next to WASM, if Ethereum tooling is wanted (1).
 - Outside audit and a host-ABI fuzzing campaign before mainnet (9).
+- If the audit prefers one rule for both paths, the `transfer` host function could accept the pool
+  as a target (pay in only) behind a new activation height. Not needed today: native Transfer is
+  the path (6, "Paying the mining pool").

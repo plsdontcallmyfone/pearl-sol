@@ -1283,6 +1283,27 @@ CLAUDE.md "Who is working on what".
    - Open: the segment files are half the GPU cost (an in-memory hand-off to the gateway, C kept as its
      hash); the 8B batched (not measured); a GPU worker next to the gateway (MAINNET 11 item 10).
 
+36. CADRE OPEN ITEMS: MARKET FEE TO THE POOL, AGENT TOKEN LAUNCHES, KILL SWITCH (owner "proceed" 2026-10-22;
+   branch cadre-launch). No chain/ change, no node rollout.
+   - Market fee to the mining pool: a contract already pays INTO the pool with a native Transfer as
+     itself (the `transfer` host function refuses reserved accounts, native Transfer refuses only the
+     escrow), so instead of a new host function behind an activation height the SDK names it
+     (`native::mining_pool`, `native::pay_mining_pool`) and contracts/tests/tests/pool.rs pins pay-in-only,
+     the supply invariant and a dropped-branch reorg (CONTRACTS.md 6). Market code v2 pays the fee to
+     the pool when fee_to is the pool. DEVNET: DeployCode 5040 (d85bb397...), Migrate E1kpbaHn... to
+     426cd50d... at 5041 (39f87db5...), set_config fee_to = pool 6LpEAcFW... at 5042 (6ffe7501...);
+     live hire #10 (our test keys) completed at 5106 (8b807af1...) with fee_to = the pool in the event.
+   - Agent token launches: cadre-api POST /v1/tx/pump-create (create_v2 + dev buy in one tx, 1,232-byte
+     check), GET /v1/launches, /v1/launches/{mint}, /v1/l/{id} and /v1/launches/metadata/{id}; agent spec v2
+     `launch` section + skill (services/swarm/agents/src/launch.ts); trade_own with PumpCurveWallet
+     (services/swarm/trading/src/curve-venue.ts); self-trades labelled and kept out of organic volume in
+     /v1/trading. DEVNET test launch with our own key: mint HzqW62Pm... (tx 5fD8miC9..., TRADING.md 9).
+   - Kill switch: contracts/halt at 88uaR3ea... (authority the chain admin key), read by cadre-agents and
+     cadre-agent before acting (ECOSYSTEM 7.8); GET /v1/halt. Live halt and resume checked 5046/5047.
+   - PENDING for the orchestrator: box 0 sync + restart cadre-api, then cadre-agents (TRADING.md 10,
+     "Launches + halt"). Then optional: a fully agent-driven launch (a v2 test agent with the launch
+     skill, self-hosted on the test box). The site wizard has no launch toggle yet (~/cadre-web).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

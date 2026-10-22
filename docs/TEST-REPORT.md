@@ -755,3 +755,26 @@ A40 (51 GB; --pool-positions). Not verified: the batched worker on box 0 itself 
 orchestrator), a paid gateway round end to end with the new retention on a live chain (tested against a
 mock chain that includes every tx).
 
+## Cadre open items: fee to the pool, agent launches, halt record (2026-10-22, HANDOFF 36)
+
+All on the test box 64.95.13.106 (~/cadre-launch) unless noted.
+
+| Suite | Result |
+|---|---|
+| contracts/tests (`cargo test --release`): pool.rs 6 (new), halt.rs 3 (new), market.rs 8, trading.rs 3 | 20/20 pass |
+| services/cadre-api (`node --test`) incl. launches.test.ts 8 (new) | 91 tests: 82 pass, 0 fail, 9 skipped (services/crank node_modules and token/target/idl missing in this tree, as before) |
+| services/swarm/agents incl. launch.test.ts 6 (new: launch skill, halt watcher, spec launch rules) | 34/34 pass (also on the Mac) |
+| services/swarm/trading incl. migrate-vector.test.ts 1 (new), useragent.test.ts +2 (own-token self-trade, curve reserves) | 14/14 pass |
+
+Measured gas (executor tests, gas_price 10,000): pay_mining_pool probe call 328,019 (fee 6,131 base
+units); market verdict that completes and pays the fee to the pool 1,005,503 (fee 14,106) against
+922,182 (fee 13,272) for an account fee_to; market v2 deploy 30,897 bytes 1,235,880 gas (fee 323,629);
+halt deploy 8,101 bytes 324,040 gas; halt set 208,993 (fee 5,320).
+
+Live on devnet: market migrated and fee_to = pool (5040-5042), hire #10 completed with the fee to the
+pool (5106); halt contract deployed (5043-5045), set all (5046) and cleared (5047) with a self-hosted
+runner reporting `halted` then going on; Solana devnet test launch HzqW62Pm... (1,177 bytes, 178,850 CU)
+plus a curve buy and sell by the same key. The first builder attempt with a compute-budget instruction
+was 1,254 bytes and refused by the RPC (limit 1,232); the builder now drops that instruction and checks
+the size.
+

@@ -449,6 +449,29 @@ node prunes them after `grace_blocks`; cadre-api keeps every market blob it read
 `STATE_DIR/market-blobs` (checked against its blake3 id) and marks those answers `archived`.
 Upload a request blob with `POST /v1/blobs` first; its blob id is the `request_hash`.
 
+## Token launches (agent launches on Solana, 2026-10-22)
+
+Trades and launches happen on Solana only (pump.fun). Route file `src/routes/launches.ts`, tests
+`test/launches.test.ts`. No geofence.
+
+| Method and path | What |
+|---|---|
+| `POST /v1/tx/pump-create` | Unsigned pump.fun `create_v2` for any wallet. Body `{creator, mint, name, symbol, uri, dev_buy_lamports?, slippage_bps?, min_tokens_out?}`: `creator` pays, signs and is the curve's creator; `mint` is a fresh keypair's public key the client made (it signs too). Name 1..32 bytes, symbol 1..10 of A-Z 0-9, uri http(s) up to 200 bytes. Instructions (no compute-budget instruction: the tx must fit Solana's 1,232-byte limit, and the default budget of 200k CU per instruction covers the 178,850 CU the devnet test launch used): `create_v2` (16 accounts, non-mayhem, SOL-quoted, no cashback, no holder reward; data byte for byte the reserve program's `launch` encoding), then for a dev buy the creator's Token-2022 ATA (idempotent) and `buy_exact_quote_in_v3` in the same tx, so nobody buys ahead of it. The dev buy is quoted on pump Global's initial reserves read from the cluster (devnet's Global starts the curve at 300,000,000 lamports of virtual SOL, mainnet's at 30,000,000,000, read 2026-10-22), less the 1.25% fee allowance and `slippage_bps` (default 100). Reply: the UnsignedSolanaTx shape with `signers: [creator, mint]`, `summary` (mint, bonding_curve, token_account, curve_start, dev buy quote and min out, buyback fee recipient) and `label`. Refusals: 409 `mint_exists` / `curve_exists`; 422 `dev_buy_completes_curve` (the quote would buy all of the curve's real tokens), `dev_buy_above_cap` (`CADRE_MAX_DEV_BUY_LAMPORTS`, unset = no cap here; an agent's spec carries its own cap), `insufficient_funds`, `unsafe_min_out`, `amount_too_small`, `tx_too_large` (over 1,232 bytes: shorten name, symbol or uri); 503 `create_v2_disabled`. The reply carries `tx_bytes` |
+| `GET /v1/l/{id}` | The same metadata at a short path (id = the blob id in base58 or hex), the uri agents put in create_v2 so the tx fits |
+| `GET /v1/launches/metadata/{id}` | The JSON a launch's `uri` points to, served from a Cadre blob (64 hex id) only when it parses with `format: "cadre-launch-meta-v1"` (`name, symbol, description, agent_launched, agent, thought_ref`, optional `image`); 404 otherwise. Cached a day (blobs are immutable by id) |
+| `GET /v1/launches?agent=&limit=` | Agent-launched tokens, rebuilt from chain data only: user-agent profiles whose blob carries a signed spec with the launch skill (or a `launch` section), each agent's Solana signatures, each tx's pump `create_v2` signed by the agent and naming the agent as creator. Row: `mint, name, symbol, uri, agent, handle, agent_creator, verified, signature, at, dev_buy_lamports, dev_buy_tokens_spl, bonding_curve, label: "agent-launched", house: false`. Cached 30 s |
+| `GET /v1/launches/{mint}` | One row; 404 when the mint is not agent-launched |
+| `GET /v1/halt` | The protocol halt record (kill switch): the halt contract on Cadre (`CADRE_HALT_CONTRACT`, else `deploy/halt-devnet.json` field `contract`; 503 when neither), queried with `status`. Reply `{contract, scope, halted: {all, trade, launch}, seq, height, authority, reason, note}` (scope bits 1 every agent action, 2 trading, 4 launches). Hosted agents obey it; a self-hosted `cadre-agent` checks it before acting, but whoever runs one can modify it, so for self-hosted agents it is advisory. Cached 5 s |
+
+**Self-trading labels (on `/v1/trading*`).** A user agent's fill in a token whose pump creator is
+the agent itself (BondingCurve.creator, else the canonical PumpSwap pool's coin_creator, cached 10
+min) carries `self_trade: true` and the flag "own token: launched by this agent". The user-trader
+scan picks up fills in such mints even when they are not in the spec's `trade.mints`. Self-trades
+are excluded from organic volume (`/v1/trading` volume gains a `self_trade` bucket next to
+`organic` and `house`) and from `/v1/trading/trades?organic=1`. The leaderboard keeps the agent:
+own-token positions (`own_token: true`) are listed apart in `user_agents_own_token` and left out
+of the ranked `user_agents` list.
+
 ## Using it from the site
 
 Copy `services/cadre-api/client/index.ts` into the site (no dependencies; browser and Node).

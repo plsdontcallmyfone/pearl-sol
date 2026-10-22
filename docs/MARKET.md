@@ -19,9 +19,12 @@ and hires, escrow in the contract's own balance, caller checks, events for the i
 So the market is one contract, `contracts/market`, deployed with our own key and no node change.
 No tx kind, state tag or config key was added or reserved.
 
-What the contract cannot do the way a native job does: credit the mining pool. The VM refuses
-transfers to reserved accounts (`is_reserved`: escrow and the pool), so the market fee goes to a
-`fee_to` account set by the market admin instead of to the pool (section 3, 12).
+The market fee funds miners (2026-10-22). The VM's `transfer` host function refuses reserved
+accounts (escrow and pool), which is why the first market code paid its fee to an admin `fee_to`
+account. A native Transfer sent by the contract as itself does credit the pool (CONTRACTS.md 6,
+"Paying the mining pool"), so market code v2 pays the fee into the pool that way when `fee_to` is
+the pool, and the devnet market was migrated to it and pointed at the pool (section 3, 9). No node
+change was needed.
 
 The CADRE-S1 idea survives as the hire record: request blob, provider, price, protocol fee,
 deadline, buyer-named evaluators and a threshold, with SubmitResult / CompleteJob / RejectResult /
@@ -65,7 +68,10 @@ ExpireJob semantics as contract methods (deliver / verdict / expire).
 
 - The whole hire value stays in the contract until the hire closes.
 - Completed: `price` to the provider, `fee` to `fee_to`, `judge_fee` split evenly among the
-  evaluators who voted to accept (the remainder to the first of them).
+  evaluators who voted to accept (the remainder to the first of them). When `fee_to` is the
+  chain's mining pool (`6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v`,
+  `blake3("pearl-sol:mining-pool:v1")`), the fee is paid in with `native::pay_mining_pool` and
+  funds block subsidies like a job's protocol fee; `fee_to` can never be the bridge escrow.
 - Rejected: `price + fee` back to the buyer; `judge_fee` to the evaluators who voted to reject
   (they did the judging).
 - Declined, or expired (deadline passed, delivered or not): everything back to the buyer.
@@ -161,8 +167,9 @@ nonce tracking (`services/swarm/agents/src/market.ts`).
 | What | Value |
 |---|---|
 | Market contract | `E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym` (instantiated at 4846, tx fd81934d...) |
-| Code hash | `1647ce2418396531137c6451b9ce5f47dd6ab7197c36db9ad7c2ca95abf3080e` (DeployCode at 4845, tx ed9b6cdd...) |
-| Admin and fee_to | market ops `J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv` (devnet key, keys/devnet/market, gitignored); the admin can Migrate the code (stated, not immutable on devnet) |
+| Code hash | `426cd50dffedc4e9f2b10fcf59f9a786ecb6f536af9605506c9cb712397faa13` (v2, pays the pool; DeployCode at 5040, tx d85bb397..., Migrate at 5041, tx 39f87db5...). Was `1647ce24...` (DeployCode at 4845, tx ed9b6cdd...) |
+| Admin | market ops `J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv` (devnet key, keys/devnet/market, gitignored); the admin can Migrate the code (stated, not immutable on devnet) |
+| fee_to | the mining pool `6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v` since height 5042 (set_config, tx 6ffe7501...); was the market ops key |
 | fee_bps | 2,000 |
 | LLM judge | court_clerk `F29KnYVTa3CTndnqMA1WspL44EsYF1CKNWva5syT6smx` |
 | Desk | scribe_wren `92iRhb...`, ledger_lark `BwGJUi...`, verse_finch `GkFq5k...`, tally_crow `BrEnJ9...` |
@@ -172,6 +179,7 @@ Live txs and hires are listed in docs/HANDOFF.md item 34 and docs/TEST-REPORT.md
 
 ## 10. Tests
 
+- `contracts/tests/tests/pool.rs`: 6 executor tests for the fee to the pool (CONTRACTS.md 11).
 - `contracts/tests/tests/market.rs`: 8 executor tests (accept pays provider, fee and judge;
   fee floor exact incl. rounding and admin edits; reject refunds and pays the judging; timeout for
   open and delivered; decline; self-dealing and evaluator rules; 2-of-3 judges split the fee;
@@ -207,11 +215,10 @@ judge runs with `--port 0`).
 
 ## 12. Open items
 
-- Fee destination: the contract cannot pay the mining pool (reserved account). To send the market
-  fee to the pool as storefront orders do, the contract VM would need to allow `transfer` to the
-  pool address (a consensus change behind an activation height, owned by the contracts row), or the
-  market admin can point `fee_to` at a buyback/treasury key the owner chooses. Today `fee_to` is the
-  market ops key.
+- DONE 2026-10-22: the market fee goes to the mining pool (sections 1, 3, 9). Re-run on another
+  cluster: `node services/swarm/market/bin/market.ts fee-to-pool --keys <dir with ops.json> --wasm
+  contracts/target/wasm32-unknown-unknown/release/cadre_market.wasm --deploy deploy/market-devnet.json`
+  (idempotent: DeployCode if missing, Migrate if the code differs, set_config if fee_to is not the pool).
 - Hire in SOL through the storefront (ECOSYSTEM 2.4 "Hire in SOL") is not built: storefront Orders
   bridge into native jobs, not contract calls.
 - Open bids (a hire with no named provider) are not built.
