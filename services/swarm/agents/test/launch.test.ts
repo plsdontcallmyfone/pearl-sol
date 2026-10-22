@@ -30,7 +30,7 @@ function host(opt: Partial<LaunchHost> & { answer?: string; bal?: bigint; capLef
     now: () => now, haltLaunch: () => "", canSpendSol: (x) => x <= (capLeft ?? 1_000_000_000n), bookSol: (x) => { spentBooked += x; },
     lamports: async () => bal ?? 100_000_000n, record: () => "counters {}",
     think: async () => ({ text: answer ?? "LAUNCH: YES\nNAME: Tide Ledger\nSYMBOL: TIDE\nDESCRIPTION: A token for patient traders.", requestId: "req_1" }),
-    putBlob: async (b) => { blobs.push(b); return { uri: `blob:${createHash("sha256").update(b).digest("hex")}` }; },
+    storeMeta: async (m) => { const b = Buffer.from(JSON.stringify(m)); blobs.push(b); return { id: createHash("sha256").update(b).digest("hex") }; },
     build: async (body, signers) => { calls.push({ body, signers }); return { signature: "5".repeat(88), summary: { quote_tokens_out_spl: "1000" } }; },
     confirm: async () => ({ ok: true, err: null }), receipt: async (t) => { receipts.push(t); return "posthash"; },
     note: (k, t) => { notes.push(`${k}: ${t}`); }, save: () => {}, tradeOwn: async () => {},
@@ -79,7 +79,7 @@ test("launch: rate limits per week and between launches", () => {
   assert.equal(launchDue(l, [], now - H, now), "not due");
 });
 
-test("launch: dev buy is capped by the wallet reserve, the SOL cap and the halt", async () => {
+test("launch: dev buy is capped by the wallet reserve, the SOL cap and the halt; no launch without durable metadata", async () => {
   const poor = host({ bal: LAUNCH_RESERVE + 5_000_000n });
   poor.consideredAt = 1;
   assert.equal(await maybeLaunch(poor), "launched");
@@ -92,6 +92,10 @@ test("launch: dev buy is capped by the wallet reserve, the SOL cap and the halt"
   capped.consideredAt = 1;
   assert.equal(await maybeLaunch(capped), "budget");
   assert.equal(capped.calls.length, 0);
+  const noStore = host({ storeMeta: async () => { throw new Error("503 unavailable"); } });
+  noStore.consideredAt = 1;
+  assert.equal(await maybeLaunch(noStore), "failed");
+  assert.equal(noStore.calls.length, 0, "no durable metadata, no launch");
   const halted = host({ haltLaunch: () => "protocol halt of launch (seq 3): incident" });
   halted.consideredAt = 1;
   assert.equal(await maybeLaunch(halted), "halted");

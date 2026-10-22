@@ -6,7 +6,8 @@
 // Labelling: a token is "agent-launched" when its create_v2 was signed by a Cadre user agent's key
 // (a profile whose blob carries a signed agent spec with the launch skill) AND names that agent as
 // the curve's creator. Nothing here is self-reported: the row is rebuilt from the Solana tx.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { blake3 } from "../../../../apps/explorer/src/blake3.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api } from "../http.ts";
@@ -261,6 +262,46 @@ export function registerLaunches(api: Api, d: Deps) {
     };
   });
 
+  // Durable copy of every launch metadata blob (2026-10-22): node blobs that no chain state names
+  // are pruned after grace_blocks (RPC.md "Retention", the blob lifecycle rule), and a token's
+  // metadata uri must never 404 (pump.fun and wallets read it). So this API keeps the exact bytes
+  // on its own disk under <STATE_DIR>/launch-meta/<blob id>.json (the id is blake3 of the bytes,
+  // so the copy is checkable against the uri), serves the disk copy first, and adopts any launch
+  // metadata it finds on the node. CADRE_LAUNCH_META_MAX (default 20,000 files) bounds the store.
+  const metaDir = join(d.cfg.stateDir, "launch-meta");
+  const metaMax = Number(process.env.CADRE_LAUNCH_META_MAX ?? 20_000);
+  const META_MAX_BYTES = 2048;
+  const metaPath = (id: string) => join(metaDir, `${id}.json`);
+  const parseMeta = (b: Buffer): any => {
+    let j: any;
+    try { j = JSON.parse(b.toString("utf8")); } catch { return null; }
+    return j?.format === "cadre-launch-meta-v1" && typeof j.name === "string" && typeof j.symbol === "string" ? j : null;
+  };
+  const keepMeta = (id: string, b: Buffer): boolean => {
+    if (existsSync(metaPath(id))) return true;
+    mkdirSync(metaDir, { recursive: true });
+    if (readdirSync(metaDir).length >= metaMax) return false;
+    const tmp = `${metaPath(id)}.tmp-${process.pid}`;
+    writeFileSync(tmp, b);
+    renameSync(tmp, metaPath(id));
+    return true;
+  };
+  const b58id = (hexId: string) => b58encode(Buffer.from(hexId, "hex"));
+
+  api.post("/v1/launches/metadata", async (c) => {
+    const raw = await c.raw();
+    if (raw.length === 0 || raw.length > META_MAX_BYTES) throw new ApiError(413, "body_too_large", `launch metadata is 1..${META_MAX_BYTES} bytes of JSON`);
+    const j = parseMeta(raw);
+    if (!j) throw badRequest("body is launch metadata JSON: {format: \"cadre-launch-meta-v1\", name, symbol, description, agent_launched, agent, ...}");
+    if (Buffer.byteLength(j.name) > 32 || !/^[A-Za-z0-9]{1,10}$/.test(j.symbol)) throw badRequest("name is at most 32 bytes and symbol 1..10 letters or digits (create_v2 limits)");
+    if (j.agent !== undefined && j.agent !== null) addr(j.agent, "agent");
+    const id = Buffer.from(blake3(raw)).toString("hex");
+    if (!keepMeta(id, raw)) throw new ApiError(507, "store_full", `this API's launch metadata store holds ${metaMax} files (CADRE_LAUNCH_META_MAX)`);
+    // also a Cadre blob, so anyone can fetch it by id from a node while the node keeps it
+    const put = await d.chain<any>("putBlob", { data: raw.toString("base64") }).catch((e: Error) => ({ error: e.message }));
+    return reply({ status: 201, body: { id, id_b58: b58id(id), path: `/v1/l/${b58id(id)}`, size: raw.length, durable: "kept on this API's disk for good", node_blob: put?.blob_id === id ? "stored" : `not stored: ${put?.error ?? "unexpected reply"}` } });
+  }, { cost: 10 });
+
   const metadata = async (raw: string) => {
     // 64 lowercase hex, or the same 32 bytes in base58 (the short form keeps the create tx small)
     let id = raw;
@@ -270,11 +311,16 @@ export function registerLaunches(api: Api, d: Deps) {
       if (!k || k.length !== 32) throw badRequest("id must be a Cadre blob id: 64 lowercase hex or its 32 bytes in base58");
       id = Buffer.from(k).toString("hex");
     }
+    if (existsSync(metaPath(id))) {
+      const j = parseMeta(readFileSync(metaPath(id)));
+      if (j) return reply({ body: j, cache: 86_400 });
+    }
     const bl = await d.chain<any>("getBlob", { blob_id: id }).catch(() => null);
-    if (!bl?.data) throw notFound("no such blob on the node this API reads");
-    let j: any;
-    try { j = JSON.parse(Buffer.from(bl.data, "base64").toString("utf8")); } catch { throw notFound("the blob is not launch metadata (not JSON)"); }
-    if (j?.format !== "cadre-launch-meta-v1" || typeof j.name !== "string" || typeof j.symbol !== "string") throw notFound("the blob is not launch metadata (format cadre-launch-meta-v1)");
+    if (!bl?.data) throw notFound("no such launch metadata on this API or the node it reads");
+    const bytes = Buffer.from(bl.data, "base64");
+    const j = parseMeta(bytes);
+    if (!j) throw notFound("the blob is not launch metadata (format cadre-launch-meta-v1)");
+    if (Buffer.from(blake3(bytes)).toString("hex") === id) keepMeta(id, bytes); // adopt: served once, kept for good
     return reply({ body: j, cache: 86_400 });
   };
   api.get("/v1/launches/metadata/:id", (c) => metadata(c.params.id), { cache: 86_400 });

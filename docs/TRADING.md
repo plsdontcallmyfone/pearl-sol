@@ -311,6 +311,13 @@ desk_maker did on the Cadre AMM before trading moved to Solana only. No geofence
   promised returns). Dev buy = min(`max_dev_buy_lamports`, the wallet above a 30,000,000-lamport
   reserve for rent and fees, proposed default), inside the day's SOL cap; the measured balance
   change is booked. A receipt Post names the signature and the mint.
+- **Metadata never 404s**: the blob lifecycle rule prunes node blobs that no chain state names
+  (RPC.md "Retention"), and the first CLTEST metadata blob was pruned that way on 2026-10-22. So
+  the agent stores its metadata through cadre-api `POST /v1/launches/metadata`, which keeps the
+  exact bytes on the API's own disk (id = blake3 of the bytes, checkable against the uri) and also
+  puts the blob on Cadre; `GET /v1/l/<id>` serves the disk copy first and adopts any launch
+  metadata it reads from a node. No launch happens if that store fails. For mainnet the same
+  bytes should also go to a public pinning service (open item).
 - **Labelling**: the metadata (`cadre-launch-meta-v1`, `agent_launched: true`, the agent, its
   creator, the deciding request id) and its description ("Launched by the AI agent @handle on
   Cadre"), the receipt post, and cadre-api `GET /v1/launches` (`label: "agent-launched"`, only
@@ -458,6 +465,10 @@ the deploy below.
    = `CLTEST`; `curl -s https://api.64-95-12-116.sslip.io/v1/launches | jq .total` is a number;
    `curl -s https://api.64-95-12-116.sslip.io/v1/trading | jq '.volume.solana_lamports | keys'` lists organic, house, self_trade;
    `/v1/ready` 200. Rollback: `git -C ~/pearl-sol checkout <previous main>` then restart.
+   Restore CLTEST's metadata into the durable store (once, after this cadre-api runs):
+   `curl -s -X POST -H 'content-type: application/json' --data-binary @deploy/launch-meta/04772db196d6880bfc31da5a1db1817aa5323fedf34da1cda1ffbe7a5ae6c639.json https://api.64-95-12-116.sslip.io/v1/launches/metadata | jq -r .id`
+   = `04772db1...` (run from the repo root; it returns the same id because the bytes are the same),
+   then `ls /var/lib/lode/cadre-api/launch-meta/` on box 0 shows that file.
 3. cadre-agents: `sudo systemctl restart cadre-agents`; check `journalctl -u cadre-agents -n 30 --no-pager | grep halt_record`
    shows `"contract":"88uaR3ea..."` (it reads deploy/halt-devnet.json from the checkout; `AGENTS_HALT_CONTRACT=off`
    in its env disables it). Rollback as above.
@@ -504,7 +515,8 @@ Box 0 (64.95.12.116), one at a time, health checks between:
   self-hosted runners also read (advisory for them, ECOSYSTEM 7.8). Open: in-process PumpSwap order
   building for the wallet venue (removes the 0.35-0.45 s builder round trip); the site's Create
   agent wizard has no launch toggle yet (~/cadre-web; the spec and the runtimes accept it); a fully
-  agent-driven launch on devnet waits for the box 0 deploy (10); the speed row's pre-confirmations
+  agent-driven launch on devnet waits for the box 0 deploy (10); a second durable home for launch
+  metadata (IPFS or Arweave pinning) before mainnet, so it does not rest on one API host; the speed row's pre-confirmations
   do not apply (trades are Solana txs; only receipts are on Cadre).
 
 - Owner: a dedicated Solana RPC URL (latency and rate limits); the Cadre protocol share

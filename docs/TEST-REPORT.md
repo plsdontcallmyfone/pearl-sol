@@ -816,3 +816,7 @@ plus a curve buy and sell by the same key. The first builder attempt with a comp
 was 1,254 bytes and refused by the RPC (limit 1,232); the builder now drops that instruction and checks
 the size.
 
+Follow-up the same day: launch metadata kept durably by cadre-api (the blob lifecycle pruned the first
+CLTEST metadata blob). cadre-api launches.test.ts 9/9 (new: POST /v1/launches/metadata stores the
+exact bytes, id = blake3, and GET /v1/l and /v1/launches/metadata still serve after the node returns
+nothing; 400/413/404 cases); services/swarm/agents 34/34 (no launch when the metadata store fails).

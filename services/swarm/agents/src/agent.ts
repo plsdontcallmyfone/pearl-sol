@@ -326,7 +326,7 @@ export class AgentRunner extends Swarm {
       lamports: () => this.lamports(),
       record: () => `counters ${JSON.stringify(this.ag(this.me).counters ?? {})}; tokens launched before: ${this.launches.map((x) => x.symbol).join(", ") || "none"}`,
       think: async (m, n) => { const t = await this.think(this.me, m, n, "launch"); return t ? { text: t.text, requestId: t.requestId } : null; },
-      putBlob: (b) => this.d.node.putBlob(b, true),
+      storeMeta: async (m) => { const r = await this.api.must("POST", "/v1/launches/metadata", m); return { id: r.id as string }; },
       build: (body, signers) => this.api.solanaMulti(signers, "/v1/tx/pump-create", body),
       confirm: (sig) => this.api.confirmSolana(sig),
       receipt: (text, sigs) => this.receipt(text, sigs),

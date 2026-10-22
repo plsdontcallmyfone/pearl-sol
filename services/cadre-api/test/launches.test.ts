@@ -30,6 +30,7 @@ const agent = walletFromSeed(seed("ln-agent"));
 const CADRE_MINT = key(1), LMINT = key(2), EXISTING = key(3), FRESH = key(4), HALT_C = key(5), BLOCKHASH = key(6);
 const SIG_CREATE = "7".repeat(87), SIG_BUY2 = "8".repeat(87), SIG_OTHER = "9".repeat(87);
 const META_ID = "ab".repeat(32), NOT_META = "cd".repeat(32);
+const putBlobs: string[] = [];
 
 // the agent's spec: the trade skill on CADRE plus a launch section (the agent runtime's opt-in)
 const spec: any = defaultSpecV2(agent.address, creator.address, {
@@ -98,6 +99,7 @@ function rpc(m: string, p: any): any {
       if (id === NOT_META) return { data: Buffer.from(JSON.stringify({ format: "other" })).toString("base64") };
       return null;
     }
+    case "putBlob": { putBlobs.push(p.data); return { blob_id: hex(blake3(Buffer.from(p.data, "base64"))), new: true }; }
     case "getAccountTxs": return { txs: [] };
     case "getSignaturesForAddress": return p[0] === agent.address ? [
       { signature: SIG_BUY2, slot: 701, err: null, blockTime: 1_792_700_100 },
@@ -325,3 +327,27 @@ test("GET /v1/halt decodes the halt contract's status", async () => {
   }
   assert.throws(() => decodeHaltStatus(Buffer.alloc(10)));
 });
+
+test("launch metadata is kept on this API's disk: it still serves after the node pruned the blob", async () => {
+  const meta = Buffer.from(JSON.stringify({ format: "cadre-launch-meta-v1", name: "Keep Me", symbol: "KEEP", description: "Launched by the AI agent @forge_bot on Cadre. Kept for good.", image: null, agent_launched: true, agent: agent.address, thought_ref: "req_k" }));
+  const r = await fetch(base + "/v1/launches/metadata", { method: "POST", headers: { "content-type": "application/json" }, body: meta });
+  const j: any = await r.json();
+  assert.equal(r.status, 201, JSON.stringify(j));
+  assert.equal(j.id, hex(blake3(meta)), "the id is blake3 of the exact bytes, the same id as the Cadre blob");
+  assert.equal(j.path, `/v1/l/${b58encode(Buffer.from(j.id, "hex"))}`);
+  assert.equal(j.node_blob, "stored");
+  assert.equal(putBlobs.at(-1), meta.toString("base64"));
+  // the fake node's getBlob returns null for this id: as if the blob lifecycle pruned it
+  for (const path of [j.path, `/v1/launches/metadata/${j.id}`]) {
+    const g = await get(path);
+    assert.equal(g.status, 200, path);
+    assert.equal(g.body.symbol, "KEEP");
+  }
+  const bad = await fetch(base + "/v1/launches/metadata", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ format: "other" }) });
+  assert.equal(bad.status, 400);
+  const big = await fetch(base + "/v1/launches/metadata", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ format: "cadre-launch-meta-v1", name: "x", symbol: "X", description: "y".repeat(3000) }) });
+  assert.equal(big.status, 413);
+  const missing = await get(`/v1/l/${b58encode(Buffer.alloc(32, 9))}`);
+  assert.equal(missing.status, 404);
+});
+

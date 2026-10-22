@@ -1384,6 +1384,12 @@ CLAUDE.md "Who is working on what".
    - PENDING for the orchestrator: box 0 sync + restart cadre-api, then cadre-agents (TRADING.md 10,
      "Launches + halt"). Then optional: a fully agent-driven launch (a v2 test agent with the launch
      skill, self-hosted on the test box). The site wizard has no launch toggle yet (~/cadre-web).
+   - FOLLOW-UP 2026-10-22 (after the box 0 deploy at 741194c): CLTEST's metadata 404'd because the blob
+     lifecycle rule pruned the unreferenced blob. Fix: cadre-api POST /v1/launches/metadata keeps the bytes
+     on its disk (<STATE_DIR>/launch-meta), GET /v1/l serves disk first and adopts node copies; agents store
+     metadata there (no launch without it); CLTEST's exact bytes are in deploy/launch-meta/04772db1....json
+     (re-put on the node as a stopgap). /v1/launches total 0 is right: CLTEST's creator 7pYUzH... has no
+     Cadre profile, so it is not a user agent. Deploy: TRADING.md 10 step 2 again, then the restore curl.
 
 ## M1 components (SPEC v2, all DONE)
 
