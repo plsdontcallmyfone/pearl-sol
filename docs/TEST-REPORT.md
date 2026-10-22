@@ -758,6 +758,17 @@ shown as empty, never filled). Trader board: SOL spent on AI all time 272,542,59
 11,442,615 house; paid-block share all time 214,711 ppm. Event feed: 58 events; the feed bot's dry run
 printed 6 (new agents, a paid-blocks milestone, two completed house hires, block 5,000) and sent nothing.
 
+## cadre-api node RPC load (2026-10-22, Phase 5 round 2, HANDOFF 36)
+
+| Suite | Where | Result |
+|---|---|---|
+| explorer incl. new rpcload.test.ts (gate caps in flight at max and counts methods; one full jobs scan, then the newest page + rotating getJob; no window re-read on an unchanged tip) | Mac | 67/67 |
+| cadre-api full suite | Mac | 110 tests: 99 pass, 2 fail as before on the Mac (client, sol: missing @solana/web3.js), 9 skipped |
+| A/B, test box, 180 s of site-like polling (12 routes every ~3 s + 2 town streams) against Cadre devnet node 2 through a counting proxy, warm index | test box | old (main 28b9b40): 1,148 HTTP requests, 2,616 calls (listJobs 413, getTx 1,157, getBlock 332, queryContract 280), peak 15 in flight, 136 ms average; new: 514 requests, 1,136 calls (listJobs 5, getBlock 102, queryContract 86, getJob 500), peak 3, 12 ms |
+
+Box 0 before (read-only, tcpdump on lo for 60 s, 15:2x UTC): getChainInfo median 0.43 s, max 1.39 s (box 1: 0.7 ms);
+859 requests / 2,432 calls to :10630 in 60 s, listJobs from cadre-api, caddy (public RPC) and cadre-miner.
+
 ## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
 
 | Suite | Where | Result |

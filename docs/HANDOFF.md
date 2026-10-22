@@ -1315,6 +1315,19 @@ CLAUDE.md "Who is working on what".
    - DEPLOY (box 0, handed to the orchestrator; agents may not restart services): see the row and the
      final report of this row: sync box 0 to origin/main, restart cadre-api only, health checks, rollback to
      the recorded previous commit; then the site from main with CADRE_WEB; optional cadre-feed-bot unit (dry).
+   - ROUND 2 (2026-10-22, node 0 RPC saturated after the boards went live): every listJobs call makes the
+     node load every job (up to 10,000; 8,298 on devnet), and the explorer indexer ran a full paged scan (42
+     calls) on every poll. Now: one RpcGate per cadre-api (CADRE_NODE_RPC_CONCURRENCY, default 3) shared by
+     every route and the indexer, stats in /v1/ready `node_rpc`; the indexer does a full jobs scan every
+     CADRE_JOBS_FULL_MS (cadre-api 600 s; explorer default 300 s), otherwise the newest page every
+     CADRE_JOBS_POLL_MS (30 s) plus a rotating getJob refresh of 100 open jobs; the top block window is re-read
+     only when the tip moves; boards inputs (market, trading) and the discover directory on 60 s timers;
+     town and DM pending lanes fetch each mempool tx once (CADRE_PENDING_MS 5 s); market reads refresh at most
+     every 30 s (CADRE_MARKET_REFRESH_MS). A/B on the test box (same site-like load, 180 s, node 2 behind a
+     counting proxy): old 1,148 requests / 2,616 calls, 413 listJobs, peak 15 in flight, 136 ms average;
+     new 514 / 1,136, 5 listJobs, peak 3, 12 ms. Other node 0 RPC load seen by tcpdump (60 s): public RPC via
+     caddy (remote readers incl. the usertrade row's branch cadre-api on the test box, old code, full scans
+     against node 0), cadre-miner listJobs 35/min, cadre-settle getJob, cadre-gateway getTx/sendTx.
    - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
      indexer's first poll are not recorded (counters link the Config account instead).
 
