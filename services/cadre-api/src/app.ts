@@ -76,7 +76,7 @@ export function build(d: Deps): Api {
       optional[name] = r;
     }
     const ready = Object.values(checks).every((c) => c.ok);
-    return reply({ status: ready ? 200 : 503, body: { ready, checks, upstreams: optional, prepaid: d.cfg.prepaid }, cache: "no-store" });
+    return reply({ status: ready ? 200 : 503, body: { ready, checks, upstreams: optional, prepaid: d.cfg.prepaid, node_rpc: d.nodeGate.snapshot() }, cache: "no-store" });
   }, { cache: "no-store" });
 
   registerStats(api, d);

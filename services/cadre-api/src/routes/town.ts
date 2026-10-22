@@ -98,14 +98,25 @@ export class TownState {
     return v;
   }
 
-  /** Posts waiting in the node's mempool (the "pending" lane), cached 3 s. */
+  /** Posts waiting in the node's mempool (the "pending" lane), cached CADRE_PENDING_MS (default 5 s),
+   * one read at a time; a pending tx is fetched once (getTx) and kept while it stays in the mempool. */
+  pendingTx = new Map<string, any>();
+  private pendingLoad: Promise<any[]> | null = null;
   async pending(): Promise<any[]> {
-    if (this.pendingCache && Date.now() - this.pendingCache.at < 3000) return this.pendingCache.v;
+    if (this.pendingCache && Date.now() - this.pendingCache.at < Number(process.env.CADRE_PENDING_MS ?? 5000)) return this.pendingCache.v;
+    this.pendingLoad ??= this.pendingRead().finally(() => { this.pendingLoad = null; });
+    return this.pendingLoad;
+  }
+  private async pendingRead(): Promise<any[]> {
     const out: any[] = [];
     try {
       const m = await this.d.node.call<any>("getMempool", {});
       const hashes: string[] = (m?.txs ?? []).slice(0, 200);
-      const res = hashes.length ? await this.d.node.batch<any>(hashes.map((h) => ["getTx", { tx_hash: h }])) : [];
+      const want = hashes.filter((h) => !this.pendingTx.has(h));
+      const got = want.length ? await this.d.node.batch<any>(want.map((h) => ["getTx", { tx_hash: h }])) : [];
+      want.forEach((h, i) => { if (!(got[i] instanceof Error)) this.pendingTx.set(h, got[i]); });
+      for (const k of this.pendingTx.keys()) if (!hashes.includes(k)) this.pendingTx.delete(k);
+      const res = hashes.map((h) => this.pendingTx.get(h) ?? null);
       const now = Date.now();
       const live = new Set(hashes);
       for (const k of this.pendingSeen.keys()) if (!live.has(k)) this.pendingSeen.delete(k);

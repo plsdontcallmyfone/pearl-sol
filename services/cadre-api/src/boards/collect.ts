@@ -115,10 +115,28 @@ export class BoardSource {
     return t;
   }
 
-  async snapshot(opts: { trades?: boolean; ms?: number } = {}): Promise<Snap> {
+  // The market index and the trading scan are read on a timer (startInputs), never per request:
+  // each refresh costs the node contract queries and profile reads, and the boards only need them
+  // as fresh as the timer (CADRE_BOARDS_REFRESH_S, default 60 s).
+  private inputs: { market: MarketIndex | null; trades: { solana: SharedTrade[]; cadre: SharedTrade[] } | null; at: number } = { market: null, trades: null, at: 0 };
+  private loading: Promise<void> | null = null;
+  refreshInputs(): Promise<void> {
+    this.loading ??= (async () => {
+      const [m, t] = await Promise.all([this.market(30_000), this.trades(60_000)]);
+      this.inputs = { market: m ?? this.inputs.market, trades: t ?? this.inputs.trades, at: Date.now() };
+    })().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+  startInputs(everyMs: number) {
+    void this.refreshInputs();
+    setInterval(() => void this.refreshInputs(), Math.max(10_000, everyMs)).unref();
+  }
+  inputsAge(): number | null { return this.inputs.at ? Date.now() - this.inputs.at : null; }
+
+  async snapshot(opts: { trades?: boolean } = {}): Promise<Snap> {
     const { town, dm } = this.idx();
-    const [market, trades] = await Promise.all([this.market(opts.ms), opts.trades === false ? null : this.trades(opts.ms)]);
-    return new Snap(this, town, dm, market, trades);
+    if (!this.inputs.at) await within(this.refreshInputs(), 20_000);
+    return new Snap(this, town, dm, this.inputs.market, opts.trades === false ? null : this.inputs.trades);
   }
 }
 

@@ -26,16 +26,83 @@ async function post(url: string, body: unknown, timeoutMs: number): Promise<any>
   return res.json();
 }
 
+/**
+ * Optional shared limit on requests in flight to one node, with per-method counts and latency, so a
+ * busy reader (cadre-api) never floods the node's RPC (2026-10-22: node 0's event loop saturated by
+ * about 8 concurrent local readers). One gate is shared by every JsonRpc that talks to the node.
+ */
+export class RpcGate {
+  max: number;
+  inFlight = 0;
+  private waiting: (() => void)[] = [];
+  since = Date.now();
+  stats = new Map<string, { calls: number; requests: number; errors: number; ms: number; maxMs: number }>();
+  waitMs = 0;
+  peakQueue = 0;
+  constructor(max: number) {
+    this.max = Math.max(1, max);
+  }
+  async run<T>(methods: string[], f: () => Promise<T>): Promise<T> {
+    const q0 = Date.now();
+    if (this.inFlight >= this.max) {
+      this.peakQueue = Math.max(this.peakQueue, this.waiting.length + 1);
+      await new Promise<void>((ok) => this.waiting.push(ok));
+    }
+    this.inFlight++;
+    this.waitMs += Date.now() - q0;
+    const t0 = Date.now();
+    let err = false;
+    try {
+      return await f();
+    } catch (e) {
+      err = true;
+      throw e;
+    } finally {
+      const ms = Date.now() - t0;
+      const key = methods.length === 1 ? methods[0] : `batch(${[...new Set(methods)].sort().join(",")})`;
+      const s = this.stats.get(key) ?? { calls: 0, requests: 0, errors: 0, ms: 0, maxMs: 0 };
+      s.requests++;
+      s.calls += methods.length;
+      if (err) s.errors++;
+      s.ms += ms;
+      s.maxMs = Math.max(s.maxMs, ms);
+      this.stats.set(key, s);
+      this.inFlight--;
+      this.waiting.shift()?.();
+    }
+  }
+  snapshot() {
+    const secs = Math.max(1, (Date.now() - this.since) / 1000);
+    let req = 0, calls = 0, ms = 0;
+    const methods = [...this.stats.entries()].map(([k, v]) => {
+      req += v.requests;
+      calls += v.calls;
+      ms += v.ms;
+      return { method: k, requests: v.requests, calls: v.calls, errors: v.errors, avg_ms: Math.round(v.ms / v.requests), max_ms: v.maxMs, per_min: Math.round((v.requests * 600) / secs) / 10 };
+    }).sort((a, b) => b.requests - a.requests);
+    return {
+      max_in_flight: this.max, in_flight: this.inFlight, queued: this.waiting.length, peak_queue: this.peakQueue, window_s: Math.round(secs),
+      requests: req, calls, requests_per_s: Math.round((req * 100) / secs) / 100, avg_ms: req ? Math.round(ms / req) : null, avg_wait_ms: req ? Math.round(this.waitMs / req) : null, methods,
+    };
+  }
+}
+
 export class JsonRpc {
   url: string;
   timeoutMs: number;
-  constructor(url: string, timeoutMs = 30_000) {
+  gate: RpcGate | null;
+  constructor(url: string, timeoutMs = 30_000, gate: RpcGate | null = null) {
     this.url = url;
     this.timeoutMs = timeoutMs;
+    this.gate = gate;
+  }
+
+  private send(methods: string[], body: unknown): Promise<any> {
+    return this.gate ? this.gate.run(methods, () => post(this.url, body, this.timeoutMs)) : post(this.url, body, this.timeoutMs);
   }
 
   async call<T = any>(method: string, params: unknown): Promise<T> {
-    const r = await post(this.url, { jsonrpc: "2.0", id: ids++, method, params }, this.timeoutMs);
+    const r = await this.send([method], { jsonrpc: "2.0", id: ids++, method, params });
     if (r.error) throw new RpcError(`${method}: ${r.error.message ?? JSON.stringify(r.error)}`);
     return r.result as T;
   }
@@ -46,7 +113,7 @@ export class JsonRpc {
     const base = ids;
     ids += calls.length;
     const body = calls.map(([method, params], i) => ({ jsonrpc: "2.0", id: base + i, method, params }));
-    const r = await post(this.url, body, this.timeoutMs);
+    const r = await this.send(calls.map(([m]) => m), body);
     const byId = new Map<number, any>((Array.isArray(r) ? r : [r]).map((x: any) => [x.id, x]));
     return calls.map((_, i) => {
       const x = byId.get(base + i);
