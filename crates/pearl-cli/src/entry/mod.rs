@@ -57,7 +57,7 @@ use home::{plan_home, RobotSize};
 use net::{AgentEntry, DmQuote, Model, Msg, Net};
 use poll::Source;
 use robot::Robot;
-use theme::{Mode, BG, BLUE, DIM, MUTED, PANEL, PRIMARY, TEXT};
+use theme::{Mode, BG, BLUE, DIM, MUTED, PANEL, PRIMARY, SUBTLE, TEXT};
 
 /// One command for the ctrl+p palette (from the clap definitions in lib.rs).
 #[derive(Debug, Clone)]
@@ -579,7 +579,7 @@ impl App {
             return;
         }
         let Some(me) = self.me.clone().filter(|_| self.net.key.is_some()) else {
-            self.note(Kind::Note, "Sending a DM signs a chain transaction: start with `cadre --key <wallet.json>`.");
+            self.note(Kind::Note, "Sending a DM signs a chain transaction: run `cadre wallet use --key <wallet.json>` once.");
             return;
         };
         if self.quoting {
@@ -1525,7 +1525,9 @@ fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
     if room_r <= room_l || room_r - room_l < sw {
         return;
     }
-    let mut x = room_l + (room_r - room_l - sw) / 2;
+    // centered on the screen, under the content; between the two side texts only when they would overlap
+    let centered = w.saturating_sub(sw) / 2;
+    let mut x = if centered >= room_l && centered + sw <= room_r { centered } else { room_l + (room_r - room_l - sw) / 2 };
     for (i, (s, on)) in strip.iter().enumerate() {
         if i > 0 {
             x += 2;
@@ -1535,34 +1537,48 @@ fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
     }
 }
 
+/// `s` cut to `max` columns with a trailing ellipsis.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", keep.trim_end())
+}
+
 fn draw_palette(buf: &mut Buffer, pen: &Pen, app: &App) {
     let a = buf.area;
-    let w = a.width.saturating_sub(4).min(72);
+    // wide enough for the descriptions; rows: title, filter, rule, the list, a bottom pad
+    let w = a.width.saturating_sub(4).min(96);
     let items = app.palette_items();
-    let h = a.height.saturating_sub(4).min(items.len() as u16 + 5).clamp(6.min(a.height), 24);
+    let h = a.height.saturating_sub(4).min(items.len() as u16 + 6).clamp(7.min(a.height), 26);
     let x = (a.width - w) / 2;
     let y = (a.height.saturating_sub(h)) / 3;
     let r = Rect::new(x, y, w, h);
     fill(buf, r, pen.bg(PANEL));
     let right = x + w;
     put(buf, x + 2, y + 1, "Commands", pen.on(TEXT, PANEL).add_modifier(Modifier::BOLD), right);
-    put(buf, right.saturating_sub(5), y + 1, "esc", pen.on(MUTED, PANEL), right);
+    put(buf, right.saturating_sub(5), y + 1, "esc", pen.on(SUBTLE, PANEL), right);
     let p = app.palette.as_ref().unwrap();
+    let sx = put(buf, x + 2, y + 2, "> ", pen.on(BLUE, PANEL), right);
     if p.filter.is_empty() {
-        put(buf, x + 2, y + 2, "Search", pen.on(MUTED, PANEL), right);
+        put(buf, sx, y + 2, "Type to filter views and commands", pen.on(SUBTLE, PANEL), right);
     } else {
-        put(buf, x + 2, y + 2, &p.filter, pen.on(TEXT, PANEL), right);
+        put(buf, sx, y + 2, &p.filter, pen.on(TEXT, PANEL), right);
     }
-    let rows = h.saturating_sub(4) as usize;
+    put(buf, x + 2, y + 3, &"─".repeat(w.saturating_sub(4) as usize), pen.on(DIM, PANEL), right);
+    let rows = h.saturating_sub(5) as usize;
     let sel = p.sel.min(items.len().saturating_sub(1));
     let first = sel.saturating_sub(rows.saturating_sub(1));
+    // name column: the longest name, plus a gap
+    let name_w = items.iter().map(|c| c.name().chars().count()).max().unwrap_or(10).min(20) as u16 + 3;
     for (i, c) in items.iter().enumerate().skip(first).take(rows) {
-        let yy = y + 3 + (i - first) as u16;
+        let yy = y + 4 + (i - first) as u16;
         let on = i == sel;
         if on {
             fill(buf, Rect::new(x + 1, yy, w - 2, 1), pen.bg(PRIMARY));
         }
-        let (fg, fg2, bg) = if on { (BG, BG, PRIMARY) } else { (TEXT, MUTED, PANEL) };
+        let (fg, fg2, bg) = if on { (BG, BG, PRIMARY) } else { (TEXT, SUBTLE, PANEL) };
         let mut st = pen.on(fg, bg);
         if on && pen.mode == Mode::NoColor {
             st = st.add_modifier(Modifier::REVERSED);
@@ -1571,10 +1587,12 @@ fn draw_palette(buf: &mut Buffer, pen: &Pen, app: &App) {
         let about = c.about();
         let about = about.split(['.', ':']).next().unwrap_or("").trim().to_string();
         let about = if let Item::View(v) = c { format!("view {}  {}", v.num(), v.about()) } else { about };
-        put(buf, (x + 2 + 18).max(nx + 2), yy, &about, pen.on(fg2, bg), right.saturating_sub(1));
+        let ax = (x + 2 + name_w).max(nx + 2);
+        let room = right.saturating_sub(2).saturating_sub(ax) as usize;
+        put(buf, ax, yy, &ellipsize(&about, room), pen.on(fg2, bg), right.saturating_sub(1));
     }
     if items.is_empty() {
-        put(buf, x + 2, y + 3, "no command matches", pen.on(MUTED, PANEL), right);
+        put(buf, x + 2, y + 4, "no view or command matches", pen.on(SUBTLE, PANEL), right);
     }
 }
 
@@ -1894,6 +1912,50 @@ mod tests {
 
     /// The whole Home screen renders into a buffer at the reference sizes without panics,
     /// and the wordmark, prompt and hints are where the plan says.
+    /// Owner 2026-10-21: palette "hard to read" and the view strip "should be aligned": the
+    /// strip is centered on the screen (under the content) and descriptions end whole or with
+    /// an ellipsis, never cut at the box edge.
+    #[test]
+    fn view_strip_centered_and_palette_readable() {
+        // widths where the centered strip clears the side texts (narrower: it fits between them)
+        for (w, h) in [(120u16, 40u16), (140, 36)] {
+            let mut app = test_app();
+            app.cwd = "~".into();
+            let b = render(&app, w, h);
+            let fy = home::footer_y(h).unwrap();
+            let row: Vec<char> = rows(&b)[fy as usize].chars().collect();
+            let text: String = row.iter().collect();
+            let at = |pat: &str| text.char_indices().position(|(i, _)| text[i..].starts_with(pat)).unwrap();
+            let last = format!("{} {}", ViewId::ALL.len(), ViewId::ALL[ViewId::ALL.len() - 1].name());
+            let (start, end) = (at("1 home"), at(&last) + last.chars().count());
+            let (l, r) = (start as i32, row.len() as i32 - end as i32);
+            let row = text;
+            assert!((l - r).abs() <= 1, "{w}x{h}: strip not centered, {l} left vs {r} right: {row:?}");
+            app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+            let b = render(&app, w, h);
+            let all = rows(&b);
+            assert!(all.iter().any(|r| r.contains("Type to filter views and commands")), "{w}x{h}");
+            for it in app.palette_items().iter().take(8) {
+                let about = it.about();
+                let about = about.split(['.', ':']).next().unwrap_or("").trim().to_string();
+                let line = all.iter().find(|r| r.contains(&format!(" {} ", it.name()))).unwrap_or_else(|| panic!("{} missing", it.name()));
+                let shown = line[line.find(&it.name()).unwrap() + it.name().len()..].trim_end().trim_end_matches(' ');
+                let shown = shown.trim();
+                // view rows read "view N  <about>"; command rows show the about's first sentence
+                let body = match shown.split_once("  ") {
+                    Some((v, rest)) if v.starts_with("view ") => rest.trim(),
+                    _ => shown,
+                };
+                let full = match it {
+                    Item::View(v) => v.about().to_string(),
+                    _ => it.about().to_string(),
+                };
+                assert!(body.ends_with('…') || body == about || full.starts_with(body), "{w}x{h}: {} -> {shown:?}", it.name());
+            }
+        }
+        assert_eq!(ellipsize("Health of everything", 10), "Health of…");
+    }
+
     #[test]
     fn renders_home_screen_into_a_buffer() {
         for (w, h) in [(120u16, 40u16), (80, 30), (40, 20), (24, 12), (10, 5), (1, 1)] {

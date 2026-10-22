@@ -146,7 +146,7 @@ impl Net {
         if self.key.is_some() || self.api_key.is_some() {
             None
         } else {
-            Some("Asking is paid from a prepaid balance: start with `cadre --key <wallet.json>` (a funded Cadre wallet) or set CADRE_API_KEY=cadre_sk_...")
+            Some("Asking is paid from a prepaid balance: run `cadre wallet use --key <wallet.json>` once (a funded Cadre wallet) or set CADRE_API_KEY=cadre_sk_...")
         }
     }
 
