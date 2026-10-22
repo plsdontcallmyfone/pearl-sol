@@ -25,7 +25,7 @@ export const ACTIONS = ["post", "reply", "react", "follow", "tip", "trade", "mem
 export const OPTIONAL_ACTIONS = ["offer", "launch"] as const;
 export type Action = (typeof ACTIONS)[number] | (typeof OPTIONAL_ACTIONS)[number];
 export const DESKTOPS = ["social", "work"] as const;
-export const SKILLS = ["town", "pumpswap", "bridge", "x402", "memo", "market", "desktop", "trade", "launch"] as const;
+export const SKILLS = ["town", "pumpswap", "bridge", "x402", "memo", "market", "desktop", "trade", "launch", "practice"] as const;
 /** What each action needs before it can run (shown in the UI and in status). */
 export const ACTION_NEEDS: Record<Action, string | null> = {
   post: null, reply: null, react: null, follow: null, tip: null, trade: null, memo: null,
@@ -58,7 +58,30 @@ export interface TradeSpec {
    * or below it (stop loss). Deterministic, checked on every market event before the stance. */
   take_profit_bps?: number;
   stop_loss_bps?: number;
+  /** Optional (2026-10-22): real PumpSwap swaps from the agent's own wallet. The runtime runs the
+   * real-swap engine ONLY when this is true; otherwise a trade section runs as practice trading
+   * (practice.ts). No creation flow sets it: it exists for a later owner decision (docs/SPEC.md 4.8). */
+  real_swaps?: boolean;
 }
+
+/** Practice styles (services/swarm/strategies/src/styles.ts STYLE_IDS; test/practice.test.ts pins them equal). */
+export const PRACTICE_STYLES = ["momentum", "bounce", "calm", "contrarian", "accumulator"] as const;
+export type PracticeStyle = (typeof PRACTICE_STYLES)[number];
+
+/** Practice trading (v2, optional, 2026-10-22; absent in earlier specs so their hashes are
+ * unchanged): pretend SOL at real Solana mainnet prices (read-only), every strategy version, entry,
+ * exit and post-mortem committed on the strategies contract (docs/STRATEGIES.md). No real funds
+ * back the balance and no swap is ever sent. */
+export interface PracticeSpec {
+  style: PracticeStyle;
+  balance_lamports: string; // pretend starting balance, 0.1..1000 SOL
+  max_trade_lamports?: string; // largest pretend position, 0.001 SOL..balance (absent = the style's size rule)
+  strategy: string; // the creator's words for its first version (<= 600 characters)
+  take_profit_bps?: number; // pinned target for every version, 100..20000
+  stop_loss_bps?: number; // pinned stop for every version, 100..5000
+}
+
+export const PRACTICE_DEFAULT_BALANCE = "10000000000"; // 10 pretend SOL (a design choice)
 
 /** The launch skill (v2, opt-in, 2026-10-22): the agent may launch its own pump.fun token on Solana
  * (create_v2 + a dev buy in one tx, built by cadre-api POST /v1/tx/pump-create, signed by the agent
@@ -116,6 +139,10 @@ export interface AgentSpec {
   evolve?: EvolveSpec;
   /** v2, optional (absent in specs signed before 2026-10-22, so their hashes are unchanged). */
   launch?: LaunchSpec | null;
+  /** v2, optional (2026-10-22): practice trading (pretend balance, real prices). */
+  practice?: PracticeSpec | null;
+  /** v2, optional (2026-10-22): the creation template id it started from ([a-z0-9_]{1,32}), for the template track record. */
+  template?: string;
 }
 
 export const isSovereign = (s: AgentSpec) => s.format === SPEC_FORMAT_V2 && s.sovereign === true;
@@ -232,10 +259,11 @@ export function validateSpec(s: any): string[] {
   if (s.model !== null && (typeof s.model !== "string" || s.model.length > 128)) e.push("model is null or text of at most 128 characters");
   if (!Number.isInteger(s.created_ms) || s.created_ms < 0) e.push("created_ms is an integer");
   if (s.format === SPEC_FORMAT) {
-    for (const k of ["sovereign", "trade", "evolve", "launch"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
+    for (const k of ["sovereign", "trade", "evolve", "launch", "practice", "template"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
     if (Array.isArray(s.skills) && s.skills.includes("trade")) e.push(`the trade skill needs format ${SPEC_FORMAT_V2}`);
     if (Array.isArray(s.skills) && s.skills.includes("launch")) e.push(`the launch skill needs format ${SPEC_FORMAT_V2}`);
     if (s.actions?.launch) e.push(`actions.launch needs format ${SPEC_FORMAT_V2}`);
+    if (Array.isArray(s.skills) && s.skills.includes("practice")) e.push(`the practice skill needs format ${SPEC_FORMAT_V2}`);
     return e;
   }
   if (s.sovereign !== true) e.push("sovereign is true in a v2 spec");
@@ -251,6 +279,14 @@ export function validateSpec(s: any): string[] {
     if (!s.actions?.trade) e.push("a trade section needs actions.trade");
     e.push(...validateTrade(s.trade));
   }
+  const hasPractice = Array.isArray(s.skills) && s.skills.includes("practice");
+  if (s.practice === null || s.practice === undefined) {
+    if (hasPractice) e.push("the practice skill needs a practice section");
+  } else {
+    if (!hasPractice) e.push("a practice section needs the practice skill");
+    e.push(...validatePractice(s.practice));
+  }
+  if (s.template !== undefined && (typeof s.template !== "string" || !/^[a-z0-9_]{1,32}$/.test(s.template))) e.push("template is 1..32 of [a-z0-9_]");
   const hasLaunch = Array.isArray(s.skills) && s.skills.includes("launch");
   if (s.launch === null || s.launch === undefined) {
     if (hasLaunch) e.push("the launch skill needs a launch section");
@@ -262,6 +298,25 @@ export function validateSpec(s: any): string[] {
     if (s.launch?.trade_own && !(hasSkill && s.trade)) e.push("launch.trade_own needs the trade skill and a trade section");
     if (DEC.test(s.launch?.max_dev_buy_lamports ?? "") && DEC.test(s.budget?.sol_lamports_per_day ?? "") && BigInt(s.launch.max_dev_buy_lamports) > BigInt(s.budget.sol_lamports_per_day)) e.push("launch.max_dev_buy_lamports is at most budget.sol_lamports_per_day");
   }
+  return e;
+}
+
+export function validatePractice(p: any): string[] {
+  const e: string[] = [];
+  if (!p || typeof p !== "object") return ["practice is an object"];
+  const keys = ["style", "balance_lamports", "max_trade_lamports", "strategy", "take_profit_bps", "stop_loss_bps"];
+  if (Object.keys(p).some((k) => !keys.includes(k))) e.push(`practice has only ${keys.join(", ")}`);
+  if (!(PRACTICE_STYLES as readonly string[]).includes(p.style)) e.push(`practice.style is one of ${PRACTICE_STYLES.join(", ")}`);
+  const bal = DEC.test(p.balance_lamports ?? "") ? BigInt(p.balance_lamports) : -1n;
+  if (bal < 100_000_000n || bal > 1_000_000_000_000n) e.push("practice.balance_lamports is 0.1..1000 pretend SOL (decimal lamports)");
+  if (p.max_trade_lamports !== undefined) {
+    const m = DEC.test(p.max_trade_lamports ?? "") ? BigInt(p.max_trade_lamports) : -1n;
+    if (m < 1_000_000n || (bal > 0n && m > bal)) e.push("practice.max_trade_lamports is 0.001 SOL..balance_lamports");
+  }
+  if (typeof p.strategy !== "string" || p.strategy.length > 600) e.push("practice.strategy is text of at most 600 characters");
+  const int = (k: string, lo: number, hi: number) => { if (p[k] !== undefined && (!Number.isInteger(p[k]) || p[k] < lo || p[k] > hi)) e.push(`practice.${k} is an integer in ${lo}..${hi}`); };
+  int("take_profit_bps", 100, 20_000);
+  int("stop_loss_bps", 100, 5_000);
   return e;
 }
 
@@ -283,7 +338,7 @@ export function validateLaunch(t: any): string[] {
 export function validateTrade(t: any): string[] {
   const e: string[] = [];
   if (!t || typeof t !== "object") return ["trade is an object"];
-  const keys = ["venue", "mints", "max_order_lamports", "max_position_lamports", "daily_loss_stop_lamports", "cooldown_s", "max_orders_per_hour", "slippage_bps", "max_chase_bps", "stance_every_min", "buy_min_conviction", "sell_min_conviction", "strategy", "take_profit_bps", "stop_loss_bps"];
+  const keys = ["venue", "mints", "max_order_lamports", "max_position_lamports", "daily_loss_stop_lamports", "cooldown_s", "max_orders_per_hour", "slippage_bps", "max_chase_bps", "stance_every_min", "buy_min_conviction", "sell_min_conviction", "strategy", "take_profit_bps", "stop_loss_bps", "real_swaps"];
   if (Object.keys(t).some((k) => !keys.includes(k))) e.push(`trade has exactly ${keys.join(", ")}`);
   if (t.venue !== "pumpswap") e.push("trade.venue is pumpswap (trades are on Solana)");
   if (!Array.isArray(t.mints) || t.mints.length < 1 || t.mints.length > 4 || new Set(t.mints).size !== t.mints.length || t.mints.some((m: unknown) => typeof m !== "string" || !B58.test(m) || b58decode(m).length !== 32)) e.push("trade.mints is 1..4 distinct base58 mints");
@@ -303,6 +358,7 @@ export function validateTrade(t: any): string[] {
   if (typeof t.strategy !== "string" || t.strategy.length > 600) e.push("trade.strategy is text of at most 600 characters");
   if (t.take_profit_bps !== undefined) int("take_profit_bps", 50, 100_000);
   if (t.stop_loss_bps !== undefined) int("stop_loss_bps", 50, 9_900);
+  if (t.real_swaps !== undefined && typeof t.real_swaps !== "boolean") e.push("trade.real_swaps is a boolean");
   return e;
 }
 
