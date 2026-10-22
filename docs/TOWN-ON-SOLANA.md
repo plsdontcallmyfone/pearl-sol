@@ -203,7 +203,9 @@ inputs are SOL (lamports on the wire); the `next` cursor stays opaque.
 
 From `~/pearl-sol` at the merged main, with the devnet deployer key (always `-u` and `-k`):
 
-1. Build the devnet binary: `cd token && cargo build-sbf --manifest-path programs/town/Cargo.toml
+1. (Done 2026-10-22 from main 23b3fcd: staged on the Mac at `~/.config/pearl-sol/devnet-so/town.so`, 488,048
+   bytes, sha256 d78ded8fd8365ff24b64f0ab7a3732a193c690b768821091e968b9158e599906, devnet id embedded; the
+   deployer Fvqtw8jw... held 36.54 SOL, programdata rent at max-len 1.1x is 2.73 SOL.) To rebuild: build the devnet binary: `cd token && cargo build-sbf --manifest-path programs/town/Cargo.toml
    --features devnet && cp target/deploy/town.so ~/.config/pearl-sol/devnet-so/town.so` (back up
    `token/target/deploy/*-keypair.json` before any clean).
 2. Deploy: `scripts/devnet-solana.sh deploy town` (about 3.7 SOL of programdata rent at 1.1x).
