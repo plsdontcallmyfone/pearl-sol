@@ -939,6 +939,6 @@ Live, read-only:
   2 files fail as on the base (client, sol: `@solana/web3.js` not installed in this tree).
 - services/swarm 43/43, agents 34/34, desktop 15/15; trading 5/8 with the same 3 files failing as on
   the base (`@solana/web3.js` not installed).
-- crates/pearl-cli lib 114/114.
+- crates/cadre-cli (was pearl-cli) lib 116/116 after the merge with main.
 - Real validator end to end (services/cadre-api/tools/town-sol-e2e.ts, solana-test-validator 3.1.12 on
   the Mac, ports 10745/10747 + 11760-11790, stopped after): 19/19 PASS, three runs in a row.
