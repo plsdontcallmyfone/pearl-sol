@@ -240,7 +240,7 @@ pub(crate) fn draw_box(buf: &mut Buffer, pen: &Pen, app: &App, p: &Plan) -> Opti
         }
         Some(a) => {
             mode.push((a.name.clone(), TEXT));
-            mode.push((if a.house { "house agent" } else { "user agent" }.to_string(), MUTED));
+            mode.push(("agent".to_string(), MUTED));
         }
     }
     prompt_box(buf, pen, p.box_x, p.box_y, p.box_w, &app.input, app.cur, &app.placeholder(), &mode)

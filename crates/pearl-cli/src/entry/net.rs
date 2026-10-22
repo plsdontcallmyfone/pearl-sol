@@ -116,6 +116,41 @@ fn agent(t: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout(t).user_agent(concat!("cadre-cli/", env!("CARGO_PKG_VERSION"))).build()
 }
 
+/// The GitHub org whose members are Cadre's agents (owner 2026-10-22: the agents list is only
+/// the agents in our org). CADRE_GITHUB_ORG overrides; empty turns the filter off.
+pub fn github_org() -> String {
+    std::env::var("CADRE_GITHUB_ORG").unwrap_or_else(|_| "cadredotag".into())
+}
+
+/// Public members of the org (GitHub logins, exact casing), cached 6 h in ~/.cadre/org-members.json;
+/// a stale cache is used when GitHub cannot be reached. Empty when unknown.
+pub fn org_members() -> Vec<String> {
+    let org = github_org();
+    if org.is_empty() {
+        return vec![];
+    }
+    let path = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cadre/org-members.json"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let cached: Option<Value> = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).filter(|v: &Value| v["org"] == org.as_str());
+    let logins = |v: &Value| -> Vec<String> { v["logins"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(String::from)).collect() };
+    if let Some(c) = &cached {
+        if now.saturating_sub(c["at"].as_u64().unwrap_or(0)) < 6 * 3600 {
+            return logins(c);
+        }
+    }
+    match get(&format!("https://api.github.com/orgs/{org}/members?per_page=100")) {
+        Ok(v) => {
+            let l: Vec<String> = v.as_array().into_iter().flatten().filter_map(|m| m["login"].as_str().map(String::from)).collect();
+            if let Some(p) = &path {
+                let _ = std::fs::create_dir_all(p.parent().unwrap());
+                let _ = std::fs::write(p, serde_json::to_vec(&json!({"org": org, "at": now, "logins": l})).unwrap_or_default());
+            }
+            l
+        }
+        Err(_) => cached.as_ref().map(logins).unwrap_or_default(),
+    }
+}
+
 /// GET returning JSON on a 2xx, else the API's own error message.
 pub fn get(url: &str) -> Result<Value> {
     match agent(Duration::from_secs(20)).get(url).call() {
@@ -274,7 +309,7 @@ impl Net {
         Some(f.join("\n"))
     }
 
-    /// House and user agents with a town profile, house first, then by handle.
+    /// The agents in our GitHub org with a town profile, by handle (named as on GitHub).
     pub fn agents(&self) -> Result<Vec<AgentEntry>> {
         let api = self.api.as_ref().ok_or_else(|| anyhow!("no cadre-api on this network"))?;
         let v = get(&format!("{api}/profiles?sort=recent&limit=200"))?;
@@ -294,7 +329,20 @@ impl Net {
                 gh: github_of(&p["links"]),
             })
             .collect();
-        out.sort_by(|a, b| b.house.cmp(&a.house).then(a.handle.cmp(&b.handle)));
+        // only the agents in our GitHub org, named as on GitHub; without the member list, the house ones
+        let members = org_members();
+        if members.is_empty() {
+            out.retain(|a| a.house);
+        } else {
+            out.retain_mut(|a| match members.iter().find(|m| m.eq_ignore_ascii_case(&a.handle)) {
+                Some(m) => {
+                    a.gh = Some(m.clone());
+                    true
+                }
+                None => false,
+            });
+        }
+        out.sort_by(|a, b| a.handle.cmp(&b.handle));
         Ok(out)
     }
 
@@ -310,7 +358,7 @@ impl Net {
         let p = p?;
         let mut l = vec![];
         let name = p["name"].as_str().unwrap_or(&a.name);
-        let kind = if p["house"] == true { "house agent" } else { "user agent" };
+        let kind = "agent";
         l.push((format!("{name}  {}  {kind}", a.at()), 0));
         if let Some(b) = p["bio"].as_str().filter(|b| !b.is_empty()) {
             l.push((b.to_string(), 1));

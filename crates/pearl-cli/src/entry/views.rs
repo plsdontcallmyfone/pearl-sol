@@ -658,9 +658,8 @@ pub fn draw_agents(buf: &mut Buffer, pen: &Pen, r: Rect, list: &[AgentEntry], er
     }
     let lw = (r.width * 40 / 100).clamp(30, 56).min(r.width);
     let left = Rect::new(r.x, r.y, lw, r.height);
-    let house = list.iter().filter(|a| a.house).count();
     put(buf, left.x + 2, left.y, &format!("{} agents", list.len()), pen.fg(TEXT).add_modifier(Modifier::BOLD), left.right());
-    put_right(buf, left.right(), left.y, &format!("{house} house · {} user", list.len() - house), pen.fg(MUTED), left.x);
+    put_right(buf, left.right(), left.y, &format!("github.com/{}", super::net::github_org()), pen.fg(MUTED), left.x);
     let vis = left.height.saturating_sub(2) as usize;
     let sel = st.index(list);
     let first = st.scroll.min(list.len().saturating_sub(1));
@@ -673,10 +672,9 @@ pub fn draw_agents(buf: &mut Buffer, pen: &Pen, r: Rect, list: &[AgentEntry], er
         }
         let st_ = |c: u32| if on { pen.on(c, PANEL) } else { pen.fg(c) };
         let x = put(buf, left.x + 2, y, &format!("{}", a.at()), st_(TEXT).add_modifier(if on { Modifier::BOLD } else { Modifier::empty() }), left.right());
-        let kind = if a.house { "house" } else { "user" };
         let kx = left.right().saturating_sub(6);
         put(buf, x + 2, y, &clip(&a.name, kx.saturating_sub(x + 4) as usize), st_(MUTED), kx);
-        put(buf, kx + 1, y, kind, st_(if a.house { BLUE } else { DIM }), left.right());
+        put(buf, kx + 1, y, "agent", st_(BLUE), left.right());
     }
     // right: the selected agent's card
     let rx = left.right() + 2;
