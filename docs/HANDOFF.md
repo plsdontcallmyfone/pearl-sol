@@ -938,11 +938,17 @@ CLAUDE.md "Who is working on what".
    - Found and fixed: torch's CPU float64 sqrt (SLEEF) is not correctly rounded (1 ulp in 5 of 1024 rows);
      CPU sqrt now from numpy, and the spec requires correct rounding. gemm_bt slice bug for n < threads.
    - GPU: one A40, 15:49-16:55 UTC, $0.66, terminated (API: no pods).
-   - NOT DONE / NEXT: (1) roll out the new worker + gateway + evaluator on the test box and devnet box 0. Their
-     running workers still use the fp32 glue, so their tickets get the GEMM-only check. A restart changes
-     answers slightly (new glue), so announce a window in CLAUDE.md first; this row did no restarts.
-     (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
-     data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
+   - LIVE ON DEVNET (round 2, owner 2026-10-21 "turn it on"): box 0 deployed by the orchestrator 18:34-18:40 UTC
+     from main 154a819 (cadre-gateway 41a51d8f..., pearl-attester fd5fc6d6..., worker restarted on the final
+     rules; cadre-node restarted to reclaim 6 GB). First live paid ticket ecb7a659f7e4f1f0143b79068906fcd01df4c5eaa41ae6339943d4f8e20149e0
+     (Order 36, "Paris", 48 rows): response blob carries the bundle, the box 0 attester replayed 144 segments in
+     17.8 s (GEMM 8.8 s) and signed, CompleteJob a6be89db..., status completed. Settled on Solana by proof: cadre-settle "finalized order 36 by proof against final header 4560", tx 4YkF9ABPWpdxRwzXUCYF3Rm8x5k64YR7YHpkgV1cwBzQ3A5qBV8Uq4ZnurbGpckGZrvGR9UYV6muLSFLACBVtPS9 (2026-10-21).
+     Mining of its 144 segments is slow: 11 mined by 19:20 UTC, still 11 at 02:40 UTC (the script's 8 h wait ran out); the miners on all three boxes were mining other tickets' 1004-row segments (chain at ~1 block/min, one segment per block), so this is segment-queue throughput, not the replay (open question for the mining / 8B rows: job selection order across tickets).
+     House swarm: pending first thought after 00:00 UTC on the new stack (it hit its own SWARM_ROWS_PER_DAY
+     16384 budget at 17:30 UTC, before the rollout; D1 unchanged; the orchestrator checks the post-reset
+     thought). Its ticket open across the rollout mixes old requests, so it gets the GEMM check only.
+   - NOT DONE / NEXT: (1) the test box demo stack (down since the 16:26 UTC reboot) runs cadre-glue-v1 when it is
+     next started. (2) Tickets opened before 18:35 UTC close with the GEMM check only; every later ticket is replayed. (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
      GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
 
 27. SERVE THE 8B: UPLOAD ORDER, TICKET BLOCK BUDGET, JOB CHECK AT MINING (owner-approved 2026-10-21, "serve the
