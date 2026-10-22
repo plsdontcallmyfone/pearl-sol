@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::{cursor, execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
@@ -511,6 +511,37 @@ impl App {
     }
 
     /// Text goes to an input in this view (so digits and letters are not view keys).
+    /// Number keys switch views unless they would be typed: on Home and Lookup only while the
+    /// prompt is empty (owner 2026-10-22: pressing 1, 2, 3 on Home did nothing).
+    fn digits_switch(&self) -> bool {
+        match self.view {
+            ViewId::Home => self.input.is_empty(),
+            ViewId::Lookup => self.lookup_input.is_empty(),
+            _ => !self.typing(),
+        }
+    }
+
+    /// A click on the view strip opens that view; the wheel scrolls like up/down.
+    fn mouse(&mut self, m: MouseEvent, w: u16, h: u16) {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.palette.is_some() {
+                    return;
+                }
+                if let (_, Some(fy)) = frame_rows(h) {
+                    if m.row == fy {
+                        if let Some(v) = strip_cells(self, w).into_iter().find(|(a, b, _)| m.column >= *a && m.column < *b).map(|c| c.2) {
+                            self.go(v);
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => self.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            MouseEventKind::ScrollDown => self.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            _ => {}
+        }
+    }
+
     fn typing(&self) -> bool {
         match self.view {
             ViewId::Home | ViewId::Lookup => true,
@@ -975,9 +1006,9 @@ impl App {
         let num = match k.code {
             KeyCode::F(n) if (1..=10).contains(&n) => Some(n as usize),
             KeyCode::Char('0') if ctrl || alt => Some(10),
-            KeyCode::Char('0') if !self.typing() && k.modifiers.is_empty() => Some(10),
+            KeyCode::Char('0') if self.digits_switch() && k.modifiers.is_empty() => Some(10),
             KeyCode::Char(c @ '1'..='9') if ctrl || alt => Some(c as usize - '0' as usize),
-            KeyCode::Char(c @ '1'..='9') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
+            KeyCode::Char(c @ '1'..='9') if self.digits_switch() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
             _ => None,
         };
         if let Some(v) = num.and_then(ViewId::from_num) {
@@ -1663,29 +1694,46 @@ fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
 }
 
 /// The bottom bar: directory and branch, the views (current one bright), network and version.
-fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
+/// The footer's side texts: (cwd shown, its end column, network/version text, its start column).
+fn footer_sides(app: &App, w: u16) -> (String, u16, String, u16) {
     let right_s = format!("{} · {}", app.network, env!("CARGO_PKG_VERSION"));
-    let rw = str_w(&right_s);
-    let rx = w.saturating_sub(2 + rw);
-    let cx = put(buf, 2, y, &clip(&app.cwd, rx.saturating_sub(4) as usize / 2), pen.fg(MUTED), rx.saturating_sub(2));
-    put(buf, rx, y, &right_s, pen.fg(MUTED), w);
-    // the view strip, centered between the two when it fits
-    let strip: Vec<(String, bool)> = ViewId::ALL.iter().map(|v| (v.name().to_string(), *v == app.view)).collect();
-    let sw: u16 = strip.iter().map(|(s, _)| str_w(s) + 2).sum::<u16>() + 2 * (strip.len() as u16 - 1);
+    let rx = w.saturating_sub(2 + str_w(&right_s));
+    let cwd = clip(&app.cwd, rx.saturating_sub(4) as usize / 2);
+    let cx = 2 + str_w(&cwd);
+    (cwd, cx, right_s, rx)
+}
+
+/// Where each view sits in the footer strip: (from column, to column, view). Empty when the
+/// strip does not fit. Shared by drawing and by mouse clicks.
+fn strip_cells(app: &App, w: u16) -> Vec<(u16, u16, ViewId)> {
+    let (_, cx, _, rx) = footer_sides(app, w);
+    let label = |i: usize, v: &ViewId| str_w(&format!("{} {}", (i + 1) % 10, v.name()));
+    let sw: u16 = ViewId::ALL.iter().enumerate().map(|(i, v)| label(i, v)).sum::<u16>() + 2 * (ViewId::ALL.len() as u16 - 1);
     let room_l = cx + 3;
     let room_r = rx.saturating_sub(3);
     if room_r <= room_l || room_r - room_l < sw {
-        return;
+        return vec![];
     }
     // centered on the screen, under the content; between the two side texts only when they would overlap
     let centered = w.saturating_sub(sw) / 2;
     let mut x = if centered >= room_l && centered + sw <= room_r { centered } else { room_l + (room_r - room_l - sw) / 2 };
-    for (i, (s, on)) in strip.iter().enumerate() {
-        if i > 0 {
-            x += 2;
-        }
-        x = put(buf, x, y, &((i + 1) % 10).to_string(), pen.fg(if *on { BLUE } else { DIM }), w);
-        x = put(buf, x + 1, y, s, if *on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
+    let mut out = vec![];
+    for (i, v) in ViewId::ALL.iter().enumerate() {
+        let lw = label(i, v);
+        out.push((x, x + lw, *v));
+        x += lw + 2;
+    }
+    out
+}
+
+fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
+    let (cwd, _, right_s, rx) = footer_sides(app, w);
+    put(buf, 2, y, &cwd, pen.fg(MUTED), rx.saturating_sub(2));
+    put(buf, rx, y, &right_s, pen.fg(MUTED), w);
+    for (i, (x, _, v)) in strip_cells(app, w).into_iter().enumerate() {
+        let on = v == app.view;
+        let nx = put(buf, x, y, &((i + 1) % 10).to_string(), pen.fg(if on { BLUE } else { DIM }), w);
+        put(buf, nx + 1, y, v.name(), if on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
     }
 }
 
@@ -1900,12 +1948,12 @@ pub fn dashboard_buffer(sn: &Snapshot, network: &str, w: u16, h: u16, tab: dash:
 
 fn restore() {
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste, terminal::LeaveAlternateScreen, cursor::SetCursorStyle::DefaultUserShape, cursor::Show);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, terminal::LeaveAlternateScreen, cursor::SetCursorStyle::DefaultUserShape, cursor::Show);
 }
 
 fn enter() -> Result<()> {
     terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), terminal::EnterAlternateScreen, EnableBracketedPaste, cursor::SetCursorStyle::SteadyBlock)?;
+    execute!(std::io::stdout(), terminal::EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture, cursor::SetCursorStyle::SteadyBlock)?;
     Ok(())
 }
 
@@ -1960,6 +2008,10 @@ pub fn run(l: Launch) -> Result<i32> {
                 match event::read()? {
                     Event::Key(k) => app.key(k),
                     Event::Paste(s) => app.paste(&s),
+                    Event::Mouse(m) => {
+                        let (w, h) = terminal::size().unwrap_or((80, 24));
+                        app.mouse(m, w, h);
+                    }
                     Event::Resize(..) => {}
                     _ => {}
                 }
@@ -2296,6 +2348,31 @@ mod tests {
         assert_eq!(a.transcript.len(), 3, "a /command does not add to the conversation");
     }
 
+    /// Owner 2026-10-22: "click 1 or 2 or 3 and it doesn't change". On Home a number key opens
+    /// that view while the prompt is empty and is typed once something is written; a click on
+    /// the footer strip opens the view under it.
+    #[test]
+    fn number_keys_and_clicks_switch_views() {
+        let k = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut a = test_app();
+        a.key(k('2'));
+        assert_eq!(a.view, ViewId::Dashboard);
+        a.go(ViewId::Home);
+        a.key(k('h'));
+        a.key(k('3'));
+        assert_eq!(a.view, ViewId::Home, "a digit after text is typed");
+        assert_eq!(a.input.iter().collect::<String>(), "h3");
+        a.input.clear();
+        let (w, h) = (150u16, 58u16);
+        let fy = frame_rows(h).1.unwrap();
+        for (x0, x1, v) in strip_cells(&a, w) {
+            a.go(ViewId::Home);
+            a.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: (x0 + x1) / 2, row: fy, modifiers: KeyModifiers::NONE }, w, h);
+            assert_eq!(a.view, v, "click at {x0}..{x1}");
+        }
+        assert_eq!(strip_cells(&a, w).len(), ViewId::ALL.len());
+    }
+
     #[test]
     fn keys_tab_palette_and_quit() {
         let k = |c: KeyCode, m: KeyModifiers| KeyEvent::new(c, m);
@@ -2305,9 +2382,11 @@ mod tests {
         assert_eq!(a.label(), "@tide");
         a.key(k(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(a.label(), "Ask");
-        // digits type on Home; they switch views elsewhere
+        // on Home a digit is typed once the prompt has text (with it empty, it switches views)
+        a.key(k(KeyCode::Char('a'), KeyModifiers::NONE));
         a.key(k(KeyCode::Char('2'), KeyModifiers::NONE));
-        assert_eq!((a.view, a.input.iter().collect::<String>()), (ViewId::Home, "2".to_string()));
+        assert_eq!((a.view, a.input.iter().collect::<String>()), (ViewId::Home, "a2".to_string()));
+        a.key(k(KeyCode::Backspace, KeyModifiers::NONE));
         a.key(k(KeyCode::Backspace, KeyModifiers::NONE));
         a.key(k(KeyCode::Char('3'), KeyModifiers::ALT));
         assert_eq!(a.view, ViewId::Agents);
