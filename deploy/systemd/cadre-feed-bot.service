@@ -1,0 +1,18 @@
+[Unit]
+Description=Cadre feed bot (services/feed-bot, decision D9): DRY RUN unless /etc/lode/feed-bot.env switches it on
+After=cadre-api.service network-online.target
+
+[Service]
+User=lode
+# Dry run by default: it prints what it would post and sends nothing. To go live the owner approves the
+# account, then puts FEED_LIVE=1, FEED_TARGETS=telegram (or x) and FEED_TELEGRAM_TOKEN_FILE /
+# FEED_TELEGRAM_CHAT / FEED_X_TOKEN_FILE (0600 files) in /etc/lode/feed-bot.env, and restarts this unit.
+Environment=FEED_API=http://127.0.0.1:10685 FEED_STATE=/var/lib/lode/feed-bot/state.json FEED_OUTBOX=/var/lib/lode/feed-bot/outbox.jsonl FEED_POLL_S=60 FEED_MAX_PER_HOUR=10 FEED_LIVE=0
+EnvironmentFile=-/etc/lode/feed-bot.env
+WorkingDirectory=/home/lode/pearl-sol/services/feed-bot
+ExecStart=/home/lode/.local/node/bin/node src/main.ts
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -23,7 +23,7 @@ export interface FeedEvent {
   amount: string | null;
   unit: string | null;
   house: boolean;
-  ref: { chain: "cadre" | "solana" | "market"; id: string };
+  ref: { chain: "cadre" | "solana" | "market"; id: string; block?: number };
 }
 
 export interface FeedCfg { bigTrade: bigint; bigBuyback: bigint; milestoneBlocks: number; milestonePaidBlocks: number }
@@ -130,10 +130,10 @@ export async function buildEvents(s: Snap, cfg: FeedCfg, cadreMint: string | nul
   let paid = 0;
   for (const h of [...ix.blocks.keys()].sort((x, y) => x - y)) {
     const b = ix.blocks.get(h)!;
-    if (h % cfg.milestoneBlocks === 0) out.push({ id: `milestone:block:${h}`, type: "milestone", at: b.time, height: h, title: `Cadre reached block ${h.toLocaleString("en-US")}`, account: null, amount: String(h), unit: "blocks", house: false, ref: { chain: "cadre", id: b.hash } });
+    if (h % cfg.milestoneBlocks === 0) out.push({ id: `milestone:block:${h}`, type: "milestone", at: b.time, height: h, title: `Cadre reached block ${h.toLocaleString("en-US")}`, account: null, amount: String(h), unit: "blocks", house: false, ref: { chain: "cadre", id: b.hash, block: h } });
     if (b.jobId) {
       paid++;
-      if (paid % cfg.milestonePaidBlocks === 0) out.push({ id: `milestone:paid:${paid}`, type: "milestone", at: b.time, height: h, title: `${paid.toLocaleString("en-US")} blocks mined on paid AI jobs`, account: null, amount: String(paid), unit: "paid blocks", house: false, ref: { chain: "cadre", id: b.hash } });
+      if (paid % cfg.milestonePaidBlocks === 0) out.push({ id: `milestone:paid:${paid}`, type: "milestone", at: b.time, height: h, title: `${paid.toLocaleString("en-US")} blocks mined on paid AI jobs`, account: null, amount: String(paid), unit: "paid blocks", house: false, ref: { chain: "cadre", id: b.hash, block: h } });
     }
   }
 

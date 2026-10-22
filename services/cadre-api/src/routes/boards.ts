@@ -231,7 +231,7 @@ export function registerBoards(api: Api, d: Deps) {
     evCache = { at: Date.now(), key, v };
     return v;
   }
-  const evOut = (e: FeedEvent) => ({ ...e, links: e.ref.chain === "solana" ? L.sol(e.ref.id) : e.ref.chain === "market" ? { api: `/v1/market/hires/${e.ref.id}` } : L.chain(e.ref.id) });
+  const evOut = (e: FeedEvent) => ({ ...e, links: e.ref.chain === "solana" ? L.sol(e.ref.id) : e.ref.chain === "market" ? { api: `/v1/market/hires/${e.ref.id}` } : e.ref.block ? L.block(e.ref.block) : L.chain(e.ref.id) });
   function pick(q: URLSearchParams, all: FeedEvent[]) {
     const types = (q.get("types") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
     for (const t of types) if (!(EVENT_TYPES as readonly string[]).includes(t)) throw badRequest(`types are among ${EVENT_TYPES.join(", ")}`);
