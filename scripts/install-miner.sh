@@ -18,8 +18,8 @@
 #   --no-linger      do not enable lingering (CADRE_NO_LINGER=1); by default the service keeps
 #                    running after logout when `sudo -n` works (root or passwordless sudo),
 #                    otherwise the command is printed
-#   --cli            also build the Cadre CLI (CADRE_CLI=1): bin/cadre (and bin/pearl, the same
-#                    program), `cadre` = health of every component, `cadre --help` for the rest
+#   --cli            also build the Cadre CLI (CADRE_CLI=1): bin/cadre
+#                    (`cadre` = health of every component, `cadre --help` for the rest)
 #   --dry-run        show every step and command, change nothing (CADRE_DRY_RUN=1)
 #   -h, --help
 # Source (one of):
@@ -272,16 +272,16 @@ build_miner() {
   "$BIN/pearl-miner" --help >/dev/null || die "the built binary does not run" "remove $TARGET and run again"
 }
 
-# The CLI is its own Cargo workspace (crates/pearl-cli, Rust $TOOLCHAIN, its own Cargo.lock).
+# The CLI is its own Cargo workspace (crates/cadre-cli, Rust $TOOLCHAIN, its own Cargo.lock).
 build_cli() {
   local bt0; bt0=$(date +%s)
-  info "cargo +$TOOLCHAIN build --release --bins in crates/pearl-cli (target dir $TARGET/cli)"
-  if [[ $DRY == 1 ]]; then run "install $TARGET/cli/release/cadre and pearl to $BIN"; return; fi
-  (cd "$SRC/crates/pearl-cli" && CARGO_TARGET_DIR="$TARGET/cli" cargo +"$TOOLCHAIN" build --release --locked -q --bins) \
+  info "cargo +$TOOLCHAIN build --release --bins in crates/cadre-cli (target dir $TARGET/cli)"
+  if [[ $DRY == 1 ]]; then run "install $TARGET/cli/release/cadre to $BIN"; return; fi
+  (cd "$SRC/crates/cadre-cli" && CARGO_TARGET_DIR="$TARGET/cli" cargo +"$TOOLCHAIN" build --release --locked -q --bins) \
     || die "the CLI build failed (errors above)" "the miner is installed; retry with --cli later, or set CARGO_BUILD_JOBS=1 on a small box"
   mkdir -p "$BIN"
   local b
-  for b in cadre pearl; do
+  for b in cadre; do
     cp "$TARGET/cli/release/$b" "$BIN/.$b.new" && chmod 755 "$BIN/.$b.new" && mv -f "$BIN/.$b.new" "$BIN/$b"
   done
   ok "built in $(( $(date +%s) - bt0 )) s: $BIN/cadre (try: $BIN/cadre, $BIN/cadre ping api)"

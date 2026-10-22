@@ -15,10 +15,10 @@ step() { echo "[$(( $(date +%s) - t0 )) s] $*"; }
 if [[ $what == all || $what == rust ]]; then
   step "agent-node"; (cd "$ROOT/chain" && cargo build --release -q -p agent-node)
   step "pearl-job, pearl-miner, pearl-attester"; (cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester)
-  step "pearl (CLI)"; (cd "$ROOT/crates/pearl-cli" && cargo build --release -q)
+  step "cadre (CLI)"; (cd "$ROOT/crates/cadre-cli" && cargo build --release -q)
   step "header-relay (devnet ids)"; (cd "$ROOT/services/header-relay" && cargo build --release -q --features devnet)
   install -m 755 "$ROOT/chain/target/release/agent-node" "$ROOT/crates/target/release/pearl-miner" "$ROOT/crates/target/release/pearl-attester" \
-    "$ROOT/crates/target/release/pearl-job" "$ROOT/services/header-relay/target/release/header-relay" "$ROOT/crates/pearl-cli/target/release/pearl" /opt/lode/bin/
+    "$ROOT/crates/target/release/pearl-job" "$ROOT/services/header-relay/target/release/header-relay" "$ROOT/crates/cadre-cli/target/release/cadre" /opt/lode/bin/
 fi
 if [[ $what == all || $what == sbf ]]; then
   # localnet build first (IDLs + the localnet .so the tests use), with the committed localnet program keypairs
