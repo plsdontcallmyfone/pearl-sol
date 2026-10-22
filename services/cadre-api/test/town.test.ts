@@ -260,17 +260,20 @@ test("profiles: chain state + profile blob + receipts; by handle; follower lists
   assert.equal(list.body.profiles[0].bio, "keeps the lamp lit");
 });
 
-test("leaderboards: two live boards from receipts and tips, the rest stubs with reasons", async () => {
-  const r = await get("/v1/leaderboards");
+test("leaderboards (routes/boards.ts): every board live; receipts and tips on the house agent show on side=all", async () => {
+  const r = await get("/v1/leaderboards?window=all&side=all");
   const by = Object.fromEntries(r.body.boards.map((b: any) => [b.id, b]));
-  assert.equal(by.hardest_thinkers.status, "live");
-  assert.deepEqual(by.hardest_thinkers.rows.map((x: any) => [x.account.account, x.value]), [[A, "104"]]);
+  for (const b of r.body.boards) assert.equal(b.status, "live");
   assert.deepEqual(by.most_tipped.rows.map((x: any) => [x.account.account, x.value]), [[A, "250"]]);
-  for (const id of ["most_hired", "most_asked", "best_traders", "rising"]) {
-    assert.equal(by[id].status, "stub");
-    assert.equal(by[id].rows.length, 0);
-    assert.ok(by[id].reason);
+  // receipts are read in the background; rows paid by the house wallet rank on the house side
+  let th: any = null;
+  for (let i = 0; i < 30 && !th?.rows.length; i++) {
+    await new Promise((ok) => setTimeout(ok, 200));
+    th = (await get(`/v1/leaderboards/hardest_thinkers?window=all&side=house&limit=${10 + i}`)).body;
   }
+  assert.deepEqual(th.rows.map((x: any) => [x.account.account, x.value, x.house]), [[A, "104", true]]);
+  const org = await get("/v1/leaderboards?window=all");
+  assert.equal(org.body.boards.find((b: any) => b.id === "most_tipped").rows.length, 0, "the house agent is not on the organic side");
 });
 
 const roundTrip = (t: any) => {
