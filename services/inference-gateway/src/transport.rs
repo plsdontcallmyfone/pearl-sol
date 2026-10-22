@@ -64,6 +64,10 @@ impl Storefront for HttpStorefront {
     }
 }
 
+/// Marker in the error of a worker that answered 503 (its queue is full): the gateway answers
+/// 503 with Retry-After too instead of a 400.
+pub const WORKER_BUSY: &str = "cadre worker busy";
+
 pub struct HttpWorker {
     pub url: String,
 }
@@ -92,6 +96,7 @@ impl Worker for HttpWorker {
             "stop": opts.stop, "pad": opts.pad, "stream": true});
         let r = match agent(3600).post(&format!("{}/generate", self.url)).send_json(body) {
             Ok(r) => r,
+            Err(ureq::Error::Status(503, r)) => bail!("{WORKER_BUSY}: {}", r.into_string().unwrap_or_default()),
             Err(ureq::Error::Status(_, r)) => bail!("worker /generate: {}", r.into_string().unwrap_or_default()),
             Err(e) => bail!("worker /generate: {e}"),
         };

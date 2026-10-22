@@ -227,7 +227,9 @@ class DetGlue:
             for m in ks:
                 vs = v[:, m.klo:m.khi].contiguous()
                 part = int_mm(vs, m.qw)
-                if cap is not None:
+                if callable(cap):  # batched forward: the sink splits the rows by request
+                    cap(m.index, vs, part)
+                elif cap is not None:
                     cap[m.index][0].append(vs)
                     cap[m.index][1].append(part)
                 c = part.to(torch.int64) if c is None else c + part.to(torch.int64)
@@ -330,6 +332,224 @@ class DetGlue:
         inv = self.inv_rms(h)[:, None]
         gf = self.groups["lm_head"][0]
         return self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap)
+
+    # ------------------------------------------------------------- batched forward (SPEC 4.7 "Batching")
+
+    def attention_kv(self, q, kv, li, T, pos):
+        """attention() over one request's cache: the same integers, all KV heads in one binary64
+        matmul. Every score and every P V partial sum is an exact integer below 2^53, so grouping
+        heads (or requests) into one matmul cannot change a bit (SPEC 4.7)."""
+        r, H, hd = q.shape
+        KV = kv.KV
+        g = H // KV
+        assert T <= T_MAX
+        jpos = torch.arange(T, device=self.dev)
+        mask = jpos[None, :] > pos[:, None]  # r x T, True = not visible
+        Qd = q.double().reshape(r, KV, g, hd).permute(1, 2, 0, 3)          # KV x g x r x hd
+        S = torch.matmul(Qd, kv.K[li][:, None, :, :T]).to(torch.int64)    # KV x g x r x T
+        return self._softmax_pv(S, mask, kv.Vhi[li][:, None, :T, :], kv.Vlo[li][:, None, :T, :]).permute(2, 0, 1, 3).reshape(r, H * hd)
+
+    def _softmax_pv(self, S, mask, vhi, vlo):
+        """Integer softmax weights and P V of attention(), for any leading batch shape."""
+        mx = S.masked_fill(mask, torch.iinfo(torch.int64).min).amax(-1, keepdim=True)
+        x = torch.clamp(mx - S, min=0, max=X_MAX)
+        t = torch.bitwise_right_shift(x * self.L, 24)
+        P = torch.bitwise_right_shift(self.exp2neg(t), 30 - P_FRAC)
+        P = P.masked_fill(mask, 0)
+        D = P.sum(-1, keepdim=True)
+        Pd = P.double()
+        num = torch.matmul(Pd, vhi).to(torch.int64) * 4096 + torch.matmul(Pd, vlo).to(torch.int64)
+        return torch.div(2 * num + D, 2 * D, rounding_mode="floor")
+
+    def attention_decode(self, q, K, Vhi, Vlo, pos):
+        """One decode row for each of B requests at once: q B x H x hd (Q12), K B x KV x hd x T,
+        Vhi / Vlo B x KV x T x hd (each request's cache, zero past its own length, which the mask
+        hides: masked weights are exactly 0, so the padding adds exact zeros), pos B positions."""
+        B, H, hd = q.shape
+        KV, T = K.shape[1], K.shape[3]
+        g = H // KV
+        assert T <= T_MAX
+        jpos = torch.arange(T, device=self.dev)
+        mask = (jpos[None, :] > pos[:, None])[:, None, None, None, :]     # B x 1 x 1 x 1 x T
+        Qd = q.double().reshape(B, KV, g, 1, hd)
+        S = torch.matmul(Qd, K[:, :, None]).to(torch.int64)                # B x KV x g x 1 x T
+        o = self._softmax_pv(S, mask, Vhi[:, :, None], Vlo[:, :, None])    # B x KV x g x 1 x hd
+        return o.reshape(B, H * hd)
+
+    def rope_rows(self, pos_list):
+        """cos / sin rows (binary64, Q30 / 2^30) for arbitrary positions, from a device copy of
+        the integer table (the same values RopeTable.get returns)."""
+        need = max(pos_list) + 1
+        have = 0 if getattr(self, "_rope_c", None) is None else self._rope_c.shape[0]
+        if need > have:
+            n = max(need, 2 * have, 256)
+            c, s_ = self.rope_tab.get(0, n, self.dev)
+            self._rope_c, self._rope_s = c, s_
+        idx = torch.tensor(pos_list, device=self.dev)
+        return self._rope_c.index_select(0, idx), self._rope_s.index_select(0, idx)
+
+    def forward_multi(self, parts, cap=None):
+        """One forward over several requests at once (continuous batching). parts: list of
+        (ids, kv): new token ids and the request's KV cache (KVCache or a KVPool slot, extended in
+        place). cap(matrix_index, A, C) sees every matrix's A and C over ALL rows of the step,
+        stacked in parts order (the caller splits them by request). Every per-row step
+        (embedding, RMS, quantization, the int32 GEMMs, scales, RoPE, SiLU, residuals) runs on
+        all rows stacked; attention reads each request's own cache: decode rows (one new token)
+        of pooled requests in one batched attention, other parts one request at a time. Returns
+        the last logits row of every part, stacked (binary64), each bit-identical to forward()
+        of that request alone."""
+        m = self.m
+        dev = self.dev
+        spans, lo = [], 0
+        for ids, _ in parts:
+            spans.append((lo, lo + len(ids)))
+            lo += len(ids)
+        r = lo
+        starts = [kv.t for _, kv in parts]
+        pos_list = [s + i for s, (ids, _) in zip(starts, parts) for i in range(len(ids))]
+        pos = torch.tensor(pos_list, device=dev)
+        rc, rs = self.rope_rows(pos_list)
+        all_ids = [x for ids, _ in parts for x in ids]
+        # decode rows of requests in one pool: one write and one batched attention per layer
+        pool = None
+        dec = [i for i, (ids, kv) in enumerate(parts) if len(ids) == 1 and isinstance(kv, KVSlot)]
+        if len(dec) >= 2 and all(parts[i][1].pool is parts[dec[0]][1].pool for i in dec):
+            pool = parts[dec[0]][1].pool
+        else:
+            dec = []
+        dec_set = set(dec)
+        if dec:
+            d_rows = torch.tensor([spans[i][0] for i in dec], device=dev)
+            d_slots = torch.tensor([parts[i][1].slot for i in dec], device=dev)
+            d_pos = torch.tensor([starts[i] for i in dec], device=dev)
+            d_T = max(starts[i] for i in dec) + 1
+        h = self.rne_clamp(m.embed[torch.tensor(all_ids, device=dev)].double() * 2.0 ** H_FRAC, H_MAX)
+        H, KV, hd = m.H, m.KV, m.hd
+        p16 = 2.0 ** -H_FRAC
+        for li in range(m.L):
+            inv = self.inv_rms(h)[:, None]
+            g = self.groups[f"layers.{li}.qkv"][0]
+            qkv = self.lin(f"layers.{li}.qkv", (h.double() * g) + 0.0, inv * p16, cap)
+            q = self.rope(qkv[:, : H * hd].reshape(r, H, hd), rc, rs)
+            k = self.rope(qkv[:, H * hd: (H + KV) * hd].reshape(r, KV, hd), rc, rs)
+            v = self.rne_clamp(qkv[:, (H + KV) * hd:].reshape(r, KV, hd) * 2.0 ** V_FRAC, V_MAX)
+            o = torch.empty(r, H * hd, dtype=torch.int64, device=dev)
+            if dec:
+                pool.write_rows(li, d_slots, d_pos, k.index_select(0, d_rows), v.index_select(0, d_rows))
+                Kb, Vh, Vl = pool.gather(li, d_slots, d_T)
+                o.index_copy_(0, d_rows, self.attention_decode(q.index_select(0, d_rows), Kb, Vh, Vl, d_pos))
+            for i, ((_, kv), (a, b), s) in enumerate(zip(parts, spans, starts)):
+                if i in dec_set:
+                    continue
+                kv.write(li, s, k[a:b], v[a:b])
+                o[a:b] = self.attention_kv(q[a:b], kv, li, s + (b - a), pos[a:b])
+            go = self.groups[f"layers.{li}.o"][0]
+            h = self.add_res(h, self.lin(f"layers.{li}.o", (o.double() * go) + 0.0, p16, cap))
+            inv = self.inv_rms(h)[:, None]
+            gm = self.groups[f"layers.{li}.gate"][0]
+            x = (h.double() * gm) + 0.0
+            gte = self.lin(f"layers.{li}.gate", x, inv * p16, cap)
+            up = self.lin(f"layers.{li}.up", x, inv * p16, cap)
+            gd = self.groups[f"layers.{li}.down"][0]
+            h = self.add_res(h, self.lin(f"layers.{li}.down", ((self.silu(gte) * up) * gd) + 0.0, 1.0, cap))
+        for (ids, kv), s in zip(parts, starts):
+            kv.t = s + len(ids)
+        inv = self.inv_rms(h)[:, None]
+        gf = self.groups["lm_head"][0]
+        logits = self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap)
+        return logits.index_select(0, torch.tensor([b - 1 for _, b in spans], device=dev))
+
+
+def _kv_tensors(L, KV, hd, lead, cap_t, dev):
+    """Zero-filled (finite) K / Vhi / Vlo per layer; zero past a request's length matters: the
+    batched decode reads up to the longest request and the mask zeroes those weights, and
+    0 x 0 adds an exact 0 (uninitialized memory could hold NaN, and 0 x NaN is NaN)."""
+    f = dict(dtype=torch.float64, device=dev)
+    return ([torch.zeros(*lead, KV, hd, cap_t, **f) for _ in range(L)],
+            [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)],
+            [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)])
+
+
+def _kv_write(K, Vhi, Vlo, li, start, k, v, cap_t):
+    n = k.shape[0]
+    assert start + n <= cap_t, "KV cache overflow"
+    K[li][:, :, start:start + n] = k.permute(1, 2, 0).double()
+    Vhi[li][:, start:start + n, :] = torch.bitwise_right_shift(v, 12).permute(1, 0, 2).double()
+    Vlo[li][:, start:start + n, :] = torch.bitwise_and(v, 4095).permute(1, 0, 2).double()
+
+
+class KVCache:
+    """One request's attention cache for forward_multi, preallocated for `cap_t` positions:
+    K as binary64 (KV x hd x T, so a score matmul reads it in place), V split into v >> 12 and
+    v & 4095 as binary64 (KV x T x hd). Every stored value is an integer below 2^24, exact in
+    binary64, so this is the same data as the int64 cache of forward(), only converted once."""
+
+    def __init__(self, glue_, cap_t):
+        m = glue_.m
+        self.KV, self.hd, self.cap_t, self.t = m.KV, m.hd, cap_t, 0
+        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (), cap_t, glue_.dev)
+
+    def write(self, li, start, k, v):
+        """k: n x KV x hd (Q12 int64), v: n x KV x hd (Q16 int64) for positions start.."""
+        _kv_write(self.K, self.Vhi, self.Vlo, li, start, k, v, self.cap_t)
+
+    def nbytes(self):
+        return sum(t.numel() * 8 for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
+
+
+class KVPool:
+    """KV caches of up to `slots` requests in one tensor per layer (slot x KV x hd x T), so the
+    decode rows of all of them are written with one indexed store and read with one gather per
+    layer (the GPU path is launch-bound otherwise). Same values as KVCache."""
+
+    def __init__(self, glue_, slots, cap_t):
+        m = glue_.m
+        self.KV, self.hd, self.cap_t, self.dev = m.KV, m.hd, cap_t, glue_.dev
+        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (slots,), cap_t, glue_.dev)
+        self.free = list(range(slots))[::-1]
+
+    def take(self):
+        return KVSlot(self, self.free.pop()) if self.free else None
+
+    def give(self, slot):
+        # zero the slot again: the batched read relies on finite values past each length
+        for ts in (self.K, self.Vhi, self.Vlo):
+            for t in ts:
+                t[slot.slot].zero_()
+        self.free.append(slot.slot)
+
+    def write_rows(self, li, slots, pos, k, v):
+        """One new row per slot: k, v B x KV x hd at positions pos (B)."""
+        self.K[li][slots, :, :, pos] = k.double()
+        self.Vhi[li][slots, :, pos, :] = torch.bitwise_right_shift(v, 12).double()
+        self.Vlo[li][slots, :, pos, :] = torch.bitwise_and(v, 4095).double()
+
+    def gather(self, li, slots, T):
+        return (self.K[li][..., :T].index_select(0, slots), self.Vhi[li][:, :, :T, :].index_select(0, slots),
+                self.Vlo[li][:, :, :T, :].index_select(0, slots))
+
+    def nbytes(self):
+        return sum(t.numel() * 8 for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
+
+
+class KVSlot:
+    """A request's view of its pool slot; works wherever a KVCache does."""
+
+    def __init__(self, pool, slot):
+        self.pool, self.slot, self.t = pool, slot, 0
+        self.KV, self.hd, self.cap_t = pool.KV, pool.hd, pool.cap_t
+        self.K = [t[slot] for t in pool.K]
+        self.Vhi = [t[slot] for t in pool.Vhi]
+        self.Vlo = [t[slot] for t in pool.Vlo]
+
+    def write(self, li, start, k, v):
+        _kv_write(self.K, self.Vhi, self.Vlo, li, start, k, v, self.cap_t)
+
+
+def pick_rows(L):
+    """pick() of every row of L at once: the largest logit, lowest index on ties."""
+    mx = L.amax(-1, keepdim=True)
+    return (L == mx).to(torch.int32).argmax(-1).tolist()
 
 
 def pick(logits_row):

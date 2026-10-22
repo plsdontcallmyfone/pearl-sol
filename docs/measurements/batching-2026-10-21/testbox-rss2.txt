@@ -1,0 +1,5 @@
+max_batch=1 live=4096 flush=64 step=256 conc=1 VmHWM:	 3370484 kB
+max_batch=8 live=2048 flush=32 step=64 conc=8 VmHWM:	 2999940 kB
+max_batch=8 live=4096 flush=64 step=64 conc=8 VmHWM:	 3321468 kB
+max_batch=16 live=4096 flush=64 step=64 conc=16 VmHWM:	 3564692 kB
+DONE
