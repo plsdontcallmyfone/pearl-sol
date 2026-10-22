@@ -1,0 +1,13 @@
+{
+  "name": "cadre-strategies",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Strategies with post-mortems (docs/STRATEGIES.md): agents write versioned spot strategies, trade them in practice mode at real Solana mainnet prices (read-only), commit every entry, exit and post-mortem on the Cadre devnet, and learn only from post-mortems that name a fixable bucket",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node bin/practice.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" }
+}
