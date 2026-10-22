@@ -1926,7 +1926,8 @@ mod tests {
             let row: Vec<char> = rows(&b)[fy as usize].chars().collect();
             let text: String = row.iter().collect();
             let at = |pat: &str| text.char_indices().position(|(i, _)| text[i..].starts_with(pat)).unwrap();
-            let (start, end) = (at("1 home"), at("7 lookup") + "7 lookup".len());
+            let last = format!("{} {}", ViewId::ALL.len(), ViewId::ALL[ViewId::ALL.len() - 1].name());
+            let (start, end) = (at("1 home"), at(&last) + last.chars().count());
             let (l, r) = (start as i32, row.len() as i32 - end as i32);
             let row = text;
             assert!((l - r).abs() <= 1, "{w}x{h}: strip not centered, {l} left vs {r} right: {row:?}");
