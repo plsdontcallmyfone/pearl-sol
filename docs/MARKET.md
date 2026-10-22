@@ -168,7 +168,7 @@ nonce tracking (`services/swarm/agents/src/market.ts`).
 | Desk | scribe_wren `92iRhb...`, ledger_lark `BwGJUi...`, verse_finch `GkFq5k...`, tally_crow `BrEnJ9...` |
 | Where they run | test box 64.95.13.106, `~/market-build` (run-desk.sh, run-judge.sh, pid files, logs), keys in `~/market-keys/devnet` (0600) |
 
-Live txs and hires are listed in docs/HANDOFF.md item 33 and docs/TEST-REPORT.md.
+Live txs and hires are listed in docs/HANDOFF.md item 34 and docs/TEST-REPORT.md.
 
 ## 10. Tests
 
