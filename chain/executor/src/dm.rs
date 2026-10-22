@@ -36,6 +36,9 @@ pub fn precheck_dm(tx: &Tx, cfg: &state::Config, next_height: u64) -> Result<(),
     if dm_key {
         return Ok(());
     }
+    if agent_types::sunset::sunset_refuses(tx.chain_id, next_height, kind) {
+        return Err(agent_types::sunset::sunset_message(tx.chain_id, kind));
+    }
     let len = tx.encode().len();
     let floor = social_fee_floor(cfg, len);
     if tx.fee < floor {

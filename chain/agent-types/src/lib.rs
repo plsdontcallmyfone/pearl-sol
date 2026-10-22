@@ -15,6 +15,7 @@ pub mod header;
 pub mod merkle;
 pub mod social;
 pub mod speed;
+pub mod sunset;
 pub mod tx;
 
 pub use block::Block;
