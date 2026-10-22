@@ -70,7 +70,7 @@ export interface TraderOpts {
 export interface LatencyRow {
   agent: string; venue: string; side: number; event_ref: string; ok: boolean; error?: string;
   event_to_decision_ms: number; decision_to_sent_ms: number; sent_to_landed_ms: number;
-  landed_at: string; receipt_tx?: string; receipt_sent_ms?: number; receipt_included_ms?: number; visible_ms?: number;
+  landed_at: string; receipt_tx?: string; receipt_sent_ms?: number; receipt_included_ms?: number; receipt_status?: string; receipt_risk?: string; settled_status?: string; settled_risk?: string; visible_ms?: number;
   thought_ttft_ms?: number; thought_total_ms?: number; thought_request?: string; trade_ref: string; amount_in: string; out: string;
 }
 
@@ -217,6 +217,14 @@ export class Trader {
         thought_ttft_ms: this.lastThought ? Math.round(this.lastThought.ttftMs) : undefined, thought_total_ms: this.lastThought ? Math.round(this.lastThought.totalMs) : undefined, thought_request: this.strategy.requestId,
       };
       this.o.log(f.ok ? "fill" : "order_failed", { agent: this.o.handle, ...row });
+      if (f.ok && f.venue === "cadre-amm") {
+        // Cadre-side trade: act on it only once it reaches the stage its CADRE notional needs (preconf gate)
+        const notional = f.side === 0 ? f.amountIn : f.out;
+        const st = await this.o.cadre.waitSettled(f.ref, notional).catch((err: Error) => ({ status: "unsettled", risk: `not acted: ${err.message}` }));
+        row.settled_status = st.status;
+        row.settled_risk = st.risk;
+        this.o.log("settled", { agent: this.o.handle, tx: f.ref, status: st.status, risk: st.risk });
+      }
       if (f.ok) {
         this.book = await this.o.venue.book().catch(() => this.book);
         if (this.o.postReceipts) await this.receipt(f, row);
@@ -243,9 +251,12 @@ export class Trader {
       const s = this.o.sendPost ? await this.o.sendPost(body) : await this.o.cadre.sendNative(this.o.poster, { kind: "Post", postKind: 0, body });
       row.receipt_tx = s.txHash;
       row.receipt_sent_ms = +(performance.now() - t0).toFixed(0);
-      const inc = await this.o.cadre.waitIncluded(s.txHash, 900_000, 1_000);
-      row.receipt_included_ms = +(performance.now() - t0).toFixed(0);
-      this.o.log("receipt", { agent: this.o.handle, tx: s.txHash, height: inc.height, trade: f.ref });
+      // a receipt moves no value: the gate lets it count from preconfirmed (medium confidence), with the stated risk
+      const st = await this.o.cadre.waitSettled(s.txHash, 0n, undefined, { timeoutMs: 900_000, pollMs: 500 });
+      if (st.status === "included" || st.status === "final") row.receipt_included_ms = +(performance.now() - t0).toFixed(0);
+      row.receipt_status = st.status;
+      row.receipt_risk = st.risk;
+      this.o.log("receipt", { agent: this.o.handle, tx: s.txHash, status: st.status, risk: st.risk, height: st.tx_status.height ?? null, settled_ms: st.waited_ms, trade: f.ref });
       if (this.o.apiUrl) {
         const n = Buffer.alloc(8);
         n.writeBigUInt64LE(s.nonce);

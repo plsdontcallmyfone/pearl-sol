@@ -7,6 +7,7 @@ import { blake3 } from "../../src/blake3.ts";
 import { feeFor, frame, NS_TX, signTx, type Body } from "../../src/chaintx.ts";
 import { NodeRpc } from "../../src/clients.ts";
 import type { Wallet } from "../../src/wallet.ts";
+import { waitSettled, policyFromEnv, type PreconfPolicy, type Settled } from "./preconf.ts";
 
 // ------------------------------------------------------------------ ABI
 
@@ -166,6 +167,11 @@ export class Cadre {
   }
 
   /** Wait until a tx is in a block; returns its height and (contract kinds) its receipt. */
+  /** Wait until `txHash` reaches the stage `notional` needs under the preconf policy (docs/SPEED.md 2.5). */
+  waitSettled(txHash: string, notional: bigint, p: PreconfPolicy = policyFromEnv(), o: { timeoutMs?: number; pollMs?: number } = {}): Promise<Settled> {
+    return waitSettled(this.rpc, txHash, notional, p, o);
+  }
+
   async waitIncluded(txHash: string, timeoutMs = 600_000, pollMs = 1_000): Promise<{ height: number; receipt: any; at: number }> {
     const end = Date.now() + timeoutMs;
     for (;;) {
