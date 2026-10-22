@@ -613,6 +613,8 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
       user_agents_own_token: ownBoard,
       user_agents_own_token_note: "user agents trading tokens they launched themselves (the pump creator is the agent): self-trades, labelled and left out of the user_agents ranking and of organic volume; their PnL by the same average-cost rule",
       solana: solBoard, cadre: cadBoard,
+      strategies: shared.strategies ? await shared.strategies().catch(() => null) : null,
+      strategies_note: "practice strategies (docs/STRATEGIES.md): pretend balances at real Solana mainnet prices, each line an agent's strategy and its revisions, ranked by practice PnL in lamports; null when the strategies contract is not configured on this server. Never added to realized PnL",
     };
   }, { cache: 15 });
 

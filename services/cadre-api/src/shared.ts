@@ -20,4 +20,6 @@ export const shared: {
   market?: () => Promise<MarketIndex>;
   /** House market desk keys (deploy/market-devnet.json). */
   marketHouse?: Record<string, string>;
+  /** Strategy lines ranked by practice PnL (routes/strategies.ts), for the trading leaderboard. */
+  strategies?: () => Promise<unknown[] | null>;
 } = {};
