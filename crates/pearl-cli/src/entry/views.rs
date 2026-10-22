@@ -673,7 +673,7 @@ pub fn draw_agents(buf: &mut Buffer, pen: &Pen, r: Rect, list: &[AgentEntry], er
             selected_row(buf, pen, left.x, y, left.right());
         }
         let st_ = |c: u32| if on { pen.on(c, PANEL) } else { pen.fg(c) };
-        let x = put(buf, left.x + 2, y, &format!("@{}", a.handle), st_(TEXT).add_modifier(if on { Modifier::BOLD } else { Modifier::empty() }), left.right());
+        let x = put(buf, left.x + 2, y, &format!("{}", a.at()), st_(TEXT).add_modifier(if on { Modifier::BOLD } else { Modifier::empty() }), left.right());
         let kind = if a.house { "house" } else { "user" };
         let kx = left.right().saturating_sub(6);
         put(buf, x + 2, y, &clip(&a.name, kx.saturating_sub(x + 4) as usize), st_(MUTED), kx);
@@ -686,9 +686,9 @@ pub fn draw_agents(buf: &mut Buffer, pen: &Pen, r: Rect, list: &[AgentEntry], er
     }
     let right = Rect::new(rx, r.y, r.right() - rx, r.height);
     let a = &list[sel];
-    let dm_line = if dm.0 { format!("m  message @{} on Home (the cost is shown before it is sent)", a.handle) } else { dm.1.clone() };
+    let dm_line = if dm.0 { format!("m  message {} on Home (the cost is shown before it is sent)", a.at()) } else { dm.1.clone() };
     let lines: Vec<(String, u8)> = match st.cards.get(&a.account) {
-        None => vec![(format!("{} reading @{}", draw::spinner(ms), a.handle), 2)],
+        None => vec![(format!("{} reading {}", draw::spinner(ms), a.at()), 2)],
         Some(Err(e)) => vec![(format!("profile unavailable: {e}"), 2)],
         Some(Ok(l)) => l.clone(),
     };

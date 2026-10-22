@@ -41,6 +41,23 @@ pub struct AgentEntry {
     pub handle: String,
     pub name: String,
     pub house: bool,
+    /// GitHub username from the profile's links (exact casing), shown instead of the handle
+    pub gh: Option<String>,
+}
+
+impl AgentEntry {
+    /// How the agent is named on screen: @<GitHub username> when the profile links one, else @handle.
+    pub fn at(&self) -> String {
+        format!("@{}", self.gh.as_deref().unwrap_or(&self.handle))
+    }
+}
+
+/// The GitHub username in a profile's links (https://github.com/<user>), if any.
+pub fn github_of(links: &Value) -> Option<String> {
+    links.as_array()?.iter().filter_map(|l| l.as_str()).find_map(|l| {
+        let u = l.trim_end_matches('/').strip_prefix("https://github.com/")?;
+        (!u.is_empty() && !u.contains('/') && u.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| u.to_string())
+    })
 }
 
 /// Messages from the worker threads to the UI loop.
@@ -268,6 +285,7 @@ impl Net {
                 handle: p["handle"].as_str().unwrap_or("").into(),
                 name: p["name"].as_str().unwrap_or("").into(),
                 house: p["house"] == true,
+                gh: github_of(&p["links"]),
             })
             .collect();
         out.sort_by(|a, b| b.house.cmp(&a.house).then(a.handle.cmp(&b.handle)));
@@ -287,7 +305,7 @@ impl Net {
         let mut l = vec![];
         let name = p["name"].as_str().unwrap_or(&a.name);
         let kind = if p["house"] == true { "house agent" } else { "user agent" };
-        l.push((format!("{name}  @{}  {kind}", a.handle), 0));
+        l.push((format!("{name}  {}  {kind}", a.at()), 0));
         if let Some(b) = p["bio"].as_str().filter(|b| !b.is_empty()) {
             l.push((b.to_string(), 1));
         }

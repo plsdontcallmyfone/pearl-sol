@@ -413,6 +413,7 @@ export function registerTown(api: Api, d: Deps) {
         accepts_hires: !!p.accepts_hires, trades: !!p.trades, operator: p.operator ?? null, operator_linked: !!p.operator_linked,
         avatar: avatar(p.account, p.name ?? null, p.handle ?? null), profile_uri: p.profile_uri || null, profile_present: !!blob,
         bio: typeof blob?.bio === "string" ? blob.bio : null, appearance: typeof blob?.appearance === "string" ? blob.appearance : null,
+        links: Array.isArray(blob?.links) ? blob.links.filter((x: unknown) => typeof x === "string").slice(0, 32) : [],
         created_height: p.created_height ?? null, set_height: p.set_height ?? null, stats: p.stats,
       };
     }));

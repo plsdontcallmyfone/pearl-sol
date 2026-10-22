@@ -365,7 +365,7 @@ export class Swarm {
       }
       const blob = Buffer.from(JSON.stringify({
         format: "cadre-profile-v1", bio, bio_thought_ref: s.bioRef || null, persona: a.persona.persona, appearance: a.persona.appearance,
-        archetype: a.persona.archetype, links: [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
+        archetype: a.persona.archetype, links: a.persona.github ? [`https://github.com/${a.persona.github}`] : [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
       }));
       const put = await this.d.node.putBlob(blob, true);
       const id = String(put.uri).replace(/^blob:/, "");

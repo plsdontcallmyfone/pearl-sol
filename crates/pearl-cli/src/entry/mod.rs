@@ -404,7 +404,7 @@ impl App {
 
     fn label(&self) -> String {
         match self.agent() {
-            Some(a) => format!("@{}", a.handle),
+            Some(a) => format!("{}", a.at()),
             None => "Ask".into(),
         }
     }
@@ -412,8 +412,8 @@ impl App {
     fn placeholder(&self) -> String {
         match self.agent() {
             None => "Ask anything... \"What is happening on Cadre right now?\"".into(),
-            Some(a) if self.dm_live == Some(true) => format!("Message @{}... (a DM on the chain; the cost is shown before it is sent)", a.handle),
-            Some(a) => format!("@{}: profile and posts above; DMs are not live on {} yet", a.handle, self.network),
+            Some(a) if self.dm_live == Some(true) => format!("Message {}... (a DM on the chain; the cost is shown before it is sent)", a.at()),
+            Some(a) => format!("{}: profile and posts above; DMs are not live on {} yet", a.at(), self.network),
         }
     }
 
@@ -479,10 +479,10 @@ impl App {
 
     /// The agent's card in the Home conversation (cached from the Agents view if read).
     fn show_agent_card(&mut self, a: &AgentEntry) {
-        let mut e = Entry::new(Kind::Card, format!("@{}", a.handle));
+        let mut e = Entry::new(Kind::Card, format!("{}", a.at()));
         e.lines = match self.agents_v.cards.get(&a.account) {
             Some(Ok(l)) => l.clone(),
-            _ => vec![(format!("loading @{}...", a.handle), 2)],
+            _ => vec![(format!("loading {}...", a.at()), 2)],
         };
         let need = !matches!(self.agents_v.cards.get(&a.account), Some(Ok(_)));
         self.transcript.push(e);
@@ -575,7 +575,7 @@ impl App {
 
     fn dm(&mut self, a: AgentEntry, text: String) {
         if self.dm_live != Some(true) {
-            self.note(Kind::Note, format!("DMs are not live on {} yet (cadre-api serves no active /v1/dm/params), so nothing was sent to @{}.", self.network, a.handle));
+            self.note(Kind::Note, format!("DMs are not live on {} yet (cadre-api serves no active /v1/dm/params), so nothing was sent to {}.", self.network, a.at()));
             return;
         }
         let Some(me) = self.me.clone().filter(|_| self.net.key.is_some()) else {
@@ -587,7 +587,7 @@ impl App {
         }
         self.quoting = true;
         let mut you = Entry::new(Kind::You, text.clone());
-        you.label = format!("@{}", a.handle);
+        you.label = format!("{}", a.at());
         self.transcript.push(you);
         self.scroll = 0;
         let (n, t) = (self.net.clone(), self.tx.clone());
@@ -854,13 +854,18 @@ impl App {
                 self.agents_v.sel = Some(a.account.clone());
             }
             if !self.agents_v.cards.contains_key(&a.account) {
-                self.agents_v.cards.insert(a.account.clone(), Ok(vec![(format!("reading @{}", a.handle), 2)]));
+                self.agents_v.cards.insert(a.account.clone(), Ok(vec![(format!("reading {}", a.at()), 2)]));
                 self.fetch_profile(a);
             }
         }
     }
 
     // ---- palette ----------------------------------------------------------------------
+
+    /// Everything the palette can list (views + commands that are not views), unfiltered.
+    fn palette_total(&self) -> usize {
+        ViewId::ALL.len() + self.commands.iter().filter(|c| !matches!(c.name.as_str(), "dashboard" | "status" | "agents" | "watch")).count()
+    }
 
     fn palette_items(&self) -> Vec<Item> {
         let f = self.palette.as_ref().map(|p| p.filter.to_lowercase()).unwrap_or_default();
@@ -1217,7 +1222,7 @@ impl App {
                         self.agents[j].clone()
                     }
                     None => {
-                        let a = AgentEntry { account: acct.clone(), handle: p["handle"].as_str().unwrap_or(&crate::fmt::short(&acct)).to_string(), name: p["name"].as_str().unwrap_or("").to_string(), house: p["house"] == true };
+                        let a = AgentEntry { account: acct.clone(), handle: p["handle"].as_str().unwrap_or(&crate::fmt::short(&acct)).to_string(), name: p["name"].as_str().unwrap_or("").to_string(), house: p["house"] == true, gh: net::github_of(&p["links"]) };
                         self.agents.push(a.clone());
                         self.mode = self.agents.len();
                         a
@@ -1560,6 +1565,10 @@ fn draw_palette(buf: &mut Buffer, pen: &Pen, app: &App) {
     put(buf, x + 2, y + 1, "Commands", pen.on(TEXT, PANEL).add_modifier(Modifier::BOLD), right);
     put(buf, right.saturating_sub(5), y + 1, "esc", pen.on(SUBTLE, PANEL), right);
     let p = app.palette.as_ref().unwrap();
+    // how many things there are to do, or how many match the filter
+    let total = app.palette_total();
+    let count = if p.filter.is_empty() { format!("{total} things you can do") } else { format!("{} of {total}", items.len()) };
+    put(buf, x + 12, y + 1, &count, pen.on(SUBTLE, PANEL), right.saturating_sub(7));
     let sx = put(buf, x + 2, y + 2, "> ", pen.on(BLUE, PANEL), right);
     if p.filter.is_empty() {
         put(buf, sx, y + 2, "Type to filter views and commands", pen.on(SUBTLE, PANEL), right);
@@ -1935,6 +1944,8 @@ mod tests {
             let b = render(&app, w, h);
             let all = rows(&b);
             assert!(all.iter().any(|r| r.contains("Type to filter views and commands")), "{w}x{h}");
+            let total = app.palette_total();
+            assert!(all.iter().any(|r| r.contains(&format!("{total} things you can do"))), "{w}x{h}: count missing");
             for it in app.palette_items().iter().take(8) {
                 let about = it.about();
                 let about = about.split(['.', ':']).next().unwrap_or("").trim().to_string();
@@ -2228,7 +2239,7 @@ mod tests {
         a.network = "devnet";
         a.color = Mode::TrueColor;
         a.cwd = "~/pearl-sol:main".into();
-        a.agents = vec![AgentEntry { account: "A".into(), handle: "tide".into(), name: "Tide Clerk".into(), house: false }];
+        a.agents = vec![AgentEntry { account: "A".into(), handle: "tide".into(), name: "Tide Clerk".into(), house: false, gh: None }];
         a.model = Some(Model { id: "llama-3.2-1b-instruct-w7a7".into(), server: "S".into() });
         a.dm_live = Some(false);
         a

@@ -14,6 +14,8 @@ export interface Persona {
   quiet: [number, number]; // UTC hours [from, to) with no ticks
   cadenceMin: number; // base minutes between this persona's actions
   tags: string[];
+  /** GitHub username, exact casing (cadredotag org); the profile links to it. None when the account is gone. */
+  github?: string;
 }
 
 const P = (handle: string, name: string, archetype: string, persona: string, appearance: string, topics: string[], quiet: [number, number], cadenceMin: number, tags: string[]): Persona =>
@@ -55,6 +57,14 @@ export const PERSONAS: Persona[] = [
   P("hollyhock26", "Hollyhock", "clockmaker", "Stands tall and keeps time; counts blocks like ticks and frets when the chain runs slow.", "a tall figure in a leather apron with hollyhock blossoms beside a wall of clocks", ["time", "block time", "precision"], [20, 1], 60, ["time"]),
   P("penstemon72", "Penstemon", "gardener", "Tends the town's gardens, notices the seasons first, and talks to the plants more than to people.", "a gentle figure in a straw hat with tubular penstemon flowers in a basket", ["gardens", "seasons", "growing things"], [17, 22], 60, ["nature"]),
 ];
+
+// GitHub usernames of the Instance agents (exact casing, checked against api.github.com
+// 2026-10-21); Hollyhock26's account is gone, so Hollyhock has no link.
+const GITHUB = ["NettleMoth47", "YarrowVale63", "TansyWren82", "PrimroseDusk54", "BorageMist71", "HelleboreFawn39", "GentianBloom68", "MeadowSweet27", "ColumbineMoth56", "FeverfewVale84", "Foxglove47", "Celandine62", "Lunaria38", "Nigella71", "Scabiosa54", "Betony83", "Agrimony29", "Campion66", "Speedwell41", "Woodruff75", "Hyssop58", "Honeysuckle92", "Bellflower46", "Lupine81", "Delphinium37", "Freesia64", "Clematis53", "Snapdragon88", "Penstemon72"];
+for (const g of GITHUB) {
+  const p = PERSONAS.find((x) => x.handle === g.toLowerCase());
+  if (p) p.github = g;
+}
 
 /** Quiet at `hour` (UTC)? Ranges may wrap midnight. */
 export function isQuiet(p: Persona, hour: number): boolean {
