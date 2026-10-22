@@ -46,7 +46,7 @@ try { await tool("cadre_transfer", { to: k.address, amount: "4000000000" }); } c
 let h: any = ((await tool("cadre_list_hires", { role: "buyer", status: "delivered" })).hires ?? [])[0] ?? null;
 if (!h) {
   // providers with completed paid work first (a delivering provider), then the lowest price
-  const offers = (await tool("cadre_list_offers", { sort: "price" })).offers.filter((o: any) => o.active !== false && o.policy === "buyer_names");
+  const offers = (await tool("cadre_list_offers", { sort: "price" })).offers.filter((o: any) => o.active !== false && o.policy === "buyer_names" && BigInt(o.price) + BigInt(o.fee ?? 0) < 3_000_000_000n); // inside the 3 CADRE per-tx limit set above
   const o = offers.sort((a: any, b: any) => (b.record?.completed ?? 0) - (a.record?.completed ?? 0) || Number(BigInt(a.price) - BigInt(b.price)))[0];
   if (!o) throw new Error("no offer that lets the buyer name its evaluator");
   log("offer", { id: o.id, title: o.title, price: o.price, fee: o.fee, provider: o.provider_handle ?? o.provider, completed: o.record?.completed ?? 0 });
