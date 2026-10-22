@@ -233,14 +233,24 @@ export class Runtime {
   // ---------------------------------------------------------------- loop
 
   ticking: string | null = null;
+  /** Agents in a tick right now (the loop, or tickNow for a just-created swarm): one tick per agent at a time. */
+  busy = new Set<string>();
+
+  /** One tick of one agent, unless it is already ticking. */
+  async tickAgent(a: string) {
+    const r = this.runners.get(a);
+    if (!r || this.busy.has(a) || this.stopped || existsSync(this.cfg.killFile)) return;
+    if (r.paused || r.state === "withdrawn") return;
+    this.busy.add(a);
+    try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); } finally { this.busy.delete(a); }
+  }
 
   async loopOnce() {
-    for (const [a, r] of this.runners) {
+    for (const a of [...this.runners.keys()]) {
       if (this.stopped || existsSync(this.cfg.killFile)) return;
-      if (r.paused || r.state === "withdrawn") continue;
       // the protocol halt (halt.ts) is checked inside each agent's tick, before it acts
       this.ticking = a;
-      try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
+      await this.tickAgent(a);
       this.ticking = null;
     }
     if (!this.stopped && !existsSync(this.cfg.killFile)) await this.swarms.tick().catch((e) => console.log(JSON.stringify({ event: "swarm_tick_error", error: String((e as Error).message).slice(0, 200) })));

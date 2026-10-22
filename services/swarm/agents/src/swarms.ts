@@ -106,6 +106,8 @@ export interface RuntimeLike {
   checkDoc(doc: SignedSpec, operator: string): void;
   verifyAuth(method: string, path: string, h: IncomingMessage["headers"], body: string): string;
   status(agent: string): unknown;
+  stopped?: boolean;
+  tickAgent?: (agent: string) => Promise<void>;
   mintToken?: (agent: string, by: string, rotate: boolean) => unknown;
 }
 
@@ -270,6 +272,8 @@ export class SwarmHost {
       this.storeGoal(rec).catch(() => {});
       this.registerNow(rec).catch(() => {});
       this.kickoffRun = this.kickoff(rec).catch(() => {});
+      // every member's first tick now, not on the runtime's next loop (AGENTS_TICK_MS)
+      for (const m of rec.members) void this.rt.tickAgent?.(m.agent);
       return {
         swarm: this.view(rec),
         members: rec.members.map((m, i) => ({ index: i, agent: m.agent, handle: m.handle, role: m.role, practice_style: m.style, sol_lamports: m.sol_lamports, accept_sig: m.accept_sig, hosted: this.rt.status(m.agent) })),
@@ -281,6 +285,8 @@ export class SwarmHost {
   }
 
   kickoffRun: Promise<unknown> | null = null;
+  /** Set by the runtime on shutdown (and by tests): every pending kickoff wait ends. */
+  stopped = false;
 
   /** The lead's first action: a paid thought on the goal that picks the first member to hire. It
    * waits for the lead's SOL (the creator's Solana tx) so the runtime can top up inference itself. */
@@ -288,12 +294,15 @@ export class SwarmHost {
     const r = this.leadRunner(rec);
     if (!r) return;
     const t0 = rec.created_ms;
-    const end = now() + (o.maxWaitMs ?? 15 * 60_000);
+    const wait = o.maxWaitMs ?? Number(this.env.AGENTS_SWARM_KICKOFF_WAIT_MS ?? 15 * 60_000);
+    const poll = o.pollMs ?? Number(this.env.AGENTS_SWARM_KICKOFF_POLL_MS ?? 3_000);
+    const end = now() + wait;
     for (;;) {
+      if (this.stopped || this.rt.stopped) { rec.kickoff = { ...rec.kickoff, state: "failed", error: "the runtime stopped before the kickoff" }; this.save(); return; }
       const ok = await r.ensureBalance().catch(() => false);
       if (ok) break;
-      if (now() > end) { rec.kickoff = { ...rec.kickoff, state: "failed", error: "the lead's SOL did not arrive for inference within 15 minutes" }; this.save(); return; }
-      await new Promise((res) => setTimeout(res, o.pollMs ?? 3_000));
+      if (now() > end) { rec.kickoff = { ...rec.kickoff, state: "failed", error: `the lead's SOL did not arrive for inference within ${Math.round(wait / 1000)} s` }; this.save(); return; }
+      await new Promise((res) => setTimeout(res, poll));
     }
     rec.kickoff.state = "thinking";
     const others = rec.members.filter((m) => m.agent !== rec.lead);

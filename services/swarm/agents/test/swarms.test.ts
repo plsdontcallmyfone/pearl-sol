@@ -66,6 +66,8 @@ function setup(o: { config?: boolean } = {}) {
   const cfgFile = join(dir, "swarms.json.deploy");
   if (o.config !== false) writeFileSync(cfgFile, JSON.stringify({ contract: CONTRACT, start_height: 0 }));
   process.env.SWARMS_CONFIG = o.config === false ? join(dir, "missing.json") : cfgFile;
+  process.env.AGENTS_SWARM_KICKOFF_WAIT_MS = "300";
+  process.env.AGENTS_SWARM_KICKOFF_POLL_MS = "20";
   delete process.env.STRAT_MAINNET_RPC;
   delete process.env.STRAT_MAINNET_RPC_FILE;
   const node = new Node();
@@ -76,6 +78,12 @@ function setup(o: { config?: boolean } = {}) {
   }, () => ({ node: node as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "x", now: () => (t += 61_000), rand: () => 0.5, log: () => {} }));
   return { rt, node, dir };
 }
+
+/** Wait until the background first ticks of a just-committed swarm are done. */
+async function settle(rt: Runtime) {
+  for (let i = 0; i < 200 && (rt as any).busy.size; i++) await new Promise((res) => setTimeout(res, 5));
+}
+const creates = (node: Node) => node.sent.filter((t) => t.includes(Buffer.from("create_signed")));
 
 async function post(rt: Runtime, path: string, body: unknown) {
   return rt.handle("POST", path, {} as any, JSON.stringify(body)).then((r) => r, (e) => ({ status: e.status, body: { error: { code: e.code, message: e.message } } })) as Promise<any>;
@@ -175,14 +183,15 @@ test("registration: the sponsor registers at once (with each member's CADRE floa
   const b = await planAndCommit(rt, 2);
   const def = b.plan.plan_id;
   const lead = rt.runners.get(b.plan.swarm.lead)!;
+  await settle(rt);
   await rt.swarms.tick();
-  assert.equal(node.sent.length, 0);
+  assert.equal(creates(node).length, 0);
   lead.state = "running";
   node.balances.set(lead.address, 10_000_000_000n);
   rt.swarms.swarms.get(def)!.registration.checked_ms = 0;
   await rt.swarms.tick();
-  assert.equal(node.sent.length, 1);
-  assert.equal(Buffer.from(node.sent[0].subarray(5, 37)).toString("hex"), Buffer.from(lead.me.wallet.publicKey).toString("hex"), "signed by the lead");
+  assert.equal(creates(node).length, 1);
+  assert.equal(Buffer.from(creates(node)[0].subarray(5, 37)).toString("hex"), Buffer.from(lead.me.wallet.publicKey).toString("hex"), "signed by the lead");
   node.byDef.set(def, 7);
   rt.swarms.swarms.get(def)!.registration.checked_ms = 0;
   await rt.swarms.tick();
@@ -203,13 +212,15 @@ test("kickoff: the lead's first paid thought on the goal starts as soon as its S
   AgentRunner.prototype.think = async function () { return { text: "HIRE 2\nTASK List the ships seen on Monday.", requestId: "req_kick", rows: 1, receipt: null }; };
   try {
     const host = rt.swarms;
+    process.env.AGENTS_SWARM_KICKOFF_WAIT_MS = "5000";
+    solAt = Date.now() + 300;
     const c = await post(rt, "/v1/hosted/swarms", { plan_id: plan.body.plan_id, creator_sig: sig });
     assert.equal(c.status, 201);
-    solAt = Date.now() + 300;
     const rec = host.swarms.get(plan.body.plan_id)!;
-    await host.kickoff(rec, { pollMs: 20 });
+    await host.kickoffRun;
+    await settle(rt);
     assert.equal(rec.kickoff.state, "done");
-    assert.ok(rec.kickoff.ms_after_commit! >= 300, `measured ${rec.kickoff.ms_after_commit} ms`);
+    assert.ok(rec.kickoff.ms_after_commit! >= 250, `measured ${rec.kickoff.ms_after_commit} ms`);
     console.log(`# kickoff measured ${rec.kickoff.ms_after_commit} ms after the commit (in-process fakes, SOL landing at +300 ms)`);
     const lead = rt.runners.get(plan.body.swarm.lead)!;
     assert.deepEqual(lead.swarmPlan, { member: plan.body.members[2].agent, task: "List the ships seen on Monday.", request_id: "req_kick" });
@@ -231,6 +242,8 @@ test("kickoff: the lead's first paid thought on the goal starts as soon as its S
 test("the lead hires its members first, through a paid thought that sees the goal; members deliver swarm hires first", async () => {
   const { rt } = setup();
   const { plan } = await planAndCommit(rt, 3);
+  await rt.swarms.kickoffRun;
+  await settle(rt);
   const lead = rt.runners.get(plan.swarm.lead)!;
   lead.swarmPlan = null;
   const ms = plan.members;
