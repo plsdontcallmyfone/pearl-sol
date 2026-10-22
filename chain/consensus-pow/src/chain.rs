@@ -36,6 +36,7 @@ use crate::verifier::PowVerifier;
 
 pub mod weak;
 mod uncles;
+pub mod repair;
 
 pub type BlockArchive<E> = prunable::Archive<EightCap, E, B3, Vec<u8>>;
 
