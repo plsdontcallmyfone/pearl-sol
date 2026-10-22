@@ -23,7 +23,9 @@ export interface Base {
   max_slippage_bps: number;
   practice_balance_lamports: number;
 }
-export interface AgentCfg { handle: string; name: string; persona: string; base: Base }
+/** `pin` (user agents, 2026-10-22): the creator's take profit / stop loss, fixed for every version
+ * of the line (the authoring thought and later fixes cannot move them). Absent for house agents. */
+export interface AgentCfg { handle: string; name: string; persona: string; base: Base; pin?: { stop_bps?: number; target_bps?: number } }
 
 interface Hist { entry: number; version: number; conditions_hash: string; outcome: Result["outcome"]; buckets: number; pnl: string; used: boolean; missed: Signal[]; vol: number | null; sigma_hold_bps: number | null }
 interface Open {
@@ -124,7 +126,15 @@ export class PracticeAgent {
       stop_bps: p.stop_bps, target_bps: p.target_bps, max_hold_s: p.max_hold_s, max_risk_bps: this.cfg.base.max_risk_bps, max_slippage_bps: this.cfg.base.max_slippage_bps,
       edge: { win_rate: p.win_rate, avg_win_bps: p.target_bps, avg_loss_bps: p.stop_bps }, rationale: p.rationale, change: "", authored_by: t.requestId,
     };
-    await this.publish(spec, 0, 0, [], t.requestId);
+    await this.publish(this.pinned(spec), 0, 0, [], t.requestId);
+  }
+
+  /** The creator's pinned exits, when set (AgentCfg.pin), override what a thought or a fix chose. */
+  pinned(spec: StrategySpec): StrategySpec {
+    const p = this.cfg.pin;
+    if (!p) return spec;
+    const stop = p.stop_bps ?? spec.stop_bps, target = p.target_bps ?? spec.target_bps;
+    return { ...spec, stop_bps: stop, target_bps: target, edge: { ...spec.edge, avg_win_bps: target, avg_loss_bps: stop } };
   }
 
   async publish(spec: StrategySpec, parent: number, claimed: number, motives: number[], thoughtRef: string): Promise<void> {
@@ -349,11 +359,15 @@ export class PracticeAgent {
       sigmaHoldBps: sig.length ? sig[Math.floor(sig.length / 2)] : null,
       medianVol: vols.length ? vols[Math.floor(vols.length / 2)] : null,
     });
+    // a fix that only moves pinned exits changes nothing: drop it before paying for the choice
+    const same = JSON.stringify(this.pinned(spec));
+    const real = fixes.filter((f) => JSON.stringify(this.pinned(f.apply(spec))) !== same);
+    fixes.splice(0, fixes.length, ...real);
     if (fixes.length === 0) return;
     const t = await this.d.think(fixPrompt(this.cfg.persona, b, fixes, cited.length), 24);
     const f = fixes[parseFix(t.text, fixes.length)];
     const n = Number(this.s.spec!.name.match(/v(\d+)$/)?.[1] ?? 1) + 1;
-    const next: StrategySpec = { ...f.apply(spec), name: `${this.cfg.handle} v${n}`, parent: this.s.spec_id, change: `${b}: ${f.text} (post-mortems ${cited.map((h) => h.entry).join(", ")})`, authored_by: t.requestId };
+    const next: StrategySpec = { ...this.pinned(f.apply(spec)), name: `${this.cfg.handle} v${n}`, parent: this.s.spec_id, change: `${b}: ${f.text} (post-mortems ${cited.map((h) => h.entry).join(", ")})`, authored_by: t.requestId };
     await this.publish(next, this.s.version, BUCKET_ID[b], cited.map((h) => h.entry), t.requestId);
   }
 }

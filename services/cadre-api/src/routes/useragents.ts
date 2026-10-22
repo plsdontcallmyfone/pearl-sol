@@ -176,7 +176,11 @@ export async function verifyAgent(d: Deps, account: string) {
   c("spec_agent", !!doc && doc.spec.agent === account, doc ? (doc.spec.agent === account ? "the spec names this account as the agent" : `the spec names ${doc.spec.agent}`) : "no spec");
   const opOk = !!doc && !!prof?.operator && prof.operator === doc.spec.operator;
   c("operator_named", opOk, prof?.operator ? `the profile names the creator (operator field) ${prof.operator}` : "the profile names no creator");
-  c("operator_linked", !!prof?.operator_linked, prof?.operator_linked ? "the creator's OperatorLink to this agent is on the chain (attribution, two-sided)" : "the creator has not linked this agent");
+  // a sovereign (v2) agent's attribution may be the creator-signed spec in its own profile blob
+  // (the agent's SetProfile names the creator; the creator's signature names the agent): two-sided
+  // like an OperatorLink, with no extra creator tx (owner 2026-10-22, hosted runtime 0.3.0)
+  const bySpec = !prof?.operator_linked && opOk && v.ok && !!doc && isSovereign(doc.spec) && doc.spec.agent === account;
+  c("operator_linked", !!prof?.operator_linked || bySpec, prof?.operator_linked ? "the creator's OperatorLink to this agent is on the chain (attribution, two-sided)" : bySpec ? "attributed by the creator-signed v2 spec in the agent's own profile blob (two-sided: the agent's SetProfile names the creator, the creator's signature names the agent)" : "the creator has not linked this agent");
   c("registered", !!reg, reg ? `RegisterAgent at height ${reg.registered_height}` : "not registered (RegisterAgent)");
   return { prof, reg, doc, blob, checks, verified: checks.every((x) => x.ok) };
 }
@@ -311,6 +315,7 @@ export function registerUserAgents(api: Api, d: Deps) {
       name: v.prof?.name ?? v.reg?.name ?? null,
       operator: v.prof?.operator ?? null,
       operator_linked: !!v.prof?.operator_linked,
+      attribution: v.prof?.operator_linked ? "operator_link" : v.checks.find((x) => x.name === "operator_linked")?.ok ? "signed_spec" : null,
       profile_uri: v.prof?.profile_uri || null,
       registration: v.reg,
       spec: s,
@@ -434,6 +439,7 @@ export function registerUserAgents(api: Api, d: Deps) {
   api.get("/v1/hosted/agents", pass, { cache: "no-store" });
   api.get("/v1/hosted/agents/:agent", pass, { cache: "no-store" });
   api.post("/v1/hosted/agents", pass, { cost: 10 });
+  api.post("/v1/hosted/plan", pass, { cost: 10 });
   api.post("/v1/hosted/agents/:agent/:verb", pass, { cost: 10 });
 }
 

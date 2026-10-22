@@ -325,6 +325,9 @@ services/swarm/agents (cadre-api still holds no key).
 | `GET /v1/operators/{a}/agents` | agents the operator linked (OperatorLink txs folded) plus the ones hosted for it |
 | `GET /v1/hosted`, `GET /v1/hosted/agents[?operator=]`, `GET /v1/hosted/agents/{agent}` | the hosted runtime: seal key, limits, trust statement; statuses and logs (public) |
 | `POST /v1/hosted/agents`, `POST /v1/hosted/agents/{agent}/{spec,pause,resume,withdraw,export,delete}` | operator-signed (SPEC 5.4 headers over this exact path; 5 minutes; each signature once). Create body `{sealed, spec}`: the 32-byte seed sealed to `seal_pub` (X25519 + HKDF-SHA256 info `cadre-agents:seal:v1`, salt `eph_pub \|\| seal_pub`, AES-256-GCM) and the signed spec. Export body `{eph_pub}`: the seed sealed back to that key |
+| `POST /v1/hosted/agents` without headers (runtime 0.3.0) | a v2 create authorized by the creator-signed spec alone, within 10 minutes of its `created_ms` (one wallet prompt); 409 `exists` or `handle_taken` |
+| `POST /v1/hosted/plan` | `{text, choices: [{id, line}]}`: one paid Cadre thought (the runtime's planner key) picks a template id; 501 `plan_off`, 503 `plan_unavailable` (the site matches keywords) |
+| `GET /v1/templates/stats` | creation templates by measured track record (hosted agents grouped by spec `template`; hires, practice trades, actions, failures), score and rank by the formula in the reply; no agents = New |
 
 Env: `CADRE_AGENTS_URL` (the runtime, e.g. `http://127.0.0.1:10730`; unset = the `/v1/hosted*`
 routes answer 501).
