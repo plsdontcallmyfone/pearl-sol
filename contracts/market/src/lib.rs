@@ -20,6 +20,9 @@
 //!
 //! Money: the hire's whole value stays in this contract until the hire closes. Completed: price
 //! to the provider, fee to fee_to, judge_fee split among the evaluators who voted to accept.
+//! fee_to may be the chain's mining pool (`native::mining_pool()`): the fee is then paid in with
+//! `native::pay_mining_pool` (a native Transfer as this contract) and funds miners like a job's
+//! protocol fee (docs/MARKET.md 3; code v2, 2026-10-22).
 //! Rejected: price + fee back to the buyer, judge_fee split among the evaluators who voted to
 //! reject (they did the judging). Declined or expired: everything back to the buyer. A hire is
 //! accepted when `threshold` evaluators accept, and rejected as soon as so many reject that
@@ -272,11 +275,26 @@ fn save_cfg(c: &Cfg) -> Result<(), &'static str> {
     if c.fee_to == ZERO {
         return Err("fee_to must be set");
     }
+    if c.fee_to == sdk::blake3(b"pearl-sol:escrow:v1") {
+        return Err("fee_to cannot be the bridge escrow");
+    }
     if c.admin == ZERO {
         return Err("admin must be set");
     }
     storage::set(b"cfg", &Writer::new().addr(&c.admin).u16(c.fee_bps).addr(&c.fee_to).bool(c.hires_paused).finish());
     Ok(())
+}
+
+/// Pay the protocol fee to `fee_to`: into the mining pool with a native Transfer when fee_to is the
+/// pool (the `transfer` host function refuses reserved accounts), else a plain transfer.
+fn pay_fee(fee_to: &Address, amount: u64) -> Result<(), &'static str> {
+    if amount == 0 {
+        return Ok(());
+    }
+    if *fee_to == sdk::native::mining_pool() {
+        return sdk::native::pay_mining_pool(amount).map_err(|_| "paying the mining pool failed");
+    }
+    sdk::transfer(fee_to, amount)
 }
 
 /// The protocol fee on a price: ceil(price x bps / 10000).
@@ -522,9 +540,7 @@ pub extern "C" fn call() {
                     storage::set(&okey(h.offer), &o.write());
                     let c = cfg();
                     sdk::transfer(&h.provider, h.price)?;
-                    if h.fee > 0 {
-                        sdk::transfer(&c.fee_to, h.fee)?;
-                    }
+                    pay_fee(&c.fee_to, h.fee)?;
                     split(h.judge_fee, &h.evaluators, h.accepted_by)?;
                     let d = Writer::new().addr(&h.buyer).u64(h.price).u64(h.fee).u64(h.judge_fee).addr(&c.fee_to);
                     sdk::emit("Completed", &[idt(id), h.provider, h.buyer], &d.finish());

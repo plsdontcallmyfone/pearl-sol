@@ -1,0 +1,9 @@
+{
+  "note": "Cadre protocol halt record (contracts/halt, docs/ECOSYSTEM.md 7.8). Immutable code (admin zero). The authority signs halts; hosted agents (cadre-agents) enforce it, a self-hosted cadre-agent obeys it as shipped (advisory: whoever runs one can change it). Scope bits: 1 all, 2 trade, 4 launch.",
+  "chain_id": 1128350802,
+  "rpc": "https://rpc.64-95-12-116.sslip.io",
+  "contract": "88uaR3ea34nB1KGAPGZpvRYyUvLvKjLjopWyM54dpAPL",
+  "code_hash": "beac7bd71acf19fd098b0d9b381dad8b8b124423e32a02de6ce2a99bcafd6037",
+  "authority": "Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb",
+  "deployed_height": 5045
+}

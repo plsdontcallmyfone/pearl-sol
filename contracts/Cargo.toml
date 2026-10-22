@@ -3,7 +3,7 @@
 # Built for wasm32-unknown-unknown on the contract SDK, like crates/cadre-contract-sdk/examples.
 # Tests that run them in the real executor are in contracts/tests (a separate host workspace).
 [workspace]
-members = ["amm", "mandate", "market"]
+members = ["amm", "mandate", "market", "halt", "poolprobe"]
 resolver = "2"
 
 [workspace.package]
