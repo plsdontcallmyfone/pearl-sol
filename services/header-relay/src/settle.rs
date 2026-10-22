@@ -177,11 +177,50 @@ pub fn result_message(job_id: &[u8; 32], deliverer: &[u8; 32], result_hash: &[u8
 pub struct Settle {
     /// Withdrawals below this nonce are known released.
     next_withdrawal: u64,
+    /// getJob answers by job id with the chain tip they were read at (2026-10-22: one getJob
+    /// per pending order every 5 s poll, about 280 a minute on devnet box 0). A job record
+    /// changes only with a new block, so it is read again only when the tip hash moved.
+    jobs: JobCache,
+}
+
+/// Job records keyed by id, valid for one chain tip.
+#[derive(Default)]
+pub struct JobCache {
+    tip: Option<String>,
+    jobs: std::collections::HashMap<[u8; 32], serde_json::Value>,
+    pub reads: u64,
+    pub hits: u64,
+}
+
+impl JobCache {
+    /// Forget everything if the tip moved (or is unknown).
+    pub fn at_tip(&mut self, tip: Option<String>) {
+        if tip.is_none() || tip != self.tip {
+            self.jobs.clear();
+        }
+        self.tip = tip;
+    }
+
+    /// The job, from the cache when it was read at this tip.
+    pub fn get(&mut self, id: &[u8; 32], read: impl FnOnce() -> Result<serde_json::Value>) -> Result<serde_json::Value> {
+        if self.tip.is_some() {
+            if let Some(v) = self.jobs.get(id) {
+                self.hits += 1;
+                return Ok(v.clone());
+            }
+        }
+        self.reads += 1;
+        let v = read()?;
+        if self.tip.is_some() {
+            self.jobs.insert(*id, v.clone());
+        }
+        Ok(v)
+    }
 }
 
 impl Settle {
     pub fn new() -> Self {
-        Self { next_withdrawal: 0 }
+        Self { next_withdrawal: 0, jobs: JobCache::default() }
     }
 
     /// A FINAL light-client header at height in [lo, final_height] whose header bytes
@@ -294,11 +333,15 @@ impl Settle {
         };
         let accs = sol.rpc.get_program_accounts_with_config(&STOREFRONT_ID, cfg)?;
         let lc_final = sol.config()?.final_height;
+        if !accs.is_empty() {
+            let tip = node.info().ok().and_then(|i| i["tip"].as_str().map(str::to_string));
+            self.jobs.at_tip(tip);
+        }
         for (_, a) in accs {
             let d = &a.data;
             let nonce = u64::from_le_bytes(d[ORDER_NONCE..ORDER_NONCE + 8].try_into()?);
             let job_id: [u8; 32] = d[ORDER_JOB_ID..ORDER_JOB_ID + 32].try_into()?;
-            let job = node.rpc.call("getJob", json!({"job_id": hex::encode(job_id)}))?;
+            let job = self.jobs.get(&job_id, || node.rpc.call("getJob", json!({"job_id": hex::encode(job_id)})))?;
             let status = job["status"].as_str().unwrap_or("");
             if status != "completed" && status != "expired" {
                 continue;
@@ -349,5 +392,39 @@ impl Settle {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JobCache;
+    use serde_json::json;
+
+    #[test]
+    fn job_cache_reads_once_per_tip() {
+        let mut c = JobCache::default();
+        let mut calls = 0;
+        for _poll in 0..12 {
+            c.at_tip(Some("aa".into()));
+            for id in [[1u8; 32], [2u8; 32]] {
+                let v = c.get(&id, || { calls += 1; Ok(json!({"status": "open"})) }).unwrap();
+                assert_eq!(v["status"], "open");
+            }
+        }
+        assert_eq!(calls, 2, "12 polls at one tip read each job once");
+        c.at_tip(Some("bb".into()));
+        c.get(&[1u8; 32], || { calls += 1; Ok(json!({"status": "completed"})) }).unwrap();
+        assert_eq!(calls, 3, "a new tip reads again");
+        // tip unknown (getChainInfo failed): no caching at all
+        c.at_tip(None);
+        for _ in 0..3 {
+            c.get(&[1u8; 32], || { calls += 1; Ok(json!({})) }).unwrap();
+        }
+        assert_eq!(calls, 6);
+        // an error is not cached
+        c.at_tip(Some("cc".into()));
+        assert!(c.get(&[3u8; 32], || anyhow::bail!("down")).is_err());
+        c.get(&[3u8; 32], || { calls += 1; Ok(json!({})) }).unwrap();
+        assert_eq!(calls, 7);
     }
 }

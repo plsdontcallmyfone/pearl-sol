@@ -272,6 +272,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let mut v = json!({"tx_hash": hex::encode(h)});
         if self.mempool.contains(h) || self.preconf_of(h, now_ms).is_some() {
             self.annotate_pending(&mut v, h, now_ms);
+        } else if let Some((reason, height)) = self.dropped_reason(h) {
+            // dropped from this node's pool by the eviction rule (core.rs EVICT_AFTER_TIPS)
+            v["status"] = json!("dropped");
+            v["reason"] = json!(reason);
+            v["dropped_height"] = json!(height);
+            v["final"] = json!(false);
         } else {
             v["status"] = json!("unknown");
             v["final"] = json!(false);

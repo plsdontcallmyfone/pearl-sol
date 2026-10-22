@@ -106,6 +106,13 @@ impl Mempool {
 
     /// Admit a tx given the sender's account nonce and balance and the min fee.
     pub fn insert_funded(&mut self, tx: Tx, account_nonce: u64, balance: u64, min_fee: u64) -> Result<Hash, MempoolError> {
+        self.insert_funded_opts(tx, account_nonce, balance, min_fee, false)
+    }
+
+    /// [`Mempool::insert_funded`]; with `replace_any_fee` a tx at a pooled nonce replaces the
+    /// pooled one at any fee (the node passes it when the pooled tx fails at the tip, so it can
+    /// never be mined as it is; 2026-10-22).
+    pub fn insert_funded_opts(&mut self, tx: Tx, account_nonce: u64, balance: u64, min_fee: u64, replace_any_fee: bool) -> Result<Hash, MempoolError> {
         let h = tx.hash();
         if self.txs.contains_key(&h) {
             return Err(MempoolError::Known);
@@ -140,7 +147,7 @@ impl Mempool {
         }
         let size = size_of(&tx);
         if let Some(old) = self.by_sender.get(&tx.from).and_then(|q| q.get(&tx.nonce)).copied() {
-            let floor = replacement_floor(self.txs[&old].fee);
+            let floor = if replace_any_fee { 0 } else { replacement_floor(self.txs[&old].fee) };
             if tx.fee < floor {
                 return Err(if self.txs[&old].fee >= tx.fee { MempoolError::Underpriced } else { MempoolError::ReplacementUnderpriced(tx.fee, floor) });
             }
@@ -368,6 +375,23 @@ mod tests {
         m.insert(tx(3, 0, 11), 0, 1).unwrap();
         assert_eq!(m.len(), 2);
         assert_eq!(m.bytes(), 2 * one);
+    }
+
+    #[test]
+    fn failing_tx_is_replaceable_at_any_fee() {
+        let mut m = Mempool::new(1, 10);
+        let old = tx(1, 0, 100);
+        m.insert(old.clone(), 0, 1).unwrap();
+        // same fee, other body: refused without the flag, taken with it
+        let new = Tx::signed(&[1; 32], 1, 0, 100, TxBody::Transfer { to: [7; 32], amount: 1 });
+        assert_eq!(m.insert_funded_opts(new.clone(), 0, u64::MAX, 1, false), Err(MempoolError::Underpriced));
+        m.insert_funded_opts(new.clone(), 0, u64::MAX, 1, true).unwrap();
+        assert!(!m.contains(&old.hash()) && m.contains(&new.hash()));
+        // a lower fee too, still above min_fee
+        let low = Tx::signed(&[1; 32], 1, 0, 5, TxBody::Transfer { to: [8; 32], amount: 1 });
+        m.insert_funded_opts(low.clone(), 0, u64::MAX, 1, true).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.insert_funded_opts(Tx::signed(&[1; 32], 1, 0, 0, TxBody::Transfer { to: [9; 32], amount: 1 }), 0, u64::MAX, 1, true), Err(MempoolError::LowFee(0, 1)));
     }
 
     #[test]

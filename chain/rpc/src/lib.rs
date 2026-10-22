@@ -5,6 +5,7 @@ pub mod blobfetch;
 pub mod core;
 pub mod cxjson;
 pub mod dispatch;
+pub mod jobindex;
 pub mod preconf;
 mod dm;
 mod reject;

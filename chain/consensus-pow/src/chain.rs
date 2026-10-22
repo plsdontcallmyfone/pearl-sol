@@ -168,6 +168,39 @@ pub const MAX_ORPHAN_BYTES: usize = 256 << 20;
 /// 512 the oldest segments of a round were never offered (scripts/serve8b run, 2026-10-21).
 pub const TEMPLATE_JOB_SCAN: u64 = 4096;
 
+/// Share of a candidate's work already mined, in ppm: for a segment its ticket's
+/// `blocks_mined / blocks_allocated`, for a plain job its own `blocks_mined / max_blocks`.
+pub fn job_progress_ppm(j: &JobRecord, ticket: Option<&schema::TicketExt>) -> u64 {
+    let (done, of) = match (j.segment(), ticket) {
+        (Some(_), Some(t)) => (t.blocks_mined as u64, t.blocks_allocated as u64),
+        _ => (j.blocks_mined as u64, j.max_blocks as u64),
+    };
+    done.saturating_mul(1_000_000) / of.max(1)
+}
+
+/// Auto-choice order of mineable jobs (node policy, not consensus; SPEC 4.5 "Segment order",
+/// 2026-10-22). Least-served ticket first: the candidate whose ticket (a plain job: itself) has
+/// the smallest share of its allocated blocks mined, then the oldest (lowest job index). Every
+/// live ticket advances at the same fractional rate, and within a ticket its rounds are mined
+/// in posting order. Replaces "largest cap_remaining first", under which a segment's cap (MAC
+/// share of its round's rows) made big rounds always win: a 48-row ticket on devnet had 11 of
+/// its 144 segments mined after 7 hours while 1,600-row rounds were mined.
+pub fn fair_job_order(jobs: &mut [JobRecord], ticket: &dyn Fn(&Hash) -> Option<schema::TicketExt>) {
+    let mut keyed: Vec<(u64, u64, usize)> = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, j)| {
+            let t = j.segment().and_then(|(tid, _, _)| ticket(&tid));
+            (job_progress_ppm(j, t.as_ref()), j.index, i)
+        })
+        .collect();
+    keyed.sort();
+    let order: Vec<JobRecord> = keyed.iter().map(|&(_, _, i)| jobs[i].clone()).collect();
+    for (slot, j) in jobs.iter_mut().zip(order) {
+        *slot = j;
+    }
+}
+
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
     archive: Option<BlockArchive<E>>,
@@ -211,6 +244,10 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// index, route_nonce)`. Same rule as `history`: extended at finalization, the live
     /// part is read from the canonical branch at query time.
     clears: HashMap<Pubkey, (u64, u32, u64)>,
+    /// State keys written by the blocks a tip change connected or disconnected since the
+    /// last [`Chain::take_touched`] (node-local indexes, e.g. the RPC job index); `None`
+    /// until [`Chain::track_touched`].
+    touched: Option<HashSet<schema::Key>>,
 }
 
 /// Fees, subsidy and matured coinbase of one block (getBlock).
@@ -379,6 +416,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             rewards: Some(rewards),
             history: HashMap::new(),
             clears: HashMap::new(),
+            touched: None,
         };
 
         match committed_height {
@@ -1152,6 +1190,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.tx_index.insert(t.hash(), (*c, i as u32));
             }
         }
+        if let Some(t) = self.touched.as_mut() {
+            for h in disconnected.iter().chain(connected.iter()) {
+                t.extend(self.live[h].snapshot.written().iter().copied());
+            }
+        }
         self.tip = new;
         if reorg_depth > 0 {
             info!(depth = reorg_depth, new_tip = %hex(&new), height = self.tip_height(), "reorg");
@@ -1223,6 +1266,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         Ok(())
     }
 
+    /// Start collecting the state keys tip changes touch (see `touched`).
+    pub fn track_touched(&mut self) {
+        if self.touched.is_none() {
+            self.touched = Some(HashSet::new());
+        }
+    }
+
+    /// Keys written by every block connected to or disconnected from the canonical chain
+    /// since the last call: re-reading them at the tip brings a node-local index of tip
+    /// state up to date across any reorg.
+    pub fn take_touched(&mut self) -> HashSet<schema::Key> {
+        self.touched.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     // ------------------------------------------------------------------ templates
 
     /// Open jobs a block on the tip could mine, newest `scan` jobs only.
@@ -1286,6 +1343,23 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         now_ms: u64,
         available: &(dyn Fn(&JobRecord) -> bool + Sync),
     ) -> Result<Template, ChainError> {
+        self.build_template_with(parent, miner, choice, candidates, now_ms, available, None).await
+    }
+
+    /// [`Chain::build_template_filtered`] where an auto choice takes its mineable jobs (and
+    /// their tickets) from `jobs` instead of scanning the newest TEMPLATE_JOB_SCAN jobs in
+    /// state: the node's job index (rpc jobindex), which must describe `parent`'s state.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_template_with(
+        &self,
+        parent: Hash,
+        miner: Pubkey,
+        choice: JobChoice,
+        candidates: &[Tx],
+        now_ms: u64,
+        available: &(dyn Fn(&JobRecord) -> bool + Sync),
+        jobs: Option<(Vec<JobRecord>, HashMap<Hash, schema::TicketExt>)>,
+    ) -> Result<Template, ChainError> {
         let tip = self.live.get(&parent).ok_or_else(|| ChainError::Invalid("parent is not a live block".into()))?;
         let height = tip.header.height + 1;
         let job = match choice {
@@ -1303,9 +1377,28 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 Some(j)
             }
             JobChoice::Auto => {
-                let mut jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
+                let (mut jobs, tickets) = match jobs {
+                    Some(x) => x,
+                    None => {
+                        let jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
+                        let mut tickets = HashMap::new();
+                        for j in &jobs {
+                            if let Some((tid, _, _)) = j.segment() {
+                                if tickets.contains_key(&tid) {
+                                    continue;
+                                }
+                                if let Some(v) = self.read_at(&parent, &schema::job_key(&tid)).await? {
+                                    if let Some(t) = JobRecord::decode(&v).map_err(internal)?.ticket() {
+                                        tickets.insert(tid, *t);
+                                    }
+                                }
+                            }
+                        }
+                        (jobs, tickets)
+                    }
+                };
                 jobs.retain(|j| available(j));
-                jobs.sort_by(|a, b| b.cap_remaining.cmp(&a.cap_remaining).then(a.index.cmp(&b.index)));
+                fair_job_order(&mut jobs, &|t| tickets.get(t).copied());
                 jobs.into_iter().next()
             }
         };

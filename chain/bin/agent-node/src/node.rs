@@ -148,6 +148,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let (blobs_s, mut blobs_r) = channels.blobs;
     let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch };
     core.peer_info = cfg.peer_info.clone();
+    core.started_ms = now_ms(&context);
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
     let mut next_tip = context.current() + cfg.tip_interval;
     // events handled per select branch (api, blocks, txs, blobs, tips, sync, timer), logged every 15 tip ticks

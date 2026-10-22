@@ -485,8 +485,16 @@ impl<'a> Miner<'a> {
         let height = self.node.call("getChainInfo", json!({}))?.get("height").and_then(Value::as_u64).unwrap_or(0);
         let mut queued = 0;
         let mut offset = 0u64;
+        // a node with the job index (2026-10-22) filters by kind and pages by cursor, so a sweep
+        // reads only the open plain jobs; an older node ignores both and pages by offset
+        let mut cursor: Option<u64> = None;
         loop {
-            let page = self.node.call("listJobs", json!({"status": "open", "offset": offset, "limit": 200}))?;
+            let mut q = json!({"status": "open", "kind": "job", "limit": 200});
+            match cursor {
+                Some(c) => q["after"] = json!(c),
+                None => q["offset"] = json!(offset),
+            }
+            let page = self.node.call("listJobs", q)?;
             let jobs = page.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
             for v in &jobs {
                 let n = |k: &str| v.get(k).and_then(|x| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
@@ -513,6 +521,15 @@ impl<'a> Miner<'a> {
                 self.log(json!({"event": "orphan_found", "job": hex::encode(id), "blocks_mined": n("blocks_mined"), "deadline_height": n("deadline_height")}));
                 self.queue_delivery(id, &prep)?;
                 queued += 1;
+            }
+            if let Some(nc) = page.get("next_cursor") {
+                match nc.as_u64() {
+                    Some(c) => {
+                        cursor = Some(c);
+                        continue;
+                    }
+                    None => break,
+                }
             }
             offset += jobs.len() as u64;
             if jobs.len() < 200 || offset >= n_total(&page) {

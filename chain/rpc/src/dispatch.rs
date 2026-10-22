@@ -247,7 +247,7 @@ pub fn route_json(account: &[u8; 32], r: &Route, height: u64) -> Value {
     })
 }
 
-fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
+pub(crate) fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
     r.map_err(RpcError::server)
 }
 
@@ -316,8 +316,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         })
     }
 
-    /// Handle one JSON-RPC call. `now_ms` is the node clock.
+    /// Handle one JSON-RPC call. `now_ms` is the node clock. Counts calls and time per
+    /// method (getNodeStats).
     pub async fn dispatch(&mut self, method: &str, p: &Value, now_ms: u64) -> R {
+        let t0 = std::time::Instant::now();
+        let r = self.dispatch_method(method, p, now_ms).await;
+        let us = t0.elapsed().as_micros() as u64;
+        // unknown method names are counted together so junk cannot grow the map
+        let known = r.as_ref().err().is_none_or(|e| e.code != -32601);
+        let e = self.rpc_stats.entry(if known { method.to_string() } else { "(unknown)".into() }).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += us;
+        r
+    }
+
+    async fn dispatch_method(&mut self, method: &str, p: &Value, now_ms: u64) -> R {
         let p = if p.is_null() { &json!({}) } else { p };
         match method {
             "getChainInfo" => {
@@ -486,31 +499,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let a = p_key(p, &["account", "address", "deliverer"])?;
                 self.reject_stats(&a).await
             }
-            "listJobs" => {
-                let status = p_str(p, &["status"]).map(|s| s.to_ascii_lowercase());
-                let offset = p_u64(p, "offset").unwrap_or(0) as usize;
-                let limit = p_u64(p, "limit").unwrap_or(50).min(200) as usize;
-                let c = self.counters().await?;
-                let next = self.chain.tip_height() + 1;
-                let mut all = Vec::new();
-                for i in c.job_count.saturating_sub(10_000)..c.job_count {
-                    let Some(b) = self.tip_record(&schema::job_index_key(i)).await? else { continue };
-                    let id = srv(schema::decode_job_index(&b))?;
-                    if let Some(j) = self.job(&id).await? {
-                        let keep = match status.as_deref() {
-                            None => true,
-                            Some("mineable") => executor::check_mineable(&j, next).is_ok(),
-                            Some(s) => j.status.name() == s,
-                        };
-                        if keep {
-                            all.push(j);
-                        }
-                    }
-                }
-                let total = all.len();
-                let jobs: Vec<Value> = all.iter().skip(offset).take(limit).map(|j| job_json(j, next)).collect();
-                Ok(json!({"total": total, "jobs": jobs}))
-            }
+            "listJobs" => self.list_jobs(p).await,
+            "getNodeStats" => Ok(self.node_stats(now_ms)),
             "getModel" => {
                 let id = p_key(p, &["model_id", "id"])?;
                 Ok(match self.tip_record(&schema::model_key(&id)).await? {

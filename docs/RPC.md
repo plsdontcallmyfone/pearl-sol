@@ -236,8 +236,11 @@ stores it and relays it on the tips channel. Result:
 2 below the tip are pruned).
 
 ### getTxStatus `{"tx_hash": "hex"}`
-`{"tx_hash", "status": "pending|preconfirmed|included|final|unknown", "preconf"?, "block_hash"?,
-"height"?, "confirmations"?, "final": bool}` without the tx body. `preconf` (status
+`{"tx_hash", "status": "pending|preconfirmed|included|final|dropped|unknown", "preconf"?, "block_hash"?,
+"height"?, "confirmations"?, "reason"?, "dropped_height"?, "final": bool}` without the tx body.
+`dropped` (2026-10-22): this node evicted the tx from its pool (sendTx "Eviction"); `reason` says
+why (`failed at 3 consecutive tips: <executor error>`), `dropped_height` is the tip it was dropped
+at. The node remembers its last 4096 drops; getTx still answers null for a dropped tx. `preconf` (status
 preconfirmed): `{"weak_count", "weak_miners", "weak_share", "first_seen_ms", "latest_age_ms",
 "confidence": "low|medium|high"}` over the weak blocks on the current tip (docs/SPEED.md 2.4;
 what it guarantees: 2.5). `unknown`: neither pooled, nor listed by a weak block on the tip, nor
@@ -248,9 +251,16 @@ Checks decoding, chain id, signature, fee, nonce (>= account nonce, within 64), 
 gossips. Result `{"tx_hash": "hex"}`.
 A tx at a nonce the sender already has pooled replaces it only with a fee at least 10% higher
 (`old + max(old / 10, 1)`); otherwise "a tx with this nonce is pooled with a fee >= this one" or
-"replacement fee F below G". The mempool checks no tx semantics: a tx that fails at the tip stays
-pooled (templates skip it, and every later nonce of the sender with it) until it is replaced or
-its nonce is used; getAccount's `nonce` is the confirmed one (SPEC 5.4 "Server nonce").
+"replacement fee F below G". getAccount's `nonce` is the confirmed one (SPEC 5.4 "Server nonce").
+Eviction (node policy, 2026-10-22; before it a tx that failed at the tip stayed pooled until it was
+replaced or its nonce was used, which held the gateway's nonce for 9 hours, HANDOFF 39): after every
+new tip the node executes its pool's candidate txs against the tip in block order, as a template
+does. A tx that fails at `EVICT_AFTER_TIPS` (3) consecutive tips (3 different blocks; a rebuild on
+the same tip does not count, a success resets the count) is dropped; a failure caused only by an
+earlier failing tx of the same sender is not counted, and the sender's later nonces stay pooled for
+it to fill the gap. While a pooled tx fails at the tip, a tx at its nonce replaces it at ANY fee (no
+10% bump; min_fee still applies). A nonce below the account nonce is pruned as before. Each node
+applies the rule to its own pool; getNodeStats `mempool.failing` / `evicted` count it.
 A same-nonce replacement of a pooled tx that a weak block on the tip lists is refused (`... is
 preconfirmed by a weak block on the tip and cannot be replaced`, docs/SPEED.md 2.6).
 
@@ -324,8 +334,30 @@ tickets, segments, blocks_mined, subsidy_paid, matrix_count, matrices: [{index, 
 `segment_list`: `[{segment_id, round, matrix, m, k, n, status, mineable, max_blocks, blocks_mined, cap, subsidy_paid, data_uri, c_hash}]`
 over every round. Error if the job is not a ticket.
 
-### listJobs `{"status"?: "open|delivered|completed|expired|mineable", "offset"?: 0, "limit"?: 50}`
-`{"total": 12, "jobs": [Job]}`, in posting order. `limit` is at most 200.
+### listJobs `{"status"?: "open|delivered|completed|expired|live|mineable|all", "kind"?: "job|ticket|segment", "offset"?: 0, "after"?: n, "before"?: n, "limit"?: 50}`
+`{"total": 12, "jobs": [Job], "next_cursor": n | null}`. `limit` is at most 200; `live` = open or
+delivered. Two ways to page:
+- `offset` (as before): the newest 10,000 jobs that match, in posting order; `total` counts them.
+- cursor (2026-10-22): `after` = a job `index`, the matching jobs with a higher index in ascending
+  order; or `before` = an index, lower ones in descending order (newest first). Spans every job;
+  `total` counts every match.
+`next_cursor` (both modes) is the `index` of the last job on the page when more match after it, else
+null: pass it as `after` (or `before`) for the next page. A node older than 2026-10-22 ignores
+`kind`, `after` and `before` and sends no `next_cursor`; clients use that to fall back to offsets.
+Answered from the node's job index (chain/rpc/src/jobindex.rs: ids and statuses of every job, the
+records of live jobs and tickets, kept current from the keys each connected or disconnected block
+wrote), so a call decodes only its page. Before it, every call read the index entry and record of
+each of the newest 10,000 jobs (20,000 state reads; the box 0 miner's orphan sweep made about 40 such
+calls a minute).
+
+### getNodeStats `{}` (2026-10-22, node-local diagnostics)
+`{"uptime_ms", "rpc": {"<method>": {"calls", "total_ms", "avg_us"}}, "state_cache": {"hits",
+"misses", "bypass", "entries", "bytes", "budget_bytes"}, "job_index": {"built", "jobs", "records",
+"rebuilds", "updates", "state_reads"}, "mempool": {"size", "failing", "evicted", "evict_after_tips"}}`:
+RPC calls and time per method since the node started (methods sorted by total time; unknown method
+names counted as `(unknown)`), the state read cache (committed values by key: `hits`/`misses` are
+reads answered from it or from disk, `bypass` reads of keys an uncommitted block wrote, which go
+through the block's batch chain), the job index and the pool eviction counters.
 
 ### getBlock `{"hash": "hex"}` or `{"height": n}`, optional `"raw": true`
 ```json

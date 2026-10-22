@@ -488,6 +488,20 @@ describe("order results", () => {
     assert.deepEqual([t.finalized, rl.state.orders], [[], []]);
   });
 
+  it("reads a pending order's job once per chain tip, not once per tick (2026-10-22)", async () => {
+    const { w, jobId } = await orderWorld();
+    const rl = relayer(w);
+    await rl.tick();
+    w.node.mine();
+    const before = w.node.calls.get("getJob") ?? 0;
+    for (let i = 0; i < 5; i++) await rl.tick();
+    assert.equal((w.node.calls.get("getJob") ?? 0) - before, 1, "five ticks at one tip: one getJob");
+    w.node.mine([{ op: "deliver", jobId, deliverer: Keypair.generate().publicKey, resultHash: Buffer.alloc(32, 2), uri: "" }]);
+    await rl.tick();
+    await rl.tick();
+    assert.equal((w.node.calls.get("getJob") ?? 0) - before, 2, "a new tip: read again");
+  });
+
   it("expire_order when the job expired on the chain", async () => {
     const { w, jobId } = await orderWorld();
     const rl = relayer(w);
