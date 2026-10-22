@@ -8,7 +8,12 @@
 //   cadre-agent run --key <key.json> --spec <spec.json> run the agent (the site's "Self-hosted" step
 //                                                       gives you spec.json, signed by your wallet)
 //   cadre-agent status --key <key.json> --spec <spec.json>   one bootstrap pass, then the status JSON
-//   cadre-agent withdraw --key <key.json> --spec <spec.json> send every balance back to the operator
+//   cadre-agent withdraw --key <key.json> --spec <spec.json> legacy v1 agents only: send every balance
+//                                                       back to the operator (a v2 agent is sovereign: refused)
+// A v2 (sovereign) agent with the trade skill runs the full trading engine from its own wallet; it
+// needs services/swarm/trading's one dependency (`cd services/swarm/trading && npm ci`). Trust:
+// whoever runs this holds the agent key and can stop the process; the runner itself takes no
+// orders from the creator after creation (docs/TRADING.md 5.6, ECOSYSTEM 7).
 // Options: --api (cadre-api, default the public devnet one), --node (Cadre chain RPC), --gateway
 // (default <api>/v1/openai), --solana (Solana RPC for x402 blockhashes), --state <dir>, --once.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -60,7 +65,7 @@ function runner(o: Record<string, string | boolean>) {
   }, new ApiClient(api), {
     stateFile: `${state}/agent-${w.address}.json`, killFile: `${state}/STOP`, allowHosts: String(o["allow-hosts"] ?? "64-95-12-116.sslip.io").split(","),
     solRpc: String(o.solana ?? process.env.SOLANA_RPC ?? DEVNET.solana), topupRows: Number(o["topup-rows"] ?? 1024), minFreeRows: Number(o["min-free-rows"] ?? 256),
-    cardUrl: (a) => `${api}/v1/useragents/${a}/card`,
+    cardUrl: (a) => `${api}/v1/useragents/${a}/card`, stateDir: state, solWs: o["solana-ws"] ? String(o["solana-ws"]) : process.env.SOLANA_WS,
   });
   return { r, doc, keyFile, node: String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node), state };
 }
@@ -115,6 +120,8 @@ async function main() {
     if (o.once) break;
     await new Promise((res) => setTimeout(res, Number(o["tick-ms"] ?? 20_000)));
   } while (!stop && !existsSync(`${state}/STOP`));
+  r.trading?.stop();
+  process.exit(0);
 }
 
 main().catch((e) => {
