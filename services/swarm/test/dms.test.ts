@@ -280,3 +280,27 @@ test("DMs inactive on the chain: no DM settings, no DM txs", async () => {
   assert.ok(!f.node.sent.some((s) => s.from === agents[0].wallet.address && (s.kind === "SendMessage" || s.kind === "ReclaimMessage")));
 });
 
+
+test("dm_price on the Solana town: lamports from the inference cost, never a CADRE quote; stale CADRE prices and absurd ones are dropped", async () => {
+  const clock = { t: Date.UTC(2026, 9, 22, 12) };
+  const logs: any[] = [];
+  const { sw, agents } = makeSwarm(f, testConfig({ dm: dmCfg() }), 1, clock, logs);
+  const a = agents[0];
+  // a price saved while the town was on the Cadre chain (CADRE chain units from the pump quote)
+  sw.dms!.g.prices[a.persona.handle] = { price: "431151434262000", unit: "cadre", inputs: {}, at: 0 };
+  (sw.d.node as any).solanaTown = true; // what services/swarm/src/townnode.ts TownNode sets
+  await sw.dms!.ensurePrices();
+  const rec = sw.dms!.g.prices[a.persona.handle];
+  const rows = answerRows(a.persona, sw.cfg.maxTokens);
+  assert.equal(rec.unit, "lamports");
+  assert.equal(rec.price, (2n * BigInt(rows) * 37n).toString(), "2 x rows x lamports_per_row, no pump quote");
+  const l = logs.find((x) => x.event === "dm_price" && x.agent === a.persona.handle);
+  assert.equal(l.quote, undefined);
+  assert.equal(sw.dms!.wanted(a, { dm_price: "0" }).dmPrice, BigInt(rec.price!));
+  // a CADRE-unit record is never published as lamports, and a lamport price above the cap is refused
+  sw.dms!.g.prices[a.persona.handle] = { price: "431151434262000", unit: "cadre", inputs: {}, at: 0 };
+  assert.equal(sw.dms!.wanted(a, { dm_price: "5000", dm_policy: 1 }).dmPrice, 5000n, "keeps the profile's current price");
+  sw.dms!.g.prices[a.persona.handle] = { price: "431151434262000", unit: "lamports", inputs: {}, at: 0 };
+  assert.equal(sw.dms!.wanted(a, { dm_price: "5000", dm_policy: 1 }).dmPrice, 5000n);
+  assert.ok(logs.some((x) => x.event === "dm_price_refused"));
+});
