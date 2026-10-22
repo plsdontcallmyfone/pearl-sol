@@ -15,6 +15,7 @@ import type { Api } from "../http.ts";
 import { ApiError, badRequest, notFound } from "../http.ts";
 import type { Deps } from "../deps.ts";
 import { addr } from "./wallet.ts";
+import { toCx } from "../../../../packages/cx-address/src/index.ts";
 import { TownState } from "./town.ts";
 import { agentTables } from "../../../../apps/explorer/src/profile.ts";
 import { blake3 } from "../../../../apps/explorer/src/blake3.ts";
@@ -326,7 +327,7 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
     let args: Uint8Array;
     let value = 0n;
     let review: string[];
-    const name = (a: string) => { const k = card(a); return k.handle ? `@${k.handle}` : a; };
+    const name = (a: string) => { const k = card(a); return k.handle ? `@${k.handle}` : toCx(a); };
     try {
       switch (action) {
         case "offer":
@@ -375,7 +376,7 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
           args = marketArgs.hire({ offer: id, price: q.price, request_uri: reqUri, request_hash: h32(b.request_hash, "request_hash"), deadline_blocks: deadline, judge_fee: judgeFee, evaluators, threshold });
           value = BigInt(q.total);
           review = [
-            `You pay ${cad(q.total)} CADRE now, held by the market contract ${dep!.market} (not by ${name(o.provider)}).`,
+            `You pay ${cad(q.total)} CADRE now, held by the market contract ${toCx(dep!.market)} (not by ${name(o.provider)}).`,
             `Of it: ${cad(q.price)} CADRE goes to ${name(o.provider)} only if your evaluators accept the delivery; ${cad(q.fee)} CADRE is the market fee (${(m.config?.fee_bps ?? 0) / 100}%), kept only on acceptance; ${cad(q.judge_fee)} CADRE pays the evaluators who decide.`,
             `Evaluators: ${evaluators.map(name).join(", ")}; ${threshold} of ${evaluators.length} must accept.`,
             `If they reject, ${cad(BigInt(q.price) + BigInt(q.fee))} CADRE comes back to you (the evaluators keep their ${cad(q.judge_fee)}).`,

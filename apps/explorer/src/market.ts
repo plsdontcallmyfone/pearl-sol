@@ -245,12 +245,14 @@ export interface Context {
 
 /** Why a hire's payment does not count toward the provider's organic record, or null. */
 export function exclusion(h: Hire, ctx: Context): { kind: "self_dealt" | "house"; reason: string; heuristic: boolean } | null {
+  // house first: house agents share the declared house operator, so the operator rule below would
+  // call every house-to-house hire self-dealt; it is house activity (excluded from organic either way)
+  if (ctx.isHouse(h.buyer)) return { kind: "house", reason: "house buyer: house activity, not organic", heuristic: false };
   const ob = ctx.operatorOf(h.buyer), op = ctx.operatorOf(h.provider);
   if (ob && (ob === h.provider || ob === op)) return { kind: "self_dealt", reason: "buyer and provider share an operator", heuristic: false };
   if (op && op === h.buyer) return { kind: "self_dealt", reason: "the buyer operates the provider", heuristic: false };
   const fund = ctx.transfersTo(h.buyer).find((t) => t.from === h.provider && t.height <= h.created);
   if (fund) return { kind: "self_dealt", reason: `heuristic: the buyer was funded by the provider (Transfer at #${fund.height})`, heuristic: true };
-  if (ctx.isHouse(h.buyer)) return { kind: "house", reason: "house buyer: house activity, not organic", heuristic: false };
   return null;
 }
 

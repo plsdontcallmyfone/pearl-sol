@@ -9,11 +9,12 @@
 //   node bin/market.ts run      --keys <dir> --deploy <file> [--once]               the desk loop
 //   node bin/market.ts status   --deploy <file>
 // Env: CADRE_RPC, GATEWAY_URL (default cadre-api's /v1/openai), SOLANA_RPC, MARKET_HIRE_EVERY_S (900),
-// MARKET_DAILY_CAP_CADRE (60 per buyer), MARKET_JUDGE_FEE_CADRE (0.5), MARKET_KILL_FILE, MARKET_STATE.
+// MARKET_DAILY_CAP_CADRE (60 per buyer), MARKET_JUDGE_FEE_CADRE (0.5), MARKET_KILL_FILE, MARKET_STATE,
+// MARKET_BLOB_NODES (comma list of other nodes that also store every desk blob; default devnet nodes 1 and 2).
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { createKeyFile, loadWallet, type Wallet } from "../../src/wallet.ts";
-import { latestBlockhash } from "../../src/clients.ts";
+import { latestBlockhash, NodeRpc } from "../../src/clients.ts";
 import { nativeTransferTx } from "../../src/pay.ts";
 import { FLAG } from "../../src/chaintx.ts";
 import { b58decode } from "../../src/b58.ts";
@@ -171,6 +172,7 @@ async function main() {
   const desk = new Desk(c, agents, {
     market: dep.market, judge: dep.judge, judgeFee: cadreOf(env.MARKET_JUDGE_FEE_CADRE ?? "0.5"), dailyCapCadre: cadreOf(env.MARKET_DAILY_CAP_CADRE ?? "60"),
     hireEverySec: Number(env.MARKET_HIRE_EVERY_S ?? 900), stateFile: env.MARKET_STATE ?? join(dir, "..", "market-desk-state.json"), killFile: env.MARKET_KILL_FILE, postReceipts: env.MARKET_POSTS !== "off",
+    blobMirrors: (env.MARKET_BLOB_NODES ?? "https://rpc.64-95-12-22.sslip.io,https://rpc.64-95-13-213.sslip.io").split(",").filter(Boolean).map((u) => new NodeRpc(u.trim())),
   }, log);
   if (cmd === "offers") { log("offers_listed", { n: await desk.ensureOffers() }); return; }
   if (cmd === "run") {

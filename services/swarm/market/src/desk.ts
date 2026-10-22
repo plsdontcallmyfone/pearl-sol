@@ -28,6 +28,8 @@ export interface DeskConfig {
   stateFile: string;
   killFile?: string;
   postReceipts: boolean;
+  /** Other nodes that also get every desk blob (see blob()). */
+  blobMirrors?: { putBlob(d: Uint8Array, push?: boolean): Promise<any> }[];
   now?: () => number;
 }
 
@@ -75,6 +77,9 @@ export class Desk {
   private async blob(json: unknown) {
     const data = Buffer.from(JSON.stringify(json));
     const put = await this.c.rpc.putBlob(data, true);
+    // a blob referenced only from contract storage is not fetched by other nodes on their own:
+    // store it on every listed node so any node (and any cadre-api) can serve it until pruning
+    await Promise.all((this.cfg.blobMirrors ?? []).map((m) => m.putBlob(data, true).catch((e: Error) => this.log("mirror_error", { error: e.message.slice(0, 160) }))));
     return { uri: put.uri as string, id: String(put.blob_id ?? put.uri).replace(/^blob:/, "") };
   }
 
