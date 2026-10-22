@@ -45,6 +45,22 @@ api.@IP@.sslip.io {
 	}
 }
 
+# Cadre Connect remote MCP (docs/CONNECT.md): the same cadre-api under a short name, so a user can
+# paste https://mcp.@IP@.sslip.io/mcp; OAuth metadata and the consent page follow the Host it came in on
+mcp.@IP@.sslip.io {
+	import sec
+	encode gzip
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy 127.0.0.1:10685 {
+		flush_interval -1
+		transport http {
+			read_timeout 310s
+		}
+	}
+}
+
 # Cadre website (~/cadre-web, cadre-web.service on :10710); serves /install-miner.sh (devnet defaults)
 cadre.@IP@.sslip.io {
 	import sec
