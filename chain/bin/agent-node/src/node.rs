@@ -155,7 +155,10 @@ pub async fn run<E, CE, V, S, R, D, B>(
 
     loop {
         // biased select: the tip timer comes first so a busy branch below cannot starve it
-        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21)
+        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21); then
+        // block gossip, sync deliveries and tips/weak blocks BEFORE the RPC mailbox: a node whose
+        // RPC is saturated by local clients (devnet box 0, 2026-10-22: getChainInfo at 0.6-1.4 s)
+        // otherwise read gossiped blocks late and fell off the tip (orphan stalls at 5762, 5768, 5777)
         select! {
             _ = context.sleep_until(next_tip) => {
                 next_tip = context.current() + cfg.tip_interval;
@@ -174,18 +177,6 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 if cfg.peer_info.is_none() {
                     core.static_peers = seen_peers.iter().map(|k| bs58::encode(commonware_codec::Encode::encode(k)).into_string()).collect();
                     core.static_peers.sort();
-                }
-            },
-            req = api.next() => {
-                seen[0] += 1;
-                let Some(req) = req else { break };
-                match req {
-                    ApiRequest::Call { method, params, reply } => {
-                        let now = now_ms(&context);
-                        let r = core.dispatch(&method, &params, now).await;
-                        let _ = reply.send(r);
-                    }
-                    ApiRequest::Subscribe { topics, tx } => core.subscribers.push(Subscriber { topics, tx }),
                 }
             },
             msg = blocks_r.recv() => {
@@ -218,23 +209,10 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     }
                 }
             },
-            msg = txs_r.recv() => {
-                seen[2] += 1;
-                let Ok((peer, buf)) = msg else { break };
-                seen_peers.insert(peer);
-                if let Ok(t) = Tx::decode(buf.as_ref()) {
-                    let _ = core.add_tx(t, false).await;
-                }
-            },
-            msg = blobs_r.recv() => {
-                seen[3] += 1;
-                let Ok((peer, buf)) = msg else { break };
-                seen_peers.insert(peer.clone());
-                let key = commonware_codec::Encode::encode(&peer);
-                if !core.receive_blob(key.as_ref(), buf.as_ref(), now_ms(&context)).await {
-                    warn!(?peer, "oversized blob push from peer: blocking it");
-                    let _ = gossip_blocker.block(peer);
-                }
+            ev = sync_rx.recv() => {
+                seen[5] += 1;
+                let Some(ev) = ev else { break };
+                handle_sync(&mut core, ev, now_ms(&context)).await;
             },
             msg = tips_r.recv() => {
                 seen[4] += 1;
@@ -252,13 +230,46 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     let height = u64::from_le_bytes(b[32..40].try_into().unwrap());
                     if height > core.chain.finalized().header.height && !core.chain.is_known(&h) {
                         core.outbox.push(Outbound::FetchHeader(h));
+                    } else if height > core.chain.tip_height() {
+                        // a tip we hold only as an orphan or header: ask again for whatever its
+                        // ancestry is missing (consensus_pow::chain::repair, the 5762 stall)
+                        match core.chain.repair_for(&h) {
+                            Some(consensus_pow::Repair::Header(m)) => core.outbox.push(Outbound::FetchHeader(m)),
+                            Some(consensus_pow::Repair::Body(m)) => core.chain.reask_body(&m),
+                            None => {}
+                        }
                     }
                 }
             },
-            ev = sync_rx.recv() => {
-                seen[5] += 1;
-                let Some(ev) = ev else { break };
-                handle_sync(&mut core, ev, now_ms(&context)).await;
+            req = api.next() => {
+                seen[0] += 1;
+                let Some(req) = req else { break };
+                match req {
+                    ApiRequest::Call { method, params, reply } => {
+                        let now = now_ms(&context);
+                        let r = core.dispatch(&method, &params, now).await;
+                        let _ = reply.send(r);
+                    }
+                    ApiRequest::Subscribe { topics, tx } => core.subscribers.push(Subscriber { topics, tx }),
+                }
+            },
+            msg = txs_r.recv() => {
+                seen[2] += 1;
+                let Ok((peer, buf)) = msg else { break };
+                seen_peers.insert(peer);
+                if let Ok(t) = Tx::decode(buf.as_ref()) {
+                    let _ = core.add_tx(t, false).await;
+                }
+            },
+            msg = blobs_r.recv() => {
+                seen[3] += 1;
+                let Ok((peer, buf)) = msg else { break };
+                seen_peers.insert(peer.clone());
+                let key = commonware_codec::Encode::encode(&peer);
+                if !core.receive_blob(key.as_ref(), buf.as_ref(), now_ms(&context)).await {
+                    warn!(?peer, "oversized blob push from peer: blocking it");
+                    let _ = gossip_blocker.block(peer);
+                }
             },
         }
         core.schedule_fetches();
