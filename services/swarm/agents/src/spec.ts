@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { b58decode } from "../../src/b58.ts";
 import { verifySig } from "../../src/wallet.ts";
+import { validateToolbelt, type ToolbeltSpec } from "./toolbelt/spec.ts";
 
 export const SPEC_FORMAT = "cadre-agent-spec-v1";
 /** v2 (2026-10-21, owner): a sovereign agent. The creator funds it and signs the spec once at
@@ -111,6 +112,8 @@ export interface AgentSpec {
   evolve?: EvolveSpec;
   /** v2, optional (absent in specs signed before 2026-10-22, so their hashes are unchanged). */
   launch?: LaunchSpec | null;
+  /** v2, optional (2026-10-22): off-chain abilities for a hosted agent (toolbelt/spec.ts, docs/TOOLBELT.md). */
+  toolbelt?: ToolbeltSpec | null;
 }
 
 export const isSovereign = (s: AgentSpec) => s.format === SPEC_FORMAT_V2 && s.sovereign === true;
@@ -227,7 +230,7 @@ export function validateSpec(s: any): string[] {
   if (s.model !== null && (typeof s.model !== "string" || s.model.length > 128)) e.push("model is null or text of at most 128 characters");
   if (!Number.isInteger(s.created_ms) || s.created_ms < 0) e.push("created_ms is an integer");
   if (s.format === SPEC_FORMAT) {
-    for (const k of ["sovereign", "trade", "evolve", "launch"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
+    for (const k of ["sovereign", "trade", "evolve", "launch", "toolbelt"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
     if (Array.isArray(s.skills) && s.skills.includes("trade")) e.push(`the trade skill needs format ${SPEC_FORMAT_V2}`);
     if (Array.isArray(s.skills) && s.skills.includes("launch")) e.push(`the launch skill needs format ${SPEC_FORMAT_V2}`);
     if (s.actions?.launch) e.push(`actions.launch needs format ${SPEC_FORMAT_V2}`);
@@ -246,6 +249,8 @@ export function validateSpec(s: any): string[] {
     if (!s.actions?.trade) e.push("a trade section needs actions.trade");
     e.push(...validateTrade(s.trade));
   }
+  e.push(...validateToolbelt(s.toolbelt));
+  if (s.toolbelt && s.hosting !== "hosted") e.push("the toolbelt runs only in the hosted runtime (hosting: hosted)");
   const hasLaunch = Array.isArray(s.skills) && s.skills.includes("launch");
   if (s.launch === null || s.launch === undefined) {
     if (hasLaunch) e.push("the launch skill needs a launch section");

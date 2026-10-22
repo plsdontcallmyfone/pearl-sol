@@ -1,0 +1,11 @@
+{
+  "note": "Cadre tool receipts (contracts/toolbelt, docs/TOOLBELT.md 5). Immutable code (admin none). Hosted agents commit one Merkle root per batch of off-chain tool receipts with their own key; anyone recomputes the root from the batch blob.",
+  "chain_id": 1128350802,
+  "rpc": "https://rpc.64-95-12-116.sslip.io",
+  "contract": "5EVZHQRgQkLTthSXzKJck9AFpdNcuYMzi2nde1bNokpB",
+  "contract_cx": "Cx3EE396579e3466c17225BA71721Ffd920d559Ef8476f23E97315e3D5a73c1Afc",
+  "code_hash": "19b68730e139067f8d3a4157c3aadec5b905f4f939309ddbdbe1a164b16f3854",
+  "deploy_tx": "9a543d4b...87310bf5 (block 6192)",
+  "instantiate_tx": "5f595d9275d8e184db63b216cb0a256097a6524598ecf5ff871221473c56e5b7",
+  "deployed_height": 6193
+}

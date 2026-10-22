@@ -34,6 +34,9 @@ import type { UserTrading } from "../../trading/src/useragent.ts";
 import { AgentMarket } from "./market.ts";
 import type { HaltWatch } from "./halt.ts";
 import { type LaunchHost, type LaunchRec, maybeLaunch } from "./launch.ts";
+import type { Toolbelt } from "./toolbelt/index.ts";
+import { toolbeltFor } from "./toolbelt/host.ts";
+import { watch as toolWatch, type WatchState } from "./toolbelt/work.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error" | "halted";
 
@@ -108,6 +111,9 @@ export class AgentRunner extends Swarm {
   launches: LaunchRec[] = [];
   launchConsideredAt = 0;
   sendChain: Promise<unknown> = Promise.resolve();
+  /** v2 toolbelt (docs/TOOLBELT.md): this agent's own off-chain tools, meter and receipts; null = none */
+  toolbelt: Toolbelt | null = null;
+  watchSt: WatchState = { last: {}, at: 0 };
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -131,6 +137,8 @@ export class AgentRunner extends Swarm {
       this.launchConsideredAt = ex.launchConsideredAt ?? 0;
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
+    this.toolbelt = toolbeltFor(this, ex?.toolbelt);
+    if (ex?.watch) this.watchSt = ex.watch;
     if (this.self) this.me.persona = personaOf(doc.spec, this.self);
   }
 
@@ -145,7 +153,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, toolbelt: this.toolbelt?.toJSON(), watch: this.watchSt };
     super.save();
   }
 
@@ -312,8 +320,29 @@ export class AgentRunner extends Swarm {
       await this.startTrading().catch((e) => this.note("trade_error", `trading did not start: ${(e as Error).message}`, { ok: false }));
       await this.evolve().catch((e) => this.note("evolve_error", (e as Error).message, { ok: false }));
       await this.launchTick().catch((e) => this.note("launch_error", (e as Error).message.slice(0, 200), { ok: false }));
+      await this.toolbeltTick().catch((e) => this.note("toolbelt_error", (e as Error).message.slice(0, 200), { ok: false }));
     }
     return r;
+  }
+
+  /** v2 toolbelt standing work: the spec's watch list, and a receipt batch older than a day. */
+  async toolbeltTick(): Promise<string> {
+    const tb = this.toolbelt;
+    if (!tb) return "off";
+    if (tb.spec.watch) {
+      const r = await toolWatch(tb, (m, n, p) => this.think(this.me, m, n, p).then((t) => (t ? { text: t.text, requestId: t.requestId } : null)), this.watchSt, this.d.now(), this.me.persona.persona);
+      for (const c of r.changed) {
+        if (!c.summary || !this.spec.actions.post) continue;
+        const text = `changed: ${c.url.replace(/^https:\/\//, "")}: ${c.summary}`.slice(0, 900);
+        if (!checkOutput(text, { maxBytes: 1024, allowHosts: [new URL(c.url).hostname, ...this.cfg.allowHosts] }).ok) continue;
+        const h = await this.send(this.me.wallet, { kind: "Post", postKind: 0, body: text, thoughtRef: c.thought ?? undefined });
+        this.note("watch", text, { tx: h, request_id: c.thought ?? undefined, ok: true });
+      }
+      if (r.due) this.save();
+    }
+    const old = tb.pending[0];
+    if (old && this.d.now() - old.started_ms > 86_400_000) await tb.maybeFlush(true);
+    return "ok";
   }
 
   /** The v2 launch skill (launch.ts), when the spec opts in. */
@@ -654,6 +683,7 @@ export class AgentRunner extends Swarm {
       desktops: this.spec.desktops.length ? { requested: this.spec.desktops, running: false, why: "user agent desktops wait for the house desktop controller to host user agents (ECOSYSTEM 7.4)" } : null,
       self: this.self,
       trading: this.trading ? this.trading.status() : this.spec.trade ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
+      toolbelt: this.toolbelt ? this.toolbelt.status() : null,
       launches: this.spec.launch ? { bounds: this.spec.launch, launched: this.launches, considered_at: this.launchConsideredAt || null, label: "agent-launched (pump.fun create_v2 by this agent's key)" } : null,
       halt: this.o.halt ? this.o.halt.status() : null,
       log: this.log2.slice(-60).reverse(),

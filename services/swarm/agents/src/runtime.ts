@@ -26,6 +26,7 @@ import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
+import { RouteError, toolbeltRoute } from "./toolbelt/host.ts";
 
 export const VERSION = "0.1.0";
 
@@ -281,6 +282,9 @@ export class Runtime {
     const json = () => { try { return body ? JSON.parse(body) : {}; } catch { throw new HttpError(400, "bad_request", "body is not JSON"); } };
     if (method === "GET" && (path === "/health" || path === "/v1/hosted/health")) return { status: 200, body: { ok: !this.stopped, agents: this.entries.size } };
     if (method === "GET" && path === "/v1/hosted") return { status: 200, body: this.info() };
+    // the agent toolbelt (docs/TOOLBELT.md 10): public status
+    const tbr = await toolbeltRoute(this, method, path).catch((e) => { throw e instanceof RouteError ? new HttpError(e.status, e.code, e.message) : e; });
+    if (tbr) return tbr;
     if (path === "/v1/hosted/agents") {
       if (method === "GET") {
         const op = cadreAddr(u.searchParams.get("operator"), "operator");
