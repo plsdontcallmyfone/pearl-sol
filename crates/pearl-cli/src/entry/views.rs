@@ -492,16 +492,15 @@ fn draw_block(c: &mut Buffer, pen: &Pen, r: Rect, b: &Block) {
                     Row::Kv(k, v, t) => {
                         put(c, inner.x, y, &clip(k, lw as usize), pen.card(MUTED), inner.x + lw);
                         let vw = inner.width.saturating_sub(lw + 2) as usize;
-                        for (i, l) in wrap(v, vw).iter().enumerate() {
+                        let lines = wrap(v, vw);
+                        for (i, l) in lines.iter().enumerate() {
                             if y + i as u16 >= inner.bottom() {
                                 break;
                             }
                             put(c, inner.x + lw + 2, y + i as u16, l, pen.card(tone_c(*t)), inner.right());
-                            if i > 0 {
-                                y += 1;
-                            }
                         }
-                        y += 1;
+                        // a value wrapped onto 3+ lines used to land its third line on the next row
+                        y += lines.len().max(1) as u16;
                     }
                     Row::Section(t) => {
                         put(c, inner.x, y, t, pen.card(BLUE), inner.right());
@@ -891,5 +890,22 @@ mod tests {
         assert!(text[0].contains("block 12"));
         assert!(all.contains("Block 12") && all.contains("Miner") && all.contains("abc") && all.contains("a hint"), "{all}");
         assert_eq!(c[(0, 0)].symbol(), "┃");
+    }
+
+    /// A value that wraps onto three lines keeps the next row below it (it used to overwrite it).
+    #[test]
+    fn long_values_do_not_overwrite_the_next_row() {
+        use crate::term::{Panel, View};
+        let pen = Pen { mode: super::super::theme::Mode::NoColor };
+        let long = format!("@scribe_wren (house) {}", "Cx774dEaA57Ee1975B6b007135Ea586A1290Ec9F7694F9738435a5c9CE69228205");
+        let o: Result<Out, String> = Ok(Out::new(json!({}), "t").view(View::panel(Panel::new("Offer").kv("Provider", long).kv("Price", "4 CADRE"))));
+        let w = 50;
+        let h = out_height(&o, w);
+        let mut c = canvas(w, h);
+        draw_out(&mut c, &pen, 0, 0, w, &o);
+        let rows: Vec<String> = (0..h).map(|y| (0..w).map(|x| c[(x, y)].symbol().to_string()).collect()).collect();
+        let price = rows.iter().position(|r| r.contains("Price")).unwrap();
+        assert!(rows[price].contains("4 CADRE") && !rows[price].contains("CE69"), "{rows:#?}");
+        assert!(rows[..price].iter().any(|r| r.contains("228205")), "{rows:#?}");
     }
 }

@@ -12,6 +12,7 @@
 //! 5 Activity   blocks, txs, town posts and trades as they happen
 //! 6 Status     every health check (what `cadre status` prints)
 //! 7 Lookup     a tx, block, account or @handle, or any command, drawn as cards
+//! 8 Market     the services market: offers and hires, the selected one's detail cards
 //!
 //! One poller (poll.rs) feeds every view; switching views never refetches or resets the
 //! conversation, a selection, a scroll position, a filter or a half-typed input. Palette
@@ -90,10 +91,11 @@ pub enum ViewId {
     Activity,
     Status,
     Lookup,
+    Market,
 }
 
 impl ViewId {
-    pub const ALL: [ViewId; 7] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup];
+    pub const ALL: [ViewId; 8] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup, ViewId::Market];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -104,6 +106,7 @@ impl ViewId {
             ViewId::Activity => "activity",
             ViewId::Status => "status",
             ViewId::Lookup => "lookup",
+            ViewId::Market => "market",
         }
     }
 
@@ -116,6 +119,7 @@ impl ViewId {
             ViewId::Activity => "Live blocks, txs, posts and trades",
             ViewId::Status => "Health of every component",
             ViewId::Lookup => "A tx, block, account or @handle, or any command",
+            ViewId::Market => "Services market: offers, hires, timelines and verdicts",
         }
     }
 
@@ -138,6 +142,7 @@ impl ViewId {
             "activity" | "watch" | "feed" => ViewId::Activity,
             "status" | "health" => ViewId::Status,
             "lookup" | "find" => ViewId::Lookup,
+            "market" | "services" | "offers" | "hires" => ViewId::Market,
             _ => return None,
         })
     }
@@ -238,6 +243,8 @@ pub(crate) struct App {
     inbox: Option<std::result::Result<Value, String>>,
     report: Option<crate::health::Report>,
     feed_errors: Vec<String>,
+    market: Option<std::result::Result<crate::market::Snap, String>>,
+    market_v: crate::market::ViewState,
     // ---- Home
     /// 0 = Ask, i = agents[i - 1].
     mode: usize,
@@ -353,6 +360,8 @@ impl App {
             inbox: None,
             report: None,
             feed_errors: vec![],
+            market: None,
+            market_v: crate::market::ViewState::default(),
             mode: 0,
             input: vec![],
             cur: 0,
@@ -437,8 +446,31 @@ impl App {
                 }
             }
             ViewId::Agents => self.load_card(),
+            ViewId::Market => {
+                if let Some(p) = &self.poll {
+                    if !p.wants.market.swap(true, Ordering::Relaxed) {
+                        let _ = p.kick.send(poll::Kick::One(Source::Market));
+                    }
+                }
+                self.load_market_detail(false);
+            }
             _ => {}
         }
+    }
+
+    /// Read the selected offer's or hire's detail cards (once, or again with `force`).
+    fn load_market_detail(&mut self, force: bool) {
+        let Some(Ok(sn)) = &self.market else { return };
+        let Some(key) = self.market_v.selected(sn) else { return };
+        if self.market_v.pending.contains(&key) || (!force && self.market_v.details.contains_key(&key)) {
+            return;
+        }
+        self.market_v.pending.insert(key);
+        let (ctx, t) = (self.ctx.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let r = crate::market::detail(&ctx, key).map_err(|e| format!("{e:#}"));
+            let _ = t.send(Msg::MarketDetail(key, r));
+        });
     }
 
     /// Text goes to an input in this view (so digits and letters are not view keys).
@@ -749,6 +781,17 @@ impl App {
                 }
             }
             Msg::Status(r) => self.report = Some(*r),
+            Msg::Market(r) => {
+                self.market = Some(*r);
+                // the selected card follows the new read
+                if self.view == ViewId::Market {
+                    self.load_market_detail(true);
+                }
+            }
+            Msg::MarketDetail(k, r) => {
+                self.market_v.pending.remove(&k);
+                self.market_v.details.insert(k, r);
+            }
             Msg::CmdDone(id, r) => {
                 if let Some(l) = self.lookups.iter_mut().find(|l| l.id == id) {
                     l.out = Some(r);
@@ -884,11 +927,11 @@ impl App {
             self.palette_key(k, ctrl);
             return;
         }
-        // view keys that work everywhere: F1..F7, alt+1..7, ctrl+1..7 (where the terminal sends them)
+        // view keys that work everywhere: F1..F8, alt+1..8, ctrl+1..8 (where the terminal sends them)
         let num = match k.code {
-            KeyCode::F(n) if (1..=7).contains(&n) => Some(n as usize),
-            KeyCode::Char(c @ '1'..='7') if ctrl || alt => Some(c as usize - '0' as usize),
-            KeyCode::Char(c @ '1'..='7') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
+            KeyCode::F(n) if (1..=8).contains(&n) => Some(n as usize),
+            KeyCode::Char(c @ '1'..='8') if ctrl || alt => Some(c as usize - '0' as usize),
+            KeyCode::Char(c @ '1'..='8') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
             _ => None,
         };
         if let Some(v) = num.and_then(ViewId::from_num) {
@@ -914,6 +957,51 @@ impl App {
             ViewId::Activity => self.activity_key(k),
             ViewId::Status => self.status_key(k),
             ViewId::Lookup => self.lookup_key(k, ctrl),
+            ViewId::Market => self.market_key(k),
+        }
+    }
+
+    fn market_key(&mut self, k: KeyEvent) {
+        use crate::market::Pane;
+        let moved = match (&self.market, k.code) {
+            (_, KeyCode::Esc) => {
+                self.go(ViewId::Home);
+                return;
+            }
+            (_, KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('o') | KeyCode::Left | KeyCode::Right) => {
+                self.market_v.pane = if self.market_v.pane == Pane::Offers { Pane::Hires } else { Pane::Offers };
+                self.market_v.detail_scroll = 0;
+                true
+            }
+            (_, KeyCode::Char(']')) => {
+                self.market_v.detail_scroll = self.market_v.detail_scroll.saturating_add(3);
+                false
+            }
+            (_, KeyCode::Char('[')) => {
+                self.market_v.detail_scroll = self.market_v.detail_scroll.saturating_sub(3);
+                false
+            }
+            (_, KeyCode::Char('r') | KeyCode::Enter) => {
+                self.kick(poll::Kick::One(Source::Market));
+                self.load_market_detail(true);
+                false
+            }
+            (Some(Ok(sn)), code) => {
+                let d = match code {
+                    KeyCode::Up | KeyCode::Char('k') => -1,
+                    KeyCode::Down | KeyCode::Char('j') => 1,
+                    KeyCode::PageUp => -10,
+                    KeyCode::PageDown => 10,
+                    KeyCode::Home | KeyCode::Char('g') => -100_000,
+                    KeyCode::End | KeyCode::Char('G') => 100_000,
+                    _ => 0,
+                };
+                d != 0 && self.market_v.step(sn, d)
+            }
+            _ => false,
+        };
+        if moved {
+            self.load_market_detail(false);
         }
     }
 
@@ -1430,6 +1518,7 @@ fn draw_header(buf: &mut Buffer, pen: &Pen, app: &App, w: u16) {
         ViewId::Activity => Source::Feed,
         ViewId::Agents => Source::Agents,
         ViewId::Inbox => Source::Inbox,
+        ViewId::Market => Source::Market,
         _ => Source::Chain,
     };
     if app.loading.contains(&src) && app.updated.get(&src).is_none() {
@@ -1455,13 +1544,14 @@ fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
     let mut parts: Vec<(&str, &str)> = match app.view {
         ViewId::Dashboard if app.dash.detail.is_some() => vec![("↑↓", "scroll"), ("esc", "close")],
         ViewId::Dashboard if app.dash.tab == dash::Tab::Send && app.dash.send.confirm => vec![("enter", "sign and send"), ("esc", "edit")],
-        ViewId::Dashboard if app.dash.tab == dash::Tab::Send => vec![("enter", "next"), ("tab", "tabs"), ("f1-f7", "views")],
-        ViewId::Dashboard => vec![("↑↓", "select"), ("enter", "open"), ("←→", "tab"), ("1-7", "views"), ("esc", "home")],
+        ViewId::Dashboard if app.dash.tab == dash::Tab::Send => vec![("enter", "next"), ("tab", "tabs"), ("f1-f8", "views")],
+        ViewId::Dashboard => vec![("↑↓", "select"), ("enter", "open"), ("←→", "tab"), ("1-8", "views"), ("esc", "home")],
         ViewId::Agents => vec![("↑↓", "select"), ("enter", "reload"), ("[ ]", "scroll card"), ("m", "message"), ("esc", "home")],
         ViewId::Inbox => vec![("↑↓", "select"), ("enter", "open"), ("m", "reply on home"), ("esc", "home")],
         ViewId::Activity => vec![("a b t p x", "filter"), ("↑↓", "scroll"), ("g", "newest"), ("esc", "home")],
         ViewId::Status => vec![("↑↓", "scroll"), ("r", "check again"), ("esc", "home")],
-        ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f7", "views"), ("esc", "home")],
+        ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f8", "views"), ("esc", "home")],
+        ViewId::Market => vec![("↑↓", "select"), ("tab", "offers / hires"), ("[ ]", "scroll card"), ("r", "read again"), ("esc", "home")],
         ViewId::Home => vec![],
     };
     parts.push(("ctrl+p", "commands"));
@@ -1581,6 +1671,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             }
             ViewId::Status => draw_status(buf, &pen, app, body, ms),
             ViewId::Lookup => cursor = draw_lookup(buf, &pen, app, body, ms),
+            ViewId::Market => crate::market::draw_view(buf, &pen, body, app.market.as_ref(), &app.market_v, ms),
             ViewId::Home => {}
         }
         if hints_y > body.y {

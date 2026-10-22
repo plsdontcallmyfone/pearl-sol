@@ -7,7 +7,8 @@
 //! the Solana side every 20 s or when a withdrawal appears; town posts and trades every
 //! 10 s; the agent list, DM params and models every 60 s; the inbox every 10 s once DMs
 //! are live and there is an address; health checks every 60 s once the Status view has
-//! been opened (they ping every component). `Kick::Now` runs every source at once
+//! been opened (they ping every component); the services market every 15 s once the Market
+//! view has been opened. `Kick::Now` runs every source at once
 //! (`r` in a view, and after a command that writes).
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,10 +31,11 @@ pub enum Source {
     Models,
     Inbox,
     Status,
+    Market,
 }
 
 impl Source {
-    pub const ALL: [Source; 7] = [Source::Chain, Source::Feed, Source::Agents, Source::Dm, Source::Models, Source::Inbox, Source::Status];
+    pub const ALL: [Source; 8] = [Source::Chain, Source::Feed, Source::Agents, Source::Dm, Source::Models, Source::Inbox, Source::Status, Source::Market];
 
     pub fn period(self) -> Duration {
         Duration::from_secs(match self {
@@ -41,6 +43,7 @@ impl Source {
             Source::Feed => 10,
             Source::Agents | Source::Dm | Source::Models | Source::Status => 60,
             Source::Inbox => 10,
+            Source::Market => 15,
         })
     }
 }
@@ -50,6 +53,8 @@ impl Source {
 pub struct Wants {
     /// The Status view has been opened: keep the health checks fresh.
     pub status: AtomicBool,
+    /// The Market view has been opened: keep the services market fresh.
+    pub market: AtomicBool,
     /// DMs are live and there is an address: read the inbox.
     pub inbox: AtomicBool,
     /// The model list arrived (stop asking).
@@ -96,6 +101,7 @@ fn run(ctx: Arc<Ctx>, net: Net, me: Option<String>, tx: Sender<Msg>, kick: Recei
             let due = force.contains(&s) || last.get(&s).is_none_or(|t| now.duration_since(*t) >= s.period());
             let enabled = match s {
                 Source::Status => wants.status.load(Ordering::Relaxed),
+                Source::Market => wants.market.load(Ordering::Relaxed),
                 Source::Inbox => wants.inbox.load(Ordering::Relaxed) && me.is_some(),
                 Source::Models => !wants.have_model.load(Ordering::Relaxed),
                 _ => true,
@@ -171,6 +177,7 @@ fn fetch(s: Source, ctx: &Ctx, net: &Net, me: Option<&str>, tx: &Sender<Msg>, pr
             Msg::Inbox(net::get(&format!("{a}/inbox/{me}?limit=50")).map_err(|e| format!("{e:#}")))
         }
         Source::Status => Msg::Status(Box::new(crate::health::run_all(ctx))),
+        Source::Market => Msg::Market(Box::new(crate::market::snap(ctx).map_err(|e| format!("{e:#}")))),
     };
     tx.send(msg).is_ok()
 }
