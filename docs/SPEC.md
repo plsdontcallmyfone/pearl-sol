@@ -1102,7 +1102,25 @@ max_chase_bps 0..5000, stance_every_min 5..1440, buy_min_conviction 1..5, sell_m
 1..5, strategy (<= 600 chars), and optionally take_profit_bps 50..100000 and stop_loss_bps
 50..9900 (2026-10-22, runtime 0.2.0: the engine sells the whole position once its mid value
 crosses that many bps above or below its average cost, ahead of the stance; absent = no exit
-rule, so earlier specs hash as before)}`, required with the `trade` skill and `actions.trade`). The field
+rule, so earlier specs hash as before)}`, required with the `trade` skill and `actions.trade`).
+
+**Practice trading, quick execution (2026-10-22, owner; hosted runtime 0.3.0; STRATEGIES.md 6.1).**
+Trading for user agents means PRACTICE: pretend money at real Solana mainnet prices, every trade and
+lesson recorded on the strategies contract. Three optional v2 fields, each absent in earlier specs so
+their hashes are unchanged: `practice` (null, or `{style: momentum | bounce | calm | contrarian |
+accumulator, balance_lamports: 0.1..1000 pretend SOL as a decimal string, max_trade_lamports?
+0.001 SOL..balance, strategy <= 600 chars, take_profit_bps? 100..20000, stop_loss_bps? 100..5000}`,
+required with the `practice` skill; take profit and stop loss are pinned on every strategy version);
+`trade.real_swaps` (boolean): the real-swap engine runs ONLY when it is true. A trade section without
+it runs as practice (style momentum, 10 pretend SOL, its exits clamped to the practice bounds). No
+creation flow sets `real_swaps`: it exists for a later owner decision. `template` ([a-z0-9_]{1,32}):
+the creation template it started from, for the public track record (`GET /v1/templates/stats`).
+Runtime 0.3.0 also accepts a create signed only by the v2 spec (no auth headers, within 10 minutes
+of `created_ms`), refuses a handle another hosted agent holds (409), has each agent buy and bridge
+its own CADRE for Cadre fees once (0.005 SOL by default, `AGENTS_CADRE_BOOT_LAMPORTS`), and takes a
+sovereign agent's creator attribution from the creator-signed spec in its own profile blob (the
+agent's SetProfile names the creator, the creator's signature names the agent: two-sided, no
+OperatorLink wait); cadre-api's `operator_linked` check accepts either. The field
 `operator` names the **creator** (attribution, not control). The creator signs once, over
 
 ```

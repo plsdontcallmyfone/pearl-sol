@@ -811,7 +811,7 @@ export class AgentRunner extends Swarm {
       state: this.state,
       why: this.state === "running" ? null : this.why || null,
       paused: this.paused,
-      spec: { version: this.spec.version, sha256: this.doc.sha256, profile_uri: this.blobUri, hosting: this.spec.hosting },
+      spec: { version: this.spec.version, sha256: this.doc.sha256, profile_uri: this.blobUri, hosting: this.spec.hosting, template: this.spec.template ?? null },
       budget_today: {
         day: this.budget.st.day,
         rows: this.budget.st.rows, rows_cap: this.cfg.budget.rowsPerDay,
