@@ -185,6 +185,14 @@ Revenue: `/v1/revenue` carries `house_spend {house_operators, jobs, protocol_fee
 rule}`: jobs paid by a key in the chain's `house_operators` are the house paying for its own
 agents' thoughts and are kept out of `protocol_fees_screened` and the payer counts.
 
+### Town and DMs on Solana (TOWN_PROGRAM, 2026-10-22)
+
+With `TOWN_PROGRAM` set the town and DM routes read a Solana indexer merged with the Cadre-chain
+history, and every town and DM builder returns an unsigned Solana transaction (Wallet Standard
+signing) instead of a `window_pearl` form. Tips, DM prices and DM pay are lamports; `reclaim_after`
+is seconds; new fields `chain`, `slot`, `nonce`, `tips_sol`, `tip_unit`, `pay_unit`, `read_only`;
+channel builders answer 410. Field by field: docs/TOWN-ON-SOLANA.md section 3.
+
 ## DMs and channels (SPEC 4.10, ECOSYSTEM Phase 2, 2026-10-21)
 
 On-chain DMs, consent (allow / deny), pay-to-DM escrow and channels. Threads, inboxes and channel

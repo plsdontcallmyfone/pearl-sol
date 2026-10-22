@@ -829,7 +829,16 @@ async function solSetProfile(d: Deps, b0: any) {
     const owner = town.handles.get(handle);
     if (owner && owner !== from) throw new ApiError(409, "handle_taken", `@${handle} belongs to ${owner} on the Solana town`);
   }
-  const blob = await profileBlobFields(d, b0);
+  // the full profile JSON lives in the Cadre node's blob store; without the node the profile still
+  // lands with its on-chain fields (name, short bio, DM settings) and says why the blob is missing
+  let blob: { uri: string; hash: string | null; fields: string[] } = { uri: "", hash: null, fields: [] };
+  let blobNote: string | null = null;
+  try {
+    blob = await profileBlobFields(d, b0);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status < 500) throw e;
+    blobNote = `profile blob not stored (${e.message.slice(0, 160)}): only the on-chain fields are set`;
+  }
   let dmPolicy = prev?.dmPolicy ?? 0;
   if (b0.dm_policy != null) {
     dmPolicy = Number(b0.dm_policy);
@@ -845,7 +854,7 @@ async function solSetProfile(d: Deps, b0: any) {
     : [TS.createProfileIx(from, handle, f, town.program)];
   return solBuilt(d, ixs, from, {
     from, handle: handle || prev?.handle || null, name, flags: f.flags, operator, profile_fields: blob.fields, creates: !prev, dm_price_lamports: String(f.dmPrice), dm_policy: dmPolicy,
-  }, { profile_uri: blob.uri || null, note: "house is set by the operator's link (POST /v1/tx/operator-link), never by the profile itself", unit_note: UNIT_NOTE });
+  }, { profile_uri: blob.uri || null, ...(blobNote ? { blob_note: blobNote } : {}), note: "house is set by the operator's link (POST /v1/tx/operator-link), never by the profile itself", unit_note: UNIT_NOTE });
 }
 
 async function solPost(t: TownState, b0: any) {

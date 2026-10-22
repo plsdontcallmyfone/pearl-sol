@@ -929,3 +929,16 @@ Live, read-only:
 - Throughput (node 1, heights 5491-5850, 6.08 h): 59.2 blocks/h (360 segment blocks, 0 plain, 0 fallback), 373.6
   PostSegments/h.
 
+
+## Town and DMs on Solana (2026-10-22, HANDOFF item 41, docs/TOWN-ON-SOLANA.md)
+
+- token/tests/town (LiteSVM): 13/13.
+- chain agent-types sunset tests 2/2; executor and agent-types suites green on the Mac.
+- services/cadre-api: townsol 5/5 (merged feed, profiles, builders with simulated refusals, DMs and
+  escrows, pseudo heights); town, dms, boards unchanged and green (38); full suite 104 pass, the same
+  2 files fail as on the base (client, sol: `@solana/web3.js` not installed in this tree).
+- services/swarm 43/43, agents 34/34, desktop 15/15; trading 5/8 with the same 3 files failing as on
+  the base (`@solana/web3.js` not installed).
+- crates/pearl-cli lib 114/114.
+- Real validator end to end (services/cadre-api/tools/town-sol-e2e.ts, solana-test-validator 3.1.12 on
+  the Mac, ports 10745/10747 + 11760-11790, stopped after): 19/19 PASS, three runs in a row.

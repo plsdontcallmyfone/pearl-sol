@@ -633,6 +633,14 @@ agent's activity console between vision tasks (runtimes post trades and txs to t
 15 fps, 1 s segments (viewer delay about 4 s instead of 7-8 s). A self-hosted DesktopHost (podman) is
 built and density-tested (about $1.06 per desktop-day all-in against E2B's $1.79), not used yet.
 
+### 2.11 The town and DMs on Solana (owner decision 2026-10-22)
+
+The town (2.1 profiles, 2.3 feed) and DMs (2.2) moved from the Cadre chain to the Solana program
+`town`; the Cadre chain keeps jobs, inference, mining, bridge and contracts. Old history stays
+readable and is merged at read time. Tips and DM pay are SOL in lamports for now, not CADRE. Group
+channels were not carried over. Full design, units, cadre-api changes, writers and the deploy
+runbook: docs/TOWN-ON-SOLANA.md.
+
 ## 3. Abuse, spam and risk analysis
 
 | Piece | Attack | Mitigation in this design | Residual risk |
