@@ -338,6 +338,32 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   canonical chain from height 2890 had segment blocks by all three miners (box 1 4pDphQ... 11, box 2
   AHYHqU... 5, box 0 GDcEUh... 4 at height ~2910; for example height 2909, segment of matrix 142).
 
+### Verifiable answers (cadre-glue-v1 replay, 2026-10-21)
+
+SPEC 4.7, docs/PROOFS.md row 11. Owner 2026-10-21: turn it on. Box 0 deployed by the orchestrator
+18:34-18:40 UTC from main 154a819, one unit at a time: cadre-gateway 41a51d8f... and pearl-attester
+fd5fc6d6... in /opt/lode/bin (old ones kept as .prev), cadre-worker restarted from ~/pearl-sol
+(cadre-glue-v1 is its default; `/health` reports `"glue": "cadre-glue-v1"`), with cadre-explorer,
+cadre-api, cadre-miner and cadre-node in the same window (the node to reclaim 6 GB of memory).
+The attester's model store is /var/lib/lode/models/<model_id> (the same files the worker serves).
+
+- First live ticket, run devnet-va-1 (`scripts/devnet-inference.sh`, INF_RUN=devnet-va-1, result in
+  .devnet-e2e/inference-devnet-va-1.json): ticket `ecb7a659f7e4f1f0143b79068906fcd01df4c5eaa41ae6339943d4f8e20149e0`, storefront Order 36,
+  256 rows for 25,121,472 lamports; "What is the capital of France? Answer in one word." -> "Paris"
+  (47 + 2 tokens, 48 rows, ttft 4.2 s, decode 1.53 tok/s); closed 18:39:49 UTC (height 4560).
+- Response blob `880ae9049aace77c9acd57d0eddba8e95bcd7df37338810c23d6b050e52a4803`: `glue: cadre-glue-v1`,
+  and the request carries prompt_ids (47), output_ids (2), max_new_tokens 8, stop, output/text/body sha256.
+- The box 0 attester (evaluator 9U5wdELZ...) replayed it before signing: `replay ecb7a659...: 1 rounds,
+  1 requests, 48 rows, 144 segments in 17.8 s (GEMM 8.8 s)` (journalctl -u cadre-attester). The gateway
+  sent CompleteJob a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3; getTicket: completed.
+- Settled on Solana by proof: cadre-settle "finalized order 36 by proof against final header 4560", tx 4YkF9ABPWpdxRwzXUCYF3Rm8x5k64YR7YHpkgV1cwBzQ3A5qBV8Uq4ZnurbGpckGZrvGR9UYV6muLSFLACBVtPS9 (2026-10-21). Mining of its 144 segments is slow: 11 mined by 19:20 UTC, still 11 at 02:40 UTC (the script's 8 h wait ran out); the miners on all three boxes were mining other tickets' 1004-row segments (chain at ~1 block/min, one segment per block), so this is segment-queue throughput, not the replay (open question for the mining / 8B rows: job selection order across tickets).
+- A ticket holding requests served before the rollout (no `glue` in the gateway ledger, for example the
+  house swarm's ticket open at 18:35 UTC) is not marked replayable and gets the GEMM check only.
+- House swarm: no thought since 17:30 UTC because it reached its own daily budget (SWARM_ROWS_PER_DAY
+  16384, D1 unchanged), before the rollout. Pending its first thought after the 00:00 UTC reset on the
+  new stack.
+- Check a ticket yourself: `cadre-replay` (crates/cadre-glue) or the reference evaluator, docs/EVALUATORS.md 4.
+
 ### Town (social layer) and the house swarm (2026-10-21, ECOSYSTEM Phase 1)
 
 - Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with

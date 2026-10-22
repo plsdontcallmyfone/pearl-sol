@@ -426,6 +426,19 @@ pub struct Gateway {
     pub refused_storage: AtomicUsize,
     /// Request dirs deleted since start.
     pub data_deleted: AtomicUsize,
+    /// The node's blob headroom (bytes RPC puts may still add) and when it was read; None =
+    /// unknown (an older node without the field, or the read failed).
+    node_blob: Mutex<Option<(Option<u64>, Instant)>>,
+    /// Paid requests refused because the node's blob store is nearly full, since start.
+    pub refused_node_storage: AtomicUsize,
+}
+
+/// How long a getBlobStats read of the node's blob headroom is reused.
+pub const NODE_BLOB_TTL: Duration = Duration::from_secs(10);
+
+/// Is `msg` a node refusing a putBlob for space ("blob store full" or "blob store nearly full")?
+pub fn is_blob_store_full(msg: &str) -> bool {
+    msg.contains("blob store full") || msg.contains("blob store nearly full")
 }
 
 /// Free bytes on the filesystem holding `p` (None when unknown).
@@ -537,6 +550,8 @@ impl Gateway {
             in_flight: Mutex::new(BTreeMap::new()),
             refused_storage: AtomicUsize::new(0),
             data_deleted: AtomicUsize::new(0),
+            node_blob: Mutex::new(None),
+            refused_node_storage: AtomicUsize::new(0),
         }
     }
 
@@ -757,8 +772,10 @@ impl Gateway {
 
     pub fn stats_json(&self) -> Value {
         // before any lock below: request_data_bytes takes the ledger lock itself
+        let nb = self.node_blob.lock().unwrap().and_then(|(h, _)| h);
         let data = json!({"bytes_waiting": self.request_data_bytes(), "max_bytes": self.cfg.max_request_data_bytes, "disk_free_bytes": disk_free_bytes(&self.cfg.work_dir),
-            "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst)});
+            "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst),
+            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst)});
         let r = self.recent.lock().unwrap();
         let n = r.len();
         let mean = |f: &dyn Fn(&(f64, Option<f64>, u32)) -> Option<f64>| {
@@ -967,6 +984,13 @@ impl Gateway {
             self.refused_storage.fetch_add(1, Ordering::SeqCst);
             let mut x = err(503, "insufficient_storage", why);
             x.headers.push(("retry-after".into(), "30".into()));
+            return Ok(x);
+        }
+        let need_rows = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1);
+        if let Some(why) = self.node_storage_refusal(need_rows) {
+            self.refused_node_storage.fetch_add(1, Ordering::SeqCst);
+            let mut x = err(503, "insufficient_storage", why);
+            x.headers.push(("retry-after".into(), "60".into()));
             return Ok(x);
         }
         let need = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1);
@@ -1233,7 +1257,13 @@ impl Gateway {
         let ids: Vec<String> = self.ledger.lock().unwrap().tickets.iter().filter(|(_, t)| t.state == "open" || t.state == "closing" || t.state == "delivered").map(|(k, _)| k.clone()).collect();
         for id in ids {
             if let Err(e) = self.settle_ticket(&id) {
-                (self.log)(json!({"event": "settle_error", "ticket": id, "error": format!("{e:#}")}));
+                let msg = format!("{e:#}");
+                if is_blob_store_full(&msg) {
+                    // the node refused the round's A blobs: refuse new paid work at once instead of
+                    // waiting for the next getBlobStats read (backpressure, SPEC 5.4)
+                    *self.node_blob.lock().unwrap() = Some((Some(0), Instant::now()));
+                }
+                (self.log)(json!({"event": "settle_error", "ticket": id, "error": msg}));
             }
         }
         self.sweep_request_data();
@@ -1271,6 +1301,45 @@ impl Gateway {
                 return Some(format!("the gateway's disk has {} MB free, under its reserve of {} MB once this request ({} MB) and those running are written; retry later",
                     free >> 20, self.cfg.min_free_disk_bytes >> 20, need >> 20));
             }
+        }
+        None
+    }
+
+    /// A bytes per row (one k-byte row per registered matrix): what a posted round adds to the
+    /// node's blob store at most (matrices sharing an input share one blob, so less in practice).
+    pub fn a_bytes_per_row(&self) -> u64 {
+        self.model.matrices.iter().map(|(k, _)| *k as u64).sum()
+    }
+
+    /// Bytes the node's blob store accepts from RPC puts before it refuses them (getBlobStats
+    /// `rpc_headroom_bytes`; an older node without it: `max_total_bytes - total_bytes`). Read at
+    /// most every [`NODE_BLOB_TTL`]; None when unknown.
+    pub fn node_blob_headroom(&self) -> Option<u64> {
+        if let Some((h, at)) = *self.node_blob.lock().unwrap() {
+            if at.elapsed() < NODE_BLOB_TTL {
+                return h;
+            }
+        }
+        let h = self.node.call("getBlobStats", json!({})).ok().and_then(|v| {
+            v["rpc_headroom_bytes"].as_u64().or_else(|| Some(v["max_total_bytes"].as_u64()?.saturating_sub(v["total_bytes"].as_u64()?)))
+        });
+        *self.node_blob.lock().unwrap() = Some((h, Instant::now()));
+        h
+    }
+
+    /// Node blob backpressure (SPEC 5.4 "Request data retention"): a paid request whose A rows,
+    /// with every row already waiting for a round, would not fit in the node's blob headroom
+    /// waits (503 insufficient_storage) instead of piling up scratch that cannot be posted.
+    pub fn node_storage_refusal(&self, need_rows: u64) -> Option<String> {
+        let head = self.node_blob_headroom()?;
+        let bpr = self.bytes_per_row().max(1);
+        let waiting_rows = self.request_data_bytes() / bpr;
+        let need = (waiting_rows + need_rows) * self.a_bytes_per_row();
+        if need > head {
+            return Some(format!(
+                "the chain node's blob store is nearly full: {} MB of room for activation blobs, {} MB needed by the rounds waiting and this request; retry after the node prunes",
+                head >> 20, need >> 20
+            ));
         }
         None
     }
