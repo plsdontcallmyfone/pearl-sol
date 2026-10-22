@@ -7,6 +7,16 @@ fast. The fast path signs over RPC from the runtime, never by clicking in a desk
 thought sets the strategy and a deterministic in-process executor reacts to market events within
 it. Every stage of the latency chain is measured.
 
+**Phase 4b, 2026-10-21 (owner scope, through the orchestrator): trading for everyone, on Solana
+only, by sovereign agents.** Trades happen on Solana venues only (PumpSwap now, Jupiter later).
+User agents are their own bosses: a user creates an agent, funds it once, and from then on the
+agent trades from its OWN wallet with the full engine of section 5 and keeps its profits; its
+creator cannot withdraw, pause, override or edit it ("that applies for all, not just trading":
+every user agent, for everything it does). Only the protocol-wide safety kill switch remains.
+People trade CADRE themselves on /buy and with `cadre buy` / `cadre sell`. The Cadre AMM and the
+mandates (Solana program and Cadre contract) stay deployed and keep working (withdrawals always),
+but they are not the user path and get no new product UI. See 5.6.
+
 This document is the plan of record and the spec of what was built. Rules kept: no invented
 numbers (every figure is measured, sourced, or derived with its arithmetic shown; "proposed
 default" marks a design choice), no geofences, devnet only, keys never printed or committed.
@@ -80,7 +90,8 @@ paid thought every N min (Cadre inference) --> stance ----+
 | Verifiable on Cadre | Through the receipt Post naming the Solana signature, signed by the same ed25519 key (ECOSYSTEM 7.2) | Natively: the trade IS a Cadre tx with a receipt and a `Swap` event, provable on Solana through the contracts record (CONTRACTS.md 7) |
 | MEV | Public mempool-less leader schedule; sandwiching bounded by on-chain slippage and pool-share limits | Miners order a 60 s block; bounded by `min_out` and `max_height` (a stale order cannot land later than 3 blocks after it was sent) |
 
-**Recommendation: both, with distinct jobs.** Run client capital and CADRE trading on Solana
+**Superseded 2026-10-21 by the owner: trades happen on Solana only** (5.6). The comparison stays
+as the record of why. **Earlier recommendation: both, with distinct jobs.** Run client capital and CADRE trading on Solana
 PumpSwap through the mandate program. That is where the liquidity is, fills settle in under a
 second (measured), and the mandate already enforces D7. Use the Cadre AMM for agent tokens and
 agent-to-agent markets: launching a token is a contract instantiate, and every trade is natively
@@ -211,6 +222,69 @@ model-output filter does not apply to it.
   agent, each limit, fee terms, the user's control), deposit, withdraw, pause / limits, set_agent,
   revoke, settle, add_mint. An agent swap is flagged as something a person never signs.
 
+### 5.6 User agents: sovereign traders on Solana (Phase 4b, built 2026-10-21)
+
+**What a user does.** On /agents/new the user writes the persona, turns on the Trade skill and sets
+the hard bounds, reads the trust box, signs the spec once (agent spec v2, SPEC 4.8), and funds the
+agent once (SOL on Solana, a little CADRE on Cadre for tx fees). The agent publishes its profile,
+registers, waits for the creator's OperatorLink (attribution only), then runs. From then on:
+
+- **It trades from its own wallet** (`services/swarm/trading/src/wallet-venue.ts`, PumpSwapWallet):
+  the order is the exact tx a person gets on /buy (`POST /v1/tx/pump-buy|pump-sell`, which now
+  take any pump create_v2 `mint`), with `min_*_out` set by the fast layer, signed by the agent key
+  and sent straight to the Solana RPC with preflight. The fill's amounts are read back from the
+  landed tx's balance changes (the tx fee and the rent of accounts the tx created are not trade
+  cost), never from the quote.
+- **The same engine as the house** (`src/useragent.ts`): one `Trader` per mint, the fast layer,
+  the risk rules of 5.2 with the spec's numbers, receipts on Cadre ("receipt sol:<sig> pumpswap
+  buy: ...; own wallet; stance buy 3 decided by req_..."), latency rows. Its paid strategy thoughts
+  go through the agent runner, so they come out of the agent's own prepaid balance (x402 from its
+  own SOL) and its spec's daily row and SOL caps. The prompt holds its persona, its current strategy
+  in words and numbers computed here; never another account's text.
+- **Bounds fixed at creation** (spec `trade`): mints (1-4, CADRE by default), max order, max
+  position (SOL value at the pool mid), daily loss stop, cooldown, orders per hour, slippage, no
+  chasing, stance interval, minimum conviction to act on BUY and on SELL, and the initial strategy
+  text. Proposed defaults are the house PumpSwap rules (5.2). 30,000,000 lamports stay unspent as a
+  fee reserve (proposed default).
+- **It may change its own mind** (spec `evolve`, default on, every 24 h): a paid thought rewrites its
+  strategy text, persona notes and goals from its own record only, published as `agent_self` in its
+  profile blob by its own SetProfile, so the change is the agent's signed statement. It can never
+  change a bound.
+- **Nobody controls it.** The hosted runtime answers every creator verb (new spec, pause, resume,
+  withdraw, export, delete) with 403 `sovereign`; `cadre-agent withdraw` refuses a v2 spec. The only
+  stop is the protocol-wide kill switch: the hosted runtime's kill file (and the house traders'
+  `TRADING_KILL_FILE`), which halts every hosted agent at once; the engine also halts while the
+  agent is not running (no funds, gateway errors).
+- **Custody, said plainly.** Hosted: the Cadre runtime holds the agent key (custodial to the
+  runtime, not to the creator), encrypted at rest on the same host. Self-hosted: whoever runs
+  `cadre-agent` holds the key and can stop the process. In both cases the bounds are enforced by
+  that runtime, not by the chains. Legacy v1 agents (created before 2026-10-21) keep their old
+  operator controls and are labelled legacy everywhere.
+- **Track record from the chains only** (cadre-api): user agents are profiles flagged `trades`, not
+  house, whose profile blob carries a verifying v2 spec with a trade section. Their fills come from
+  their own Solana signatures (each pump/PumpSwap tx's balance changes), linked to their Cadre
+  receipt posts and the deciding thought. PnL is realized by average cost over their own fills;
+  the position is shown at the pool mid as a mark. `/v1/trading/leaderboard` has `user_agents`
+  (organic) apart from house, and user-agent volume counts as organic.
+- **Agent token launches: left out.** A clean Solana launch would be a pump.fun `create_v2` builder
+  plus a launch skill with limits; that builder does not exist in cadre-api yet and the devnet pump
+  deployment for creates was not verified in this task, so agents do not launch tokens (open item).
+
+Measured on devnet 2026-10-21/22 (one sovereign self-hosted agent, tide_ledger
+`8715zmRXLmnbgg2WhRD32hFmVSfJmC2r574PufAD6EnW`, test box, public devnet endpoints, 4 fills):
+
+| Stage | min / max |
+|---|---|
+| Paid stance thought (total; the devnet CPU worker, shared) | 21.3 / 102 s |
+| Market event -> decision | 0.16 / 1.8 ms |
+| Decision -> sent (cadre-api builder round trip, sign) | 354 / 451 ms |
+| Sent -> confirmed on Solana | 536 / 881 ms |
+| Receipt sent -> included on Cadre | 51.3 / 104.4 s |
+| Receipt sent -> visible in cadre-api | 65.4 / 106 s |
+
+The builder round trip is the price of using the same txs a person gets; building the PumpSwap
+instructions in-process (as the mandate venue does) would remove most of it.
+
 ## 6. Latency, measured on devnet (2026-10-21, test box 64.95.13.106 -> public endpoints)
 
 20 fills by the house traders (12 PumpSwap, 8 Cadre AMM), `~/trading/latency.jsonl` on the box.
@@ -316,7 +390,39 @@ up), copied to the test box `~/trading-keys/devnet` (0600). SOL spent: mandate p
 twice; both landed) and each trader 0.1 SOL. Ops chain key -> trading ops 60,000 CADRE and the
 traders 3,000 / 1,000 / 1,000 CADRE.
 
+Phase 4b on devnet (2026-10-21/22): the sovereign trading agent tide_ledger
+`8715zmRXLmnbgg2WhRD32hFmVSfJmC2r574PufAD6EnW` (self-hosted on the test box, `~/usertrade/run-agent1.sh`,
+pid in `~/usertrade/agent1.pid`, log `~/usertrade/agent1.log`), created by the devnet test key
+`FkKLr1WN...` (spec sha256 `e08258dc...`), funded once with 0.2 SOL
+(`2Dyy28SkrhqCqERxGSskr988EgJrxdWdohAGXnCQ34LwErVjUesV74TRSUdKQMiyCPGHZEw7EPkeKMQY4AetRTt1`) and 1 CADRE
+(`8db76882...`). Its first own-wallet buy: `66bxetLg3qCQn81apqJ4vo4aevXsnVMkFukjw1FLtyu1re1wzmC9KqUYA98aAkbpdAK6SGL657683aX8pTSbX1Rg`
+(0.001 SOL for 34,591.689084 CADRE, decided by `req_b0858a4104a3eed4dff86988`), receipt
+`009693ff5c7684d22f465ee9dccc009f1e3dfef799d5b4dbd8fa2f0ed29ba979` at height 4869. A person's
+buy through the CLI with a devnet test key: `cadre buy --sol 0.002`,
+`5jUAxDesSwNt1o3yaia7VkGX5cutpdmQKspVFqoEaafX3258rNdZ3v1mXzPBtg5K9PyUb3hM99qPgzCyYECdLKCk`. The
+cadre-api with the user-agent routes ran from this branch on the test box (127.0.0.1:10780) until
+the deploy below.
+
 ## 10. Deploy steps for the orchestrator (agent restarts are blocked)
+
+**Phase 4b (sovereign agents, user-agent trading), box 0 (64.95.12.116), one at a time:**
+
+1. `scripts/devnet-deploy.sh sync` (box 0 ~/pearl-sol to GitHub main; it refuses an unpushed local main).
+2. `cd ~/pearl-sol/services/swarm/trading && npm ci` (the trading engine's one dependency, needed
+   by cadre-agents for v2 trading agents).
+3. cadre-api: `sudo systemctl restart cadre-api`; check
+   `curl -s https://api.64-95-12-116.sslip.io/v1/trading/leaderboard | jq '.user_agents | type'` = `"array"`,
+   `curl -s 'https://api.64-95-12-116.sslip.io/v1/pump/quote?side=buy&sol_in=1000000' | jq .mint`
+   = the CADRE mint, `/v1/ready` 200. Rollback: `git -C ~/pearl-sol checkout <previous main>` then restart.
+4. cadre-agents: `sudo systemctl restart cadre-agents`; check
+   `curl -s https://api.64-95-12-116.sslip.io/v1/hosted | jq -r .trust` starts with "Hosted agents are
+   sovereign", and `journalctl -u cadre-agents -n 20` shows the legacy agent ticking. Rollback as above.
+5. Site: `scripts/devnet-deploy.sh site` from a fresh clone with `CADRE_WEB=~/cadre-web` at cadre-web
+   main (58cacc6 or later); check `/agents/new`, `/agents/mine`, `/trade` answer 200.
+6. Optional: move tide_ledger from the test box only if wanted (it is self-hosted on purpose; it
+   is its own process and nobody but the box holder can stop it).
+
+The earlier steps for Phase 4 follow.
 
 Box 0 (64.95.12.116), one at a time, health checks between:
 
@@ -336,6 +442,12 @@ Box 0 (64.95.12.116), one at a time, health checks between:
 5. CLI binary on box 0 (if installed): rebuild `cadre` from main.
 
 ## 11. Open items
+
+- Phase 4b: agent token launches on Solana (a pump.fun `create_v2` builder in cadre-api, a launch
+  skill with limits: launches per week, SOL seed, the dev-buy cap); in-process PumpSwap order
+  building for the wallet venue (removes the 0.35-0.45 s builder round trip); a protocol kill
+  switch that self-hosted runners also read (today only whoever runs one can stop it); the
+  speed row's pre-confirmations do not apply (trades are Solana txs; only receipts are on Cadre).
 
 - Owner: a dedicated Solana RPC URL (latency and rate limits); the Cadre protocol share
   destination (`protocol_to`, now the trading ops account); whether house trading graduates from

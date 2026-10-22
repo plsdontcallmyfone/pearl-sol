@@ -2,7 +2,7 @@
 // skill, found from listProfiles (flag trades, not house) and its verifying spec in the profile
 // blob; its own-wallet PumpSwap fills read from its Solana txs' balance changes (fee and new
 // token-account rent excluded); receipts linked from its Cadre posts; leaderboard and agent view
-// label it user_agent (organic), apart from house. Ports 10780 (fake RPC) and 10781 (api): this
+// label it user_agent (organic), apart from house. Ports 10782 (fake RPC) and 10783 (api): this
 // row's block (CLAUDE.md).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -21,7 +21,7 @@ import { socialSigningBytes } from "../../../apps/explorer/src/social.ts";
 import { walletFromSeed } from "../../swarm/src/wallet.ts";
 import { defaultSpecV2, defaultTrade, profileBlob, specMessage, specSha256 } from "../../swarm/agents/src/spec.ts";
 
-const PORTS = { rpc: 10780, api: 10781 };
+const PORTS = { rpc: 10782, api: 10783 };
 const key = (i: number) => b58encode(Uint8Array.from({ length: 32 }, (_, j) => (j === 0 ? i : 9)));
 const MINT = key(1), POOL = key(2), BASEV = key(5), QUOTEV = key(6), HOUSE = key(13);
 const seed = (s: string) => createHash("sha256").update(s).digest();

@@ -1164,6 +1164,24 @@ CLAUDE.md "Who is working on what".
    kill file ~/trading/STOP). PENDING for the orchestrator: box 0 cadre-api restart + site redeploy, and
    optionally moving the traders to box 0 (deploy/systemd/cadre-trading.service), TRADING.md 10.
 
+33. TRADING FOR EVERYONE: SOVEREIGN AGENTS ON SOLANA (Phase 4b, owner 2026-10-21 via the orchestrator:
+   "people ... create their own agents ... and start trading themselves", then: trades on Solana only;
+   agents are their own bosses, "that applies for all"; "trading for everyone" row): DONE in code, LIVE on
+   devnet from the test box. Agent spec v2 (SPEC 4.8): sovereign, fixed at creation, trade skill with hard
+   bounds, evolve (agent_self). Hosted runtime refuses every creator verb on v2 agents (403 sovereign);
+   legacy v1 agents keep the old controls, labelled legacy (none migrated). User agents run the house
+   engine from their own wallets (services/swarm/trading src/wallet-venue.ts, src/useragent.ts); cadre-api
+   user-agent fills, leaderboard user_agents (organic) apart from house, sovereignty fields, any pump mint
+   on the pump builders. Site cadre-web 58cacc6 (v2 wizard with Trade + Evolve + trust box, read-only
+   /agents/mine, /trade user vs house), CLI 6fd0031 (Trade view 8, cadre quote/positions/buy/sell with
+   y/N), wallet de929c621 (any pump coin trade, receipt posts, v2 spec warning; dev + danishseal
+   cadre-chain). Live: sovereign self-hosted agent tide_ledger 8715zmRX... on the test box
+   (~/usertrade/run-agent1.sh; 4 own-wallet buys, receipts on Cadre); a person's CLI buy 5jUAxDes...
+   Not built: agent token launches (no pump create_v2 builder). PENDING for the orchestrator: box 0 sync,
+   `npm ci` in services/swarm/trading, cadre-api + cadre-agents restarts, site redeploy (TRADING.md 10).
+   Test box leftovers: ~/usertrade (agent1 running, cadre-api 127.0.0.1:10780 pid ~/usertrade/api.pid,
+   web/cli/wallet build trees, Xvfb :74 pid ~/usertrade/cli/xvfb.pid), ~/usertrade-keys (0600).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

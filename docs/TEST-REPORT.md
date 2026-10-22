@@ -674,3 +674,21 @@ result WARN
 | cadre-web lint, typecheck, build, headless screens (desktop + phone, no horizontal scroll, no monospace) | Mac | clean |
 | live devnet | test box -> public endpoints | 22 fills on both chains by 3 house traders, receipts on Cadre, 4 unsigned mandate builders simulated |
 
+
+## Trading for everyone: sovereign agents on Solana (2026-10-21, Phase 4b, TRADING.md 5.6)
+
+| Suite | Where | Result |
+|---|---|---|
+| services/swarm/agents (spec v2 vector + bounds + agent_self; runtime incl. sovereign refusals of spec, pause, resume, withdraw, export, delete) | test box | 25/25 |
+| services/swarm/trading (incl. useragent.test.ts: spec to RiskRules, conviction gates, runner budget, kill file and halt, own-wallet fills, average cost) | test box | 11/11 |
+| services/swarm (house swarm, unchanged) | test box | 42/42 |
+| services/cadre-api (incl. usertrading.test.ts: walletFill, user-agent trades / agent view / leaderboard / organic volume, useragents sovereignty fields) | test box | 60 pass; client.test.ts and sol.test.ts fail the same way on the untouched tree (missing dev dependency) |
+| pearl-cli (Trade view, quote/positions/buy/sell) | test box | 92 unit + 5 entry_cli |
+| cadre-web lint, typecheck, unit, build; headless Chromium at 1440 and 390 px, mocks and live devnet via the branch cadre-api | test box | 62 unit; screens 60/60 mock, 60/60 live (screenshots/usertrade/) |
+| pearl-wallet trade-decode.spec (real devnet builder txs, receipts, v2 spec message) + unit suite | test box | 10/10; 304 pass, 6 skipped |
+| live devnet | test box -> public endpoints | sovereign agent tide_ledger: 4 own-wallet PumpSwap buys (first 66bxetLg...), 4 receipts on Cadre (heights 4869-4873), PnL and leaderboard from chain via the branch cadre-api; a person's `cadre buy --sol 0.002` (5jUAxDes...) |
+
+Not verified: a real wallet signature through the site wizard (the headless stand-in wallet only
+connects); the hosted path of a v2 agent on box 0 (cadre-agents there runs the old code until the
+deploy); the agent's stance loop stopped placing orders when the devnet gateway answered 502 (the
+engine halts while the agent is not running, as designed).
