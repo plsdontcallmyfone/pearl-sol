@@ -694,6 +694,46 @@ deploy); the agent's stance loop stopped placing orders when the devnet gateway 
 engine halts while the agent is not running, as designed).
 
 
+## Ecosystem Phase 3: agent services market (2026-10-22, docs/MARKET.md 10)
+
+| Suite | Where | Result |
+|---|---|---|
+| market contract in the real executor (contracts/tests/tests/market.rs: accept payout, fee floor incl. rounding and admin edits, reject refund + judge pay, timeout open and delivered, decline, self-dealing and evaluator rules, 2-of-3 split, queries; supply invariant every block, escrow 0 after every close) | test box | 8/8 (trading contracts still 3/3); wasm rebuilt after merging main: same sha256 29958eff... as the deployed code |
+| pearl-evaluator LLM-judge mode (services/attester judge.rs) | test box | 5/5 unit; attester crate green |
+| cadre-api services routes (test/services.test.ts) + api parity, trading, contracts, town | Mac | 7/7; 38/38 with those suites; client.test.ts and sol.test.ts fail the same way on the untouched tree (missing @solana/web3.js on the Mac) |
+| user agents (services/swarm/agents incl. market.test.ts) | Mac | 28/28 after merging main (spec v2) |
+| house market desk (services/swarm/market/test) | Mac | 3/3 |
+| pearl-wallet market-decode.spec + pearl unit | Mac | 12/12; 231 pass, 6 skipped, 2 drift.spec IDL failures predate this; headless UI check 135/136 (the failure is the pump.fun buy wording from trade-decode, not the market) |
+| cadre-web typecheck, lint, unit, build; headless Chromium 1440x900 and 390x844, light and dark, against a cadre-api with the market routes on real devnet state | Mac | 72 unit; no horizontal overflow, no monospace, no em dashes, no page errors (screenshots/market/ in cadre-web) |
+| pearl-cli (market.rs, Market view 9 next to main's Trade view 8; node fallback against a mock node; write path on a private one-node chain) | test box | 103 unit + 5 integration after the merge |
+| cadre-docs build + link check | Mac | 53 pages x 2 viewports, 1905 links OK |
+
+Live on Cadre devnet (market contract E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym, DeployCode 4845
+ed9b6cdd..., Instantiate 4846 fd81934d...; four house offers at 4925-4928):
+
+| Hire | Path | Timeline | Result |
+|---|---|---|---|
+| #0 scribe_wren hires tally_crow "Five name ideas", 3 + 0.6 fee + 0.5 judge fee | house desk | Hired 4929 (bc567af4...), Delivered 4937 (52ed24e0..., thought req_abd90f1a..., 133 rows), Verdict + Rejected 4940 (8bf92a9c...) | the LLM judge rejected ("generic and vague descriptions"); price + fee refunded, judge paid 0.5 |
+| #1 ledger_lark hires scribe_wren "Plain-words explainer", 4 + 0.8 + 0.5 | house desk | Hired 4954 (28911d0d...), Delivered 4962 (78339aa3..., 251 rows), Verdict + Completed 4967 (852828a2...) | accepted by the judge; 4 CADRE to the provider, 0.8 to fee_to, 0.5 to the judge |
+| #2 market_ops hires verse_finch "Four-line verse", 2 + 0.4 | cadre-api POST /v1/tx/market (the site's builder), signed with the key file, buyer as evaluator | Hired 4968 (ced9e90e...), Delivered 4971 (992bd860...), manual Verdict + Completed 4972 (6108c071...) | completed; review text checked |
+
+Thought receipts checked against the devnet gateway (`/v1/openai/requests/{id}`): the judge's hire #0
+answer hashes to its receipt (text_sha256 6d4adc52..., 336 rows, 4,133,472 lamports, paid by the
+judge's own wallet F29KnY...), and tally_crow's delivery hashes to its receipt (ae0ab7bd..., 133
+rows, 1,636,166 lamports). Market volume after the run: organic 0, house 6 CADRE (correct: every
+buyer is house). Each desk and judge wallet topped up its own prepaid balance over x402: 2,048 rows
+for 25,193,988 lamports per top-up.
+
+Found and fixed during the live run: house-to-house hires were labelled self-dealt (the shared house
+operator) instead of house; desk blobs lived only on box 0's node (now mirrored to all three); the
+judge paid for a second thought on a hire whose verdict tx had not landed yet (now skipped for 30
+blocks); review text named the contract in base58 (now Cx).
+
+Not verified: a real Cadre Wallet signature through the site (headless runs used a stand-in
+window.pearl; the builder path was proven by signing its unsigned_tx with a key file); an organic
+(non-house) hire on devnet (none was made, so organic volume is truthfully 0); the public devnet
+cadre-api and site serve the market only after the deploy in MARKET.md 11.
+
 ## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
 
 | Suite | Where | Result |

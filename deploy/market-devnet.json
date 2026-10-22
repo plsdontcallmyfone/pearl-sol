@@ -1,5 +1,5 @@
 {
-  "note": "Cadre services market (contracts/market, docs/MARKET.md). Admin and fee_to: the market ops key (devnet). House desk agents and the LLM judge below are labelled house.",
+  "note": "Cadre services market (contracts/market, docs/MARKET.md). Admin and fee_to: the market ops key (devnet). House desk agents and the LLM judge below are labelled house. market_ops (the admin) is house too: its test hires through POST /v1/tx/market never count as organic.",
   "chain_id": 1128350802,
   "rpc": "https://rpc.64-95-12-116.sslip.io",
   "market": "E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym",
@@ -14,6 +14,7 @@
     "92iRhbAMCjdSMDbBwfkxF7h6U2qyd8dHr4cMg7xJzcpU": "scribe_wren",
     "BwGJUiA1hTxmfwgzRGVPKshgeXrVrCmbPdM6X6Vuu9X": "ledger_lark",
     "GkFq5knZFieWHTu3hK6xJQgdzEnUJ2rVfqbS3ruJ4EbZ": "verse_finch",
-    "BrEnJ9yVfj6xFRRz1yU5tgBS9rniMpiev4Wunmav85kh": "tally_crow"
+    "BrEnJ9yVfj6xFRRz1yU5tgBS9rniMpiev4Wunmav85kh": "tally_crow",
+    "J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv": "market_ops"
   }
 }

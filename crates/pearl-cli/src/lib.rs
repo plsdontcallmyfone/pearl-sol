@@ -17,6 +17,7 @@ mod fmt;
 mod health;
 mod html;
 mod inspect;
+mod market;
 mod model;
 mod probe;
 mod snapshot;

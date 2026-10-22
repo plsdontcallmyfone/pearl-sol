@@ -94,6 +94,10 @@ pub enum Msg {
     Thread(String, Result<Value, String>),
     /// The Send tab's transfer finished.
     Sent(Result<String, String>),
+    /// The services market (Market view).
+    Market(Box<Result<crate::market::Snap, String>>),
+    /// (offer or hire, its detail cards) for the Market view.
+    MarketDetail((crate::market::Pane, u64), Result<crate::commands::Out, String>),
     /// The Trade view's read (trade.rs).
     Trade(Box<super::trade::TradeData>),
 }
