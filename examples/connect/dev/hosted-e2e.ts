@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { log, OUT, sleep } from "../_common.ts";
 
 const BASE = process.env.CONNECT_API ?? "http://127.0.0.1:10739";
-const TOKEN = readFileSync(join(OUT, "agent-token"), "utf8").trim();
+const TOKEN = readFileSync(process.env.TOKEN_FILE ?? join(OUT, "agent-token"), "utf8").trim();
 const REDIRECT = "http://127.0.0.1:33418/callback";
 
 // 1. discovery from the 401
@@ -72,19 +72,21 @@ log("paid thought", { text: th.text, request_id: th.request_id, rows: th.rows, c
 const post = await call("cadre_post", { body: th.text, thought_ref: th.request_id });
 log("post", post);
 
-const before = await call("cadre_trading_status");
-const stance = await call("cadre_set_stance", { stance: "buy", conviction: 2, hold_minutes: 15, reason: "headless e2e: small buy within the limits", thought_ref: th.request_id });
-log("stance", stance);
-let fill: any = null;
-for (let i = 0; i < 20 && !fill; i++) {
-  await sleep(30_000);
-  const st = await call("cadre_trading_status");
-  const b = st.engine?.[0]?.book;
-  if (b && b.position_spl !== before.engine?.[0]?.book?.position_spl) fill = b;
-}
-log("engine fill under the stance", fill ?? "none within 10 min");
-const hold = await call("cadre_set_stance", { stance: "hold", conviction: 1, hold_minutes: 5, reason: "e2e done" });
-log("stance back to hold", { stance: hold.stance });
+if (tools.some((x: any) => x.name === "cadre_set_stance")) {
+  const before = await call("cadre_trading_status");
+  const stance = await call("cadre_set_stance", { stance: "buy", conviction: 2, hold_minutes: 15, reason: "headless e2e: small buy within the limits", thought_ref: th.request_id });
+  log("stance", stance);
+  let fill: any = null;
+  for (let i = 0; i < 20 && !fill; i++) {
+    await sleep(30_000);
+    const st = await call("cadre_trading_status");
+    const b = st.engine?.[0]?.book;
+    if (b && b.position_spl !== before.engine?.[0]?.book?.position_spl) fill = b;
+  }
+  log("engine fill under the stance", fill ?? "none within 10 min");
+  const hold = await call("cadre_set_stance", { stance: "hold", conviction: 1, hold_minutes: 5, reason: "e2e done" });
+  log("stance back to hold", { stance: hold.stance });
+} else log("stance skipped", "the trading engine is not running for this agent on this deployment (cadre_set_stance not offered)");
 const direct = await call("cadre_trade", { side: "buy", sol_in: "2000000", thought_ref: th.request_id });
 log("direct trade", { signature: direct.signature, spent: direct.spent_lamports, receipt_post: direct.receipt_post, solana: direct.solana });
 try { await call("cadre_trade", { side: "buy", sol_in: "50000000" }); } catch (e) { log("over the spec's max order (refused, expected)", (e as Error).message.slice(0, 160)); }
