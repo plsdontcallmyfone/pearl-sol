@@ -96,7 +96,8 @@ export class Toolbelt {
   d: ToolbeltDeps;
   meter: Meter;
   price: PriceConfig;
-  pending: ToolReceipt[] = [];
+  get pending(): ToolReceipt[] { return (this.meter.st.pending ??= []); }
+  set pending(v: ToolReceipt[]) { this.meter.st.pending = v; this.meter.save(); }
   batches: { first_seq: number; n: number; root: string; blob: string; tx: string; via: string; price_lamports: string; t_ms: number }[] = [];
   createdRepos: string[] = [];
   inbox: string | null = null;
@@ -107,14 +108,14 @@ export class Toolbelt {
     this.price = deps.price ?? priceConfigFromEnv();
     this.meter = new Meter(deps.meterFile, spec, deps.rt, () => host.now());
     if (saved) {
-      this.pending = saved.pending ?? [];
+      if (!this.meter.st.pending?.length && saved.pending?.length) this.pending = saved.pending;
       this.batches = saved.batches ?? [];
       this.createdRepos = saved.createdRepos ?? [];
       this.inbox = saved.inbox ?? null;
     }
   }
 
-  toJSON() { return { pending: this.pending, batches: this.batches.slice(-50), createdRepos: this.createdRepos, inbox: this.inbox }; }
+  toJSON() { return { batches: this.batches.slice(-50), createdRepos: this.createdRepos, inbox: this.inbox }; }
 
   /** keys, counting providers injected directly (tests, or a host that wires its own) as present */
   effectiveKeys(): ProviderKeys {

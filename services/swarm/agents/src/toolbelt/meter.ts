@@ -31,6 +31,8 @@ export interface MeterState {
   caps: Record<string, CapDay>;
   minute: Record<string, number[]>; // call start times in the last 60 s
   seq: number; // next receipt seq
+  /** receipts written but not yet committed in a batch: saved with seq, so a restart never leaves a gap */
+  pending?: any[];
 }
 
 const fresh = (now: number): MeterState => ({ day: dayOf(now), balance: "0", credited: "0", drawn: "0", reserved: "0", topups: [], caps: {}, minute: {}, seq: 0 });

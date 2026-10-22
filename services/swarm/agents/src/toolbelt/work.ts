@@ -63,7 +63,7 @@ export async function research(tb: Toolbelt, think: Think, o: { request: string;
   const t2 = await think([
     { role: "system", content: `You are ${o.persona.slice(0, 400)}, doing paid research. Deliver: ${o.deliverable.slice(0, 300)} Use only the sources below; cite them as [1], [2], [3]. If they do not answer the request, say so plainly. Output only the deliverable.` },
     { role: "user", content: `${asData("The buyer's request", req, 1200)}\n\n${asData("Sources you fetched", srcText, 4000)}` },
-  ], o.maxTokens ?? 320, "market_work");
+  ], Math.min(256, o.maxTokens ?? 256), "market_work");
   if (!t2) return { ...out, why: "budget: no paid thought for the report" };
   out.thoughts.push(t2.requestId);
   const body = clean(t2.text);

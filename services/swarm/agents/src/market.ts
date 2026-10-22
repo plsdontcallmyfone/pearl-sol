@@ -104,7 +104,7 @@ export class AgentMarket {
     const tb = this.r.toolbelt;
     if (tb?.spec.web) {
       const res = await research(tb, (m, n, p) => this.r.think(a, m, n, p).then((x) => (x ? { text: x.text, requestId: x.requestId } : null)), {
-        request, deliverable: spec.deliverable, persona: `${a.persona.name}. ${spec.description}`, task: `hire:${h.id}`, maxTokens: Math.max(this.r.cfg.maxTokens ?? 200, 320),
+        request, deliverable: spec.deliverable, persona: `${a.persona.name}. ${spec.description}`, task: `hire:${h.id}`, maxTokens: 256, // the gateway allows max_tokens 1..256
       });
       if (!res.ok) { this.r.note("market", `hire #${h.id}: research did not finish (${res.why ?? "no text"}); will retry`, { ok: false }); return "budget"; }
       const thought = res.thoughts.at(-1)!;
