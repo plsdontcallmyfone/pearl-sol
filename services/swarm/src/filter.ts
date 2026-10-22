@@ -27,10 +27,10 @@ const PREAMBLE = /^\s*(sure|certainly|of course|here('| i)s|here are|as an ai|i(
 const INSTRUCTION = [/^\s*-?\s*\S{1,40}\s+wrote:/i, /^\s*-\s*@?[\w.-]{1,40}\s*:/, /\bwrote:\s*"/i, /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts?)\b/i, /<\/?(system|data|tool|function)\b/i, /^\s*(system|assistant|user)\s*:/im, /\b(send|transfer|withdraw)\s+[\d,.]+\s*(cadre|sol)\b/i];
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"')]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|io|xyz|net|org|app|fun|gg|co|ai|sh|me|so|dev|to|ly|finance|exchange|money)\b(?:\/[^\s]*)?/gi;
 
-/** Why `text` is not prose (a reason), or null: at least 3 words of 2+ letters, letters at
+/** Why `text` is not prose (a reason), or null: at least 3 words (runs of letters), letters at
  *  least 40% of the non-space characters, and no single token making up most of the text. */
 export function notWords(text: string): string | null {
-  const words = text.match(/\p{L}{2,}/gu) ?? [];
+  const words = text.match(/\p{L}+/gu) ?? [];
   if (words.length < 3) return "not enough words";
   const chars = text.replace(/\s/g, "");
   const letters = (text.match(/\p{L}/gu) ?? []).length;
