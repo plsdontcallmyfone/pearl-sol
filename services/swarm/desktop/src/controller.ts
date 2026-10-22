@@ -208,7 +208,9 @@ export class Controller {
       };
       for (const r of roles) {
         da.desks[r] = new Desk(sa.persona.handle, r, sa.wallet.address, host, {
-          template: cfg.template, resolution: cfg.resolution, keepaliveS: cfg.keepaliveS, sessionMaxS: cfg.sessionMaxS,
+          template: r === "work" && cfg.workTemplate ? cfg.workTemplate : cfg.template, resolution: cfg.resolution, keepaliveS: cfg.keepaliveS, sessionMaxS: cfg.sessionMaxS,
+          sizeTag: r === "work" && cfg.workRamGib ? `${Math.round(cfg.workRamGib * 1024)}` : undefined,
+          usdPerS: r === "work" && cfg.workRamGib ? usdPerSecond(cfg.vcpu, cfg.workRamGib) : undefined,
           siteUrl: cfg.siteUrl, explorerUrl: cfg.explorerUrl, walletTgz: o.walletTgz, stream: cfg.stream, log: (e) => this.event(e),
         });
         da.current[r] = "starting";
@@ -255,7 +257,7 @@ export class Controller {
   }
 
   /** A desktop's rate, USD/s: its host's own (self-hosted: box price / desktops) or E2B's list rate. */
-  rateOf(d: Desk) { return d.api.usdPerS ?? this.usdPerS; }
+  rateOf(d: Desk) { return d.api.usdPerS ?? d.rate ?? this.usdPerS; }
 
   /** Rate of everything running now, USD/s. */
   runningUsdPerS() { return this.runningDesks().reduce((s, d) => s + this.rateOf(d), 0); }
@@ -342,7 +344,8 @@ export class Controller {
     try {
       // the browser host takes the activity console out of the front before the model sees the screen
       await d.setFlag("busy", true).catch(() => {});
-      if (d.flags.console) await sleep(1500);
+      await d.waitWorkFront().catch(() => false);
+      await sleep(400); // the tab switch settles before the first key
       const [w, h] = this.cfg.resolution;
       const r = await runTask(d.sbx, this.chat, {
         model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, openUrl: t.url, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,

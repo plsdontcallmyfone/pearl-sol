@@ -93,7 +93,14 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    pub fn new(opts: Opts) -> Result<Self> {
+    pub fn new(mut opts: Opts) -> Result<Self> {
+        // no --key / --address (or env): the wallet saved by `cadre wallet use`
+        if opts.key.is_none() && opts.address.is_none() {
+            if let Some(s) = crate::wallet_cfg::load() {
+                opts.key = s.key;
+                opts.address = s.address;
+            }
+        }
         let key = opts.key.as_deref().map(read_key_file).transpose()?;
         let sol_key = match opts.sol_key.as_deref() {
             Some(p) => Some(read_key_file(p)?),
@@ -132,7 +139,7 @@ impl Ctx {
     }
 
     pub fn key(&self) -> Result<&SigningKey> {
-        self.key.as_ref().ok_or_else(|| anyhow!("no key: pass --key FILE or set PEARL_KEY (keys/localnet/ has throwaway localnet keys)"))
+        self.key.as_ref().ok_or_else(|| anyhow!("no key: run `cadre wallet use --key FILE` once (or pass --key FILE / set PEARL_KEY)"))
     }
 
     pub fn sol_key(&self) -> Result<&SigningKey> {

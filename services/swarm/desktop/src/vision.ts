@@ -117,7 +117,16 @@ export async function runTask(
   await shot(`Task: ${o.task}${o.openUrl ? `\nThe browser has just opened ${o.openUrl} for you; do not open it again.` : ""}\nThis is the screen now.`);
   for (let step = 1; step <= o.maxSteps; step++) {
     if (usd > o.maxUsd) return { ok: false, summary: "stopped: task spend cap", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: "task_usd_cap" };
-    const r = await chat({ model: o.model, messages, tools: o.verbatim !== undefined ? [...TOOLS, TYPE_GIVEN] : TOOLS, tool_choice: "auto", max_tokens: 400, usage: { include: true } });
+    // a model error (429, 5xx, a dropped connection) is retried twice before the task gives up
+    // (2026-10-21: one post failed on a single "vision model error")
+    const body = { model: o.model, messages, tools: o.verbatim !== undefined ? [...TOOLS, TYPE_GIVEN] : TOOLS, tool_choice: "auto", max_tokens: 400, usage: { include: true } };
+    let r: { status: number; json: any } = { status: 0, json: null };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      r = await chat(body).catch((e: any) => ({ status: 0, json: { error: String(e?.message ?? e).slice(0, 120) } }));
+      if (r.status === 200 && r.json?.choices?.[0]) break;
+      if (r.status !== 0 && r.status !== 408 && r.status !== 429 && r.status < 500) break;
+      await sleep(attempt === 0 ? 2000 : 5000);
+    }
     if (r.status !== 200 || !r.json?.choices?.[0]) {
       return { ok: false, summary: "vision model error", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: `model ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}` };
     }

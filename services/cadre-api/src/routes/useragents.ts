@@ -27,7 +27,10 @@ import { b58decode, b58encode, hex } from "../../../../apps/explorer/src/codec.t
 import { avatar, decodeSocialTx, socialFee, socialSigningBytes, type SocialBody } from "../../../../apps/explorer/src/social.ts";
 import { ACTIONS, CONSENT_STATES, DM_KIND, dmFee, dmSigningBytes, messageBodyBytes, type DmBody } from "../../../../apps/explorer/src/dm.ts";
 import { ata, compileLegacy, computeUnitLimit, createAtaIdempotent, systemTransfer, TOKEN_2022, unsignedTx, type Ix } from "../sol.ts";
-import { verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
+import { isSovereign, validateSelf, verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
+
+/** The trust model in one paragraph (docs/TRADING.md 5.6, ECOSYSTEM 7), served with every agent. */
+export const SOVEREIGN_TRUST = "A v2 agent is sovereign: its creator funded it and fixed its persona, initial strategy and hard bounds (budget, limits, skills, trade risk numbers) at creation, and is shown only as the creator (attribution, not control). After creation nobody can withdraw its funds, export its key, pause, resume, delete it or edit its spec; it keeps its profits and may rewrite its own strategy, persona notes and goals through its own paid thoughts, never its bounds. The only stop is the protocol-wide safety kill switch. Custody: a hosted agent's key is held by the Cadre hosted runtime (custodial to the runtime, not the creator); a self-hosted agent's key is held by whoever runs cadre-agent. The bounds are enforced by that runtime, not by the chains.";
 
 const NS = Buffer.from("pearl-sol:tx:v1");
 const MEMO = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
@@ -166,14 +169,14 @@ export async function verifyAgent(d: Deps, account: string) {
   c("profile_blob", blobOk, raw ? (blobOk ? "blob bytes hash (blake3) to the profile_hash on the chain" : "blob bytes do not hash to profile_hash") : "the profile blob is not on the node the API reads");
   try { if (raw) blob = JSON.parse(raw.toString("utf8")); } catch { blob = null; }
   const doc: SignedSpec | null = blob?.agent_spec ? { spec: blob.agent_spec, sha256: blob.agent_spec_sha256, sig: blob.agent_spec_sig } : null;
-  c("spec_present", !!doc, doc ? "the profile blob carries an agent spec (cadre-agent-spec-v1)" : "no agent spec in the profile blob");
+  c("spec_present", !!doc, doc ? `the profile blob carries an agent spec (${doc.spec?.format ?? "unknown format"})` : "no agent spec in the profile blob");
   let v = { ok: false, problems: ["no spec"] };
   if (doc) v = verifySigned(doc);
   c("spec_signature", !!doc && v.ok, doc ? (v.ok ? `spec sha256 ${doc.sha256} signed by the operator ${doc.spec.operator}` : v.problems.join("; ")) : "no spec");
   c("spec_agent", !!doc && doc.spec.agent === account, doc ? (doc.spec.agent === account ? "the spec names this account as the agent" : `the spec names ${doc.spec.agent}`) : "no spec");
   const opOk = !!doc && !!prof?.operator && prof.operator === doc.spec.operator;
-  c("operator_named", opOk, prof?.operator ? `the profile names operator ${prof.operator}` : "the profile names no operator");
-  c("operator_linked", !!prof?.operator_linked, prof?.operator_linked ? "the operator's OperatorLink to this agent is on the chain (two-sided link)" : "the operator has not linked this agent");
+  c("operator_named", opOk, prof?.operator ? `the profile names the creator (operator field) ${prof.operator}` : "the profile names no creator");
+  c("operator_linked", !!prof?.operator_linked, prof?.operator_linked ? "the creator's OperatorLink to this agent is on the chain (attribution, two-sided)" : "the creator has not linked this agent");
   c("registered", !!reg, reg ? `RegisterAgent at height ${reg.registered_height}` : "not registered (RegisterAgent)");
   return { prof, reg, doc, blob, checks, verified: checks.every((x) => x.ok) };
 }
@@ -311,6 +314,12 @@ export function registerUserAgents(api: Api, d: Deps) {
       profile_uri: v.prof?.profile_uri || null,
       registration: v.reg,
       spec: s,
+      sovereign: !!s && isSovereign(s),
+      legacy: !!s && !isSovereign(s),
+      self: v.blob?.agent_self && validateSelf(v.blob.agent_self).length === 0 ? v.blob.agent_self : null,
+      controls: s ? (isSovereign(s) ? { creator: "none: attribution only", stop: "the protocol-wide safety kill switch only" } : { creator: "legacy v1 agent (created before 2026-10-21): its operator keeps the old controls (new spec, pause, resume, withdraw, export, delete)" }) : null,
+      custody: s ? (s.hosting === "hosted" ? "hosted: the Cadre runtime holds the agent key (custodial to the runtime, not the creator)" : "self-hosted: whoever runs cadre-agent holds the agent key") : null,
+      trust: SOVEREIGN_TRUST,
       spec_sha256: v.doc?.sha256 ?? null,
       spec_sig: v.doc?.sig ?? null,
       balances: { chain: chainAcct ? { balance: chainAcct.balance, nonce: chainAcct.nonce } : null, solana: sol },

@@ -202,7 +202,7 @@ pub fn prompt_box(buf: &mut Buffer, pen: &Pen, x: u16, y: u16, bw: u16, input: &
     let tx = x + 1 + pad;
     let inner = right.saturating_sub(tx + pad);
     let cursor = if input.is_empty() {
-        put(buf, tx, y + 1, placeholder, pen.on(DIM, PANEL), tx + inner);
+        put(buf, tx, y + 1, placeholder, pen.on(theme::SUBTLE, PANEL), tx + inner);
         Some(Position::new(tx, y + 1))
     } else {
         let widths: Vec<u16> = input.iter().map(|c| c.width().unwrap_or(0) as u16).collect();
@@ -381,6 +381,15 @@ pub(crate) fn draw(buf: &mut Buffer, pen: &Pen, app: &App, w: u16, h: u16) -> Op
         }
     } else {
         let (t, p) = plan_chat(w, h);
+        // the mascot stays in the free space above a short conversation (owner 2026-10-21:
+        // "add the mascot up there"): full size when it fits, else half, else none
+        let used = transcript_lines(app, t.width).len().min(t.height as usize) as u16;
+        let free = t.height.saturating_sub(used);
+        let robot = if w >= 44 && free >= 25 + 2 { Some((&app.robot, 25u16)) } else if w >= 24 && free >= 13 + 2 { Some((&app.robot_half, 13u16)) } else { None };
+        if let Some((r, rh)) = robot {
+            let y = t.y + free.saturating_sub(rh + 1);
+            draw_robot(buf, pen, r, app.start.elapsed(), y, w);
+        }
         draw_transcript(buf, pen, app, t);
         cursor = draw_box(buf, pen, app, &p);
         draw_hints(buf, pen, app, &p);

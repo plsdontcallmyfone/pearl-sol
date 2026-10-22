@@ -18,6 +18,9 @@ import type { Deps } from "../deps.ts";
 import { addr, amount } from "./wallet.ts";
 import { b58decode, b58encode, findPda, sha256, utf8 } from "../../../../apps/explorer/src/codec.ts";
 import { eventTopic } from "../../../../apps/explorer/src/contracts.ts";
+import { verifyAgent } from "./useragents.ts";
+import { decodeSocialTx } from "../../../../apps/explorer/src/social.ts";
+import { isSovereign } from "../../../swarm/agents/src/spec.ts";
 import { ata, canonicalPool, compileLegacy, computeUnitLimit, createAtaIdempotent, type Ix, SYSTEM, TOKEN, TOKEN_2022, unsignedTx, AMM, ATA_PROGRAM } from "../sol.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -125,7 +128,41 @@ export function swapEvents(logs: string[]): SwapEvent[] {
 interface Trade {
   chain: "solana" | "cadre"; venue: "pumpswap" | "cadre-amm"; agent: string; account: string; via: "mandate" | "wallet";
   side: "buy" | "sell"; amount_in: string; amount_out: string; unit: string; token: string; at: number; ref: string; house: boolean; flags: string[];
+  kind?: "house" | "user_agent" | "mandate" | "wallet"; receipt_post?: string | null; decided_by?: string | null;
 }
+
+/** A user agent with the v2 trade skill, read from the chain (profile, spec in the profile blob). */
+export interface UserTrader { account: string; handle: string | null; name: string | null; creator: string; hosting: string; sovereign: boolean; mints: string[]; verified: boolean }
+
+/**
+ * Amounts a landed Solana tx moved for `owner` in `mint` (the agent runtime's wallet-venue.ts
+ * fillFromTx, the same rule): SOL change with the fee added back on a sell and a new token
+ * account's rent taken out on a buy; the token change. Null when it moved none of that mint.
+ */
+export function walletFill(t: any, owner: string, mint: string): { side: "buy" | "sell"; amount_in: bigint; amount_out: bigint } | null {
+  const m = t?.transaction?.message;
+  const keys: string[] = (m?.accountKeys ?? []).map((k: any) => (typeof k === "string" ? k : k?.pubkey ?? String(k)));
+  const i = keys.indexOf(owner);
+  const meta = t?.meta;
+  if (i < 0 || !meta || meta.err) return null;
+  const tok = (list: any[]) => (list ?? []).filter((b) => b.mint === mint && b.owner === owner).reduce((s, b) => s + BigInt(b.uiTokenAmount?.amount ?? 0), 0n);
+  const dTok = tok(meta.postTokenBalances) - tok(meta.preTokenBalances);
+  if (dTok === 0n) return null;
+  const fee = BigInt(meta.fee ?? 0);
+  const dSol = BigInt(meta.postBalances[i]) - BigInt(meta.preBalances[i]);
+  if (dTok > 0n) {
+    // rent deposits for accounts this tx created (the token account, PumpSwap's per-user volume
+    // account) are not a trade cost: every account that went from 0 to a balance, other than the owner
+    let rent = 0n;
+    for (let j = 0; j < keys.length; j++) if (j !== i && BigInt(meta.preBalances[j] ?? 0) === 0n && BigInt(meta.postBalances[j] ?? 0) > 0n) rent += BigInt(meta.postBalances[j]);
+    const spent = -dSol - fee - rent;
+    return { side: "buy", amount_in: spent > 0n ? spent : 0n, amount_out: dTok };
+  }
+  const got = dSol + fee;
+  return { side: "sell", amount_in: -dTok, amount_out: got > 0n ? got : 0n };
+}
+
+const PUMP_PROGRAMS = new Set(["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]);
 
 class TradingIndex {
   d: Deps;
@@ -134,7 +171,91 @@ class TradingIndex {
   mandates: { at: number; v: MandateRec[] } = { at: 0, v: [] };
   solScanAt = 0;
   cadre: { at: number; trades: Trade[]; pool: any; mandates: any[] } = { at: 0, trades: [], pool: null, mandates: [] };
+  users: { at: number; v: UserTrader[] } = { at: 0, v: [] };
+  userSigs = new Map<string, Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint }[] }>>();
+  userScanAt = new Map<string, number>();
+  receipts = new Map<string, { post: string; decided_by: string | null }>(); // Solana signature -> the agent's receipt post on Cadre
   constructor(d: Deps, cfg: TradingConfig) { this.d = d; this.cfg = cfg; }
+
+  /** User agents with the v2 trade skill: profiles flagged `trades`, not house, whose profile blob
+   * carries a verifying spec with a trade section (every 60 s). */
+  async userTraders(): Promise<UserTrader[]> {
+    if (Date.now() - this.users.at < 60_000) return this.users.v;
+    const out: UserTrader[] = [];
+    for (let off = 0; off < 5000; off += 200) {
+      const r = await this.d.node.call<any>("listProfiles", { offset: off, limit: 200 }).catch(() => null);
+      if (!r) break;
+      for (const p of r.profiles ?? []) {
+        if (!p.trades || p.house || this.isHouse(p.account)) continue;
+        const v = await verifyAgent(this.d, p.account).catch(() => null);
+        const s = v?.doc?.spec;
+        if (!s?.trade || !Array.isArray(s.trade.mints)) continue;
+        out.push({ account: p.account, handle: p.handle ?? null, name: p.name ?? null, creator: s.operator, hosting: s.hosting, sovereign: isSovereign(s), mints: s.trade.mints.slice(0, 4), verified: !!v?.verified });
+      }
+      if ((r.profiles ?? []).length < 200) break;
+    }
+    this.users = { at: Date.now(), v: out };
+    return out;
+  }
+
+  /** The agent's receipt posts on Cadre ("receipt sol:<sig> ... decided by req_..."). */
+  async userReceipts(account: string) {
+    const r = await this.d.chain<any>("getAccountTxs", { account, limit: 200 }).catch(() => null);
+    for (const t of r?.txs ?? []) {
+      if (t.kind !== "Post" || typeof t.tx !== "string") continue;
+      let body: string | undefined;
+      try { const b: any = decodeSocialTx(Uint8Array.from(Buffer.from(t.tx, "base64"))).body; body = b.kind === "Post" ? b.body : undefined; } catch { body = undefined; }
+      if (typeof body !== "string") continue;
+      const m = /^receipt sol:([1-9A-HJ-NP-Za-km-z]{60,90})/.exec(body);
+      if (!m) continue;
+      this.receipts.set(m[1], { post: t.tx_hash ?? t.hash ?? "", decided_by: /decided by (\S+)/.exec(body)?.[1] ?? null });
+    }
+  }
+
+  /** Own-wallet fills of every user trader, from its Solana signatures (each tx's balance changes). */
+  userTradesP: Promise<Trade[]> | null = null;
+  /** One scan at a time: concurrent readers share the scan in flight (else a second caller would see the
+   * scan stamped but its signatures not read yet). */
+  userTrades(): Promise<Trade[]> {
+    if (!this.userTradesP) this.userTradesP = this.userTradesScan().finally(() => { this.userTradesP = null; });
+    return this.userTradesP;
+  }
+
+  async userTradesScan(): Promise<Trade[]> {
+    const users = await this.userTraders().catch(() => []);
+    for (const u of users) {
+      if (Date.now() - (this.userScanAt.get(u.account) ?? 0) < 30_000) continue;
+      this.userScanAt.set(u.account, Date.now());
+      const seen = this.userSigs.get(u.account) ?? new Map();
+      this.userSigs.set(u.account, seen);
+      const list = await this.d.sol.getSignatures(u.account, 100).catch(() => []);
+      const fresh = list.filter((x) => !seen.has(x.signature) && !x.err);
+      for (let i = 0; i < fresh.length; i += 8) {
+        await Promise.all(fresh.slice(i, i + 8).map(async (x) => {
+          const t = await this.d.sol.getTransaction(x.signature).catch(() => null);
+          if (!t) return;
+          const keys: string[] = (t.transaction?.message?.accountKeys ?? []).map((k: any) => (typeof k === "string" ? k : k?.pubkey ?? String(k)));
+          const pump = keys.some((k) => PUMP_PROGRAMS.has(k));
+          const fills = pump ? u.mints.map((mint) => { const f = walletFill(t, u.account, mint); return f ? { mint, ...f } : null; }).filter((f): f is NonNullable<typeof f> => !!f) : [];
+          seen.set(x.signature, { slot: x.slot, blockTime: x.blockTime, fills });
+        }));
+      }
+      if (fresh.length) await this.userReceipts(u.account).catch(() => {});
+    }
+    const out: Trade[] = [];
+    for (const u of users) {
+      for (const [sig, v] of this.userSigs.get(u.account) ?? []) {
+        for (const f of v.fills) {
+          const rc = this.receipts.get(sig);
+          out.push({
+            chain: "solana", venue: "pumpswap", agent: u.account, account: u.account, via: "wallet", side: f.side, amount_in: f.amount_in.toString(), amount_out: f.amount_out.toString(),
+            unit: "lamports", token: f.mint, at: (v.blockTime ?? 0) * 1000, ref: `sol:${sig}`, house: false, flags: [], kind: "user_agent", receipt_post: rc?.post ?? null, decided_by: rc?.decided_by ?? null,
+          });
+        }
+      }
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
 
   isHouse(a: string) { return !!this.cfg.house[a]; }
 
@@ -171,7 +292,7 @@ class TradingIndex {
         out.push({
           chain: "solana", venue: "pumpswap", agent: e.agent, account: e.mandate, via: "mandate", side: e.side === 0 ? "buy" : "sell",
           amount_in: e.amount_in, amount_out: e.amount_out, unit: "lamports", token: e.mint, at: (v.blockTime ?? 0) * 1000, ref: `sol:${sig}`,
-          house: this.isHouse(e.agent), flags: m && m.user === e.agent ? ["agent is its own grantor"] : [],
+          house: this.isHouse(e.agent), flags: m && m.user === e.agent ? ["agent is its own grantor"] : [], kind: this.isHouse(e.agent) ? "house" : "mandate",
         });
       }
     }
@@ -195,7 +316,7 @@ class TradingIndex {
       trades.push({
         chain: "cadre", venue: "cadre-amm", agent: origin, account: viaMandate ? `${c.mandate_contract}` : trader, via: viaMandate ? "mandate" : "wallet",
         side: data[0] === 0 ? "buy" : "sell", amount_in: data.readBigUInt64LE(1).toString(), amount_out: data.readBigUInt64LE(9).toString(), unit: "CADRE base units",
-        token: c.agent_token, at: e.height, ref: `cadre:${e.tx_hash}`, house: this.isHouse(origin), flags: [],
+        token: c.agent_token, at: e.height, ref: `cadre:${e.tx_hash}`, house: this.isHouse(origin), flags: [], kind: this.isHouse(origin) ? "house" : viaMandate ? "mandate" : "wallet" as any,
       });
       heights.set(e.height, (heights.get(e.height) ?? 0) + 1);
     }
@@ -284,10 +405,11 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     return { ix, cfg };
   };
 
-  async function solPool() {
+  async function solPool(mint?: string) {
     const { cfg } = need();
-    if (!cfg.solana) return null;
-    const [p] = await d.sol.getMultipleAccounts([cfg.solana.pool]);
+    if (!cfg.solana && !mint) return null;
+    const poolAddr = !mint || mint === cfg.solana?.mint ? cfg.solana!.pool : canonicalPool(mint);
+    const [p] = await d.sol.getMultipleAccounts([poolAddr]);
     if (!p) return null;
     const pd = Buffer.from(p.data);
     const bv = b58encode(pd.subarray(139, 171)), qv = b58encode(pd.subarray(171, 203));
@@ -296,7 +418,33 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     if (vq < 0n) vq = 0n;
     const base = b ? Buffer.from(b.data).readBigUInt64LE(64) : 0n;
     const quote = q ? Buffer.from(q.data).readBigUInt64LE(64) - pd.readBigUInt64LE(271) - pd.readBigUInt64LE(279) + vq : 0n;
-    return { pool: cfg.solana.pool, mint: cfg.solana.mint, base_reserve: base, quote_reserve: quote };
+    return { pool: poolAddr, mint: mint ?? cfg.solana!.mint, base_reserve: base, quote_reserve: quote };
+  }
+
+  /** Own-wallet positions of user agents (Solana, PumpSwap), by average cost over their own fills. */
+  async function walletPositions(agent?: string) {
+    const { ix } = need();
+    const users = (await ix.userTraders().catch(() => [])).filter((u) => !agent || u.account === agent);
+    if (!users.length) return [];
+    const trades = (await ix.userTrades().catch(() => [])).filter((t) => !agent || t.agent === agent);
+    const pools = new Map<string, Awaited<ReturnType<typeof solPool>>>();
+    const out: any[] = [];
+    for (const u of users) {
+      for (const mint of u.mints) {
+        const fills = trades.filter((t) => t.agent === u.account && t.token === mint).reverse();
+        if (!pools.has(mint)) pools.set(mint, await solPool(mint).catch(() => null));
+        const pool = pools.get(mint);
+        const p = avgCostPnl(fills);
+        out.push({
+          chain: "solana", venue: "pumpswap", via: "wallet", kind: "user_agent", agent: u.account, handle: u.handle, name: u.name, creator: u.creator, hosting: u.hosting, sovereign: u.sovereign, verified: u.verified, mint,
+          position_spl: p.position.toString(), cost_basis_lamports: p.cost_basis.toString(), realized_pnl_lamports: p.realized.toString(),
+          marked_at_mid_lamports: pool ? midValue(p.position, pool.base_reserve, pool.quote_reserve).toString() : null,
+          trades: fills.length, last_trade_at: fills.length ? fills[fills.length - 1].at : null,
+          method: "average cost over this agent's own PumpSwap fills, each read from the landed Solana tx's balance changes (the tx fee and rent deposits for accounts the tx created excluded)",
+        });
+      }
+    }
+    return out;
   }
 
   async function solPositions(filter: (m: MandateRec) => boolean) {
@@ -346,8 +494,8 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
 
   async function allTrades() {
     const { ix } = need();
-    const [s, c] = await Promise.all([ix.solTrades().catch(() => []), ix.cadreState().then((x) => x.trades).catch(() => [])]);
-    return { solana: s, cadre: c };
+    const [s, c, u] = await Promise.all([ix.solTrades().catch(() => []), ix.cadreState().then((x) => x.trades).catch(() => []), ix.userTrades().catch(() => [])]);
+    return { solana: [...s, ...u].sort((a, b) => b.at - a.at), cadre: c };
   }
 
   api.get("/v1/trading", async () => {
@@ -362,8 +510,9 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
         cadre: cfg.cadre ? { amm_pool: cfg.cadre.amm_pool, token: cfg.cadre.agent_token, mandate_contract: cfg.cadre.mandate_contract, reserves: st?.pool ?? null } : null,
       },
       house_traders: Object.entries(cfg.house).map(([account, handle]) => ({ account, handle })),
+      user_agents: (await need().ix.userTraders().catch(() => [])).length,
       volume: {
-        note: "quote-side volume per venue unit; house traders are excluded from organic and shown apart",
+        note: "quote-side volume per venue unit; house traders are excluded from organic and shown apart; user agents trading from their own wallets count as organic",
         solana_lamports: { organic: vol(t.solana, false).toString(), house: vol(t.solana, true).toString() },
         cadre_base_units: { organic: vol(t.cadre, false).toString(), house: vol(t.cadre, true).toString() },
       },
@@ -388,12 +537,13 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
   api.get("/v1/trading/agents/:account", async (c) => {
     const a = addr(c.params.account, "account");
     const { cfg } = need();
-    const [sol, cad, t] = await Promise.all([solPositions((m) => m.agent === a || m.user === a), cadrePositions(a), allTrades()]);
+    const [sol, cad, t, w] = await Promise.all([solPositions((m) => m.agent === a || m.user === a), cadrePositions(a), allTrades(), walletPositions(a)]);
     const trades = [...t.solana, ...t.cadre].filter((x) => x.agent === a).slice(0, 100);
-    if (!sol.length && !cad.wallets.length && !cad.mandates.length && !trades.length) throw notFound("no trading on chain for this account");
+    if (!sol.length && !cad.wallets.length && !cad.mandates.length && !trades.length && !w.length) throw notFound("no trading on chain for this account");
     return {
-      account: a, handle: cfg.house[a] ?? null, house: !!cfg.house[a],
-      positions: { solana_mandates: sol, cadre_wallet: cad.wallets, cadre_mandates: cad.mandates },
+      account: a, handle: cfg.house[a] ?? w[0]?.handle ?? null, house: !!cfg.house[a], kind: cfg.house[a] ? "house" : w.length ? "user_agent" : "mandate",
+      sovereign: w[0]?.sovereign ?? null, creator: w[0]?.creator ?? null,
+      positions: { solana_wallet: w, solana_mandates: sol, cadre_wallet: cad.wallets, cadre_mandates: cad.mandates },
       pnl_note: "realized only, from chain data; marked_at_mid is the position at the pool's current price, not profit",
       trades,
     };
@@ -401,15 +551,17 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
 
   api.get("/v1/trading/leaderboard", async () => {
     const { cfg } = need();
-    const [sol, cad] = await Promise.all([solPositions(() => true), cadrePositions()]);
-    const solBoard = sol.map((m) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, mandate: m.mandate, user: m.user, realized_pnl_lamports: m.realized_pnl_lamports, position_cadre_spl: m.cadre_position_spl, position_marked_at_mid_lamports: m.marked_at_mid_lamports, trades: m.trades, revoked: m.revoked, client_capital: m.user !== m.agent }))
+    const [sol, cad, w] = await Promise.all([solPositions(() => true), cadrePositions(), walletPositions()]);
+    const userBoard = w.map((x) => ({ ...x })).sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : BigInt(y.realized_pnl_lamports) < BigInt(x.realized_pnl_lamports) ? -1 : 0));
+    const solBoard = sol.map((m) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, kind: m.house ? "house" : "mandate", mandate: m.mandate, user: m.user, realized_pnl_lamports: m.realized_pnl_lamports, position_cadre_spl: m.cadre_position_spl, position_marked_at_mid_lamports: m.marked_at_mid_lamports, trades: m.trades, revoked: m.revoked, client_capital: m.user !== m.agent }))
       .sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : -1));
     const cadBoard = [
-      ...cad.mandates.map((m: any) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, mandate: `${m.contract}#${m.id}`, realized_pnl_cadre: m.realized_pnl, position_token: m.position, trades: Number(m.trades), revoked: m.revoked, client_capital: m.user !== m.agent })),
-      ...cad.wallets.map((w) => ({ agent: w.account, handle: w.handle, house: w.house, mandate: null, realized_pnl_cadre: w.realized_pnl_cadre, position_token: w.position_token, position_marked_at_mid_cadre: w.marked_at_mid_cadre, trades: w.trades, revoked: false, client_capital: false })),
+      ...cad.mandates.map((m: any) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, kind: m.house ? "house" : "mandate", mandate: `${m.contract}#${m.id}`, realized_pnl_cadre: m.realized_pnl, position_token: m.position, trades: Number(m.trades), revoked: m.revoked, client_capital: m.user !== m.agent })),
+      ...cad.wallets.map((w) => ({ agent: w.account, handle: w.handle, house: w.house, kind: w.house ? "house" : "wallet", mandate: null, realized_pnl_cadre: w.realized_pnl_cadre, position_token: w.position_token, position_marked_at_mid_cadre: w.marked_at_mid_cadre, trades: w.trades, revoked: false, client_capital: false })),
     ].sort((x, y) => (BigInt(y.realized_pnl_cadre) > BigInt(x.realized_pnl_cadre) ? 1 : -1));
     return {
       note: "ranked by realized PnL per venue unit (no conversion between SOL and CADRE). Mandate PnL is realized in SOL or CADRE only: buying moves value into a token position, shown apart at the pool mid and never counted as profit. Revoked and losing agents stay listed; house traders are labelled",
+      user_agents: userBoard, user_agents_note: "user agents (organic): sovereign agents created by users, trading on Solana PumpSwap from their own wallets; realized PnL by average cost over their own fills, read from the landed txs",
       solana: solBoard, cadre: cadBoard,
     };
   }, { cache: 15 });

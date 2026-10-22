@@ -89,6 +89,11 @@ export interface DeskOpts {
   siteUrl: string;
   explorerUrl: string;
   walletTgz: string; // a .tar.gz of the wallet dist (no source maps)
+  /** a size tag kept in the sandbox metadata (cadre_size); a found sandbox without this tag is
+   * replaced by a new one from `template` (used to move Work desktops to 1.5 GiB). Unset: keep any. */
+  sizeTag?: string;
+  /** this desktop's E2B rate when it differs from the controller's default size, USD/s */
+  usdPerS?: number;
   /** encoder settings for sandbox/stream.sh (DESK_FPS, DESK_KBPS, DESK_SEG_S, DESK_STILL_S); empty = its defaults */
   stream?: Record<string, string | number>;
   log: (e: Record<string, unknown>) => void;
@@ -106,6 +111,19 @@ export class Desk {
   /** last time a vision step or chain action ran on this desktop (ms), 0 = none since the controller started */
   lastActionAt = 0;
   health: DeskHealth | null = null;
+  /** After setting `busy`: waits (up to 6 s) until the browser host reports a working tab in front,
+   * so the vision model never types while the host is switching away from the activity console. */
+  async waitWorkFront(): Promise<boolean> {
+    for (let i = 0; i < 20; i++) {
+      const r = await this.sh(`cat ${HOME}/front 2>/dev/null`, 10_000);
+      if (!r.stdout.includes("console")) return true;
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    return false;
+  }
+
+  /** this desktop's own E2B rate (USD/s) when its size differs from the default */
+  get rate(): number | undefined { return this.o.usdPerS; }
   /** the Cadre Wallet's extension id in this desktop's browser (from the browser host's state) */
   extId: string | null = null;
   handle: string;
@@ -125,10 +143,18 @@ export class Desk {
 
   /** Finds or creates the sandbox and makes sure the browser host and the encoder run. */
   async ensure(secret: () => string, password: () => string): Promise<void> {
-    const opts = { timeoutMs: this.o.keepaliveS * 1000, resolution: this.o.resolution, metadata: this.meta, lifecycle: { onTimeout: "pause" } };
+    const opts = { timeoutMs: this.o.keepaliveS * 1000, resolution: this.o.resolution, metadata: this.o.sizeTag ? { ...this.meta, cadre_size: this.o.sizeTag } : this.meta, lifecycle: { onTimeout: "pause" } };
     if (!this.sbx) {
       this.state = "starting";
-      const found = (await this.api.list(this.meta)).sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+      let found = (await this.api.list(this.meta)).sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+      if (this.o.sizeTag) {
+        // a desktop of another size is replaced (the agent's key is imported again into the new one)
+        for (const old of found.filter((f) => f.metadata?.cadre_size !== this.o.sizeTag)) {
+          await this.api.kill(old.sandboxId);
+          this.o.log({ event: "desk_resized", agent: this.handle, role: this.role, sandbox: old.sandboxId, to: this.o.sizeTag });
+        }
+        found = found.filter((f) => f.metadata?.cadre_size === this.o.sizeTag);
+      }
       for (const extra of found.slice(1)) { await this.api.kill(extra.sandboxId); this.o.log({ event: "desk_duplicate_killed", agent: this.handle, role: this.role, sandbox: extra.sandboxId }); }
       if (found[0]) {
         this.sbx = await this.api.connect(found[0].sandboxId, { timeoutMs: opts.timeoutMs });

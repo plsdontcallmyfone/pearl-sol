@@ -732,7 +732,7 @@ pub fn draw_inbox(buf: &mut Buffer, pen: &Pen, r: Rect, me: Option<&str>, dm: &(
     let x = r.x + 2;
     let Some(me) = me else {
         put(buf, x, r.y, super::dash::NO_WALLET, pen.fg(MUTED), r.right());
-        put(buf, x, r.y + 1, "or cadre --address ADDR to read an inbox (sealed bodies stay sealed)", pen.fg(DIM), r.right());
+        put(buf, x, r.y + 1, "or cadre wallet use --address ADDR to read an inbox (sealed bodies stay sealed)", pen.fg(DIM), r.right());
         return;
     };
     put(buf, x, r.y, &format!("Inbox of {}", fmt::short_addr(me)), pen.fg(TEXT).add_modifier(Modifier::BOLD), r.right());

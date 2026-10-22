@@ -1122,7 +1122,12 @@ CLAUDE.md "Who is working on what".
      SIGKILL); heal now also restarts a frozen stream and the browser (dead, stuck, or under 60 MB free, never while
      busy), skipping a browser host younger than 180 s; Work desktops open 2 tabs + the console (Work memory free went
      from 65-77 MB to 144-160 MB). After the 21:56 UTC restart: all 36 at 15 fps, one encoder each, 36/36 streams alive.
-     1.5 GiB Work desktops were not used: +1.17 USD/day would cross the 64 cap.
+     Measured 22:00-23:00 UTC: 0.0713 USD per desktop-hour (61.2 USD/day at 36), 36/36 streams alive.
+     Then (orchestrator go-ahead): Work desktops at 1.5 GiB from their own E2B template `cadre-desktop-1536`
+     (`DESK_WORK_TEMPLATE`, `DESK_WORK_MEM_MB=1536`; the 6 old Work sandboxes are replaced, Social ones kept; ledger books
+     each desktop at its own rate, +1.17 USD/day, about 62.4 at 36); the browser host now reports what is in front
+     (`~/.cadre/front`) and a vision task waits for its working tab (tasks had typed half a URL into the activity console
+     or a Google search while the host switched tabs: most read_profile failures); model errors retried twice.
 
 31. CX ADDRESS FORMAT (owner 2026-10-21: "Cx" + hex, EIP-55 style checksum, option A: the full
    address stays the 32-byte key; "Cx address format" row): DONE in code, docs and the site; node
@@ -1158,6 +1163,24 @@ CLAUDE.md "Who is working on what".
    Three house traders (desk_maker, tape_reader, slow_hand) run on the TEST BOX (~/trading/run-trader.sh,
    kill file ~/trading/STOP). PENDING for the orchestrator: box 0 cadre-api restart + site redeploy, and
    optionally moving the traders to box 0 (deploy/systemd/cadre-trading.service), TRADING.md 10.
+
+33. TRADING FOR EVERYONE: SOVEREIGN AGENTS ON SOLANA (Phase 4b, owner 2026-10-21 via the orchestrator:
+   "people ... create their own agents ... and start trading themselves", then: trades on Solana only;
+   agents are their own bosses, "that applies for all"; "trading for everyone" row): DONE in code, LIVE on
+   devnet from the test box. Agent spec v2 (SPEC 4.8): sovereign, fixed at creation, trade skill with hard
+   bounds, evolve (agent_self). Hosted runtime refuses every creator verb on v2 agents (403 sovereign);
+   legacy v1 agents keep the old controls, labelled legacy (none migrated). User agents run the house
+   engine from their own wallets (services/swarm/trading src/wallet-venue.ts, src/useragent.ts); cadre-api
+   user-agent fills, leaderboard user_agents (organic) apart from house, sovereignty fields, any pump mint
+   on the pump builders. Site cadre-web 58cacc6 (v2 wizard with Trade + Evolve + trust box, read-only
+   /agents/mine, /trade user vs house), CLI 6fd0031 (Trade view 8, cadre quote/positions/buy/sell with
+   y/N), wallet de929c621 (any pump coin trade, receipt posts, v2 spec warning; dev + danishseal
+   cadre-chain). Live: sovereign self-hosted agent tide_ledger 8715zmRX... on the test box
+   (~/usertrade/run-agent1.sh; 4 own-wallet buys, receipts on Cadre); a person's CLI buy 5jUAxDes...
+   Not built: agent token launches (no pump create_v2 builder). PENDING for the orchestrator: box 0 sync,
+   `npm ci` in services/swarm/trading, cadre-api + cadre-agents restarts, site redeploy (TRADING.md 10).
+   Test box leftovers: ~/usertrade (agent1 running, cadre-api 127.0.0.1:10780 pid ~/usertrade/api.pid,
+   web/cli/wallet build trees, Xvfb :74 pid ~/usertrade/cli/xvfb.pid), ~/usertrade-keys (0600).
 
 ## M1 components (SPEC v2, all DONE)
 

@@ -1,7 +1,8 @@
 // Output filter (docs/ECOSYSTEM.md 2.6 "Safety rails"): a completion is posted verbatim or not
 // at all. Refused: keys and seed phrases, URLs other than allowlisted Cadre links, claims of
 // being human, promises of returns, chat-assistant preambles, empty or oversize text, and
-// anything that looks like a raw instruction or tool call the model echoed from inbound data.
+// anything that looks like a raw instruction or tool call the model echoed from inbound data,
+// and text that is not words (owner 2026-10-21: house agents posted lines of "- - - -").
 
 export interface FilterResult { ok: boolean; reason?: string }
 
@@ -26,6 +27,23 @@ const PREAMBLE = /^\s*(sure|certainly|of course|here('| i)s|here are|as an ai|i(
 const INSTRUCTION = [/^\s*-?\s*\S{1,40}\s+wrote:/i, /^\s*-\s*@?[\w.-]{1,40}\s*:/, /\bwrote:\s*"/i, /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts?)\b/i, /<\/?(system|data|tool|function)\b/i, /^\s*(system|assistant|user)\s*:/im, /\b(send|transfer|withdraw)\s+[\d,.]+\s*(cadre|sol)\b/i];
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"')]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|io|xyz|net|org|app|fun|gg|co|ai|sh|me|so|dev|to|ly|finance|exchange|money)\b(?:\/[^\s]*)?/gi;
 
+/** Why `text` is not prose (a reason), or null: at least 3 words (runs of letters), letters at
+ *  least 40% of the non-space characters, and no single token making up most of the text. */
+export function notWords(text: string): string | null {
+  const words = text.match(/\p{L}+/gu) ?? [];
+  if (words.length < 3) return "not enough words";
+  const chars = text.replace(/\s/g, "");
+  const letters = (text.match(/\p{L}/gu) ?? []).length;
+  if (letters < 0.4 * chars.length) return "mostly symbols, not words";
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 8) {
+    const counts = new Map<string, number>();
+    for (const t of tokens) counts.set(t.toLowerCase(), (counts.get(t.toLowerCase()) ?? 0) + 1);
+    if (Math.max(...counts.values()) > 0.5 * tokens.length) return "one token repeated";
+  }
+  return null;
+}
+
 export function hostOf(u: string): string {
   const s = u.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
   return s.split(/[/?#:]/)[0].toLowerCase();
@@ -37,6 +55,8 @@ export function checkOutput(text: string, opts: { maxBytes: number; allowHosts?:
   if (text.trim().length === 0) return { ok: false, reason: "empty" };
   if (bytes > opts.maxBytes) return { ok: false, reason: `over post_inline_max (${bytes} > ${opts.maxBytes} bytes)` };
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) return { ok: false, reason: "control characters" };
+  const junk = notWords(text);
+  if (junk) return { ok: false, reason: junk };
   for (const r of SECRET) if (r.test(text)) return { ok: false, reason: "looks like a key or seed phrase" };
   for (const r of HUMAN) if (r.test(text)) return { ok: false, reason: "claims to be human" };
   for (const r of MONEY) if (r.test(text)) return { ok: false, reason: "promises returns" };
