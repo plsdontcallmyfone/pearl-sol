@@ -150,6 +150,9 @@ bridge acts only on final events.
  "mempool_size": 0, "peers": 2, "finality_k": 30, "syncing": false,
  "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
+`speed_height` (docs/SPEED.md 3.1): the height of the block that runs the one-time 60 s -> 30 s
+migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 6000; test chain ids
+`0x7E570000 + h`), or null for chains without one.
 
 ### getParams `{}`
 All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
@@ -164,6 +167,10 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
   knobs `price_base_lamports`, `price_mlamports_per_gflop`, `price_overhead_lamports` (decimal
   strings, or null when unset: storefront-x402 then uses its own defaults). Keys 19-26 are
   settable from the chain's social upgrade height (devnet `DEVNET_SOCIAL_HEIGHT`).
+- Speed (docs/SPEED.md 3.2): `emission_ppb` (key 45; subsidy rate in parts per billion of the pool
+  per block, 0 = `emission_ppm` applies; 3500 on the devnet from the speed height, the same
+  emission per day at 30 s), settable from the speed height; `speed_height` (uncle rules apply from
+  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration).
 - `segment_replay_blocks` (key 48, own record, SPEC 4.5 "Segment data retention"; default 720) and
   `blob_params_activation_height` (the height from which key 48 may be set: devnet 5800, else 0).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
@@ -190,8 +197,13 @@ accepts a valid block for that job. A miner may name a job or ask for a fallback
  "header_fields": {...}, "height": 121, "target_bits": 545259519, "chain_id": 1347616769,
  "job": Job | null, "fallback": {"m": 4, "n": 8, "config": "hex"},
  "tx_count": 3, "fees": "3000", "subsidy": "700", "min_fee": "1000",
- "coinbase": "hex (97 B receipt, the last tx_root leaf)", "mature_height": 151}
+ "coinbase": "hex (97 B receipt, the last tx_root leaf)", "mature_height": 151,
+ "weak_target_bits": 545259519, "weak_shift": 5}
 ```
+`weak_target_bits` / `weak_shift` (docs/SPEED.md 2.3): the weak target `target << weak_shift`
+(clamped at the pow limit) and the shift (5 at 60 s, 4 at 30 s); `weak_target_bits` is null when
+weak blocks are off (shift 0, block targets under 3.75 s). A miner that mines against the weak
+target sends hits that also meet `target_bits` to submitBlock and the others to submitWeakBlock.
 The header's `tx_root` already commits to the coinbase receipt (SPEC 3.4): txs, then the
 receipt as the last leaf. A miner only sets `nonce` / `proof_hash` (and may change
 `timestamp_ms`); it never rebuilds tx_root.
@@ -208,18 +220,57 @@ Txs come from the template with matching `tx_root` and parent. Result:
 {"accepted": false, "reason": "jackpot hash does not meet the share target"}
 ```
 
+### submitWeakBlock `{"header": "hex", "proof": "base64", "template_id"?: "hex"}`
+A weak block (docs/SPEED.md 2): a header from one of this node's templates whose proof meets
+`weak_target_bits` (not necessarily `target_bits`). The node checks it like a gossiped weak block,
+stores it and relays it on the tips channel. Result:
+```json
+{"accepted": true, "weak_hash": "hex", "size": 13050}
+{"accepted": false, "reason": "invalid: bad weak proof of work: ..."}
+```
+
+### getWeakBlocks `{"parent"?: "hex"}` (default: the tip)
+`{"parent", "weak_shift", "count", "weak_blocks": [{"hash", "height", "miner", "job_id",
+"tx_count", "received_ms", "size", "timestamp_ms", "tx_hashes": ["hex"]}], "received_total",
+"invalid_total"}`: the weak blocks this node holds on that parent (at most 256; parents more than
+2 below the tip are pruned).
+
+### getTxStatus `{"tx_hash": "hex"}`
+`{"tx_hash", "status": "pending|preconfirmed|included|final|dropped|unknown", "preconf"?, "block_hash"?,
+"height"?, "confirmations"?, "reason"?, "dropped_height"?, "final": bool}` without the tx body.
+`dropped` (2026-10-22): this node evicted the tx from its pool (sendTx "Eviction"); `reason` says
+why (`failed at 3 consecutive tips: <executor error>`), `dropped_height` is the tip it was dropped
+at. The node remembers its last 4096 drops; getTx still answers null for a dropped tx. `preconf` (status
+preconfirmed): `{"weak_count", "weak_miners", "weak_share", "first_seen_ms", "latest_age_ms",
+"confidence": "low|medium|high"}` over the weak blocks on the current tip (docs/SPEED.md 2.4;
+what it guarantees: 2.5). `unknown`: neither pooled, nor listed by a weak block on the tip, nor
+in a canonical block on this node.
+
 ### sendTx `{"tx": "base64"}`
 Checks decoding, chain id, signature, fee, nonce (>= account nonce, within 64), then
 gossips. Result `{"tx_hash": "hex"}`.
 A tx at a nonce the sender already has pooled replaces it only with a fee at least 10% higher
 (`old + max(old / 10, 1)`); otherwise "a tx with this nonce is pooled with a fee >= this one" or
-"replacement fee F below G". The mempool checks no tx semantics: a tx that fails at the tip stays
-pooled (templates skip it, and every later nonce of the sender with it) until it is replaced or
-its nonce is used; getAccount's `nonce` is the confirmed one (SPEC 5.4 "Server nonce").
+"replacement fee F below G". getAccount's `nonce` is the confirmed one (SPEC 5.4 "Server nonce").
+Eviction (node policy, 2026-10-22; before it a tx that failed at the tip stayed pooled until it was
+replaced or its nonce was used, which held the gateway's nonce for 9 hours, HANDOFF 39): after every
+new tip the node executes its pool's candidate txs against the tip in block order, as a template
+does. A tx that fails at `EVICT_AFTER_TIPS` (3) consecutive tips (3 different blocks; a rebuild on
+the same tip does not count, a success resets the count) is dropped; a failure caused only by an
+earlier failing tx of the same sender is not counted, and the sender's later nonces stay pooled for
+it to fill the gap. While a pooled tx fails at the tip, a tx at its nonce replaces it at ANY fee (no
+10% bump; min_fee still applies). A nonce below the account nonce is pruned as before. Each node
+applies the rule to its own pool; getNodeStats `mempool.failing` / `evicted` count it.
+A same-nonce replacement of a pooled tx that a weak block on the tip lists is refused (`... is
+preconfirmed by a weak block on the tip and cannot be replaced`, docs/SPEED.md 2.6).
 
 ### getTx `{"tx_hash": "hex"}`
-`{"tx_hash", "status": "pending|included", "block_hash"?, "height"?, "index"?,
-"confirmations"?, "tx": "base64", "kind": "Transfer", "from": "base58", "nonce": n, "fee": "1000"}` or null.
+`{"tx_hash", "status": "pending|preconfirmed|included|final", "preconf"?, "final": bool,
+"block_hash"?, "height"?, "index"?, "confirmations"?, "tx": "base64", "kind": "Transfer", "from":
+"base58", "nonce": n, "fee": "1000"}` or null. `final` (status and flag) once the block is at or
+below the finalized height; clients that only knew `included` treat `final` as included.
+`preconf` as in getTxStatus. A tx listed by a weak block on the tip but not pooled here answers
+like getTxStatus (no body).
 
 ### getAccount `{"account": "base58"}`
 `{"account": "base58", "balance": "0", "nonce": 0, "route": Route | null}` (always an object;
@@ -283,8 +334,30 @@ tickets, segments, blocks_mined, subsidy_paid, matrix_count, matrices: [{index, 
 `segment_list`: `[{segment_id, round, matrix, m, k, n, status, mineable, max_blocks, blocks_mined, cap, subsidy_paid, data_uri, c_hash}]`
 over every round. Error if the job is not a ticket.
 
-### listJobs `{"status"?: "open|delivered|completed|expired|mineable", "offset"?: 0, "limit"?: 50}`
-`{"total": 12, "jobs": [Job]}`, in posting order. `limit` is at most 200.
+### listJobs `{"status"?: "open|delivered|completed|expired|live|mineable|all", "kind"?: "job|ticket|segment", "offset"?: 0, "after"?: n, "before"?: n, "limit"?: 50}`
+`{"total": 12, "jobs": [Job], "next_cursor": n | null}`. `limit` is at most 200; `live` = open or
+delivered. Two ways to page:
+- `offset` (as before): the newest 10,000 jobs that match, in posting order; `total` counts them.
+- cursor (2026-10-22): `after` = a job `index`, the matching jobs with a higher index in ascending
+  order; or `before` = an index, lower ones in descending order (newest first). Spans every job;
+  `total` counts every match.
+`next_cursor` (both modes) is the `index` of the last job on the page when more match after it, else
+null: pass it as `after` (or `before`) for the next page. A node older than 2026-10-22 ignores
+`kind`, `after` and `before` and sends no `next_cursor`; clients use that to fall back to offsets.
+Answered from the node's job index (chain/rpc/src/jobindex.rs: ids and statuses of every job, the
+records of live jobs and tickets, kept current from the keys each connected or disconnected block
+wrote), so a call decodes only its page. Before it, every call read the index entry and record of
+each of the newest 10,000 jobs (20,000 state reads; the box 0 miner's orphan sweep made about 40 such
+calls a minute).
+
+### getNodeStats `{}` (2026-10-22, node-local diagnostics)
+`{"uptime_ms", "rpc": {"<method>": {"calls", "total_ms", "avg_us"}}, "state_cache": {"hits",
+"misses", "bypass", "entries", "bytes", "budget_bytes"}, "job_index": {"built", "jobs", "records",
+"rebuilds", "updates", "state_reads"}, "mempool": {"size", "failing", "evicted", "evict_after_tips"}}`:
+RPC calls and time per method since the node started (methods sorted by total time; unknown method
+names counted as `(unknown)`), the state read cache (committed values by key: `hits`/`misses` are
+reads answered from it or from disk, `bypass` reads of keys an uncommitted block wrote, which go
+through the block's batch chain), the job index and the pool eviction counters.
 
 ### getBlock `{"hash": "hex"}` or `{"height": n}`, optional `"raw": true`
 ```json
@@ -309,6 +382,14 @@ cap_remaining)` for job blocks), `reward = fees + subsidy` (credited to `miner` 
 `finality_k` blocks), `matured` = coinbase of the block K below that this block released.
 Recorded for every block this node connected, on any branch. `subsidy`, `reward`, `matured`
 are null (and `fees` is summed from the txs) for blocks stored before 2026-10-17.
+`uncles` (docs/SPEED.md 3.3): `[{"hash", "height", "miner", "job_id", "reward", "nephew",
+"mature_height", "proof_len", "record": "hex (137 B)", "path": "hex"}]`, the stale job blocks this
+block credits (at most 2, depth 1 or 2): `reward` (decimal string) matures to the uncle's `miner`,
+`nephew` to this block's miner, both at `mature_height`. Their records are tx_root leaves between
+the contracts record and the coinbase receipt (so the coinbase `leaf_index` is tx count + contracts
++ uncles); `path` proves a record like the coinbase. The raw `block` gains a trailing
+`0x02 || count u8 || (header [256] || proof_len u32 || proof || record [137])*` section only when the
+block has uncles.
 
 ### getHeader `{"hash"|"height"}`
 `{"hash", "header", "header_fields", "cumulative_work", "canonical", "confirmations", "final", "proof": "base64"}`.
@@ -570,7 +651,7 @@ buyback is all on Solana (storefront-x402 `GET /buyback`, `pearl buyback`).
 ### getMempool `{}`
 `{"size": 2, "txs": ["hex"]}`
 
-### subscribe (WebSocket only) `{"topics": ["heads", "finalized", "txs", "withdrawals"]}`
+### subscribe (WebSocket only) `{"topics": ["heads", "finalized", "txs", "withdrawals", "weak"]}`
 Result `{"subscribed": [...]}`. Notifications:
 ```json
 {"jsonrpc": "2.0", "method": "notify", "params": {"topic": "heads", "data": {
@@ -581,6 +662,8 @@ Result `{"subscribed": [...]}`. Notifications:
 - `finalized`: `{"hash", "height"}` when the K-deep block advances.
 - `txs`: `{"tx_hash"}` for each tx accepted into the mempool.
 - `withdrawals`: a Withdrawal object when it becomes final.
+- `weak`: `{"hash", "parent", "height", "miner", "job_id", "tx_count", "received_ms"}` per new
+  weak block this node accepted (docs/SPEED.md 2).
 
 ## Transactions (summary; exact bytes in `chain/agent-types/src/tx.rs` and vectors)
 

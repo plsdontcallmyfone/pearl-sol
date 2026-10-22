@@ -62,7 +62,8 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
     if (!dep || !ix) throw new ApiError(503, "unavailable", "no services market is configured on this cadre-api (deploy/market-devnet.json or MARKET_CONFIG)");
     return dep;
   }
-  async function index(maxAgeMs = 10_000): Promise<MarketIndex> {
+  // reads refresh at most every CADRE_MARKET_REFRESH_MS (default 30 s: each refresh is several contract queries on the node); a tx build refreshes sooner
+  async function index(maxAgeMs = Number(process.env.CADRE_MARKET_REFRESH_MS ?? 30_000)): Promise<MarketIndex> {
     need();
     if (Date.now() - ix!.at < maxAgeMs) return ix!;
     refreshing ??= ix!.refresh().catch((e) => {
@@ -259,7 +260,7 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
   }, { cache: 5 });
 
   api.get("/v1/market/hires/:id", async (c) => {
-    const m = await index(5_000);
+    const m = await index(15_000);
     const id = Number(c.params.id);
     const h = Number.isInteger(id) ? m.hires.get(id) : undefined;
     if (!h) throw notFound("no such hire");

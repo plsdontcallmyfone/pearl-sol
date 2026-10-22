@@ -28,6 +28,7 @@ mod mock;
 #[cfg(test)]
 mod stub;
 mod term;
+mod txstatus;
 mod trade_cmd;
 mod trades;
 mod wallet_cfg;

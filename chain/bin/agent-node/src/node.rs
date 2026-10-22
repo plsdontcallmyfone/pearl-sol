@@ -105,6 +105,9 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                 Outbound::FetchBlob(h) => {
                     let _ = self.blob_fetch.fetch(sync::key(&h));
                 }
+                Outbound::Weak(b) => {
+                    let _ = self.tips.send(Recipients::All, IoBuf::from(b), false);
+                }
                 Outbound::CancelBlob(h) => {
                     let k = sync::key(&h);
                     let _ = self.blob_fetch.retain(move |key, _| *key != k);
@@ -145,6 +148,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let (blobs_s, mut blobs_r) = channels.blobs;
     let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch };
     core.peer_info = cfg.peer_info.clone();
+    core.started_ms = now_ms(&context);
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
     let mut next_tip = context.current() + cfg.tip_interval;
     // events handled per select branch (api, blocks, txs, blobs, tips, sync, timer), logged every 15 tip ticks
@@ -152,7 +156,10 @@ pub async fn run<E, CE, V, S, R, D, B>(
 
     loop {
         // biased select: the tip timer comes first so a busy branch below cannot starve it
-        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21)
+        // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21); then
+        // block gossip, sync deliveries and tips/weak blocks BEFORE the RPC mailbox: a node whose
+        // RPC is saturated by local clients (devnet box 0, 2026-10-22: getChainInfo at 0.6-1.4 s)
+        // otherwise read gossiped blocks late and fell off the tip (orphan stalls at 5762, 5768, 5777)
         select! {
             _ = context.sleep_until(next_tip) => {
                 next_tip = context.current() + cfg.tip_interval;
@@ -173,26 +180,20 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     core.static_peers.sort();
                 }
             },
-            req = api.next() => {
-                seen[0] += 1;
-                let Some(req) = req else { break };
-                match req {
-                    ApiRequest::Call { method, params, reply } => {
-                        let now = now_ms(&context);
-                        let r = core.dispatch(&method, &params, now).await;
-                        let _ = reply.send(r);
-                    }
-                    ApiRequest::Subscribe { topics, tx } => core.subscribers.push(Subscriber { topics, tx }),
-                }
-            },
             msg = blocks_r.recv() => {
                 seen[1] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
+                let t_dec = std::time::Instant::now();
                 match Block::decode(buf.as_ref()) {
                     Ok(b) => {
+                        let decode_us = t_dec.elapsed().as_micros() as u64;
                         let now = now_ms(&context);
+                        let (bh, bheight, bsize) = (b.hash(), b.header.height, buf.as_ref().len());
+                        let t_add = std::time::Instant::now();
                         let r = core.add_block(b, now, true).await;
+                        debug!(block = %hex::encode(&bh[..6]), height = bheight, size = bsize, decode_us, add_us = t_add.elapsed().as_micros() as u64,
+                               received_ms = now, accepted = r.accepted, "gossiped block timing");
                         if !r.accepted {
                             let reason = r.reason.unwrap_or_default();
                             if ban_worthy(&reason) {
@@ -207,6 +208,50 @@ pub async fn run<E, CE, V, S, R, D, B>(
                         warn!(?peer, "undecodable block from peer: {e}: blocking it");
                         let _ = gossip_blocker.block(peer);
                     }
+                }
+            },
+            ev = sync_rx.recv() => {
+                seen[5] += 1;
+                let Some(ev) = ev else { break };
+                handle_sync(&mut core, ev, now_ms(&context)).await;
+            },
+            msg = tips_r.recv() => {
+                seen[4] += 1;
+                let Ok((peer, buf)) = msg else { break };
+                seen_peers.insert(peer.clone());
+                let b = buf.as_ref();
+                if consensus_pow::is_weak_msg(b) {
+                    // weak block (docs/SPEED.md 2.2): invalid ones get the peer blocked like a bad block
+                    if let rpc::preconf::WeakOutcome::Invalid(reason) = core.add_weak(b, now_ms(&context)).await {
+                        warn!(?peer, %reason, "invalid weak block from peer: blocking it");
+                        let _ = gossip_blocker.block(peer.clone());
+                    }
+                } else if b.len() == 40 {
+                    let h: [u8; 32] = b[..32].try_into().unwrap();
+                    let height = u64::from_le_bytes(b[32..40].try_into().unwrap());
+                    if height > core.chain.finalized().header.height && !core.chain.is_known(&h) {
+                        core.outbox.push(Outbound::FetchHeader(h));
+                    } else if height > core.chain.tip_height() {
+                        // a tip we hold only as an orphan or header: ask again for whatever its
+                        // ancestry is missing (consensus_pow::chain::repair, the 5762 stall)
+                        match core.chain.repair_for(&h) {
+                            Some(consensus_pow::Repair::Header(m)) => core.outbox.push(Outbound::FetchHeader(m)),
+                            Some(consensus_pow::Repair::Body(m)) => core.chain.reask_body(&m),
+                            None => {}
+                        }
+                    }
+                }
+            },
+            req = api.next() => {
+                seen[0] += 1;
+                let Some(req) = req else { break };
+                match req {
+                    ApiRequest::Call { method, params, reply } => {
+                        let now = now_ms(&context);
+                        let r = core.dispatch(&method, &params, now).await;
+                        let _ = reply.send(r);
+                    }
+                    ApiRequest::Subscribe { topics, tx } => core.subscribers.push(Subscriber { topics, tx }),
                 }
             },
             msg = txs_r.recv() => {
@@ -226,24 +271,6 @@ pub async fn run<E, CE, V, S, R, D, B>(
                     warn!(?peer, "oversized blob push from peer: blocking it");
                     let _ = gossip_blocker.block(peer);
                 }
-            },
-            msg = tips_r.recv() => {
-                seen[4] += 1;
-                let Ok((peer, buf)) = msg else { break };
-                seen_peers.insert(peer);
-                let b = buf.as_ref();
-                if b.len() == 40 {
-                    let h: [u8; 32] = b[..32].try_into().unwrap();
-                    let height = u64::from_le_bytes(b[32..40].try_into().unwrap());
-                    if height > core.chain.finalized().header.height && !core.chain.is_known(&h) {
-                        core.outbox.push(Outbound::FetchHeader(h));
-                    }
-                }
-            },
-            ev = sync_rx.recv() => {
-                seen[5] += 1;
-                let Some(ev) = ev else { break };
-                handle_sync(&mut core, ev, now_ms(&context)).await;
             },
         }
         core.schedule_fetches();

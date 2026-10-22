@@ -208,6 +208,12 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   Coinbase and reserve subsidies mature after K. The bridge only acts on events at
   least K deep.
 
+Speed (2026-10-21, docs/SPEED.md 3): the header is unchanged. On the devnet, block
+`DEVNET_SPEED_HEIGHT` (6000) runs a one-time config migration: target 60 s -> 30 s from its child,
+K 30 -> 60 (finality stays 30 min; finality pauses until the tip is 60 above the old floor), and
+`emission_ppb` 3500 (3.4). Fork choice stays the heaviest chain by its own headers' work; uncles do
+not count. The Solana light client follows the target time and K by height (`set_speed`, 5.3).
+
 ### 3.4 Rewards
 - Per block: `fees + subsidy`. Subsidy only for job blocks:
   `subsidy = min(pool_balance x emission_ppm / 1e6, job.cap_remaining)`,
@@ -215,6 +221,13 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   who posts a job and mines it gets back at most `alpha x P` and loses
   `(1 - alpha) x P`. Default emission_ppm per block: 7 (about 1% a day at 60 s).
 - A job is mined until its cap or its `max_blocks` is used up or it expires.
+- Speed (2026-10-21, docs/SPEED.md 3.2-3.3): config key 45 `emission_ppb`, when set, replaces
+  `emission_ppm`: `subsidy = min(pool x emission_ppb / 1e9, cap_remaining)` (3500 ppb at 30 s =
+  7 ppm at 60 s per day). Uncles: a block may credit up to 2 stale job blocks of depth 1 or 2 whose
+  parent is on its branch; each gets `min(pool x rate, cap) x 1/2` (depth 1) or `x 1/4` (depth 2),
+  the including miner 1/32 of that, both from the pool and the job's cap, maturing at height + K,
+  recorded as tx_root leaves of version 0x03 (137 bytes) before the coinbase receipt. Uncles do
+  not count toward `max_blocks`.
 - The pool is funded from outside only by reserve `fund_mining` (permissionless and rate
   limited since 2026-10-19, 5.1 "Reserve exit"): pool tokens leave only as subsidy on paid
   jobs (at most alpha x P each), reserve tokens leave only into the pool.
@@ -549,11 +562,34 @@ ticket_id [32] | round u16 | model_id [32] | rank u16 | rows_pattern [6] | cols_
   lamports fee, 90.9k-103.6k CU, 973-1,006 bytes) plus a 313-byte JobCommit account (2,240,280
   lamports rent, never closed): 0.0022 SOL per segment, 0.32 SOL per 1B round of 144 and 1.44
   SOL per 8B round of 640, all of it whether or not the segment was ever mined.
-- Block templates offer a segment only if the node's auto choice sees it: the template scans
+- Block templates offer a segment only if the node's auto choice sees it: the template looks at
   the newest `TEMPLATE_JOB_SCAN = 4096` jobs (node policy in chain/consensus-pow, not consensus;
-  was 512). At 512 the oldest segments of an 8B round were never offered once 640 newer-or-equal
+  was 512; since 2026-10-22 read from the node's job index, not by scanning state). At 512 the oldest segments of an 8B round were never offered once 640 newer-or-equal
   jobs were open (found in the scripts/serve8b run: 83 of 640 stayed unmined until the nodes
   ran 4096). Nodes that serve an 8B need this build; a lower value only delays those segments.
+- Segment order (node policy, not consensus; 2026-10-22, `consensus_pow::chain::fair_job_order`).
+  Among the mineable jobs a template may offer, the auto choice takes the one whose ticket has the
+  smallest share of its allocated blocks mined (`ticket.blocks_mined / ticket.blocks_allocated`; a
+  plain job: its own `blocks_mined / max_blocks`), then the oldest (lowest job index). Every live
+  ticket advances at the same fractional rate and a ticket's rounds are mined in posting order; each
+  block on a ticket raises its share, so equal tickets alternate. Before, the choice was "largest
+  `cap_remaining` first": a segment's cap is its MAC share of its round's rows, so a 1,600-row
+  round's segments always beat a 48-row ticket's (devnet 2026-10-22: ticket ecb7a659, 48 rows, had
+  11 of 144 segments mined after 7 h while 1,000-1,600-row rounds were mined). Rejected: oldest
+  first (under overload every segment is mined as late as possible, about the template window),
+  fee per row (every ticket pays the same per row at one price, so it is the old order again),
+  plain round robin by blocks mined (a new balance ticket would take every block until it matched
+  the oldest one's lifetime count). Measured gap (devnet heights 5491-5850, 6.08 h, 2026-10-22):
+  373.6 PostSegments (one segment each) posted an hour against 59.2 blocks an hour, all of them
+  segment blocks; after the 30 s switch at 6000 about 118 blocks an hour, so demand stays about 3x
+  the chain's capacity at that traffic and most segments will never be mined. No skip rule and no
+  refund change is needed for those: a segment carries W = P = 0, the server is paid and the buyer
+  refunded by rows used at CompleteJob whether or not segments were mined, an unmined segment's cap
+  is simply never paid out of the pool, ExpireJob closes it after the deadline with nothing to
+  refund, and templates already stop offering segments outside the newest 4096 jobs (and nodes drop
+  their A after `segment_mine_blocks`, "Segment data retention"). What is lost is the miners'
+  subsidy for that work and the GEMM check of those segments; the full replay (4.7) does not need
+  them.
 - Rounds (prepaid balances, owner decision 2026-10-18): one ticket can carry many requests.
   The server serves requests off chain against the ticket's row budget R and posts their GEMMs
   in rounds: round r stacks the rows of every request served in that period (each request's
@@ -1779,8 +1815,10 @@ rows) x sum(k)` does not fit; a settle pass the node refuses with "blob store fu
 full" sets the headroom to 0 until the next read. /v1/stats `request_data.node_blob_headroom_bytes`,
 `refused_node_storage`. 4.5 "Segment data retention" has the node side.
 Server nonce (2026-10-22, box 0: one refused PostSegments held the server's nonce and blocked every
-settle for 8 h): the node's mempool keeps a tx that fails at the tip (templates skip it, nothing
-evicts it) and refuses another tx at its nonce unless it pays 10% more (`replacement_floor`). The
+settle for 8 h): the node's mempool kept a tx that fails at the tip (templates skip it, nothing
+evicted it; since 2026-10-22 a node drops it after 3 consecutive failing tips and lets a tx at its
+nonce replace it at any fee meanwhile, RPC.md sendTx "Eviction") and refuses another tx at its nonce
+unless it pays 10% more (`replacement_floor`). The
 gateway therefore signs at the account's confirmed nonce (getAccount) and reads its own pooled txs
 (getMempool + getTx, `from` = the server): a pooled tx with the same kind and body is reused, any
 other is replaced at `replacement_fee(old) = old + max(old / 10, 1)` (at most 64 x min_fee); its

@@ -28,7 +28,7 @@ impl RpcError {
     }
 }
 
-type R = Result<Value, RpcError>;
+pub(crate) type R = Result<Value, RpcError>;
 
 /// Most segments getTicket lists in one call (each is a state read on the node actor).
 pub const MAX_TICKET_SEGMENTS: usize = 4096;
@@ -75,7 +75,7 @@ pub(crate) fn p_u64(p: &Value, k: &str) -> Option<u64> {
 }
 
 /// Binary from base64 (`key`) or hex (`key_hex`).
-fn p_bytes(p: &Value, key: &str) -> Result<Vec<u8>, RpcError> {
+pub(crate) fn p_bytes(p: &Value, key: &str) -> Result<Vec<u8>, RpcError> {
     if let Some(s) = p.get(key).and_then(|v| v.as_str()) {
         return base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| RpcError::params(format!("{key}: {e}")));
     }
@@ -177,7 +177,7 @@ pub fn withdrawal_json<E: commonware_storage::Context + Spawner, V: PowVerifier>
 
 pub fn config_json(c: &Config) -> Value {
     let mut keymap = serde_json::Map::new();
-    for k in 0..=keys::LAST {
+    for k in keys::all() {
         keymap.insert(keys::name(k).into(), json!(k));
     }
     json!({
@@ -200,6 +200,7 @@ pub fn config_json(c: &Config) -> Value {
         "block_gas_limit": c.block_gas_limit.to_string(), "tx_gas_limit": c.tx_gas_limit.to_string(),
         "contract_base_fee": c.contract_base_fee.to_string(), "contract_byte_fee": c.contract_byte_fee.to_string(),
         "storage_byte_deposit": c.storage_byte_deposit.to_string(), "max_code_size": c.max_code_size, "max_call_depth": c.max_call_depth,
+        "emission_ppb": c.emission_ppb,
         "keys": keymap,
     })
 }
@@ -246,7 +247,7 @@ pub fn route_json(account: &[u8; 32], r: &Route, height: u64) -> Value {
     })
 }
 
-fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
+pub(crate) fn srv<T, Er: std::fmt::Display>(r: Result<T, Er>) -> Result<T, RpcError> {
     r.map_err(RpcError::server)
 }
 
@@ -315,8 +316,21 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         })
     }
 
-    /// Handle one JSON-RPC call. `now_ms` is the node clock.
+    /// Handle one JSON-RPC call. `now_ms` is the node clock. Counts calls and time per
+    /// method (getNodeStats).
     pub async fn dispatch(&mut self, method: &str, p: &Value, now_ms: u64) -> R {
+        let t0 = std::time::Instant::now();
+        let r = self.dispatch_method(method, p, now_ms).await;
+        let us = t0.elapsed().as_micros() as u64;
+        // unknown method names are counted together so junk cannot grow the map
+        let known = r.as_ref().err().is_none_or(|e| e.code != -32601);
+        let e = self.rpc_stats.entry(if known { method.to_string() } else { "(unknown)".into() }).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += us;
+        r
+    }
+
+    async fn dispatch_method(&mut self, method: &str, p: &Value, now_ms: u64) -> R {
         let p = if p.is_null() { &json!({}) } else { p };
         match method {
             "getChainInfo" => {
@@ -331,10 +345,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "mempool_size": self.mempool.len(), "peers": self.peers, "finality_k": tip.config.finality_k,
                     "syncing": self.syncing, "live_blocks": self.chain.live_count(),
                     "blocks_accepted": self.blocks_accepted, "txs_accepted": self.txs_accepted,
+                    "speed_height": crate::speed::speed_fields(self.chain.chain_id()).1,
                 }))
             }
             "getParams" => {
                 let mut v = config_json(&self.chain.tip().config);
+                let (sh, mh) = crate::speed::speed_fields(self.chain.chain_id());
+                v["speed_height"] = json!(sh);
+                v["speed_migration_height"] = json!(mh);
                 // blob data-lifecycle parameters (own record, SPEC 4.5 "Segment data retention")
                 let bp = srv(self.blob_params().await)?;
                 let act = state::blobparams::blob_params_upgrade_height(self.chain.chain_id());
@@ -360,6 +378,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "tx_count": t.txs.len(), "fees": t.summary.fees.to_string(), "subsidy": t.summary.subsidy.to_string(),
                     "min_fee": t.config.min_fee.to_string(),
                     "coinbase": hex::encode(t.summary.coinbase.encode()), "mature_height": t.summary.coinbase.mature_height,
+                    "weak_target_bits": self.chain.weak_bits_for(&t.header.prev_hash), "weak_shift": self.chain.weak_shift_for(&t.header.prev_hash),
                 }))
             }
             "submitBlock" => {
@@ -370,12 +389,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         .map_err(|e| RpcError::params(e.to_string()))?;
                     let header = srv(Header::decode(&hb))?;
                     let proof = p_bytes(p, "proof")?;
-                    let Some((txs, coinbase, contracts)) = self.template_txs(&header, p_str(p, &["template_id"])) else {
+                    let Some((txs, coinbase, contracts, uncles)) = self.template_body(&header, p_str(p, &["template_id"])) else {
                         return Ok(json!({"accepted": false, "reason": "no template with this parent and tx_root"}));
                     };
-                    Block { header, proof, txs, coinbase: Some(coinbase), contracts }
+                    Block { header, proof, txs, coinbase: Some(coinbase), contracts, uncles }
                 };
                 let r = self.add_block(block, now_ms, true).await;
+                tracing::debug!(block = %hex::encode(&r.hash[..6]), height = r.height, submitted_ms = now_ms, accepted = r.accepted, "submitted block");
                 let mut v = json!({"accepted": r.accepted, "block_hash": hex::encode(r.hash), "height": r.height, "tip": r.tip});
                 if let Some(reason) = r.reason {
                     v["reason"] = json!(reason);
@@ -391,14 +411,19 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let h = p_key(p, &["tx_hash", "hash"])?;
                 if let Some(t) = self.mempool.get(&h) {
                     let mut v = tx_summary(t);
-                    v["status"] = json!("pending");
+                    self.annotate_pending(&mut v, &h, now_ms);
                     return Ok(v);
                 }
-                let Some((bh, idx)) = self.chain.tx_location(&h) else { return Ok(Value::Null) };
+                let Some((bh, idx)) = self.chain.tx_location(&h) else {
+                    // listed by a weak block on the tip but not pooled here (docs/SPEED.md 2.4)
+                    return Ok(if self.preconf_of(&h, now_ms).is_some() { self.tx_status(&h, now_ms).await } else { Value::Null });
+                };
                 let Some(b) = srv(self.chain.get_block(&bh).await)? else { return Ok(Value::Null) };
                 let t = &b.txs[idx as usize];
                 let mut v = tx_summary(t);
-                v["status"] = json!("included");
+                let fin = self.chain.is_final(&bh, b.header.height);
+                v["status"] = json!(if fin { "final" } else { "included" });
+                v["final"] = json!(fin);
                 v["block_hash"] = json!(hex::encode(bh));
                 v["height"] = json!(b.header.height);
                 v["index"] = json!(idx);
@@ -474,31 +499,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let a = p_key(p, &["account", "address", "deliverer"])?;
                 self.reject_stats(&a).await
             }
-            "listJobs" => {
-                let status = p_str(p, &["status"]).map(|s| s.to_ascii_lowercase());
-                let offset = p_u64(p, "offset").unwrap_or(0) as usize;
-                let limit = p_u64(p, "limit").unwrap_or(50).min(200) as usize;
-                let c = self.counters().await?;
-                let next = self.chain.tip_height() + 1;
-                let mut all = Vec::new();
-                for i in c.job_count.saturating_sub(10_000)..c.job_count {
-                    let Some(b) = self.tip_record(&schema::job_index_key(i)).await? else { continue };
-                    let id = srv(schema::decode_job_index(&b))?;
-                    if let Some(j) = self.job(&id).await? {
-                        let keep = match status.as_deref() {
-                            None => true,
-                            Some("mineable") => executor::check_mineable(&j, next).is_ok(),
-                            Some(s) => j.status.name() == s,
-                        };
-                        if keep {
-                            all.push(j);
-                        }
-                    }
-                }
-                let total = all.len();
-                let jobs: Vec<Value> = all.iter().skip(offset).take(limit).map(|j| job_json(j, next)).collect();
-                Ok(json!({"total": total, "jobs": jobs}))
-            }
+            "listJobs" => self.list_jobs(p).await,
+            "getNodeStats" => Ok(self.node_stats(now_ms)),
             "getModel" => {
                 let id = p_key(p, &["model_id", "id"])?;
                 Ok(match self.tip_record(&schema::model_key(&id)).await? {
@@ -573,6 +575,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 );
                 v["coinbase"] = coinbase_json(&b);
                 v["contracts"] = contracts_json(&b);
+                v["uncles"] = crate::speed::uncles_json(&b);
                 match srv(self.chain.block_rewards(&b.hash()).await)? {
                     Some(r) => {
                         v["fees"] = json!(r.fees.to_string());
@@ -766,7 +769,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 Some(r) => r,
                 None => match self.dm_dispatch(m, p).await {
                     Some(r) => r,
-                    None => Err(RpcError::method(m)),
+                    None => match self.preconf_dispatch(m, p, now_ms).await {
+                        Some(r) => r,
+                        None => Err(RpcError::method(m)),
+                    },
                 },
             },
         }

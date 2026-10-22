@@ -240,6 +240,7 @@ Targets: `nodes`, `node0` .. `nodeN`, `solana`, `programs`, `relays`, `lightclie
 
 ```
 cadre tx <hash|signature>        # a Cadre tx (64 hex) or a Solana signature (base58), auto-detected
+cadre tx <hash> --watch [--timeout 3600]   # follow a Cadre tx from pending to final
 cadre account <address|@handle>  # both chains: balance, nonce, lien, agent, profile, SOL + CADRE SPL, recent txs in words
 cadre block <height|hash>        # header, miner, paid job or fallback, reward, every tx in words
 cadre agent <address|@handle>    # registration, lien, town profile + operator link, balances on both
@@ -261,7 +262,17 @@ cadre watch [--count N] [--from H] [--pending]
   ChannelMember, ChannelKey) and contracts (DeployCode with its code hash, Instantiate with the new
   contract address, Call, Migrate, SetContractAdmin; the receipt's status and gas when the node
   has one). A kind added to the chain later and not yet described here still shows its kind
-  name. Then the state (pending, included, final), block, confirmations and explorer links.
+  name. Then the state, block, confirmations and explorer links. The state is pending,
+  preconfirmed (weak blocks on the current tip list the tx: count, miners, share, age of the
+  latest and a low / medium / high confidence label, docs/SPEED.md 2.4), included or final, with
+  a `Risk` line saying what it does and does not guarantee (SPEED.md 2.5); `--json` adds
+  `tx_status`. A node from before the weak-block upgrade never says preconfirmed and has no
+  `final` flag: final is then derived from the finalized height (src/txstatus.rs).
+- `tx --watch`: polls `getTxStatus` (falling back to `getTx` on an older node) every 500 ms and
+  prints one line per change with the seconds since it started (`0.4 s  preconfirmed (1 weak
+  block, 1 miner, low, latest 0.3 s ago)  Seen in one miner's weak block ...`) until the tx is
+  final or `--timeout` seconds pass; `--json` prints one object per change and ends with
+  `ms_to_preconfirmed`, `ms_to_included`, `ms_to_final`.
   Solana signatures are read with `getTransaction` (`jsonParsed`): system, SPL token and memo
   instructions come parsed from the RPC; our four programs' instructions are named from their
   Anchor discriminators with the arguments that matter (bridge deposit amount and chain

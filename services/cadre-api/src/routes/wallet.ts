@@ -8,6 +8,7 @@ import { Api, ApiError, badRequest, notFound } from "../http.ts";
 import type { Deps } from "../deps.ts";
 import { intParam } from "./stats.ts";
 import { minerStats } from "./mining.ts";
+import { withTxStatus } from "./txstatus.ts";
 import {
   accountDisc,
   ata,
@@ -293,7 +294,7 @@ export function registerWallet(api: Api, d: Deps) {
     if (!/^[0-9a-fA-F]{64}$/.test(h)) throw badRequest("hash is 64 hex");
     const t = await d.chain<any>("getTx", { tx_hash: h.toLowerCase() });
     if (!t) throw notFound("tx not known to the node (not in the mempool or the canonical chain)");
-    return t;
+    return withTxStatus(d, t);
   }, { cache: 1 });
 
   api.get("/v1/tx/solana/:sig", async (c) => {

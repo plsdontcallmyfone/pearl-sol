@@ -95,12 +95,17 @@ fn chain_tx(ctx: &Ctx, hash: &str) -> Result<Out> {
         w.headline = w.headline.replacen(&crate::fmt::short_addr(s(&v, "from")), &format!("@{h}"), 1);
     }
     let info = ctx.call("getChainInfo", json!({})).unwrap_or(Value::Null);
-    let included = v.get("height").is_some_and(|h| !h.is_null());
-    let fin = included && u(&info, "finalized_height") >= u(&v, "height");
-    let state = if fin { "final" } else if included { "included" } else { "pending" };
+    let ts = crate::txstatus::normalize(&v, &info);
+    let included = matches!(ts.status, "included" | "final");
+    let fin = ts.is_final;
+    let state = ts.status;
     let mut p = Panel::new(&format!("Transaction: {}", w.kind));
     p = add_words(p, &w);
     p = p.section("Status").state("State", state).kv("Hash", hash);
+    if state == "preconfirmed" {
+        p = p.kv("Preconfirmed", crate::txstatus::label(&ts));
+    }
+    p = p.kv("Risk", crate::txstatus::risk(&ts));
     if included {
         p = p.kv("Block", format!("{} (index {}, {} confirmations)", u(&v, "height"), u(&v, "index"), u(&v, "confirmations")));
     }
@@ -122,6 +127,7 @@ fn chain_tx(ctx: &Ctx, hash: &str) -> Result<Out> {
         o.insert("chain".into(), json!("cadre"));
         o.insert("state".into(), json!(state));
         o.insert("final".into(), json!(fin));
+        o.insert("tx_status".into(), crate::txstatus::to_json(&ts));
         o.insert("decoded".into(), w.json());
         o.insert("links".into(), links);
     }

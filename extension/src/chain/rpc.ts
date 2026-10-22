@@ -122,7 +122,10 @@ export interface Job {
 }
 export interface TxInfo {
   tx_hash: string;
-  status: "pending" | "included";
+  /** "preconfirmed" and "final" from nodes with weak blocks (docs/SPEED.md 2.4). */
+  status: "pending" | "preconfirmed" | "included" | "final";
+  preconf?: { weak_count: number; weak_miners?: number; weak_share?: number; first_seen_ms?: number; latest_age_ms?: number; confidence?: "low" | "medium" | "high" };
+  final?: boolean;
   block_hash?: string;
   height?: number;
   confirmations?: number;

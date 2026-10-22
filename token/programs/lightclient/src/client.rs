@@ -56,6 +56,14 @@ pub fn set_params(admin: Pubkey, params: Params) -> Instruction {
     ix(accounts::AdminOnly { admin, config: config_pda() }, instruction::SetParams { params })
 }
 
+/// Admin: schedule the speed upgrade (docs/SPEED.md 3.5; grows the config account once).
+pub fn set_speed(admin: Pubkey, speed_height: u64, target_block_time_ms: u64, finality_k: u32) -> Instruction {
+    ix(
+        accounts::SetSpeed { admin, config: config_pda(), system_program: system_program::ID },
+        instruction::SetSpeed { speed_height, target_block_time_ms, finality_k },
+    )
+}
+
 pub fn submit_header(payer: Pubkey, header: [u8; 256]) -> Instruction {
     let hash = pearl_verify_sbf::blake3::hash(&header);
     let prev: [u8; 32] = header[12..44].try_into().unwrap();

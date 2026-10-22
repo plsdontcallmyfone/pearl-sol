@@ -82,6 +82,9 @@ impl NodeApi for FailoverNode {
     fn fallback_template(&self, payout: &[u8; 32]) -> Result<Template> {
         self.with(|n| n.fallback_template(payout))
     }
+    fn submit_weak_block(&self, t: &Template, b: &MinedBlock) -> Result<SubmitOutcome> {
+        self.with(|n| n.submit_weak_block(t, b))
+    }
     fn submit_block(&self, t: &Template, b: &MinedBlock) -> Result<SubmitOutcome> {
         // Another node does not hold this template, so it answers with a rejection (no template
         // with this parent and tx_root); the miner takes a fresh template from it next.

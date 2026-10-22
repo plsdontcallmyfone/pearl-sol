@@ -406,3 +406,58 @@ fn delivers_orphaned_mined_out_job() {
     assert!(mock2.job(&[0x0f; 32]).unwrap().is("Open"));
     assert_eq!(events(&logs2, "orphan_found"), 0);
 }
+
+/// A node with the job index (2026-10-22): listJobs filters by `kind` and pages by cursor
+/// (`after` / `next_cursor`), one job per page here; it records every listJobs query.
+struct CursorNode(MockNode, std::sync::Mutex<Vec<Value>>);
+impl NodeApi for CursorNode {
+    fn block_template(&self, payout: &[u8; 32]) -> anyhow::Result<pearl_node::Template> { self.0.block_template(payout) }
+    fn submit_block(&self, t: &pearl_node::Template, b: &pearl_job::pow::MinedBlock) -> anyhow::Result<pearl_node::SubmitOutcome> { self.0.submit_block(t, b) }
+    fn get_job(&self, id: &[u8; 32]) -> anyhow::Result<Option<JobInfo>> { self.0.get_job(id) }
+    fn get_account(&self, a: &[u8; 32]) -> anyhow::Result<pearl_node::Account> { self.0.get_account(a) }
+    fn send_tx(&self, wire: &[u8]) -> anyhow::Result<String> { self.0.send_tx(wire) }
+    fn call(&self, method: &str, p: Value) -> anyhow::Result<Value> {
+        let s = self.0.state.lock().unwrap();
+        match method {
+            "getChainInfo" => Ok(serde_json::json!({"height": s.blocks.len()})),
+            "listJobs" => {
+                self.1.lock().unwrap().push(p.clone());
+                let open: Vec<(u64, Value)> = s.jobs.iter().enumerate().filter(|(_, j)| j.is("Open")).map(|(i, j)| {
+                    let mut v = j.to_json();
+                    v["max_blocks"] = 2.into();
+                    v["blocks_mined"] = 2.into();
+                    v["index"] = (i as u64).into();
+                    (i as u64, v)
+                }).collect();
+                let start = p.get("after").and_then(Value::as_u64).map_or(0, |a| a + 1);
+                let rest: Vec<&(u64, Value)> = open.iter().filter(|(i, _)| *i >= start).collect();
+                let page: Vec<Value> = rest.iter().take(1).map(|(_, v)| v.clone()).collect();
+                let next = if rest.len() > 1 { Value::from(rest[0].0) } else { Value::Null };
+                Ok(serde_json::json!({"total": open.len(), "jobs": page, "next_cursor": next}))
+            }
+            m => anyhow::bail!("method not found: {m}"),
+        }
+    }
+}
+
+#[test]
+fn orphan_sweep_pages_by_cursor_and_asks_for_plain_jobs_only() {
+    let dir = tmp("orphan-cursor");
+    let mock = MockNode::new(CHAIN, EASY);
+    mock.state.lock().unwrap().max_blocks_per_job = 0;
+    for (id, seed) in [([0x1a; 32], 21u64), ([0x1b; 32], 22), ([0x1c; 32], 23)] {
+        mock.add_job(make_job(&dir, id, seed).0);
+    }
+    let node = CursorNode(mock.clone(), Default::default());
+    let att = InProc(Attester { key: attester_key(), source: JobSource::Node(Box::new(mock.clone())), freivalds_rounds: 2, models_dir: "models".into() });
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, Some(&att), miner_key(), cfg(&dir, 3, true), log);
+    m.run(&|| false).unwrap();
+    assert_eq!(events(&logs, "orphan_found"), 3, "every page of the cursor walk was read");
+    for id in [[0x1a; 32], [0x1b; 32], [0x1c; 32]] {
+        assert!(mock.job(&id).unwrap().is("Completed"));
+    }
+    let qs = node.1.lock().unwrap();
+    assert!(qs.iter().all(|q| q["kind"] == "job" && q["status"] == "open"), "{qs:?}");
+    assert!(qs[0].get("after").is_none() && qs[1]["after"].is_u64(), "first page by offset, then by cursor: {qs:?}");
+}

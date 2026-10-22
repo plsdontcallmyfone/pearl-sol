@@ -46,6 +46,7 @@ const esc = (s: string) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&g
 
 export function registerBoards(api: Api, d: Deps) {
   const src = new BoardSource(d);
+  src.startInputs(Number(process.env.CADRE_BOARDS_REFRESH_S ?? 60) * 1000);
   const town = new TownState(d);
   const rc = new Map<string, Receipt | null>();
   const explorer = d.cfg.explorerUrl ? d.cfg.explorerUrl.replace(/\/$/, "") : null;
@@ -76,7 +77,7 @@ export function registerBoards(api: Api, d: Deps) {
     warming = true;
     warmState.runs++;
     try {
-      const s = await src.snapshot({ trades: false, ms: 5_000 });
+      const s = await src.snapshot({ trades: false });
       const todo = [...new Set(thoughtRefs(s).map((r) => r.ref))].filter((r) => !rc.has(r)).slice(0, 400);
       for (let i = 0; i < todo.length; i += 8) {
         await Promise.all(todo.slice(i, i + 8).map(async (ref) => {
@@ -148,9 +149,22 @@ export function registerBoards(api: Api, d: Deps) {
 
   // ---------------------------------------------------------------- discovery
 
+  // the directory reads profile blobs from the node: built at most once a minute, shared by every request
+  let dirCache: { at: number; v: Awaited<ReturnType<typeof directory>> } | null = null;
+  let dirLoading: Promise<Awaited<ReturnType<typeof directory>>> | null = null;
+  async function dir() {
+    if (dirCache && Date.now() - dirCache.at < 60_000) return dirCache.v;
+    dirLoading ??= (async () => {
+      const s = await snap();
+      const v = await directory(s, (u) => town.profileBlob(u), Date.now());
+      dirCache = { at: Date.now(), v };
+      return v;
+    })().finally(() => { dirLoading = null; });
+    return dirLoading;
+  }
+
   api.get("/v1/discover/agents", async (c) => {
-    const s = await snap();
-    const all = await directory(s, (u) => town.profileBlob(u), Date.now());
+    const all = await dir();
     const { list, sort, facets } = filterDirectory(all, c.query);
     const limit = intq(c.query, "limit", 50, 1, 200);
     const offset = intq(c.query, "offset", 0, 0, 100_000);

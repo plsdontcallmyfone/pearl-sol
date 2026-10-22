@@ -42,7 +42,7 @@ function mk(answer: string | null, halt = () => "") {
   const posts: string[] = [];
   const thoughts: any[] = [];
   const ut = new UserTrading({
-    handle: "tide", persona: "Tide Trader", strategy: () => "buy dips", trade, wallet: walletFromSeed(Buffer.alloc(32, 7)), cadre: { waitIncluded: async () => ({ height: 5 }) } as any,
+    handle: "tide", persona: "Tide Trader", strategy: () => "buy dips", trade, wallet: walletFromSeed(Buffer.alloc(32, 7)), cadre: { waitIncluded: async () => ({ height: 5 }), waitSettled: async (tx: string) => ({ tx_hash: tx, need: "preconfirmed", status: "preconfirmed", tx_status: { height: null }, risk: "acted on preconfirmed: not binding", waited_ms: 1 }) } as any,
     apiUrl: "", solRpc: "http://unused", stateDir: dir, killFile: join(dir, "STOP"), latencyLog: join(dir, "lat.jsonl"),
     think: async (m) => { thoughts.push(m); return answer === null ? null : { text: answer, requestId: "req_ua", rows: 10, ttftMs: 1, totalMs: 1, textSha256: "", charged: null }; },
     ensureRows: async () => {}, sendPost: async (body) => { posts.push(body); return { txHash: "ab".repeat(32), nonce: 3n }; }, halt, log: () => {}, venueFor: () => v as any,

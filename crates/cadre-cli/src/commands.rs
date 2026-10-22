@@ -235,8 +235,17 @@ pub enum Cmd {
     Contract(crate::contract::ContractCmd),
     /// An inference ticket, its standing jobs (segments) and the replay verdict.
     Ticket { id: String },
-    /// A Cadre tx (64 hex) or a Solana signature, decoded in plain words.
-    Tx { hash: String },
+    /// A Cadre tx (64 hex) or a Solana signature, decoded in plain words. A Cadre tx shows its
+    /// status: pending, preconfirmed (weak blocks on the tip, docs/SPEED.md), included, final.
+    Tx {
+        hash: String,
+        /// Follow the tx from pending to final, one line per transition with its time.
+        #[arg(long)]
+        watch: bool,
+        /// With --watch: give up after this many seconds.
+        #[arg(long, default_value_t = 3600)]
+        timeout: u64,
+    },
     /// Render the dashboard from a live read into an HTML (and .txt) file.
     Snapshot {
         /// Output path; `.html` gets a styled page, the text grid goes next to it as .txt.
@@ -857,7 +866,8 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             }
             Ok(Out::new(j, o.text).view(view))
         }
-        Cmd::Tx { hash } => crate::inspect::tx(ctx, hash),
+        Cmd::Tx { hash, watch: false, .. } => crate::inspect::tx(ctx, hash),
+        Cmd::Tx { hash, watch: true, timeout } => crate::txstatus::follow(ctx, hash, std::time::Duration::from_secs(*timeout), std::time::Duration::from_millis(500)),
         Cmd::Snapshot { out, width, height, tab } => {
             let sn = snapshot::gather(ctx);
             let tab = crate::entry::dash::Tab::parse(tab)?;

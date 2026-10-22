@@ -3,7 +3,7 @@
 // upstreams (inference gateway, storefront-x402, mining pool).
 
 import { Indexer } from "../../../apps/explorer/src/indexer.ts";
-import { JsonRpc, SolanaRpc } from "../../../apps/explorer/src/rpc.ts";
+import { JsonRpc, RpcGate, SolanaRpc } from "../../../apps/explorer/src/rpc.ts";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
@@ -61,6 +61,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: stri
 export class Deps {
   cfg: Config;
   ix: Indexer;
+  /** One limit on requests in flight to the node, shared by every route and the indexer (CADRE_NODE_RPC_CONCURRENCY, default 3). */
+  nodeGate: RpcGate;
   node: JsonRpc;
   sol: SolanaRpc;
   private bridgeCache: { at: number; v: BridgeConfig | null } | null = null;
@@ -68,8 +70,12 @@ export class Deps {
 
   constructor(cfg: Config, ix?: Indexer) {
     this.cfg = cfg;
-    this.ix = ix ?? new Indexer({ nodeUrl: cfg.nodeRpc, solUrl: cfg.solanaRpc, stateDir: cfg.stateDir, pollMs: cfg.pollMs, solPollMs: Number(process.env.SOL_POLL_MS ?? 0), log: (m) => console.log(JSON.stringify({ msg: m })) });
-    this.node = new JsonRpc(cfg.nodeRpc, 15_000);
+    this.nodeGate = new RpcGate(Number(process.env.CADRE_NODE_RPC_CONCURRENCY ?? 3) || 3);
+    this.ix = ix ?? new Indexer({
+      nodeUrl: cfg.nodeRpc, solUrl: cfg.solanaRpc, stateDir: cfg.stateDir, pollMs: cfg.pollMs, solPollMs: Number(process.env.SOL_POLL_MS ?? 0),
+      jobsFullMs: Number(process.env.CADRE_JOBS_FULL_MS ?? 600_000), jobsPollMs: Number(process.env.CADRE_JOBS_POLL_MS ?? 30_000), nodeGate: this.nodeGate, log: (m) => console.log(JSON.stringify({ msg: m })),
+    });
+    this.node = new JsonRpc(cfg.nodeRpc, 15_000, this.nodeGate);
     this.sol = new SolanaRpc(cfg.solanaRpc);
   }
 

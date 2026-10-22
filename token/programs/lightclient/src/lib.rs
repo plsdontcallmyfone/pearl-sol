@@ -142,6 +142,70 @@ impl Params {
     }
 }
 
+/// Speed schedule (docs/SPEED.md 3.5): from `speed_height` the chain halves its target block
+/// time and doubles K. Stored in the Config account's bytes AFTER the Anchor-serialized
+/// [`Config`] (offset [`SPEED_OFFSET`]), not as Config fields: `Config` and its encoding stay
+/// exactly as before, so every instruction and every off-chain reader
+/// (`Config::try_deserialize`, which ignores trailing bytes) works unchanged on an account that
+/// was never migrated (no trailing bytes = no schedule), and Anchor's exit serialization only
+/// rewrites the Config prefix, so the trailing schedule survives every instruction. Layout:
+/// `"SPD1" || speed_height u64 || target_block_time_ms u64 || finality_k u32` (little-endian).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeedSchedule {
+    pub speed_height: u64,
+    pub target_block_time_ms: u64,
+    pub finality_k: u32,
+}
+
+pub const SPEED_OFFSET: usize = 8 + Config::INIT_SPACE;
+pub const SPEED_MAGIC: [u8; 4] = *b"SPD1";
+pub const SPEED_LEN: usize = 4 + 8 + 8 + 4;
+
+impl SpeedSchedule {
+    /// The schedule in a Config account's data, if one was set.
+    pub fn read(data: &[u8]) -> Option<Self> {
+        let b = data.get(SPEED_OFFSET..SPEED_OFFSET + SPEED_LEN)?;
+        if b[..4] != SPEED_MAGIC {
+            return None;
+        }
+        Some(Self {
+            speed_height: u64::from_le_bytes(b[4..12].try_into().unwrap()),
+            target_block_time_ms: u64::from_le_bytes(b[12..20].try_into().unwrap()),
+            finality_k: u32::from_le_bytes(b[20..24].try_into().unwrap()),
+        })
+    }
+
+    pub fn write(&self, data: &mut [u8]) {
+        let b = &mut data[SPEED_OFFSET..SPEED_OFFSET + SPEED_LEN];
+        b[..4].copy_from_slice(&SPEED_MAGIC);
+        b[4..12].copy_from_slice(&self.speed_height.to_le_bytes());
+        b[12..20].copy_from_slice(&self.target_block_time_ms.to_le_bytes());
+        b[20..24].copy_from_slice(&self.finality_k.to_le_bytes());
+    }
+}
+
+/// Target block time for a header at `height` (the chain's child of block `speed_height` is
+/// the first 30 s block: its parent's post-state carries the new config).
+pub fn target_time_at(p: &Params, s: Option<SpeedSchedule>, height: u64) -> u64 {
+    match s {
+        Some(s) if height > s.speed_height => s.target_block_time_ms,
+        _ => p.target_block_time_ms,
+    }
+}
+
+/// Finality depth K for a tip at `tip_height` (the chain uses the K of the tip's post-state;
+/// block `speed_height` itself already carries the new K).
+pub fn finality_k_at(p: &Params, s: Option<SpeedSchedule>, tip_height: u64) -> u64 {
+    match s {
+        Some(s) if tip_height >= s.speed_height => s.finality_k as u64,
+        _ => p.finality_k as u64,
+    }
+}
+
+fn speed_of(ai: &AccountInfo) -> Option<SpeedSchedule> {
+    SpeedSchedule::read(&ai.try_borrow_data().ok()?)
+}
+
 #[program]
 pub mod lightclient {
     use super::*;
@@ -201,6 +265,39 @@ pub mod lightclient {
         Ok(())
     }
 
+    /// Admin: schedule the chain's speed upgrade (docs/SPEED.md 3.5). The first call grows the
+    /// Config account by [`SPEED_LEN`] bytes (rent from the admin). It can be changed only while
+    /// the tip is below the current `speed_height` and the new one, so no header already
+    /// accepted is judged by other rules.
+    pub fn set_speed(ctx: Context<SetSpeed>, speed_height: u64, target_block_time_ms: u64, finality_k: u32) -> Result<()> {
+        require!(target_block_time_ms > 0, LcError::BadParams);
+        require!(finality_k >= 1 && (finality_k as usize) < CANON_LEN - 16, LcError::BadParams);
+        let info = ctx.accounts.config.to_account_info();
+        let tip = ctx.accounts.config.tip_height;
+        if let Some(old) = speed_of(&info) {
+            require!(tip < old.speed_height, LcError::BadParams);
+        }
+        require!(tip < speed_height, LcError::BadParams);
+        let need = SPEED_OFFSET + SPEED_LEN;
+        if info.data_len() < need {
+            let rent = Rent::get()?.minimum_balance(need).saturating_sub(info.lamports());
+            if rent > 0 {
+                anchor_lang::system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        anchor_lang::system_program::Transfer { from: ctx.accounts.admin.to_account_info(), to: info.clone() },
+                    ),
+                    rent,
+                )?;
+            }
+            info.realloc(need, true)?;
+        }
+        let s = SpeedSchedule { speed_height, target_block_time_ms, finality_k };
+        s.write(&mut info.try_borrow_mut_data()?);
+        emit!(SpeedSet { speed_height, target_block_time_ms, finality_k });
+        Ok(())
+    }
+
     pub fn set_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
         ctx.accounts.config.admin = new_admin;
         Ok(())
@@ -212,6 +309,7 @@ pub mod lightclient {
         require!(h.block_hash() == hash, LcError::HashMismatch);
         require!(h.version() == pv::header::VERSION, LcError::BadHeader);
         let p = &ctx.accounts.config.params;
+        let speed = speed_of(&ctx.accounts.config.to_account_info());
         let parent = ctx.accounts.parent.load()?;
         // Any submitted parent: its fields were checked against its own parent when it
         // was submitted. Nothing here trusts the parent's work; a header only becomes
@@ -228,7 +326,7 @@ pub mod lightclient {
             parent_bits: Header(&parent.header).target_bits(),
             parent_ts_ms: pts,
             grandparent_ts_ms: gp,
-            target_block_time_ms: p.target_block_time_ms,
+            target_block_time_ms: target_time_at(p, speed, h.height()),
             half_life_ms: p.half_life_ms,
             pow_limit_bits: p.pow_limit_bits,
             min_difficulty_bits: p.min_difficulty_bits,
@@ -490,7 +588,8 @@ pub mod lightclient {
         c.tip_hash = new_hash;
         c.tip_height = new_height;
         c.tip_work = new_work;
-        c.final_floor = c.final_floor.max(new_height.saturating_sub(c.params.finality_k as u64));
+        let k = finality_k_at(&c.params, speed_of(&c.to_account_info()), new_height);
+        c.final_floor = c.final_floor.max(new_height.saturating_sub(k));
         emit!(TipChanged { hash: new_hash, height: new_height, reorg_depth: depth });
         Ok(())
     }
@@ -820,7 +919,8 @@ fn promote<'info>(
         c.tip_hash = hash;
         c.tip_height = height;
         c.tip_work = cw;
-        c.final_floor = c.final_floor.max(height.saturating_sub(c.params.finality_k as u64));
+        let k = finality_k_at(&c.params, speed_of(&c.to_account_info()), height);
+        c.final_floor = c.final_floor.max(height.saturating_sub(k));
         emit!(TipChanged { hash, height, reorg_depth: 0 });
     }
     let reward = c.params.relay_reward;
@@ -1032,6 +1132,15 @@ pub struct AdminOnly<'info> {
     pub admin: Signer<'info>,
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ LcError::NotAdmin)]
     pub config: Box<Account<'info, Config>>,
+}
+
+#[derive(Accounts)]
+pub struct SetSpeed<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ LcError::NotAdmin)]
+    pub config: Box<Account<'info, Config>>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1266,6 +1375,13 @@ pub struct HeaderVerified {
 pub struct WorkVerified {
     pub hash: [u8; 32],
     pub height: u64,
+}
+
+#[event]
+pub struct SpeedSet {
+    pub speed_height: u64,
+    pub target_block_time_ms: u64,
+    pub finality_k: u32,
 }
 
 #[event]

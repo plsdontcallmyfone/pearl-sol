@@ -65,6 +65,25 @@ enum Cmd {
         #[arg(long, default_value_t = 1_000_000)]
         base_nonce: u64,
     },
+    /// Measure send -> preconfirmed (on another node) -> included times (docs/SPEED.md 7.2).
+    PreconfProbe {
+        /// Two or more node RPC URLs (txs go round robin, status is read on the next one).
+        #[arg(long, value_delimiter = ',')]
+        rpc: Vec<String>,
+        /// Fund the sender first with an attested BridgeUnlock (local test chains).
+        #[arg(long)]
+        attester_seed: Option<String>,
+        /// Sender seed (hex, 32 bytes).
+        #[arg(long)]
+        sender_seed: String,
+        #[arg(long, default_value_t = 30)]
+        count: u64,
+        /// Seconds between txs.
+        #[arg(long, default_value_t = 20)]
+        spacing: u64,
+        #[arg(long, default_value_t = 900)]
+        timeout: u64,
+    },
     /// Print the public key (base58) of a 32-byte hex seed.
     Pubkey {
         seed: String,
@@ -92,6 +111,14 @@ fn main() -> Result<()> {
             println!("sent {} txs in {:.2} s", h.len(), t.elapsed().as_secs_f64());
             Ok(())
         }
+        Cmd::PreconfProbe { rpc, attester_seed, sender_seed, count, spacing, timeout } => agent_node::probe::run(agent_node::probe::ProbeArgs {
+            rpcs: rpc,
+            attester_seed: attester_seed.as_deref().map(seed32).transpose()?,
+            sender_seed: seed32(&sender_seed)?,
+            count,
+            spacing: Duration::from_secs(spacing),
+            timeout: Duration::from_secs(timeout),
+        }),
         Cmd::Pubkey { seed } => {
             println!("{}", bs58::encode(agent_types::tx::pubkey_from_seed(&seed32(&seed)?)).into_string());
             Ok(())

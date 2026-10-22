@@ -109,8 +109,8 @@ fn admin_only_range_checked_reserved_key_and_default_deletes_the_record() {
     assert_eq!(c.params(), Some(BlobParams { segment_replay_blocks: 0 }));
     c.admin_as(ADMIN, 48, bp::DEFAULT_SEGMENT_REPLAY_BLOCKS.to_le_bytes().to_vec()).unwrap();
     assert_eq!(c.params(), None, "back to the default: no record, the same state as never set");
-    // keys 45-47 stay unknown here (another row's speed tier may claim 45)
-    for k in [45u8, 46, 47, 50] {
+    // keys 46-47 stay unknown here (45 is the speed tier's emission_ppb, docs/SPEED.md 3.2)
+    for k in [46u8, 47, 50] {
         assert!(c.admin_as(ADMIN, k, vec![0; 8]).unwrap_err().contains("unknown config key"), "key {k}");
     }
 }

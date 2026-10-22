@@ -51,6 +51,22 @@ pub mod keys {
     pub const MAX_CODE_SIZE: u8 = 33; // u32 (bytes, <= agent_types::contracts::MAX_CODE_SIZE)
     pub const MAX_CALL_DEPTH: u8 = 34; // u8 (1..=16)
     pub const LAST: u8 = 34;
+    /// Speed tier (docs/SPEED.md 3.2): keys 35-44 belong to the DM params record (state::dm),
+    /// never to this record, so the tier after the contract keys starts at 45. Encoded only
+    /// when it differs from its default.
+    pub const EMISSION_PPB: u8 = 45; // u64 (per block, of the pool; 0 = use emission_ppm)
+    pub const SPEED_FIRST: u8 = 45;
+    pub const SPEED_LAST: u8 = 45;
+
+    /// Is `k` a key of this record?
+    pub fn is_config_key(k: u8) -> bool {
+        k <= LAST || (SPEED_FIRST..=SPEED_LAST).contains(&k)
+    }
+
+    /// Every key of this record, in encoding order.
+    pub fn all() -> impl Iterator<Item = u8> {
+        (0..=LAST).chain(SPEED_FIRST..=SPEED_LAST)
+    }
 
     pub fn name(k: u8) -> &'static str {
         match k {
@@ -89,6 +105,7 @@ pub mod keys {
             STORAGE_BYTE_DEPOSIT => "storage_byte_deposit",
             MAX_CODE_SIZE => "max_code_size",
             MAX_CALL_DEPTH => "max_call_depth",
+            EMISSION_PPB => "emission_ppb",
             _ => "unknown",
         }
     }
@@ -139,6 +156,9 @@ pub struct Config {
     pub storage_byte_deposit: u64,
     pub max_code_size: u32,
     pub max_call_depth: u8,
+    /// Subsidy rate in parts per billion of the pool per block; 0 = use `emission_ppm`
+    /// (docs/SPEED.md 3.2).
+    pub emission_ppb: u64,
 }
 
 /// Gas price unit: `gas_price` is chain base units per this much gas.
@@ -218,6 +238,17 @@ impl Config {
             storage_byte_deposit: CONTRACT_DEFAULTS.storage_byte_deposit,
             max_code_size: CONTRACT_DEFAULTS.max_code_size,
             max_call_depth: CONTRACT_DEFAULTS.max_call_depth,
+            emission_ppb: 0,
+        }
+    }
+
+    /// Subsidy for one block from a pool holding `pool`, before the job cap (SPEC 3.4,
+    /// docs/SPEED.md 3.2): `pool x emission_ppb / 1e9` when set, else `pool x emission_ppm / 1e6`.
+    pub fn emission_of(&self, pool: u64) -> u64 {
+        if self.emission_ppb > 0 {
+            ((pool as u128 * self.emission_ppb as u128) / 1_000_000_000) as u64
+        } else {
+            ((pool as u128 * self.emission_ppm as u128) / 1_000_000) as u64
         }
     }
 
@@ -240,8 +271,15 @@ impl Config {
         } else {
             keys::LEGACY_LAST
         };
+        let speed = !self.range_is_default(keys::SPEED_FIRST, keys::SPEED_LAST);
+        let last = if speed { keys::LAST } else { last };
         for k in 0..=last {
             w.bytes16(&self.value(k));
+        }
+        if speed {
+            for k in keys::SPEED_FIRST..=keys::SPEED_LAST {
+                w.bytes16(&self.value(k));
+            }
         }
         w.into_inner()
     }
@@ -256,7 +294,7 @@ impl Config {
             let v = r.bytes16(usize::MAX, "config value")?;
             c.set(k, &v).map_err(|_| DecodeError::Invalid("config value"))?;
         }
-        for (lo, hi) in [(keys::LEGACY_LAST + 1, keys::SOCIAL_LAST), (keys::SOCIAL_LAST + 1, keys::LAST)] {
+        for (lo, hi) in [(keys::LEGACY_LAST + 1, keys::SOCIAL_LAST), (keys::SOCIAL_LAST + 1, keys::LAST), (keys::SPEED_FIRST, keys::SPEED_LAST)] {
             if r.pos < r.b.len() {
                 for k in lo..=hi {
                     let v = r.bytes16(usize::MAX, "config value")?;
@@ -319,6 +357,7 @@ impl Config {
             STORAGE_BYTE_DEPOSIT => self.storage_byte_deposit.to_le_bytes().to_vec(),
             MAX_CODE_SIZE => self.max_code_size.to_le_bytes().to_vec(),
             MAX_CALL_DEPTH => vec![self.max_call_depth],
+            EMISSION_PPB => self.emission_ppb.to_le_bytes().to_vec(),
             _ => Vec::new(),
         }
     }
@@ -402,6 +441,7 @@ impl Config {
                 }
                 self.max_call_depth = v[0];
             }
+            EMISSION_PPB => self.emission_ppb = u64v(v)?,
             _ => return Err(format!("unknown config key {k}")),
         }
         Ok(())
@@ -419,6 +459,9 @@ impl Config {
         }
         if self.emission_ppm > 1_000_000 {
             return Err("emission_ppm above 1e6".into());
+        }
+        if self.emission_ppb > 1_000_000_000 {
+            return Err("emission_ppb above 1e9".into());
         }
         if self.attester_threshold as usize > self.attesters.len() || (!self.attesters.is_empty() && self.attester_threshold == 0)
         {
@@ -485,7 +528,7 @@ mod tests {
         c.attester_threshold = 2;
         c.validate().unwrap();
         assert_eq!(Config::decode(&c.encode()).unwrap(), c);
-        for k in 0..=keys::LAST {
+        for k in keys::all() {
             let mut d = c.clone();
             d.set(k, &c.value(k)).unwrap();
             assert_eq!(d, c, "key {k}");
@@ -530,5 +573,40 @@ mod tests {
         e.validate().unwrap();
         e.set(keys::POST_INLINE_MAX, &0u32.to_le_bytes()).unwrap();
         assert!(e.validate().is_err());
+    }
+
+    /// docs/SPEED.md 3.2: key 45 forms its own tier after the contract keys (35-44 are the DM
+    /// record's), encoded only when set; records without it stay byte-identical.
+    #[test]
+    fn speed_tier_encodes_only_when_set() {
+        let mut c = Config::defaults([7; 32]);
+        c.attesters = vec![[1; 32]];
+        let base = c.encode();
+        let mut d = c.clone();
+        d.set(keys::EMISSION_PPB, &3500u64.to_le_bytes()).unwrap();
+        d.validate().unwrap();
+        let enc = d.encode();
+        // legacy + social + contract tiers, then key 45
+        let mut want = W::new();
+        want.u8(tag::CONFIG).u8(1);
+        for k in 0..=keys::LAST {
+            want.bytes16(&d.value(k));
+        }
+        want.bytes16(&3500u64.to_le_bytes());
+        assert_eq!(enc, want.into_inner());
+        let back = Config::decode(&enc).unwrap();
+        assert_eq!(back, d);
+        assert_eq!(back.emission_ppb, 3500);
+        d.set(keys::EMISSION_PPB, &0u64.to_le_bytes()).unwrap();
+        assert_eq!(d.encode(), base);
+        assert!(!keys::is_config_key(40));
+        assert!(keys::is_config_key(45));
+        assert_eq!(keys::name(45), "emission_ppb");
+        // emission: 7 ppm and 3,500 ppb of a 1e15 pool
+        let pool = 1_000_000_000_000_000u64;
+        assert_eq!(c.emission_of(pool), 7_000_000_000);
+        let mut e = c.clone();
+        e.emission_ppb = 3500;
+        assert_eq!(e.emission_of(pool), 3_500_000_000);
     }
 }

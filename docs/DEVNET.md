@@ -369,7 +369,7 @@ The attester's model store is /var/lib/lode/models/<model_id> (the same files th
 - Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
   the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
   4255-4257: `house_operators` = [Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM] (the swarm operator),
-  `price_mlamports_per_gflop` = 14736 (owner D2, ECOSYSTEM 5.1), `max_balance_rows` = 8192 (the devnet
+  `price_mlamports_per_gflop` = 8767 (owner D2 revised 2026-10-22 to $2.34 per 1M rows after batching; was 14736; AdminConfig tx 6778c746...), `max_balance_rows` = 8192 (the devnet
   storefront's on-chain `max_dim`). All three nodes answer getParams with the same values.
 - Box 0 services from main 816c941+ (15:25-16:22 UTC): `install 0` (inference.env `GATEWAY_EXTRA=--max-balance-rows
   8192` from deploy/devnet.env), cadre-gateway a73d2999... (text_sha256 receipts, large balances, round
@@ -750,3 +750,114 @@ After the drain (gateway `request_data.bytes_waiting` under 16 GiB), revert the 
 `cp -p /root/inference.env.pre-drain /etc/lode/inference.env && systemctl restart cadre-gateway`.
 deploy/devnet.env now carries the new quotas (BOX0_BLOBS 40 GB, BOX1/2_BLOBS 16 GB + keep_replay false), so a later
 `devnet-deploy.sh` node.json write keeps them.
+
+## Speed rollout (2026-10-22, HANDOFF item 39, docs/SPEED.md)
+
+Staged by the chain speed row in `/home/lode/stage-speed/` on boxes 0-2 (built on the test box from branch speed
+49c6700 (chain sources; later commits touch docs and tests only), which contains main up to 741194c): agent-node `8b4b3f749f2e6674149f95c073fc516129809915d470ae173419e6107fcb9222`, pearl-miner `9d78dda6d06cd717bab6097845eacf6109909fb43841fe7e26d6c20c08412068`.
+Running before: agent-node 556739d3... (bloblife), pearl-miner 295bfca2....
+
+What it changes: Phase 1 weak blocks and pre-confirmations (p2p and RPC only, inert toward old nodes) and the Phase 2
+consensus change at **height 6000** (block 6000 migrates the config: 30 s target from 6001, K 60, emission_ppb
+3500; uncles from 6000). Every node must run it BEFORE the tip reaches 6000 (about 18:40 UTC 2026-10-22 at 60 s
+blocks): an old node rejects block 6000 (state_root mismatch) and forks off. Before 6000, old and new nodes mix and
+rollback is a binary swap; after 6000 there is no rollback to the old binary (it cannot follow the migrated chain).
+If the rollout cannot finish by about height 5980, stop and move the height (agent-types/src/speed.rs
+DEVNET_SPEED_HEIGHT, rebuild, restage, and the light client set_speed height); never roll part of the boxes across 6000.
+
+Order: box 1, box 2, box 0, one at a time, as root (`ssh -i ~/.ssh/lode_devnetN root@<ip>`):
+
+    rpc() { curl -s -XPOST 127.0.0.1:10630 -H content-type:application/json -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":${2:-{\}}}"; }
+    rpc getChainInfo                                          # baseline: height (must be < 5990), finalized_hash
+    sha256sum /home/lode/stage-speed/agent-node /home/lode/stage-speed/pearl-miner   # 8b4b3f74... / 9d78dda6...
+    cp -p /opt/lode/bin/agent-node /opt/lode/bin/agent-node.pre-speed
+    cp -p /opt/lode/bin/pearl-miner /opt/lode/bin/pearl-miner.pre-speed
+    install -m 755 /home/lode/stage-speed/agent-node /opt/lode/bin/agent-node.new && mv -f /opt/lode/bin/agent-node.new /opt/lode/bin/agent-node
+    install -m 755 /home/lode/stage-speed/pearl-miner /opt/lode/bin/pearl-miner.new && mv -f /opt/lode/bin/pearl-miner.new /opt/lode/bin/pearl-miner
+    systemctl restart cadre-node
+    until rpc getChainInfo | grep -q '"height"'; do sleep 2; done
+    systemctl restart cadre-miner
+
+Checks before the next box: `rpc getChainInfo` shows `speed_height` 6000, height and finalized_hash equal to the
+other two boxes within a block or two; `rpc getPeers` count >= 2; `rpc getParams` shows `speed_height`,
+`speed_migration_height` 6000 and `emission_ppb` 0 (until 6000); `journalctl -u cadre-node -n 50` and
+`journalctl -u cadre-miner -n 20` without errors (the miner's stats line has `weak_found` / `weak_accepted`, both
+growing once this box's node runs the new build); `systemctl is-active cadre-node cadre-miner cadre-header-relay`.
+After the first upgraded box: `rpc getWeakBlocks` on it lists weak blocks from its own miner; after all three, a
+transfer shows `preconfirmed` on another box within a few seconds (`rpc getTxStatus '{"tx_hash":"<hash>"}'`).
+Box 0 has the other services; only cadre-node and cadre-miner restart, nothing else.
+
+Light client, once all three nodes run the build and before the light-client tip reaches 6000 (from the Mac; the
+light-client admin is the ops key on box 0; the program was upgraded on 2026-10-21 (slot 513664592) and behaves as
+before until this call; the running relays need no change):
+
+    scp -i ~/.ssh/pearl_vps pearl@64.95.13.106:~/speed/stage/header-relay.speed /tmp/header-relay.speed
+    scp -i ~/.ssh/lode_devnet0 -o IdentitiesOnly=yes /tmp/header-relay.speed lode@64.95.12.116:/home/lode/header-relay.speed
+    ssh -i ~/.ssh/lode_devnet0 -o IdentitiesOnly=yes lode@64.95.12.116 '/opt/lode/bin/with-rpc /bin/sh -c "exec /home/lode/header-relay.speed --solana \$TOKEN_RPC --payer /etc/lode/keys/ops.json set-speed --height 6000 --target-ms 30000 --k 60"'
+    ssh -i ~/.ssh/lode_devnet0 -o IdentitiesOnly=yes lode@64.95.12.116 '/opt/lode/bin/with-rpc /bin/sh -c "exec /home/lode/header-relay.speed --solana \$TOKEN_RPC --payer /etc/lode/keys/ops.json status"'   # "speed": {"speed_height": 6000, ...}
+
+At 6000 and after (watch for an hour): every box `rpc getChainInfo` equal tips, finalized height = tip - 30 up to
+5969 (tip 5999), then held at 5969 while K doubles (tip - 60 is lower) until the tip reaches 6030, then tip - 60; `rpc getParams` target_block_time_ms 30000, finality_k 60, emission_ppb 3500; block intervals drift from
+about 60 s to 30 s over about an hour (WTEMA, half-life 1 h); header-relay `status` lag stays small and the light
+client's final floor follows tip - 60; `rpc getBlock` of blocks after a depth-1 reorg shows `uncles`.
+
+Rollback before 6000 (per box): `cp -p /opt/lode/bin/agent-node.pre-speed /opt/lode/bin/agent-node.new && mv -f
+/opt/lode/bin/agent-node.new /opt/lode/bin/agent-node` (same for pearl-miner), restart cadre-node then cadre-miner.
+
+## Job query perf rollout (2026-10-22, HANDOFF item 40)
+
+Staged by the job query perf row in `/home/lode/stage-jobperf/` (built on the test box from main 64eeaaa, which
+contains the speed and repair builds now running): agent-node
+`6a194b232832fd6b9bee6c8e017a9bc230586066615db2728fbc98d2f48d1b23` (boxes 0-2), pearl-miner
+`9daaf87117084f2626bf80e6738a003f93e464374ea0bc023cdb3ad536fb1416` and header-relay (devnet ids)
+`562cfce6061e26577f38f9456d5e436de26d015b3d485d397e2a96cad34b9fbf` (box 0 only). Running before: agent-node
+ee51b6de... (box 0), pearl-miner 9d78dda6..., header-relay 4bb4f670....
+
+Node-local only (state read cache, job index, listJobs cursors, getNodeStats, template segment order, pool
+eviction): no consensus change, no activation height, old and new nodes mix, rollback is a binary swap at any
+height. Do NOT start before the height 6000 switch is verified ("Speed rollout": every box past about 6060,
+`getParams` target_block_time_ms 30000 and finality_k 60, equal finalized hashes, finalized height moving again).
+
+Box 1, box 2, then box 0, one at a time, as root (`ssh -i ~/.ssh/lode_devnetN -o IdentitiesOnly=yes root@<ip>`):
+
+    rpc() { curl -s -XPOST 127.0.0.1:10630 -H content-type:application/json -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":${2:-{\}}}"; }
+    rpc getChainInfo                                                  # baseline height, finalized_hash, peers
+    sha256sum /home/lode/stage-jobperf/agent-node                     # 6a194b23...
+    cp -p /opt/lode/bin/agent-node /opt/lode/bin/agent-node.pre-jobperf
+    install -m 755 /home/lode/stage-jobperf/agent-node /opt/lode/bin/agent-node.new && mv -f /opt/lode/bin/agent-node.new /opt/lode/bin/agent-node
+    systemctl restart cadre-node
+    until rpc getChainInfo | grep -q '"height"'; do sleep 2; done
+    rpc getNodeStats | head -c 300; echo                              # answers (the old build: unknown method)
+    rpc listJobs '{"status":"open","kind":"job","limit":5}' | head -c 300; echo   # has "next_cursor"
+
+Checks before the next box (give it 2-3 blocks): `rpc getChainInfo` height and finalized_hash equal to the other two
+boxes within a block or two, peers >= 2; `journalctl -u cadre-node -n 50` shows "job index built" once (after the
+first listJobs or auto template) and no errors; `systemctl is-active cadre-node cadre-miner`; on box 0 also
+`systemctl is-active cadre-api cadre-explorer cadre-gateway cadre-settle cadre-relayer`. A node restart makes cadre-*
+clients retry for a few seconds, as on every node restart.
+
+Box 0 only, after its node, one at a time:
+
+    sha256sum /home/lode/stage-jobperf/pearl-miner /home/lode/stage-jobperf/header-relay   # 9daaf871... / 562cfce6...
+    cp -p /opt/lode/bin/pearl-miner /opt/lode/bin/pearl-miner.pre-jobperf
+    install -m 755 /home/lode/stage-jobperf/pearl-miner /opt/lode/bin/pearl-miner.new && mv -f /opt/lode/bin/pearl-miner.new /opt/lode/bin/pearl-miner
+    systemctl restart cadre-miner      # check: journalctl -u cadre-miner -n 20 (block_accepted / stats lines, no step_failed loop)
+    cp -p /opt/lode/bin/header-relay /opt/lode/bin/header-relay.pre-jobperf
+    install -m 755 /home/lode/stage-jobperf/header-relay /opt/lode/bin/header-relay.new && mv -f /opt/lode/bin/header-relay.new /opt/lode/bin/header-relay
+    systemctl restart cadre-settle     # check: journalctl -u cadre-settle -n 20, no errors; only cadre-settle uses this binary on box 0
+    # relayer (TypeScript, runs from /home/lode/pearl-sol): from the Mac `scripts/devnet-deploy.sh sync` (box 0 checkout to main), then on box 0:
+    systemctl restart cadre-relayer    # check: curl -s https://relayer.64-95-12-116.sslip.io/health
+
+After (box 0, root, read-only, 5 minutes; the before numbers are in HANDOFF 40 and TEST-REPORT):
+
+    bash /home/lode/pearl-sol/scripts/devnet-rpc-load.sh 300
+
+Expected: listJobs from pearl-miner about 1 call a minute (was 47), cadre-settle getJob about one per pending order
+per block (was 223/min), relayer the same (was 112/min), node CPU and getChainInfo p90 down; getNodeStats shows the
+cache hits and the per-method totals. Pool eviction shows as "dropped a pooled tx" in `journalctl -u cadre-node`.
+
+Rollback (per box, any height): `cp -p /opt/lode/bin/agent-node.pre-jobperf /opt/lode/bin/agent-node.new && mv -f
+/opt/lode/bin/agent-node.new /opt/lode/bin/agent-node`, restart cadre-node; box 0 the same for pearl-miner (restart
+cadre-miner) and header-relay (restart cadre-settle); the relayer by checking out the previous commit in
+/home/lode/pearl-sol and restarting cadre-relayer. The old pearl-miner and relayer work against the new node and the
+new ones against the old node (offset fallback; per-tip cache only needs getChainInfo `tip`).

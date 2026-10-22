@@ -98,7 +98,7 @@ import {
 } from "./codec.ts";
 import type { BridgeConfig, Deposit } from "./codec.ts";
 import { KIND, bridgeUnlockBody, signTx } from "./agent-tx.ts";
-import type { ChainInfo, DepositStatus, NodeIO, NodeParams, Withdrawal } from "./node.ts";
+import type { ChainInfo, DepositStatus, Job, NodeIO, NodeParams, Withdrawal } from "./node.ts";
 import { loadState, saveState } from "./state.ts";
 import type { RefundRecord, RelayerState } from "./state.ts";
 
@@ -199,6 +199,21 @@ export class Relayer {
   ticks = 0;
   readonly failures = new Map<string, Failure>();
   private readonly trader: PublicKey;
+  /** getJob answers read at one chain tip (2026-10-22: one getJob per pending order per tick,
+   * about 140 a minute on devnet box 0). A job changes only with a block, so it is read again
+   * only when the tip hash moves. */
+  private jobCache: { tip: string; jobs: Map<string, Job | null> } = { tip: "", jobs: new Map() };
+  jobReads = 0;
+
+  /** The job as of chain tip `tip`, read at most once per tip. */
+  async jobAtTip(tip: string, id: string): Promise<Job | null> {
+    if (!tip || this.jobCache.tip !== tip) this.jobCache = { tip, jobs: new Map() };
+    if (tip && this.jobCache.jobs.has(id)) return this.jobCache.jobs.get(id) ?? null;
+    this.jobReads++;
+    const j = await this.o.node.getJob(id);
+    if (tip) this.jobCache.jobs.set(id, j);
+    return j;
+  }
 
   constructor(opts: RelayerOptions) {
     this.o = {
@@ -739,7 +754,7 @@ export class Relayer {
       keep.push(nonce.toString());
       const id = `order:${nonce}`;
       try {
-        const job = await this.o.node.getJob(order.jobId.toString("hex"));
+        const job = await this.jobAtTip(s.info.tip, order.jobId.toString("hex"));
         if (!job || (job.status !== "completed" && job.status !== "expired")) continue;
         if (s.info.height - job.closedHeight < K) continue; // not final yet
         if ((sf.finalizeModes & MODE_SIGNERS) === 0) {

@@ -34,6 +34,10 @@ use tracing::{debug, info, warn};
 use crate::difficulty::{next_bits, nbits_to_target, work, Retarget};
 use crate::verifier::PowVerifier;
 
+pub mod weak;
+mod uncles;
+pub mod repair;
+
 pub type BlockArchive<E> = prunable::Archive<EightCap, E, B3, Vec<u8>>;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -135,6 +139,8 @@ pub struct Template {
     pub summary: BlockSummary,
     pub fallback: pearl_job::pow::FallbackParams,
     pub config: Config,
+    /// Uncles the block credits, records filled in (docs/SPEED.md 3.3).
+    pub uncles: Vec<agent_types::speed::Uncle>,
 }
 
 const MTP_SPAN: usize = 11;
@@ -161,6 +167,39 @@ pub const MAX_ORPHAN_BYTES: usize = 256 << 20;
 /// exceed the open jobs of the busiest moment: one 8B round alone is 640 segment jobs, and at
 /// 512 the oldest segments of a round were never offered (scripts/serve8b run, 2026-10-21).
 pub const TEMPLATE_JOB_SCAN: u64 = 4096;
+
+/// Share of a candidate's work already mined, in ppm: for a segment its ticket's
+/// `blocks_mined / blocks_allocated`, for a plain job its own `blocks_mined / max_blocks`.
+pub fn job_progress_ppm(j: &JobRecord, ticket: Option<&schema::TicketExt>) -> u64 {
+    let (done, of) = match (j.segment(), ticket) {
+        (Some(_), Some(t)) => (t.blocks_mined as u64, t.blocks_allocated as u64),
+        _ => (j.blocks_mined as u64, j.max_blocks as u64),
+    };
+    done.saturating_mul(1_000_000) / of.max(1)
+}
+
+/// Auto-choice order of mineable jobs (node policy, not consensus; SPEC 4.5 "Segment order",
+/// 2026-10-22). Least-served ticket first: the candidate whose ticket (a plain job: itself) has
+/// the smallest share of its allocated blocks mined, then the oldest (lowest job index). Every
+/// live ticket advances at the same fractional rate, and within a ticket its rounds are mined
+/// in posting order. Replaces "largest cap_remaining first", under which a segment's cap (MAC
+/// share of its round's rows) made big rounds always win: a 48-row ticket on devnet had 11 of
+/// its 144 segments mined after 7 hours while 1,600-row rounds were mined.
+pub fn fair_job_order(jobs: &mut [JobRecord], ticket: &dyn Fn(&Hash) -> Option<schema::TicketExt>) {
+    let mut keyed: Vec<(u64, u64, usize)> = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, j)| {
+            let t = j.segment().and_then(|(tid, _, _)| ticket(&tid));
+            (job_progress_ppm(j, t.as_ref()), j.index, i)
+        })
+        .collect();
+    keyed.sort();
+    let order: Vec<JobRecord> = keyed.iter().map(|&(_, _, i)| jobs[i].clone()).collect();
+    for (slot, j) in jobs.iter_mut().zip(order) {
+        *slot = j;
+    }
+}
 
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
@@ -205,6 +244,10 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// index, route_nonce)`. Same rule as `history`: extended at finalization, the live
     /// part is read from the canonical branch at query time.
     clears: HashMap<Pubkey, (u64, u32, u64)>,
+    /// State keys written by the blocks a tip change connected or disconnected since the
+    /// last [`Chain::take_touched`] (node-local indexes, e.g. the RPC job index); `None`
+    /// until [`Chain::track_touched`].
+    touched: Option<HashSet<schema::Key>>,
 }
 
 /// Fees, subsidy and matured coinbase of one block (getBlock).
@@ -373,6 +416,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             rewards: Some(rewards),
             history: HashMap::new(),
             clears: HashMap::new(),
+            touched: None,
         };
 
         match committed_height {
@@ -381,7 +425,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 let header = genesis_header(&genesis, snap.state_root, snap.withdraw_root);
                 let hash = header.hash();
                 chain.store.finalize(&snap).await.map_err(internal)?;
-                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None, contracts: None };
+                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None, contracts: None, uncles: Vec::new() };
                 chain.archive_put(&block).await?;
                 chain.genesis_hash = hash;
                 chain.install_root(block, snap, U256::zero()).await?;
@@ -1062,7 +1106,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             Some(j) => Some(j.pearl_job().map_err(ChainError::Invalid)?),
             None => None,
         };
+        let t_pow = std::time::Instant::now();
         self.check_pow(h, pj.as_ref(), &block.proof, &pcfg)?;
+        let uncle_inputs = self.check_block_uncles(block, &parent_snap).await?;
+        let pow_us = t_pow.elapsed().as_micros() as u64;
+        let t_exec = std::time::Instant::now();
         // Execute.
         let env = BlockEnv {
             chain_id: self.genesis.chain_id,
@@ -1071,7 +1119,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             job_id: if h.is_fallback() { None } else { Some(h.job_id) },
         };
         let view = View { store: &self.store, snap: &parent_snap };
-        let (ws, summary) = executor::execute_block(&view, env, &block.txs).await.map_err(|e| match e {
+        let (ws, summary) = executor::execute_block_with_uncles(&view, env, &block.txs, uncle_inputs).await.map_err(|e| match e {
             executor::ExecError::State(s) => internal(s),
             other => ChainError::Invalid(other.to_string()),
         })?;
@@ -1092,7 +1140,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if block.contracts != summary.contracts {
             return invalid("contracts record mismatch");
         }
+        if block.uncles.iter().map(|u| u.record).ne(summary.uncles.iter().copied()) {
+            return invalid("uncle record mismatch");
+        }
         let config = self.read_config(&snap).await?;
+        debug!(height = h.height, pow_us, exec_us = t_exec.elapsed().as_micros() as u64, txs = block.txs.len(), proof_len = block.proof.len(), "block timing");
         Ok((snap, summary, config))
     }
 
@@ -1136,6 +1188,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             });
             for (i, t) in n.txs.iter().enumerate() {
                 self.tx_index.insert(t.hash(), (*c, i as u32));
+            }
+        }
+        if let Some(t) = self.touched.as_mut() {
+            for h in disconnected.iter().chain(connected.iter()) {
+                t.extend(self.live[h].snapshot.written().iter().copied());
             }
         }
         self.tip = new;
@@ -1209,6 +1266,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         Ok(())
     }
 
+    /// Start collecting the state keys tip changes touch (see `touched`).
+    pub fn track_touched(&mut self) {
+        if self.touched.is_none() {
+            self.touched = Some(HashSet::new());
+        }
+    }
+
+    /// Keys written by every block connected to or disconnected from the canonical chain
+    /// since the last call: re-reading them at the tip brings a node-local index of tip
+    /// state up to date across any reorg.
+    pub fn take_touched(&mut self) -> HashSet<schema::Key> {
+        self.touched.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     // ------------------------------------------------------------------ templates
 
     /// Open jobs a block on the tip could mine, newest `scan` jobs only.
@@ -1272,6 +1343,23 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         now_ms: u64,
         available: &(dyn Fn(&JobRecord) -> bool + Sync),
     ) -> Result<Template, ChainError> {
+        self.build_template_with(parent, miner, choice, candidates, now_ms, available, None).await
+    }
+
+    /// [`Chain::build_template_filtered`] where an auto choice takes its mineable jobs (and
+    /// their tickets) from `jobs` instead of scanning the newest TEMPLATE_JOB_SCAN jobs in
+    /// state: the node's job index (rpc jobindex), which must describe `parent`'s state.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_template_with(
+        &self,
+        parent: Hash,
+        miner: Pubkey,
+        choice: JobChoice,
+        candidates: &[Tx],
+        now_ms: u64,
+        available: &(dyn Fn(&JobRecord) -> bool + Sync),
+        jobs: Option<(Vec<JobRecord>, HashMap<Hash, schema::TicketExt>)>,
+    ) -> Result<Template, ChainError> {
         let tip = self.live.get(&parent).ok_or_else(|| ChainError::Invalid("parent is not a live block".into()))?;
         let height = tip.header.height + 1;
         let job = match choice {
@@ -1289,9 +1377,28 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 Some(j)
             }
             JobChoice::Auto => {
-                let mut jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
+                let (mut jobs, tickets) = match jobs {
+                    Some(x) => x,
+                    None => {
+                        let jobs = self.mineable_jobs_at(&parent, TEMPLATE_JOB_SCAN).await?;
+                        let mut tickets = HashMap::new();
+                        for j in &jobs {
+                            if let Some((tid, _, _)) = j.segment() {
+                                if tickets.contains_key(&tid) {
+                                    continue;
+                                }
+                                if let Some(v) = self.read_at(&parent, &schema::job_key(&tid)).await? {
+                                    if let Some(t) = JobRecord::decode(&v).map_err(internal)?.ticket() {
+                                        tickets.insert(tid, *t);
+                                    }
+                                }
+                            }
+                        }
+                        (jobs, tickets)
+                    }
+                };
                 jobs.retain(|j| available(j));
-                jobs.sort_by(|a, b| b.cap_remaining.cmp(&a.cap_remaining).then(a.index.cmp(&b.index)));
+                fair_job_order(&mut jobs, &|t| tickets.get(t).copied());
                 jobs.into_iter().next()
             }
         };
@@ -1301,6 +1408,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             miner,
             job_id: job.as_ref().map(|j| j.job_id),
         };
+        let mut uncles = self.template_uncles(&parent).await?;
         let view = View { store: &self.store, snap: &tip.snapshot };
         let mut ex = BlockExecutor::begin(&view, env).await.map_err(|e| ChainError::Invalid(e.to_string()))?;
         let max = tip.config.max_block_txs as usize;
@@ -1313,7 +1421,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 txs.push(t.clone());
             }
         }
+        ex.set_uncles(uncles.iter().map(|u| executor::UncleInput { hash: u.header.hash(), height: u.header.height, miner: u.header.miner, job_id: u.header.job_id }).collect());
         let (ws, summary) = ex.finish(true).await.map_err(|e| ChainError::Invalid(e.to_string()))?;
+        for (u, r) in uncles.iter_mut().zip(&summary.uncles) {
+            u.record = *r;
+        }
         let snap = self.store.build(&tip.snapshot, &ws, height).await.map_err(internal)?;
         let header = Header {
             version: HEADER_VERSION,
@@ -1323,13 +1435,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             target_bits: self.required_bits(&parent),
             job_id: job.as_ref().map(|j| j.job_id).unwrap_or([0; 32]),
             miner,
-            tx_root: agent_types::block::tx_root_full(&txs, summary.contracts.as_ref(), Some(&summary.coinbase)),
+            tx_root: agent_types::block::tx_root_all(&txs, summary.contracts.as_ref(), &summary.uncles, Some(&summary.coinbase)),
             state_root: snap.state_root,
             withdraw_root: snap.withdraw_root,
             proof_hash: [0; 32],
             nonce: 0,
         };
-        Ok(Template { header, txs, job, summary, fallback: tip.config.fallback_params(), config: tip.config.clone() })
+        Ok(Template { header, txs, job, summary, fallback: tip.config.fallback_params(), config: tip.config.clone(), uncles })
     }
 
     /// Decode a sync payload (header + proof).

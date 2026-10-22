@@ -7,6 +7,7 @@ import { fmtInt } from "./math.ts";
 import type { Summary } from "./models.ts";
 import type { Read } from "./contract-route.ts";
 import { T, addr, badge, card, esc, id, kv, page, tok } from "./views.ts";
+import { txStatusCell } from "./txstatus-view.ts";
 
 const STYLE = `<style>
 .t-contracts .tr { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr) 90px 70px 70px 110px; }
@@ -215,7 +216,7 @@ export function txPage(sm: Summary, m: any) {
   const pending = t.status === "pending";
   const head = kv([
     ["Kind", `<span class="ix">${esc(t.kind)}</span>`],
-    ["Status", pending ? badge("neutral", "pending in the mempool") : `${badge("ok", "included")} ${blk(t.height)}${t.confirmations !== undefined ? ` <span class="faint">${fmtInt(t.confirmations)} confirmations</span>` : ""}`],
+    ["Status", m.tx_status ? txStatusCell(m.tx_status) : pending ? badge("neutral", "pending in the mempool") : `${badge("ok", "included")} ${blk(t.height)}${t.confirmations !== undefined ? ` <span class="faint">${fmtInt(t.confirmations)} confirmations</span>` : ""}`],
     ["From", addr(t.from, { href: `/agent/${t.from}`, head: 8, tail: 6 })],
     ["Nonce", grp(t.nonce)],
     ["Fee paid (bid)", amt(t.fee, 9)],

@@ -280,6 +280,84 @@ pub fn verify_block(header: &BlockHeader, job: Option<&Job>, proof: &[u8], fallb
     verify_block_proof(job, &p, &pd, header.target_bits, header.nonce)
 }
 
+// ---------------------------------------------------------------- weak blocks (docs/SPEED.md 2)
+
+/// Bitcoin `BigToCompact` (the inverse of `job::nbits_to_target` up to mantissa truncation).
+pub fn target_to_bits(t: primitive_types::U256) -> u32 {
+    if t.is_zero() {
+        return 0;
+    }
+    let mut size = t.bits().div_ceil(8) as u32;
+    let mut compact: u32 = if size <= 3 { (t.low_u64() << (8 * (3 - size))) as u32 } else { (t >> (8 * (size - 3) as usize)).low_u32() };
+    if compact & 0x0080_0000 != 0 {
+        compact >>= 8;
+        size += 1;
+    }
+    compact | (size << 24)
+}
+
+/// Weak-block shift for a target block time: `clamp(floor(log2(target_ms / 1875)), 0, 10)`
+/// (a weak block about every 1.9 s; 0 turns weak blocks off).
+pub fn weak_shift(target_block_time_ms: u64) -> u32 {
+    let q = target_block_time_ms / 1875;
+    if q == 0 {
+        return 0;
+    }
+    (63 - q.leading_zeros()).min(10)
+}
+
+/// `min(target(strong_bits) << shift, target(pow_limit_bits))` as compact bits. Equal to
+/// `strong_bits` when `shift` is 0.
+pub fn weak_bits(strong_bits: u32, shift: u32, pow_limit_bits: u32) -> u32 {
+    if shift == 0 {
+        return strong_bits;
+    }
+    let t = crate::job::nbits_to_target(strong_bits);
+    let limit = crate::job::nbits_to_target(pow_limit_bits);
+    let w = if t.bits() as u32 + shift > 256 { primitive_types::U256::MAX } else { t << shift as usize };
+    let w = if !limit.is_zero() && w > limit { limit } else { w };
+    target_to_bits(w)
+}
+
+/// [`mine_header_nonce`] against `mine_bits` (the weak target) instead of the header's
+/// target. The header keeps its own `target_bits`; `strong` says whether the found proof
+/// also meets it (then it is a block).
+pub fn mine_header_nonce_at(template: &BlockHeader, work: &BlockWork, nonce: u64, mine_bits: u32) -> Result<Option<(MinedBlock, bool)>> {
+    let mut h = *template;
+    h.nonce = nonce;
+    h.proof_hash = [0; 32];
+    let pd = h.pow_digest();
+    let (proof, job) = match work {
+        BlockWork::Job(prep) => {
+            ensure!(!h.is_fallback(), "job blocks need a non-zero job_id");
+            (prep.mine_block(&pd, mine_bits, nonce), prep.job.clone())
+        }
+        BlockWork::Fallback(p) => {
+            ensure!(h.is_fallback(), "fallback blocks need job_id zero");
+            let fj = fallback_job(&pd, p)?;
+            (fj.mine_block(&pd, mine_bits, nonce), fj.job.clone())
+        }
+    };
+    let Some(p) = proof else { return Ok(None) };
+    let strong = mine_bits == h.target_bits || verify_block_proof(&job, &p, &pd, h.target_bits, nonce).is_ok();
+    let bytes = block_proof_to_bytes(&p);
+    h.proof_hash = proof_hash(&bytes);
+    Ok(Some((MinedBlock { header: h, proof: bytes }, strong)))
+}
+
+/// [`verify_block`] against `target_bits` instead of the header's own (weak blocks).
+pub fn verify_block_at(header: &BlockHeader, job: Option<&Job>, proof: &[u8], fallback: &FallbackParams, target_bits: u32) -> Result<VerifiedShare> {
+    ensure!(proof_hash(proof) == header.proof_hash, "proof_hash does not match the proof bytes");
+    let p = block_proof_from_bytes(proof)?;
+    let pd = header.pow_digest();
+    if header.is_fallback() {
+        let fj = fallback_job(&pd, fallback)?;
+        return verify_block_proof(&fj.job, &p, &pd, target_bits, header.nonce);
+    }
+    let Some(job) = job else { bail!("job block needs its job") };
+    verify_block_proof(job, &p, &pd, target_bits, header.nonce)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +410,48 @@ mod tests {
         let j2 = fallback_job(&[9; 32], &p).unwrap();
         assert_eq!(j1.job, j2.job);
         assert_ne!(j1.job.hash_a, [0; 32]);
+    }
+
+    #[test]
+    fn weak_shift_and_bits() {
+        assert_eq!(weak_shift(60_000), 5);
+        assert_eq!(weak_shift(30_000), 4);
+        assert_eq!(weak_shift(1_500), 0);
+        assert_eq!(weak_shift(3_750), 1);
+        assert_eq!(weak_shift(u64::MAX), 10);
+        let s = 0x1e0f1b3f;
+        assert_eq!(weak_bits(s, 0, 0x207fffff), s);
+        let w = crate::job::nbits_to_target(weak_bits(s, 5, 0x207fffff));
+        let t = crate::job::nbits_to_target(s);
+        // compact bits keep a 23-bit mantissa: at most 2^-15 below the exact shift
+        assert!(w <= t << 5 && w >= (t << 5) - ((t << 5) >> 15), "{w} vs {}", t << 5);
+        // clamped at the pow limit
+        assert_eq!(weak_bits(0x207fffff, 5, 0x207fffff), 0x207fffff);
+        for b in [0x1d00ffffu32, 0x1e040000, 0x03123456] {
+            assert_eq!(target_to_bits(crate::job::nbits_to_target(b)), b);
+        }
+    }
+
+    #[test]
+    fn weak_mining_finds_weak_and_strong() {
+        // easy fallback header: strong = 1/2^shift of the weak hits on average
+        let p = FallbackParams::default();
+        let f = crate::job::penalized_adjustment_factor(&p.config);
+        let strong_t = (primitive_types::U256::MAX >> 3) / primitive_types::U256::from(f);
+        let mut h = BlockHeader { version: 1, height: 1, prev_hash: [1; 32], timestamp_ms: 1, target_bits: target_to_bits(strong_t), job_id: [0; 32], miner: [3; 32],
+            tx_root: [0; 32], state_root: [0; 32], withdraw_root: [0; 32], proof_hash: [0; 32], nonce: 0 };
+        let wb = weak_bits(h.target_bits, 2, 0x207fffff);
+        let (mut weak, mut strong) = (0, 0);
+        for n in 0..120u64 {
+            if let Some((b, s)) = mine_header_nonce_at(&h, &BlockWork::Fallback(p), n, wb).unwrap() {
+                verify_block_at(&b.header, None, &b.proof, &p, wb).unwrap();
+                assert_eq!(verify_block(&b.header, None, &b.proof, &p).is_ok(), s);
+                if s { strong += 1 } else { weak += 1 }
+            }
+        }
+        assert!(weak > 0, "weak hits");
+        assert!(strong > 0, "strong hits");
+        h.target_bits = wb;
+        let _ = h;
     }
 }

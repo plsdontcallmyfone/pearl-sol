@@ -29,6 +29,8 @@ pub enum Outbound {
     FetchBlob(BlobId),
     /// Stop fetching a blob nobody needs any more.
     CancelBlob(BlobId),
+    /// A weak block message (docs/SPEED.md 2.2), sent on the tips channel.
+    Weak(Vec<u8>),
 }
 
 /// Live peer list for getPeers (open net); returns the JSON result.
@@ -84,7 +86,30 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     /// getBlockTemplate is public and executes up to max_block_txs txs, so repeats within
     /// [`TEMPLATE_REUSE_MS`] get the same template (security pass 2026-10-21).
     pub last_template: Option<(u64, Hash, Pubkey, JobChoice, usize, String)>,
+    /// Weak blocks and pre-confirmations (docs/SPEED.md 2).
+    pub preconf: crate::preconf::Preconf,
+    /// Node-local index of the tip's jobs (jobindex.rs).
+    pub jobs: crate::jobindex::JobIndex,
+    /// Pooled txs that failed against the tip: `(consecutive tips, last tip, reason)`
+    /// (mempool eviction, [`EVICT_AFTER_TIPS`]).
+    pub tx_strikes: HashMap<Hash, (u32, Hash, String)>,
+    /// Txs this node dropped from its pool, newest last: `(hash, reason, tip height)`.
+    pub dropped: VecDeque<(Hash, String, u64)>,
+    /// Txs evicted since start.
+    pub evicted: u64,
+    /// RPC calls by method since start: `(calls, total microseconds)` (getNodeStats).
+    pub rpc_stats: HashMap<String, (u64, u64)>,
+    /// Node start (ms) for getNodeStats.
+    pub started_ms: u64,
 }
+
+/// A pooled tx that fails against this many consecutive tips (each a different block) is
+/// dropped from the pool (2026-10-22: a PostSegments refused at every tip held its sender's
+/// nonce for 9 hours, HANDOFF 39). Failures caused only by an earlier failing tx of the same
+/// sender do not count.
+pub const EVICT_AFTER_TIPS: u32 = 3;
+/// Dropped txs remembered for getTxStatus.
+pub const DROPPED_MEMORY: usize = 4096;
 
 /// A getBlockTemplate for the same tip, miner, choice and mempool size within this many
 /// milliseconds reuses the last template.
@@ -227,6 +252,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             model_pins: HashMap::new(),
             refs_cache: None,
             last_template: None,
+            preconf: Default::default(),
+            jobs: Default::default(),
+            tx_strikes: HashMap::new(),
+            dropped: VecDeque::new(),
+            evicted: 0,
+            rpc_stats: HashMap::new(),
+            started_ms: 0,
         }
     }
 
@@ -672,8 +704,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if tx.from == self.chain.tip().config.admin {
             executor::precheck_admin_config(&tx, acc.balance)?;
         }
+        let pooled = self.mempool.pooled_at(&tx.from, tx.nonce);
+        crate::preconf::check_replacement(&self.preconf, &self.chain.tip().hash, &tx, pooled)?;
+        // a pooled tx that fails at the tip may be replaced at any fee (no 10% bump)
+        let failing = pooled.is_some_and(|p| self.tx_strikes.contains_key(&p));
         let bytes = tx.encode();
-        let h = self.mempool.insert_funded(tx, acc.nonce, acc.balance, min_fee).map_err(|e| e.to_string())?;
+        let h = self.mempool.insert_funded_opts(tx, acc.nonce, acc.balance, min_fee, failing).map_err(|e| e.to_string())?;
         self.txs_accepted += 1;
         if relay {
             self.outbox.push(Outbound::Tx(bytes));
@@ -766,9 +802,86 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             self.prune_blobs().await;
         }
         if tip_moved {
+            self.prune_weak();
             self.prune_mempool().await;
             self.templates.retain(|(_, t)| self.chain.live_node(&t.header.prev_hash).is_some());
+            if self.jobs.at.is_some() {
+                if let Err(e) = self.sync_jobs().await {
+                    warn!("job index update failed, rebuilding on next use: {e}");
+                    self.jobs.at = None;
+                }
+            }
+            self.check_pool().await;
         }
+    }
+
+    /// Execute the pool's candidate txs against the tip (as a template would) and drop any
+    /// that failed at [`EVICT_AFTER_TIPS`] consecutive tips. The sender can then send another
+    /// tx at that nonce (or replace a failing one at any fee before that, see `add_tx`).
+    pub async fn check_pool(&mut self) {
+        if self.mempool.is_empty() {
+            self.tx_strikes.clear();
+            return;
+        }
+        let tip = self.chain.tip().hash;
+        let txs = self.candidate_txs().await;
+        let n = self.chain.tip();
+        let env = executor::BlockEnv { chain_id: self.chain.chain_id(), height: n.header.height + 1, miner: [0; 32], job_id: None };
+        let view = state::View { store: self.chain.store(), snap: &n.snapshot };
+        let mut ex = match executor::BlockExecutor::begin(&view, env).await {
+            Ok(x) => x,
+            Err(e) => {
+                debug!("pool check skipped: {e}");
+                return;
+            }
+        };
+        let mut failed: Vec<(Hash, String)> = Vec::new();
+        let mut ok: Vec<Hash> = Vec::new();
+        let mut blocked: HashSet<Pubkey> = HashSet::new();
+        for t in &txs {
+            if blocked.contains(&t.from) {
+                continue; // fails because an earlier tx of its sender did
+            }
+            match ex.apply_tx(t).await {
+                Ok(_) => ok.push(t.hash()),
+                Err(e) => {
+                    blocked.insert(t.from);
+                    failed.push((t.hash(), e.to_string()));
+                }
+            }
+        }
+        drop(ex);
+        for h in ok {
+            self.tx_strikes.remove(&h);
+        }
+        let height = self.chain.tip_height();
+        for (h, reason) in failed {
+            let e = self.tx_strikes.entry(h).or_insert((0, [0; 32], String::new()));
+            if e.1 != tip {
+                e.0 += 1;
+                e.1 = tip;
+            }
+            e.2 = reason;
+            if e.0 >= EVICT_AFTER_TIPS {
+                let reason = format!("failed at {} consecutive tips: {}", e.0, e.2);
+                self.tx_strikes.remove(&h);
+                if let Some(t) = self.mempool.remove(&h) {
+                    info!(tx = %hex::encode(&h[..6]), from = %bs58::encode(t.from).into_string(), nonce = t.nonce, %reason, "dropped a pooled tx");
+                    self.evicted += 1;
+                    self.dropped.push_back((h, reason, height));
+                    while self.dropped.len() > DROPPED_MEMORY {
+                        self.dropped.pop_front();
+                    }
+                }
+            }
+        }
+        let pool = &self.mempool;
+        self.tx_strikes.retain(|h, _| pool.contains(h));
+    }
+
+    /// Why this node dropped `h` from its pool, if it did recently.
+    pub fn dropped_reason(&self, h: &Hash) -> Option<(&str, u64)> {
+        self.dropped.iter().rev().find(|(x, _, _)| x == h).map(|(_, r, ht)| (r.as_str(), *ht))
     }
 
     async fn prune_mempool(&mut self) {
@@ -803,9 +916,22 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
         }
         let txs = self.candidate_txs().await;
+        // auto choice: mineable jobs from the job index instead of a 4096-job state scan
+        let jobs = if choice == JobChoice::Auto {
+            match self.sync_jobs().await {
+                Ok(()) => Some(self.jobs.template_candidates(self.chain.tip_height() + 1, consensus_pow::chain::TEMPLATE_JOB_SCAN)),
+                Err(e) => {
+                    warn!("job index unavailable for the template ({e}); scanning state");
+                    self.jobs.at = None;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let t = {
             let avail = |j: &schema::JobRecord| self.job_data_available(j);
-            self.chain.build_template_filtered(tip, miner, choice, &txs, now_ms, &avail).await
+            self.chain.build_template_with(tip, miner, choice, &txs, now_ms, &avail, jobs).await
         };
         if let (Err(_), JobChoice::Job(id)) = (&t, choice) {
             // a named job whose data we lack: start fetching it so a retry can succeed
@@ -830,15 +956,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     /// Txs and coinbase receipt for a mined header: from the named template or any
     /// template with the same parent and tx_root.
     pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>)> {
+        self.template_body(header, template_id).map(|(t, c, k, _)| (t, c, k))
+    }
+
+    /// [`Core::template_txs`] plus the template's uncles (docs/SPEED.md 3.3).
+    pub fn template_body(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>, Vec<agent_types::speed::Uncle>)> {
         let m = |t: &Template| t.header.prev_hash == header.prev_hash && t.header.tx_root == header.tx_root;
         if let Some(id) = template_id {
             if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
                 if m(t) {
-                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts));
+                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts, t.uncles.clone()));
                 }
             }
         }
-        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts))
+        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts, t.uncles.clone()))
     }
 
     pub fn notify(&mut self, topic: &str, mut data: Value) {

@@ -26,10 +26,12 @@ mod contracts;
 mod dm;
 mod reject;
 mod social;
+mod uncles;
 
 pub use contracts::{contract_fee_floor, gas_limit_of, precheck_contract, query_contract, simulate_call, vm, QueryResult, NATIVE_CALL_KINDS};
 pub use dm::{precheck_dm, read_dm_params};
 pub use social::{precheck_social, social_fee_floor};
+pub use uncles::{execute_block_with_uncles, UncleInput};
 
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
 use agent_types::{
@@ -93,6 +95,8 @@ pub struct BlockSummary {
     pub events: Vec<agent_types::contracts::Event>,
     pub gas_used: u64,
     pub contracts: Option<agent_types::contracts::ContractsRecord>,
+    /// Uncle records in body order (docs/SPEED.md 3.3), set by `finish`.
+    pub uncles: Vec<agent_types::speed::UncleRecord>,
 }
 
 /// Successful tx effects worth reporting.
@@ -438,6 +442,8 @@ pub struct BlockExecutor<'a, S: StateRead> {
     env: BlockEnv,
     cfg: Config,
     summary: BlockSummary,
+    /// Uncles this block credits (docs/SPEED.md 3.3; uncles.rs).
+    uncles: Vec<UncleInput>,
 }
 
 impl<'a, S: StateRead> BlockExecutor<'a, S> {
@@ -445,7 +451,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
     pub async fn begin(base: &'a S, env: BlockEnv) -> Result<Self, ExecError> {
         let ov = Overlay::new(base);
         let cfg = ov.config().await?;
-        let mut ex = Self { ov, env, cfg, summary: BlockSummary::default() };
+        let mut ex = Self { ov, env, cfg, summary: BlockSummary::default(), uncles: Vec::new() };
         let ik = schema::immature_key(env.height);
         if let Some(b) = ex.ov.get(&ik).await? {
             let imm = Immature::decode(&b).map_err(|e| StateError::Corrupt(format!("immature: {e}")))?;
@@ -459,6 +465,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             ex.summary.routed.extend(routed);
             ex.ov.put(ik, None);
         }
+        ex.speed_migration().await?;
         if let Some(id) = env.job_id {
             let job = ex.ov.job(&id).await?.ok_or_else(|| ExecError::Block("job block names an unknown job".into()))?;
             check_mineable(&job, env.height).map_err(ExecError::Block)?;
@@ -736,8 +743,12 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if tx.from != self.cfg.admin {
                     return bad("not the admin");
                 }
-                if *key > keys::LAST {
+                if !keys::is_config_key(*key) {
                     return bad("unknown config key");
+                }
+                let sact = agent_types::speed::speed_upgrade_height(self.env.chain_id);
+                if *key >= keys::SPEED_FIRST && h < sact {
+                    return bad(format!("config key {key} activates at height {sact}"));
                 }
                 let act = agent_types::social::social_upgrade_height(self.env.chain_id);
                 if *key > keys::LEGACY_LAST && h < act {
@@ -1165,7 +1176,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if let Some(id) = self.env.job_id {
             let mut j = self.ov.job(&id).await?.ok_or_else(|| ExecError::Block("job vanished".into()))?;
             let pool = self.ov.account(&pool_address()).await?.balance;
-            let s = mul_ppm(pool, self.cfg.emission_ppm).min(j.cap_remaining);
+            let s = self.cfg.emission_of(pool).min(j.cap_remaining);
             j.blocks_mined += 1;
             j.cap_remaining -= s;
             j.subsidy_paid += s;
@@ -1189,6 +1200,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 }
             }
         }
+        self.credit_uncles().await?;
         let reward = self.summary.fees + self.summary.subsidy;
         let mature_height = h + self.cfg.finality_k as u64;
         self.summary.coinbase = Coinbase {

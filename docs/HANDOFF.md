@@ -1315,6 +1315,19 @@ CLAUDE.md "Who is working on what".
    - DEPLOY (box 0, handed to the orchestrator; agents may not restart services): see the row and the
      final report of this row: sync box 0 to origin/main, restart cadre-api only, health checks, rollback to
      the recorded previous commit; then the site from main with CADRE_WEB; optional cadre-feed-bot unit (dry).
+   - ROUND 2 (2026-10-22, node 0 RPC saturated after the boards went live): every listJobs call makes the
+     node load every job (up to 10,000; 8,298 on devnet), and the explorer indexer ran a full paged scan (42
+     calls) on every poll. Now: one RpcGate per cadre-api (CADRE_NODE_RPC_CONCURRENCY, default 3) shared by
+     every route and the indexer, stats in /v1/ready `node_rpc`; the indexer does a full jobs scan every
+     CADRE_JOBS_FULL_MS (cadre-api 600 s; explorer default 300 s), otherwise the newest page every
+     CADRE_JOBS_POLL_MS (30 s) plus a rotating getJob refresh of 100 open jobs; the top block window is re-read
+     only when the tip moves; boards inputs (market, trading) and the discover directory on 60 s timers;
+     town and DM pending lanes fetch each mempool tx once (CADRE_PENDING_MS 5 s); market reads refresh at most
+     every 30 s (CADRE_MARKET_REFRESH_MS). A/B on the test box (same site-like load, 180 s, node 2 behind a
+     counting proxy): old 1,148 requests / 2,616 calls, 413 listJobs, peak 15 in flight, 136 ms average;
+     new 514 / 1,136, 5 listJobs, peak 3, 12 ms. Other node 0 RPC load seen by tcpdump (60 s): public RPC via
+     caddy (remote readers incl. the usertrade row's branch cadre-api on the test box, old code, full scans
+     against node 0), cadre-miner listJobs 35/min, cadre-settle getJob, cadre-gateway getTx/sendTx.
    - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
      indexer's first poll are not recorded (counters link the Config account instead).
 
@@ -1422,11 +1435,98 @@ CLAUDE.md "Who is working on what".
      recovered with the 2 original requests, stuck tx replaced, leftover cancelled, next round posts), a recorded
      round resumed and its pooled tx reused, a refused ticket stalls in a few blocks while the next ticket posts on
      the stuck nonce in the same pass and the refused one backs off, settle order, replacement fee. Gateway 37/37.
-   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked): binary staged on box 0, install + restart
-     cadre-gateway only, checks and rollback in the row's report. No node, chain or other unit; no ledger edit.
+   - ROLLOUT DONE: the orchestrator installed cadre-gateway cb2a6b3b... on box 0 and restarted it at 12:59:19 UTC
+     (rollback copies /opt/lode/bin/cadre-gateway.pre-stucknonce, /var/lib/lode/gateway/ledger.json.pre-stucknonce).
+     After (measured): the first pass prepared 941712d7 round 0 (1,924 rows, about 5.2 GB of scratch read) and at
+     13:02:33 replaced the 32 stuck txs (6527-6558, fee 1100); round_posted 13:08:59; 6f120b62 round 1 recovered
+     13:32:29 (9 requests, m 1280) and posted its last 112 segments 13:36:45. By 14:44 UTC: 10 rounds posted
+     (rounds_posted 45 -> 55, 16,552 rows), nonce 6527 -> 8066, mempool empty, tx_stalls 0, bytes_waiting
+     68,613,923,840 -> 54,405,237,760 (net -8.1 GB/h while 52 new paid requests were served: refused_storage
+     only 10 since the restart, all in the first minutes). A cadre-node restart at 13:48:53 (not this row) made 18
+     tickets fail getTicket once; they backed off and the pass went on. Throughput is bounded by blocks (about 1.1
+     min each, 64 server txs per block by the mempool's nonce window, so at least 3 blocks per 144-segment round)
+     plus the round's scratch read; a later speedup is preparing the next round while the current one confirms.
    - 64 GiB stopgap: keep it until bytes_waiting is under 12 GiB after the new binary drains the backlog, then
      restore /root/inference.env.pre-drain (16 GiB cap, 8 GiB disk reserve; the only difference is GATEWAY_EXTRA)
      and restart cadre-gateway once more (safe: rounds in progress are in the ledger now).
+
+39. CHAIN SPEED: WEAK-BLOCK PRE-CONFIRMATIONS + 30 S TARGET WITH UNCLE CREDIT (owner "yeah proceed on speed then
+   pls" 2026-10-21; docs/SPEED.md spec + measurements, research/SPEED.md sources; branch speed).
+   - Phase 1 (p2p/RPC only): weak blocks = template headers whose Pearl proof meets target << weak_shift (5 at 60 s,
+     4 at 30 s: one about every 1.9 s), gossiped as "CWB1" messages on the tips channel (old nodes ignore non-40-byte
+     tips, so no handshake change), checked (tx_root over the items, target, timestamp, job, weak PoW; invalid = peer
+     blocked); tx status pending / preconfirmed {weak_count, weak_miners, weak_share, first_seen_ms, latest_age_ms,
+     confidence} / included / final in getTx, getTxStatus, getWeakBlocks, ws topic weak, submitWeakBlock; a
+     preconfirmed tx cannot be replaced by a same-nonce tx; pearl-miner and `agent-node mine` submit weak hits.
+     Clients: cadre-api tx_status + GET /v1/tx/chain/{hash}/status, explorer badge with the risk note, `cadre tx
+     [--watch]`, extension + pearl-wallet (8b3ac7f15), trading gate services/swarm/trading/src/preconf.ts (NOT hooked
+     yet: the two-line hook for the trading row is in TEST-REPORT "Chain speed").
+   - Measured: sent -> preconfirmed on another node 1.05 s median, 3.7 s p90 (sent -> included 41 s median); weak
+     message 25,025 bytes, check 0.43 ms. Guarantee: evidence of hashrate mining the tx, NOT inclusion (SPEED.md 2.5).
+   - Phase 2 (consensus, devnet height 6000): block 6000 migrates target 60 -> 30 s, K 30 -> 60 (30 min kept),
+     emission 7 ppm -> 3,500 ppb (config key 45, same 1.003%/day); uncles: up to 2 stale job blocks at depth 1-2,
+     1/2 and 1/4 of their subsidy, nephew 1/32, from the pool and the job cap, mature at H + K, tx_root records 0x03
+     (137 bytes), body section 0x02; fork choice unchanged (light client unchanged there). Light client: speed schedule
+     (set_speed) upgraded on devnet 2026-10-21 slot 513664592, inert until set_speed.
+   - Orphans: cross-box 4-node test 0 of 32 at 60 s, 0 of 79 at 30 s, 7 of 1,313 (0.53%) at 3 s, per-peer delay 12 ms
+     median; live devnet 4 depth-1 reorgs in 892 blocks (about 0.45%), effective tau 0.27 s, so about 0.9% stale at
+     30 s, credited as uncles. Light client: 0.311 SOL/day measured now; 0.58-0.93 SOL/day at 30 s (SPEED.md 7.5).
+   - Tests: chain 228 pass (58 suites), crates 74, pearl-cli 119, LiteSVM lightclient 26, header-relay 8, explorer 65,
+     cadre-api 98 (+2 env failures, @solana/web3.js missing in that tree, same on main); 8.8 h Phase 2 soak; fresh
+     sync of the live devnet from genesis with the staged binary (TEST-REPORT "Chain speed").
+   - ROLLOUT (handed to the orchestrator): staged /home/lode/stage-speed/{agent-node 8b4b3f74..., pearl-miner
+     9d78dda6...} on boxes 0-2; box 1, 2, 0 BEFORE height 6000 (about 18:40 UTC 2026-10-22), then the light client
+     set_speed(6000, 30000, 60) before its tip reaches 6000. Exact commands, checks and rollback: DEVNET.md "Speed
+     rollout". If it cannot finish by about 5980, move the height first (never straddle it).
+
+40. JOB QUERY PERF, POOL EVICTION, FAIR SEGMENT ORDER, DOCS DRIFT (2026-10-22, "job query perf" row; owner
+   "start working on whatever is left"). Main 64eeaaa (+ docs). All node changes are NODE-LOCAL (no consensus
+   change, no activation height): old and new nodes mix, rollback is a binary swap before or after height 6000.
+   - Box 0 node CPU, cause (measured read-only on box 0, 2026-10-22): the hot path in the 15:45 UTC perf profile was
+     state reads (Store::get, pread, futex hand-offs). RPC by client over 60 s (tcpdump on lo + ss, about 15:55 UTC):
+     getJob 400/min explorer, 280/min cadre-settle, 144/min relayer, 100/min cadre-api, 44/min attester; listJobs
+     16-47/min from cadre-miner's orphan sweep (`--deliver`, every 60 s it paged `listJobs status=open` 200 at a time
+     over about 9,500 open jobs = 48 pages, and every call read 2 records per job for the newest 10,000 jobs: about
+     960,000 state reads a minute). A/B on two fresh followers of the live devnet on the test box (same state, height
+     5869): that sweep took 20.6 s of node time per pass on the old build, 1.28 s on the new one with the same
+     offset paging, and 0.001 s with the new `kind=job` cursor query the miner now sends (one call, 0 jobs:
+     every open job is a segment); an auto getBlockTemplate 123-158 ms old, 13-23 ms new. Box 0 node CPU at the time
+     (pidstat): 18.97% over 15:56-16:01 UTC and 41.09% over 16:44-16:49 UTC (scripts/devnet-rpc-load.sh), 48.5%
+     average since its 15:29 restart; getChainInfo p50 3.3 / 1.8 ms, p90 260 / 410 ms, max 445 / 932 ms in those
+     two windows; listJobs 62.4/min (47.2 from pearl-miner), getJob 904/min. See TEST-REPORT "Job query perf" for the full tables.
+   - Fix: (1) chain/state read cache: committed values by key (64 MiB, two generations), a read of a key no
+     uncommitted block on the snapshot's branch wrote is answered from it, finalize drops exactly the keys the newly
+     committed blocks wrote; snapshots record their written keys. (2) chain/rpc job index (jobindex.rs): ids and
+     status of every job, records of live jobs and tickets, updated per tip from the keys connected and disconnected
+     blocks wrote (Chain::take_touched), so any reorg is handled by re-reading those keys. listJobs answers from it
+     (`kind` filter, `after`/`before` cursors, `next_cursor`; offset mode unchanged) and auto templates take their
+     candidates from it. getNodeStats: RPC calls and time per method, cache, index, eviction counters. (3) pearl-miner
+     sweep: `listJobs {status: open, kind: job}` by cursor (offset fallback on an older node). (4) header-relay settle
+     and the relayer read a pending order's job once per chain tip instead of every poll.
+   - Mempool eviction: after every tip the node executes its pool against the tip like a template; a tx failing at 3
+     consecutive tips is dropped (getTxStatus `dropped` + reason), a failure caused only by an earlier failing tx of the
+     same sender does not count, and while a tx fails at the tip a tx at its nonce replaces it at any fee. The
+     gateway's own nonce handling (item 39) keeps working; it no longer depends on it.
+   - Fair segment order (SPEC 4.5 "Segment order"): auto choice = least-served ticket (blocks mined / allocated) first,
+     then oldest; was largest cap_remaining first, which made big rounds always win (ticket ecb7a659, 48 rows, 11 of 144
+     after 7 h). On the live state at 5869 the old order spent a simulated hour of 118 blocks on 4 tickets, the new one
+     on 13. Measured gap (heights 5491-5850, 6.08 h): 373.6 segments posted an hour against 59.2 blocks an hour (all
+     segment blocks); about 118 an hour after the 30 s switch, so about 3x too little capacity at that traffic. No skip
+     or refund rule is needed for segments that are never mined (they carry W = P = 0; pay and refund go by rows used;
+     their cap stays in the pool); what is lost is miner subsidy and the per-segment GEMM check.
+   - Tests (test box ~/jobperf, -j 4): chain workspace 241 pass, 0 fail, 2 ignored (new: state read_cache 3, rpc
+     jobindex 5 = index vs full scan across mining, expiry and two reorgs + kind filter + eviction 3, consensus
+     fair_order 3, mempool 1); the new agent-node synced the live devnet from genesis (5,869 blocks, cache on) to
+     finalized 5839 2a9df3e5... equal to node 1; crates pearl-miner incl. the cursor sweep test pass; header-relay lib
+     1 new pass (catchup 2 fail on the box's stale token/target/deploy/lightclient.so, 652,840 B from 10-19; the tests
+     need the tree's own build; untouched by this row); relayer 34/34 on the Mac (litesvm bad_alloc on the box, known).
+   - STAGED (not running) in /home/lode/stage-jobperf/: agent-node 6a194b23... (boxes 0-2), pearl-miner 9daaf871...
+     and header-relay 562cfce6... (box 0). Rollout ONLY after the height 6000 switch is verified, commands in
+     DEVNET.md "Job query perf rollout"; then `scripts/devnet-rpc-load.sh 300` on box 0 for the after numbers.
+   - Docs drift (cadre-docs c181a66 + this row's follow-up): devnet page (cadre-api, gateway, Solana side, mint,
+     upgrade heights), model-registry replay, status, index, tokenomics, limits, jobs, agents, buy-a-job, market (fee
+     reaches the pool), x402, data availability, parameters 19-48, run-a-node speed warning; RPC listJobs/getNodeStats/
+     sendTx eviction and the segment order.
 
 ## M1 components (SPEC v2, all DONE)
 

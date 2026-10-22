@@ -1,6 +1,7 @@
 // Chain operations for the selected account: balances, sends, bridge in/out with
 // pending tracking, agents, jobs, storefront orders, mining rewards.
 
+import { activityStatus, needsRefresh } from "../chain/txstatus";
 import { b58, b64, fromB64, fromHex, hex, isAddress, key32 } from "../core/bytes";
 import { pubkeyOf } from "../core/crypto";
 import { commitJob, commitOrder, jobHeaderProblem } from "../chain/job";
@@ -66,13 +67,14 @@ export async function activity(account: string) {
       /* offline */
     }
   }
-  const chainPend = local.filter((a) => a.chain === "pearl" && a.status === "pending");
+  const chainPend = local.filter((a) => needsRefresh(a));
   if (chainPend.length) {
     const { chain } = await ctx();
+    const info = await chain.chainInfo().catch(() => null);
     for (const p of chainPend) {
       try {
-        const t = await chain.tx(p.ref);
-        if (t?.status === "included") await patchActivity(p.ref, { status: "confirmed" });
+        const s = activityStatus(await chain.tx(p.ref), info);
+        if (s && (s.status !== p.status || s.detail !== p.detail)) await patchActivity(p.ref, s);
       } catch {
         /* offline */
       }
@@ -364,7 +366,7 @@ async function stepOut(c: Ctx, p: PendingTransfer) {
       }
       return;
     }
-    if (t.status !== "included" || t.height === undefined) return;
+    if ((t.status !== "included" && t.status !== "final") || t.height === undefined) return;
     p.sourceHeight = t.height;
     p.stage = "waiting-final";
     await patchActivity(p.sourceRef, { status: "confirmed" });

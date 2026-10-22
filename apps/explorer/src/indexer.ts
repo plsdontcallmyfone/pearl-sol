@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { b58encode } from "./codec.ts";
 import * as D from "./decode.ts";
-import { JsonRpc, SolanaRpc, chunkedBatch } from "./rpc.ts";
+import { JsonRpc, RpcGate, SolanaRpc, chunkedBatch } from "./rpc.ts";
 
 export interface TxRec {
   hash: string;
@@ -86,6 +86,15 @@ export interface IndexerOptions {
   solPollMs?: number;
   /** blocks fetched per poll while backfilling */
   backfillPerPoll?: number;
+  /** Full listJobs scan at most this often (default 300000). In between, each poll reads the newest
+   * page of jobs and refreshes up to `jobsRefreshPerPoll` older open jobs by getJob. The node's
+   * listJobs loads every job (up to 10,000) for each page, so a full scan per poll saturated it. */
+  jobsFullMs?: number;
+  jobsRefreshPerPoll?: number;
+  /** Incremental job reads at most this often (default 15000; every listJobs call costs the node a load of every job). */
+  jobsPollMs?: number;
+  /** Shared limit on requests in flight to the node (cadre-api passes its gate). */
+  nodeGate?: RpcGate | null;
   log?: (msg: string) => void;
 }
 
@@ -113,6 +122,11 @@ export class Indexer {
   /** Light-client txs per block hash, captured while the Solana ledger still had them. */
   lcTxs = new Map<string, SolTx[]>();
   backfillCursor = 0; // next height to fetch going down (0 = done)
+  private jobsFullAt = 0;
+  private jobsAt = 0;
+  private jobsTotal = 0;
+  private jobsCursor = 0;
+  private lastTip = "";
   status = { nodeOk: false, solOk: false, nodeError: "", solError: "", lastPoll: 0, polls: 0, resets: 0 };
 
   private dirty = false;
@@ -122,8 +136,8 @@ export class Indexer {
   private listeners = new Set<() => void>();
 
   constructor(opts: IndexerOptions) {
-    this.o = { pollMs: 3000, solPollMs: 0, backfillPerPoll: 2000, log: (m) => console.log(m), ...opts };
-    this.node = new JsonRpc(opts.nodeUrl);
+    this.o = { pollMs: 3000, solPollMs: 0, backfillPerPoll: 2000, jobsFullMs: 300_000, jobsRefreshPerPoll: 100, jobsPollMs: 15_000, nodeGate: null, log: (m) => console.log(m), ...opts };
+    this.node = new JsonRpc(opts.nodeUrl, 30_000, this.o.nodeGate);
     this.sol = new SolanaRpc(opts.solUrl);
   }
 
@@ -188,6 +202,10 @@ export class Indexer {
     this.buyback = null;
     this.buybackTxs = [];
     this.backfillCursor = 0;
+    this.jobsFullAt = 0;
+    this.jobsAt = 0;
+    this.jobsTotal = 0;
+    this.lastTip = "";
     this.status.resets++;
     if (!this.load(genesis)) this.o.log(`explorer: new chain ${genesis.slice(0, 16)}, indexing from scratch`);
   }
@@ -217,7 +235,10 @@ export class Indexer {
     const firstRun = this.blocks.size === 0;
     const topFrom = firstRun ? Math.max(1, tip - 299) : startTop;
     const newTop = Math.max(topFrom, tip - 4999); // never more than 5000 in one go
-    await this.fetchRange(newTop, tip);
+    // the reorg-safe window is re-read only when the tip moved (new block or a reorg)
+    const tipKey = `${tip}:${info.tip ?? ""}`;
+    if (firstRun || tipKey !== this.lastTip || !info.tip) await this.fetchRange(newTop, tip);
+    this.lastTip = tipKey;
     if (firstRun || this.backfillCursor === 0) {
       // find the highest missing height below the top window
       let h = newTop - 1;
@@ -233,15 +254,7 @@ export class Indexer {
       this.backfillCursor = h;
     }
 
-    // jobs (paged)
-    const jobs: any[] = [];
-    for (let offset = 0; ; offset += 200) {
-      const r = await this.node.call<any>("listJobs", { offset, limit: 200 });
-      jobs.push(...r.jobs);
-      if (jobs.length >= r.total || r.jobs.length === 0) break;
-    }
-    this.jobs.clear();
-    for (const j of jobs) this.jobs.set(j.job_id, j);
+    await this.pollJobs();
     this.rebuildJobBlocks();
 
     // bridge withdrawals (for release / release_proof on Solana)
@@ -252,6 +265,55 @@ export class Indexer {
         nonce: w.nonce, from: w.from, solana_recipient: w.solana_recipient, amount_spl: w.amount_spl, height: w.height,
         block_hash: w.block_hash, final: w.final,
         released: prev?.released ?? false, releaseTxs: prev?.releaseTxs ?? [], releaseChecked: prev?.releaseChecked ?? false,
+      });
+    }
+  }
+
+  /** Jobs: a full listJobs scan every `jobsFullMs`; otherwise the newest page plus a rotating getJob refresh. */
+  async pollJobs() {
+    const now = Date.now();
+    if (now - this.jobsFullAt >= this.o.jobsFullMs || this.jobs.size === 0) {
+      const jobs: any[] = [];
+      let total = 0;
+      for (let offset = 0; ; offset += 200) {
+        const r = await this.node.call<any>("listJobs", { offset, limit: 200 });
+        total = r.total;
+        jobs.push(...r.jobs);
+        if (jobs.length >= r.total || r.jobs.length === 0) break;
+      }
+      this.jobs.clear();
+      for (const j of jobs) this.jobs.set(j.job_id, j);
+      this.jobsFullAt = now;
+      this.jobsAt = now;
+      this.jobsTotal = total;
+      return;
+    }
+    if (now - this.jobsAt < this.o.jobsPollMs) return;
+    this.jobsAt = now;
+    // newest jobs: from just below the last known end, one page at a time (the list is oldest first)
+    let offset = Math.max(0, this.jobsTotal - 20);
+    for (let pages = 0; pages < 5; pages++) {
+      const r = await this.node.call<any>("listJobs", { offset, limit: 200 });
+      for (const j of r.jobs) this.jobs.set(j.job_id, j);
+      if (r.total < this.jobsTotal) {
+        // the node's 10,000-job window slid: the next poll does a full scan
+        this.jobsFullAt = 0;
+      }
+      this.jobsTotal = r.total;
+      offset += r.jobs.length;
+      if (offset >= r.total || r.jobs.length === 0) break;
+    }
+    // older jobs still open or delivered: a rotating slice refreshed by getJob each poll
+    const live = [...this.jobs.values()].filter((j) => j.status === "open" || j.status === "delivered");
+    if (live.length) {
+      const n = Math.min(this.o.jobsRefreshPerPoll, live.length);
+      const start = this.jobsCursor % live.length;
+      const pick = Array.from({ length: n }, (_, i) => live[(start + i) % live.length]);
+      this.jobsCursor = start + n;
+      const res = await chunkedBatch<any>(this.node, pick.map((j) => ["getJob", { job_id: j.job_id }]), 50, 1);
+      res.forEach((r, i) => {
+        if (r && !(r instanceof Error) && r.job_id) this.jobs.set(r.job_id, r);
+        else if (r === null) this.jobs.delete(pick[i].job_id);
       });
     }
   }

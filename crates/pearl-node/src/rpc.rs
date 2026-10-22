@@ -144,6 +144,14 @@ impl NodeApi for HttpNode {
         })
     }
 
+    fn submit_weak_block(&self, t: &Template, b: &MinedBlock) -> Result<SubmitOutcome> {
+        Ok(match self.call_raw("submitWeakBlock", submit_params(t, b))? {
+            Ok(v) if v["accepted"].as_bool() == Some(true) => SubmitOutcome::Accepted { block_hash: b.header.block_hash() },
+            Ok(v) => SubmitOutcome::Rejected { reason: v["reason"].as_str().unwrap_or("rejected").to_string() },
+            Err(reason) => SubmitOutcome::Rejected { reason },
+        })
+    }
+
     fn get_job(&self, job_id: &[u8; 32]) -> Result<Option<JobInfo>> {
         let v = self.call("getJob", json!({"job_id": hex::encode(job_id)}))?;
         if v.is_null() {

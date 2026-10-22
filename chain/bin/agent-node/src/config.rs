@@ -62,7 +62,7 @@ impl GenesisFile {
         c.attesters = self.attesters.iter().map(|a| parse_key(a)).collect::<Result<_>>()?;
         c.attester_threshold = self.attester_threshold;
         for (name, v) in &self.params {
-            let k = (0..=keys::LAST).find(|k| keys::name(*k) == name).with_context(|| format!("unknown param {name}"))?;
+            let k = keys::all().find(|k| keys::name(*k) == name).with_context(|| format!("unknown param {name}"))?;
             let bytes = match k {
                 keys::ADMIN => parse_key(v.as_str().context("admin is a key string")?)?.to_vec(),
                 keys::FALLBACK_CONFIG => hex::decode(v.as_str().context("hex")?)?,
