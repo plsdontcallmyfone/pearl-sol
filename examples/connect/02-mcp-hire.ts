@@ -10,7 +10,7 @@ import { API, fund, log, ROOT, sleep, throwawayKey } from "./_common.ts";
 
 const k = throwawayKey("mcp-02");
 log("agent", { address: k.address });
-log("funded from ops", await fund(k.address, 5_000_000n, 4_000_000_000n));
+log("funded from ops", await fund(k.address, 5_000_000n, 6_000_000_000n));
 
 // the MCP config a client would hold: key file path + limits (never the key itself)
 const server = spawn(process.execPath, [join(ROOT, "packages/cadre-mcp/src/main.ts")], {
@@ -42,18 +42,21 @@ log("whoami", await tool("cadre_whoami"));
 // a spend above the config limit is refused before signing
 try { await tool("cadre_transfer", { to: k.address, amount: "4000000000" }); } catch (e) { log("limit refused (expected)", (e as Error).message.slice(0, 160)); }
 
-const offers = (await tool("cadre_list_offers", { sort: "price" })).offers.filter((o: any) => o.active !== false && o.policy === "buyer_names");
-const o = offers.sort((a: any, b: any) => Number(BigInt(a.price) - BigInt(b.price)))[0];
-if (!o) throw new Error("no offer that lets the buyer name its evaluator");
-log("offer", { id: o.id, title: o.title, price: o.price, fee: o.fee, provider: o.provider_card?.handle ?? o.provider });
-const hire = await tool("cadre_hire", { offer: o.id, request: "Theme: a lighthouse keeper's first night. Keep it gentle." });
-log("hired", { tx: hire.tx_hash, review: hire.built?.review_text ?? null });
-
-// the hire id: the newest hire this agent bought
-await sleep(20_000);
-let h: any = null;
-for (let i = 0; i < 20 && !h; i++) { h = (await tool("cadre_list_hires", { role: "buyer" })).hires?.[0] ?? null; if (!h) await sleep(15_000); }
-if (!h) throw new Error("hire not visible yet");
+// a rerun resumes a hire this agent already bought that is waiting for its verdict (never pays twice)
+let h: any = ((await tool("cadre_list_hires", { role: "buyer", status: "delivered" })).hires ?? [])[0] ?? null;
+if (!h) {
+  // providers with completed paid work first (a delivering provider), then the lowest price
+  const offers = (await tool("cadre_list_offers", { sort: "price" })).offers.filter((o: any) => o.active !== false && o.policy === "buyer_names");
+  const o = offers.sort((a: any, b: any) => (b.record?.completed ?? 0) - (a.record?.completed ?? 0) || Number(BigInt(a.price) - BigInt(b.price)))[0];
+  if (!o) throw new Error("no offer that lets the buyer name its evaluator");
+  log("offer", { id: o.id, title: o.title, price: o.price, fee: o.fee, provider: o.provider_handle ?? o.provider, completed: o.record?.completed ?? 0 });
+  const hire = await tool("cadre_hire", { offer: o.id, request: "Theme: a lighthouse keeper's first night. Keep it gentle." });
+  log("hired", { tx: hire.tx_hash, review: hire.built?.review_text ?? null });
+  // the hire id: the newest hire this agent bought for that offer
+  await sleep(20_000);
+  for (let i = 0; i < 20 && !h; i++) { h = ((await tool("cadre_list_hires", { role: "buyer" })).hires ?? []).find((x: any) => x.offer === o.id && x.status === "open") ?? null; if (!h) await sleep(15_000); }
+  if (!h) throw new Error("hire not visible yet");
+}
 log("hire", { id: h.id, status: h.status, deadline: h.deadline, total: h.total });
 
 const until = Date.now() + Number(process.env.WAIT_MIN ?? 45) * 60_000;

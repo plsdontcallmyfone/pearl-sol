@@ -26,8 +26,7 @@ import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
 import { TokenStore } from "./tokens.ts";
-import { Drive, DriveError } from "./drive.ts";
-import { TOKEN_SCOPES, NEVER_SCOPES } from "../../../../packages/cadre-mcp/src/catalog.ts";
+import { connectRoute, mintToken } from "./connect-routes.ts";
 
 export const VERSION = "0.1.0";
 
@@ -73,7 +72,6 @@ export class Runtime {
   halt: HaltWatch | undefined;
   /** Agent tokens + OAuth grants (docs/CONNECT.md "Hosted mode"), hashed at rest. */
   tokens: TokenStore;
-  drives = new WeakMap<AgentRunner, Drive>();
   private makeDeps: (w: Wallet) => Deps;
 
   constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
@@ -232,117 +230,6 @@ export class Runtime {
     };
   }
 
-  // ---------------------------------------------------------------- agent tokens, OAuth grants, drive (docs/CONNECT.md)
-
-  /** The agent's creator (the spec's operator), for token minting. Works for sovereign agents too:
-   * a token carries no withdraw, export, limit, pause or delete scope. */
-  creatorCheck(agent: string, signer: string): Entry {
-    const e = this.entries.get(agent);
-    if (!e) throw new HttpError(404, "not_found", "this agent is not hosted here");
-    if (e.operator !== signer) throw new HttpError(403, "not_creator", "only the agent's creator wallet can do this");
-    return e;
-  }
-
-  mintToken(agent: string, by: string, rotate: boolean) {
-    let t;
-    try { t = this.tokens.issue(agent, by, rotate); } catch (e) {
-      if ((e as Error).message === "exists") throw new HttpError(409, "token_exists", "this agent already has a token; rotate it with POST /v1/hosted/agents/{agent}/token/rotate");
-      throw e;
-    }
-    const pub = this.cfg.publicApiUrl.replace(/\/$/, "");
-    this.runners.get(agent)?.note("token", rotate ? "agent token rotated (the old token and its OAuth grants no longer work)" : "agent token minted: an external AI may now drive this agent inside its fixed limits", { ok: true });
-    return {
-      agent, token: t.token, token_id: t.token_id, scopes: TOKEN_SCOPES, never: [...NEVER_SCOPES], created_ms: t.created_ms, shown_once: true,
-      mcp_url: `${pub}/mcp`, api_base: `${pub}/v1`,
-      note: "Whoever holds this token steers the agent's decisions (posts, DMs, hires, trades inside its fixed limits, paid inference). It can never withdraw the agent's money, export its key, change its limits, pause or delete it. Keep it secret; rotate it if it leaks.",
-    };
-  }
-
-  bearer(h: IncomingMessage["headers"]): string {
-    const a = String(h["authorization"] ?? "");
-    const m = /^Bearer\s+(\S+)$/i.exec(a);
-    return m ? m[1] : "";
-  }
-
-  driveOf(agent: string): Drive {
-    const r = this.runners.get(agent);
-    if (!r) throw new HttpError(404, "not_found", "this agent is not hosted here");
-    let d = this.drives.get(r);
-    if (!d) { d = new Drive(r); this.drives.set(r, d); }
-    return d;
-  }
-
-  async connectRoute(method: string, path: string, h: IncomingMessage["headers"], body: string, json: () => any): Promise<{ status: number; body: unknown } | null> {
-    const tm = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})\/token(\/rotate)?$/.exec(path);
-    if (tm) {
-      const agent = cadreAddr(tm[1], "agent")!;
-      if (!tm[2] && method === "GET") { if (!this.entries.has(agent)) throw new HttpError(404, "not_found", "this agent is not hosted here"); return { status: 200, body: this.tokens.status(agent) }; }
-      if (method !== "POST") throw new HttpError(405, "method_not_allowed", `${method} not allowed`);
-      if (!tm[2]) {
-        const op = this.verifyAuth(method, path, h, body);
-        this.creatorCheck(agent, op);
-        return { status: 201, body: this.mintToken(agent, op, false) };
-      }
-      const b = this.bearer(h);
-      if (b) {
-        if (this.tokens.agentOfToken(b) !== agent) throw new HttpError(401, "bad_token", "the bearer is not this agent's current token");
-        return { status: 200, body: this.mintToken(agent, "token", true) };
-      }
-      const op = this.verifyAuth(method, path, h, body);
-      this.creatorCheck(agent, op);
-      return { status: 200, body: this.mintToken(agent, op, true) };
-    }
-    if (path === "/v1/hosted/oauth/grant" && method === "POST") {
-      // the consent page's approval: proof is the agent token, or the creator's signature (then a token is minted behind the scenes if none exists, never shown)
-      const b = json();
-      let agent: string;
-      if (typeof b.agent_token === "string" && b.agent_token) {
-        const a = this.tokens.agentOfToken(b.agent_token);
-        if (!a) throw new HttpError(401, "bad_token", "that agent token is not valid (rotated, or mistyped)");
-        agent = a;
-      } else {
-        const op = this.verifyAuth(method, path, h, body);
-        agent = cadreAddr(String(b.agent ?? ""), "agent")!;
-        this.creatorCheck(agent, op);
-        if (!this.tokens.has(agent)) this.tokens.issue(agent, op, false);
-      }
-      if (!this.entries.has(agent)) throw new HttpError(404, "not_found", "this agent is not hosted here");
-      const g = this.tokens.grant(agent, String(b.client_id ?? ""), String(b.client_name ?? ""));
-      this.runners.get(agent)?.note("token", `OAuth grant to ${String(b.client_name ?? "an MCP client").slice(0, 60)}`, { ok: true });
-      return { status: 201, body: { ...g, scopes: TOKEN_SCOPES, handle: this.entries.get(agent)!.doc.spec.handle } };
-    }
-    if (path === "/v1/hosted/oauth/refresh" && method === "POST") {
-      const b = json();
-      const g = this.tokens.refresh(String(b.refresh_token ?? ""), b.client_id ? String(b.client_id) : undefined);
-      if (!g) throw new HttpError(400, "invalid_grant", "the refresh token is not valid (revoked, expired, rotated or used already)");
-      return { status: 200, body: { ...g, scopes: TOKEN_SCOPES } };
-    }
-    if (path === "/v1/hosted/oauth/revoke" && method === "POST") {
-      const b = json();
-      return { status: 200, body: { revoked: this.tokens.revoke(String(b.token ?? "")) } };
-    }
-    const dm = /^\/v1\/hosted\/drive(?:\/([a-z_]{3,48}))?$/.exec(path);
-    if (dm) {
-      const who = this.tokens.resolve(this.bearer(h));
-      if (!who) throw new HttpError(401, "unauthorized", "send Authorization: Bearer <agent token or OAuth access token>");
-      if (!this.entries.has(who.agent)) throw new HttpError(404, "not_found", "this agent is no longer hosted here");
-      const d = this.driveOf(who.agent);
-      if (!dm[1] && method === "GET") return { status: 200, body: { agent: who.agent, handle: d.spec.handle, via: who.kind, tools: d.tools() } };
-      if (dm[1] && method === "POST") {
-        if (existsSync(this.cfg.killFile)) throw new HttpError(409, "halted", "the hosted runtime's kill switch is on");
-        try {
-          const result = await d.call(dm[1], json(), { agent: who.agent, via: who.kind, token_id: who.token_id, grant_id: who.grant_id });
-          return { status: 200, body: { tool: dm[1], ok: true, result } };
-        } catch (e) {
-          if (e instanceof DriveError) throw new HttpError(e.status, e.code, e.message);
-          throw new HttpError(502, "tool_failed", String((e as Error).message ?? e).slice(0, 400));
-        }
-      }
-      throw new HttpError(405, "method_not_allowed", `${method} not allowed`);
-    }
-    return null;
-  }
-
   // ---------------------------------------------------------------- loop
 
   ticking: string | null = null;
@@ -410,13 +297,13 @@ export class Runtime {
         const b = json();
         const st = this.create(op, b.sealed, b.spec);
         if (b.agent_token === true) {
-          const at = this.mintToken(st.agent, op, false);
+          const at = mintToken(this, st.agent, op, false);
           return { status: 201, body: { ...this.status(st.agent), agent_token: at } };
         }
         return { status: 201, body: st };
       }
     }
-    const conn = await this.connectRoute(method, path, h, body, json);
+    const conn = await connectRoute(this, method, path, h, body, json);
     if (conn) return conn;
     // the agent may be named by its Cx address (SPEC 2.1); signatures still cover the path as sent
     const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
@@ -467,7 +354,7 @@ export class Runtime {
 }
 
 /** A Cx address (or base58) as its base58 key; a bad Cx checksum is a 400. */
-function cadreAddr(v: string | null, name: string): string | null {
+export function cadreAddr(v: string | null, name: string): string | null {
   if (v === null) return null;
   const r = cxInput(v);
   if ("error" in r) throw new HttpError(400, "bad_address", `${name}: ${r.error}`);
