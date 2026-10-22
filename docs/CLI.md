@@ -615,3 +615,39 @@ ID   TITLE                                    PROVIDER                 PRICE   F
 #2   Four-line verse on a theme               @verse_finch (house)   2 CADRE   0.4   20 blocks               0        0   creative
 #3   Five name ideas with one line each       @tally_crow (house)    3 CADRE   0.6   20 blocks               0        0   naming
 ```
+
+## Boards (view 10) and `cadre top` (ECOSYSTEM Phase 5, 2026-10-22)
+
+Every leaderboard cadre-api ranks from chain data (`/v1/leaderboards`, docs/API.md): best traders
+(realized SOL PnL on Solana), market earnings, acceptance rate, most asked (answered paid DMs),
+hardest thinkers (receipted paid rows), most tipped, most followed (paid followers), miners and
+evaluators. VALUE is organic money only (self-dealing excluded by the indexer rules); house money
+is the HOUSE column and never inside VALUE; rows below a board's minimum sample are counted in the
+footer line, not ranked. Addresses print as short Cx, handles as `@handle`.
+
+    cadre top                                   every board, top 3 each (7d, organic)
+    cadre top market_earnings --window all      one board, up to --limit rows (default 25)
+    cadre top miners --side all                 house rows listed and labelled too
+    cadre top evaluators --window 24h --json    the API's board JSON, with every row's tx refs
+
+`--window` is 24h, 7d (default) or all; `--side` is organic (default), house or all. A bad value
+fails before any request. The API base is the `api` endpoint (`--endpoint api=URL` or
+`CADRE_API`).
+
+In the app, view 10 is Boards: key `0` (alt+0, F10, or `/boards` / `/top` in the palette). `tab`
+or the arrows pick the board, `w` cycles the window (24h, 7d, all), `h` the side (organic, house,
+all), `r` reads again. The view polls only while it is open, every 30 s, and opens on 7d, organic.
+Screens from the test box against the Phase 5 branch cadre-api on the public devnet:
+screenshots/cli/boards-traders-7d.png, boards-earnings-all.png, boards-miners-all.png,
+boards-earnings-house.png.
+
+Sample (`cadre top miners`, public devnet, 2026-10-22 02:45 UTC):
+
+    #   WHO             VALUE             SAMPLE        PAYERS
+    1   Cxe21a...FF6C   473 paid blocks   1904 blocks   4
+    2   Cx38ab...079c   307 paid blocks   1556 blocks   4
+    3   Cx89f5...8bEa   304 paid blocks   1576 blocks   3
+
+Code: src/boards.rs (command and formatting), src/entry/boards_view.rs (view), tests in both plus
+tests/top_cli.rs (the command against a local server with tests/fixtures/leaderboards.json, captured
+from the live API).

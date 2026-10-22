@@ -100,6 +100,8 @@ pub enum Msg {
     MarketDetail((crate::market::Pane, u64), Result<crate::commands::Out, String>),
     /// The Trade view's read (trade.rs).
     Trade(Box<super::trade::TradeData>),
+    /// The Boards view's read (boards_view.rs).
+    Boards(Box<Result<serde_json::Value, String>>),
 }
 
 #[derive(Debug, Clone)]
