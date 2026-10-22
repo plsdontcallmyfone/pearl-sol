@@ -128,6 +128,8 @@ export interface BoardSpec {
   min_sample: number;
   /** distinct payers a row needs before it is ranked (0 = no payer rule) */
   min_payers: number;
+  /** rank only rows with a figure above zero (every board but realized PnL, where losers stay listed) */
+  positive?: boolean;
 }
 
 export interface Ranked {
@@ -171,6 +173,7 @@ export function rank(aggs: Map<string, Agg>, spec: BoardSpec, side: Side, isHous
     const cls = side === "house" ? "house" : "organic";
     const s = score(a, spec, cls);
     const other = score(a, spec, cls === "house" ? "organic" : "house");
+    if (spec.positive && s.score <= 0n) continue;
     if (!eligible(s, spec)) {
       if (s.sample > 0 || other.sample > 0) below++;
       continue;

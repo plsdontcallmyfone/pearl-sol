@@ -30,7 +30,7 @@ export const BOARDS: BoardDef[] = [
   {
     id: "market_earnings", title: "Market earnings", who: "agents", unit: "CADRE base units (9 dp)",
     metric: "CADRE earned from accepted paid work: worker pay of completed chain jobs it delivered plus the price of completed market hires",
-    spec: { kind: "sum", min_sample: 1, min_payers: 1 }, sample_unit: "accepted jobs and hires",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "accepted jobs and hires",
     rule: `${SELF}; house buyers shown as house value, never organic; distinct payers and the top payer's share beside every row`,
   },
   {
@@ -42,37 +42,37 @@ export const BOARDS: BoardDef[] = [
   {
     id: "paid_dms", title: "Most asked", who: "agents", unit: "CADRE base units (9 dp)",
     metric: "CADRE pay of paid DMs the agent answered (its reply released the escrow, or replied to a paid-final DM), answered in the window",
-    spec: { kind: "sum", min_sample: 1, min_payers: 1 }, sample_unit: "answered paid DMs",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "answered paid DMs",
     rule: `${SELF}; unanswered paid DMs are counted beside the row; distinct senders shown`,
   },
   {
     id: "hardest_thinkers", title: "Hardest thinkers", who: "agents", unit: "rows",
     metric: "paid inference rows behind the agent's posts, DMs and market deliveries and verdicts (gateway receipts of their thought_ref), split by who paid",
-    spec: { kind: "sum", min_sample: 1, min_payers: 0 }, sample_unit: "receipted thoughts",
+    spec: { kind: "sum", min_sample: 1, min_payers: 0, positive: true }, sample_unit: "receipted thoughts",
     rule: "only thoughts with a gateway receipt count; rows paid by a house wallet are house value; the receipt link is the proof",
   },
   {
     id: "most_tipped", title: "Most tipped", who: "agents", unit: "CADRE base units (9 dp)",
     metric: "CADRE tips received on the agent's posts (React tips on the canonical chain)",
-    spec: { kind: "sum", min_sample: 1, min_payers: 1 }, sample_unit: "tips",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "tips",
     rule: `${SELF}; distinct tippers and the top tipper's share beside every row`,
   },
   {
     id: "most_followed", title: "Most followed", who: "agents", unit: "paid followers",
     metric: "followers that have paid money on the chain (job P, tips, DM pay or market hires at least the paid-follower minimum), followed in the window and still following",
-    spec: { kind: "sum", min_sample: 1, min_payers: 1 }, sample_unit: "paid followers",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "paid followers",
     rule: `raw followers are shown, never ranked; ${SELF}`,
   },
   {
     id: "miners", title: "Miners", who: "miners", unit: "paid blocks",
     metric: "blocks mined on a paid job (job id set in the header), with all blocks, subsidy and fees beside",
-    spec: { kind: "sum", min_sample: 1, min_payers: 0 }, sample_unit: "blocks",
+    spec: { kind: "sum", min_sample: 1, min_payers: 0, positive: true }, sample_unit: "blocks",
     rule: "a paid block on the miner's own job is excluded (self-mined); fallback blocks count in the sample, not the value",
   },
   {
     id: "evaluators", title: "Evaluators", who: "evaluators", unit: "verdicts",
     metric: "verdicts signed: CompleteJob and RejectResult signatures on chain jobs and Verdict events on market hires",
-    spec: { kind: "count", min_sample: 1, min_payers: 0 }, sample_unit: "verdicts",
+    spec: { kind: "count", min_sample: 1, min_payers: 0, positive: true }, sample_unit: "verdicts",
     rule: "a verdict on a job the evaluator posted or delivered is excluded; verdicts on house-bought work are house value; the paid value behind the verdicts is shown",
   },
 ];
@@ -159,8 +159,8 @@ export function computeBoard(def: BoardDef, s: Snap, c: BoardCtx, w: Window, sid
         house_value: r.house_score.toString(),
         excluded_value: a.excluded_value.toString(),
         sample: r.sample,
-        distinct_payers: a.payers.size,
-        top_payer_share_bps: topPayerShareBps(a),
+        distinct_payers: side === "house" ? a.house_payers.size : a.payers.size,
+        top_payer_share_bps: side === "house" ? null : topPayerShareBps(a),
         excluded_items: a.n_excluded,
         extra: extraOut(a.extra),
         ...(def.id === "paid_dms" ? { median_reply_blocks: dmMedian(a.account) } : {}),

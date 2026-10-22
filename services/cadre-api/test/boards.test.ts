@@ -68,6 +68,12 @@ test("math: house side ranks house accounts on house money; organic side hides t
   assert.deepEqual(rank(ag, spec, "all", isHouse).rows.map((x) => [x.agg.account, x.score]), [["A", 20n], ["H", 10n]]);
 });
 
+test("math: positive boards skip zero rows (a miner with only fallback blocks); realized PnL keeps losers", () => {
+  const ag = aggregate([f({ account: "M", amount: 0n }), f({ account: "M", amount: 0n }), f({ account: "L", amount: -5n }), f({ account: "W", amount: 3n })], "all", NOW);
+  assert.deepEqual(rank(ag, { kind: "sum", min_sample: 1, min_payers: 0, positive: true }, "organic", () => false).rows.map((x) => x.agg.account), ["W"]);
+  assert.deepEqual(rank(ag, { kind: "sum", min_sample: 1, min_payers: 0 }, "organic", () => false).rows.map((x) => x.agg.account), ["W", "M", "L"]);
+});
+
 test("math: rate boards rank accepted share in ppm over closed outcomes", () => {
   const o = (out: Fact["outcome"], p: string) => f({ account: "A", amount: 1n, payer: p, outcome: out });
   const ag = aggregate([o("accepted", "p1"), o("accepted", "p2"), o("rejected", "p3"), o("expired", "p1")], "all", NOW);
