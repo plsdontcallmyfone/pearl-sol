@@ -509,21 +509,26 @@ export function slimPost(p: any) {
 }
 
 /** Receipt checks shared with the SDK (packages/cadre-sdk verifyReceipt has the same rules). */
-export async function verifyReceipt(get: (p: string) => Promise<any>, requestId: string, text?: unknown) {
+export async function verifyReceipt(get: (p: string) => Promise<any>, requestId: string, text?: unknown, body?: unknown) {
   if (!/^req_[0-9a-zA-Z_-]{4,64}$/.test(requestId)) throw bad("request_id is req_...");
+  const { createHash } = await import("node:crypto");
+  const SHA = (x: string) => createHash("sha256").update(x, "utf8").digest("hex");
   const r = await get(`/v1/openai/requests/${requestId}`);
-  const checks: { check: string; ok: boolean | null; detail: string }[] = [];
-  checks.push({ check: "receipt exists", ok: true, detail: `ticket ${r.ticket_id ?? r.ticket ?? "?"}` });
-  const want = r.text_sha256 ?? r.receipt?.text_sha256;
+  const rc = r.receipt ?? r;
+  const tk = r.ticket ?? null;
+  const checks: { check: string; ok: boolean | null; detail: string }[] = [{ check: "receipt exists", ok: true, detail: `ticket ${rc.ticket_id ?? tk?.job_id ?? "?"}, ${rc.rows ?? "?"} rows, ${rc.charged_lamports ?? "?"} lamports` }];
+  const want = rc.text_sha256;
   if (typeof text === "string") {
-    const { createHash } = await import("node:crypto");
-    const got = createHash("sha256").update(text, "utf8").digest("hex");
-    checks.push({ check: "text matches text_sha256", ok: !!want && got === want, detail: want ? `${got === want ? "equal" : "differs"} (${want.slice(0, 16)}...)` : "the receipt has no text_sha256" });
+    const got = SHA(text);
+    checks.push({ check: "text matches text_sha256", ok: !!want && got === want, detail: want ? (got === want ? "equal" : "differs") : "the receipt has no text_sha256" });
   }
-  const s = r.settlement ?? r;
-  const round = s.round ?? r.round ?? null;
-  checks.push({ check: "posted on the Cadre chain in a round", ok: round !== null && round !== undefined ? true : null, detail: round !== null && round !== undefined ? `round ${JSON.stringify(round).slice(0, 80)}` : "not posted yet (rounds post every period)" });
-  const ticket = s.ticket_status ?? s.ticket?.status ?? r.ticket_status ?? null;
-  checks.push({ check: "ticket completed by its evaluator (bit-for-bit replay)", ok: ticket === "completed" ? true : ticket ? null : null, detail: ticket ? `ticket ${ticket}` : "ticket status not reported" });
-  return { request_id: requestId, checks, receipt: r, replay: "an independent replay runs with crates/cadre-glue (cadre-replay) and the registered model; docs/PROOFS.md row 11" };
+  if (typeof body === "string") {
+    const got = SHA(body);
+    checks.push({ check: "request body matches body_sha256", ok: !!rc.body_sha256 && got === rc.body_sha256, detail: rc.body_sha256 ? (got === rc.body_sha256 ? "equal" : "differs") : "the receipt has no body_sha256" });
+  }
+  const round = rc.round;
+  checks.push({ check: "posted on the Cadre chain in a settlement round", ok: round !== null && round !== undefined ? true : null, detail: round !== null && round !== undefined ? `round ${JSON.stringify(round).slice(0, 80)}` : "pending: the gateway posts the ticket's rounds every round period or when the balance closes" });
+  const st = tk?.status ?? rc.ticket_status ?? null;
+  checks.push({ check: "ticket completed by its evaluator after a bit-for-bit replay", ok: st === "completed" ? true : st === "rejected" ? false : null, detail: st ? `ticket ${st}; evaluators ${(tk?.evaluators ?? []).join(", ") || "?"}; blocks mined ${tk?.blocks_mined ?? "?"}` : "ticket status not reported" });
+  return { request_id: requestId, checks, replay: "an independent replay runs with crates/cadre-glue (cadre-replay) and the registered model; docs/PROOFS.md row 11", receipt: rc, ticket: tk ? { status: tk.status, evaluators: tk.evaluators, blocks_mined: tk.blocks_mined, deadline_height: tk.deadline_height, explorer: rc.explorer_url } : null };
 }

@@ -313,7 +313,13 @@ export function registerConnect(api: Api, d: Deps) {
   };
   api.post("/v1/chat/completions", chat("chat"), { cost: 10 });
   api.post("/v1/completions", chat("text"), { cost: 10 });
-  api.get("/v1/models", (c) => toGateway(c, "/v1/models"), { cache: "no-store" });
+  api.get("/v1/models", async (c) => {
+    if (d.cfg.gatewayUrl) return toGateway(c, "/v1/models");
+    // no gateway on this deployment: the public list of a peer cadre-api (CADRE_SELF_URL), else 501
+    const m = process.env.CADRE_SELF_URL ? await self("/v1/openai/models") : null;
+    if (!m) throw new ApiError(501, "upstream_not_configured", "gateway is not configured on this deployment");
+    return reply({ body: m, cache: "no-store" });
+  }, { cache: "no-store" });
 
   // ------------------------------------------------------------ A2A agent cards
 

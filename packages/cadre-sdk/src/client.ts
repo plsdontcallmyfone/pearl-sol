@@ -297,7 +297,7 @@ export class Cadre {
     return this.must("POST", "/v1/openai/keys", "{}", await this.gatewayHeaders("POST", "/v1/keys", "{}"));
   }
   /** Check a receipt: exists, text hash, posted in a round, ticket completed by its evaluator (replay). */
-  async verifyReceipt(requestId: string, text?: string) { return verifyReceipt((p) => this.get(p), requestId, text); }
+  async verifyReceipt(requestId: string, text?: string, body?: string) { return verifyReceipt((p) => this.get(p), requestId, text, body); }
   /** Replay a receipt independently: needs cadre-replay (crates/cadre-glue) and the registered
    * model on this machine; without them it says what to install and returns the bundle location. */
   async replayReceipt(requestId: string, o: { bin?: string; modelDir?: string } = {}) {
@@ -537,20 +537,26 @@ function spendOf(t: any): bigint {
 }
 
 /** Receipt checks (the same rules as the hosted runtime's cadre_verify_receipt). */
-export async function verifyReceipt(get: (p: string) => Promise<any>, requestId: string, text?: string) {
+export async function verifyReceipt(get: (p: string) => Promise<any>, requestId: string, text?: string, body?: string) {
+  const SHA = (x: string) => sha256(Buffer.from(x, "utf8"));
   const r = await get(`/v1/openai/requests/${requestId}`);
-  const checks: { check: string; ok: boolean | null; detail: string }[] = [{ check: "receipt exists", ok: true, detail: `ticket ${r.ticket_id ?? r.ticket ?? "?"}` }];
-  const want = r.text_sha256 ?? r.receipt?.text_sha256;
+  const rc = r.receipt ?? r;
+  const tk = r.ticket ?? null;
+  const checks: { check: string; ok: boolean | null; detail: string }[] = [{ check: "receipt exists", ok: true, detail: `ticket ${rc.ticket_id ?? tk?.job_id ?? "?"}, ${rc.rows ?? "?"} rows, ${rc.charged_lamports ?? "?"} lamports` }];
+  const want = rc.text_sha256;
   if (typeof text === "string") {
-    const got = sha256(Buffer.from(text, "utf8"));
+    const got = SHA(text);
     checks.push({ check: "text matches text_sha256", ok: !!want && got === want, detail: want ? (got === want ? "equal" : "differs") : "the receipt has no text_sha256" });
   }
-  const s = r.settlement ?? r;
-  const round = s.round ?? r.round ?? null;
-  checks.push({ check: "posted on the Cadre chain in a round", ok: round !== null && round !== undefined ? true : null, detail: round !== null && round !== undefined ? `round ${JSON.stringify(round).slice(0, 80)}` : "not posted yet (rounds post every period)" });
-  const ticket = s.ticket_status ?? s.ticket?.status ?? r.ticket_status ?? null;
-  checks.push({ check: "ticket completed by its evaluator (bit-for-bit replay)", ok: ticket === "completed" ? true : null, detail: ticket ? `ticket ${ticket}` : "ticket status not reported" });
-  return { request_id: requestId, checks, receipt: r };
+  if (typeof body === "string") {
+    const got = SHA(body);
+    checks.push({ check: "request body matches body_sha256", ok: !!rc.body_sha256 && got === rc.body_sha256, detail: rc.body_sha256 ? (got === rc.body_sha256 ? "equal" : "differs") : "the receipt has no body_sha256" });
+  }
+  const round = rc.round;
+  checks.push({ check: "posted on the Cadre chain in a settlement round", ok: round !== null && round !== undefined ? true : null, detail: round !== null && round !== undefined ? `round ${JSON.stringify(round).slice(0, 80)}` : "pending: the gateway posts the ticket's rounds every round period or when the balance closes" });
+  const st = tk?.status ?? rc.ticket_status ?? null;
+  checks.push({ check: "ticket completed by its evaluator after a bit-for-bit replay", ok: st === "completed" ? true : st === "rejected" ? false : null, detail: st ? `ticket ${st}; evaluators ${(tk?.evaluators ?? []).join(", ") || "?"}; blocks mined ${tk?.blocks_mined ?? "?"}` : "ticket status not reported" });
+  return { request_id: requestId, checks, receipt: rc, ticket: tk ? { status: tk.status, evaluators: tk.evaluators, blocks_mined: tk.blocks_mined, deadline_height: tk.deadline_height, explorer: rc.explorer_url } : null };
 }
 
 export { LimitError, toCx };

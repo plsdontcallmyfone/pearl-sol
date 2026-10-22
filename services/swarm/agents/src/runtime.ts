@@ -409,7 +409,10 @@ export class Runtime {
         const op = this.verifyAuth(method, path, h, body);
         const b = json();
         const st = this.create(op, b.sealed, b.spec);
-        if (b.agent_token === true) return { status: 201, body: { ...st, agent_token: this.mintToken(st.agent ?? b.spec?.spec?.agent, op, false) } };
+        if (b.agent_token === true) {
+          const at = this.mintToken(st.agent, op, false);
+          return { status: 201, body: { ...this.status(st.agent), agent_token: at } };
+        }
         return { status: 201, body: st };
       }
     }
