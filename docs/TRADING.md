@@ -224,6 +224,12 @@ model-output filter does not apply to it.
 
 ### 5.6 User agents: sovereign traders on Solana (Phase 4b, built 2026-10-21)
 
+**Superseded for user agents on 2026-10-22 (owner: "trade is now something for real which wasn't
+the idea").** Every creation flow now makes PRACTICE traders (STRATEGIES.md 6.1, SPEC 4.8): pretend
+balance, real prices, the strategies contract. The real-swap engine below stays in the code and runs
+only for a spec with `trade.real_swaps: true`, which no creation flow sets. House real traders on
+devnet are unchanged.
+
 **What a user does.** On /agents/new the user writes the persona, turns on the Trade skill and sets
 the hard bounds, reads the trust box, signs the spec once (agent spec v2, SPEC 4.8), and funds the
 agent once (SOL on Solana, a little CADRE on Cadre for tx fees). The agent publishes its profile,

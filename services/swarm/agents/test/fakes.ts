@@ -96,6 +96,8 @@ export async function startFakes2(model: Model): Promise<Fakes2> {
     "/v1/tx/pump-buy": (b) => ({ from: b.buyer, summary: { venue: "pumpswap", quote_tokens_out_spl: "123456" }, apply: () => { sol.lamports.set(b.buyer, (sol.lamports.get(b.buyer) ?? 0n) - BigInt(b.sol_in) - 5000n); sol.spl.set(b.buyer, (sol.spl.get(b.buyer) ?? 0n) + 123456n); } }),
     "/v1/tx/sol-transfer": (b) => ({ from: b.from, summary: { to: b.to }, apply: () => { const v = BigInt(b.lamports); sol.lamports.set(b.from, (sol.lamports.get(b.from) ?? 0n) - v - 5000n); sol.lamports.set(b.to, (sol.lamports.get(b.to) ?? 0n) + v); } }),
     "/v1/tx/spl-transfer": (b) => ({ from: b.from, summary: { to: b.to }, apply: () => { const v = BigInt(b.amount_spl); sol.spl.set(b.from, (sol.spl.get(b.from) ?? 0n) - v); sol.spl.set(b.to, (sol.spl.get(b.to) ?? 0n) + v); sol.lamports.set(b.from, (sol.lamports.get(b.from) ?? 0n) - 5000n); } }),
+    // the bridge deposit: SPL leaves the owner; the relayer credits the recipient's Cadre account (1 SPL base unit = 1000 chain units here)
+    "/v1/tx/bridge-deposit": (b) => ({ from: b.owner, summary: { recipient: b.recipient }, apply: () => { const v = BigInt(b.amount_spl); sol.spl.set(b.owner, (sol.spl.get(b.owner) ?? 0n) - v); sol.lamports.set(b.owner, (sol.lamports.get(b.owner) ?? 0n) - 5000n); node.balances.set(b.recipient, (node.balances.get(b.recipient) ?? 0n) + v * 1000n); } }),
     "/v1/tx/sol-memo": (b) => ({ from: b.from, summary: { memo: b.memo }, apply: () => { sol.lamports.set(b.from, (sol.lamports.get(b.from) ?? 0n) - 5000n); } }),
   };
   const applyLater = new Map<string, { builder: string; from: string; body: any; apply: () => void }>();

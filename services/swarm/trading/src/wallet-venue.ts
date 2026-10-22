@@ -117,10 +117,15 @@ export class PumpSwapWallet implements Venue {
     return avgCost(this.fills.map((f) => ({ side: f.side, amountIn: BigInt(f.amountIn), out: BigInt(f.out) }))).realized;
   }
 
+  /** Average-cost basis of the open position over own fills (quote units). */
+  cost() {
+    return avgCost(this.fills.map((f) => ({ side: f.side, amountIn: BigInt(f.amountIn), out: BigInt(f.out) }))).cost;
+  }
+
   async book(): Promise<Book> {
     const [sol, ta] = await this.conn.getMultipleAccountsInfo([this.owner, ata(this.owner, this.mint, T22)], "confirmed");
     const lam = BigInt(sol?.lamports ?? 0);
-    return { quote: lam > this.feeReserve ? lam - this.feeReserve : 0n, base: ta && ta.data.length >= 72 ? ta.data.readBigUInt64LE(64) : 0n, realized: this.realized() };
+    return { quote: lam > this.feeReserve ? lam - this.feeReserve : 0n, base: ta && ta.data.length >= 72 ? ta.data.readBigUInt64LE(64) : 0n, realized: this.realized(), cost: this.cost() };
   }
 
   private async build(side: 0 | 1, amountIn: bigint, minOut: bigint): Promise<{ transaction: string; summary: any; recent_blockhash?: string; last_valid_block_height?: number }> {

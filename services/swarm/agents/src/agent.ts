@@ -17,6 +17,14 @@
 //     its own strategy, persona notes and goals through its own paid thoughts (`evolve`), written
 //     into its profile blob as `agent_self` by its own SetProfile. Its creator has no controls:
 //     pause, withdraw and spec changes are refused (runtime.ts); only the protocol kill file stops it.
+//   - Trading for user agents is PRACTICE (owner 2026-10-22): a practice section, or a trade section
+//     without trade.real_swaps, runs practice.ts (pretend balance, real mainnet prices, the
+//     strategies contract). The real-swap engine starts only when trade.real_swaps is true, which no
+//     creation flow sets; the v1 single PumpSwap buy is off for user agents.
+//   - Quick execution (owner 2026-10-22): the agent buys and bridges its own CADRE for Cadre fees
+//     (no browser step), a sovereign agent's creator attribution is the signed spec in its profile
+//     blob (no OperatorLink wait), its first action runs as soon as it is live, and hires, mentions
+//     and DMs make it act at once instead of waiting for its cadence.
 import { isTownSolana, type TownNode } from "../../src/townnode.ts";
 import { key32 } from "../../src/b58.ts";
 import { type Body, feeFor, REACTION } from "../../src/chaintx.ts";
@@ -29,7 +37,9 @@ import type { Wallet } from "../../src/wallet.ts";
 import { type ApiClient, signRegisterAgent } from "./chain.ts";
 import { type AgentSelf, type AgentSpec, isSovereign, profileBlob, profileFlags, type SignedSpec, validateSelf } from "./spec.ts";
 import { checkOutput } from "../../src/filter.ts";
-import { Cadre } from "../../trading/src/cadre.ts";
+import { Cadre, type ContractBody, contractFee, contractSigningBytes } from "../../trading/src/cadre.ts";
+import { frame, NS_TX } from "../../src/chaintx.ts";
+import { type PracticeHost, practicePlan, realSwapsOn } from "./practice.ts";
 import type { UserTrading } from "../../trading/src/useragent.ts";
 import { AgentMarket } from "./market.ts";
 import type { HaltWatch } from "./halt.ts";
@@ -49,6 +59,9 @@ export function swarmLine(w: SwarmCtx | null | undefined): string {
   const others = w.members.filter((m) => m.role && m.handle).map((m) => `@${m.handle} (${m.role})`).join(", ");
   return ` You are a member of the swarm "${w.name}" as ${w.role}. Shared goal: ${w.goal.slice(0, 600)} ${lead} Members: ${others.slice(0, 600)}. You stay your own boss: the swarm is a shared goal, not orders.`;
 }
+
+/** Log kinds that are the agent doing its job (not setup): the "first task action" timing. */
+const TASK_KINDS = new Set(["post", "reply", "react", "tip", "follow", "offer", "deliver", "decline", "verdict", "hire", "practice", "trade", "launch", "memo", "evolve"]);
 
 export function personaOf(s: AgentSpec, self: AgentSelf | null = null, swarm: SwarmCtx | null = null): Persona {
   const g = self?.goals && s.evolve?.goals ? self.goals : s.goals;
@@ -77,7 +90,16 @@ export interface RunnerOpts {
   solWs?: string;
   /** The protocol halt record (halt.ts), shared by every agent of a runtime; checked before acting. */
   halt?: HaltWatch;
+  /** Practice trading (practice.ts), shared by every agent of a runtime; absent = practice off here. */
+  practice?: PracticeHost;
+  /** Why practice is off on this runtime (shown in status), when `practice` is absent. */
+  practiceOff?: string;
+  /** SOL the agent spends once to buy and bridge its own CADRE for Cadre fees (lamports; 0 = never). */
+  cadreBootLamports?: bigint;
 }
+
+/** Default self-funding of Cadre fees: 0.005 SOL of CADRE (the old quick-create split's 5% of 0.1 SOL). */
+export const CADRE_BOOT_LAMPORTS = 5_000_000n;
 
 export function configFor(s: AgentSpec, o: RunnerOpts): SwarmConfig {
   const A = s.actions;
@@ -121,6 +143,15 @@ export class AgentRunner extends Swarm {
   swarm: SwarmCtx | null = null;
   /** The lead's kickoff decision (swarms.ts kickoff): the member to hire first and the task. */
   swarmPlan: { member: string; task: string; request_id: string } | null = null;
+  /** The one-time CADRE self-funding (buy on PumpSwap, bridge to its own Cadre account). */
+  cadreBoot: { state: "bought" | "bridged" | "failed"; buy?: string; bridge?: string; spl?: string; at: number; error?: string } | null = null;
+  /** When it went live (profile, registration and attribution done). */
+  liveAt = 0;
+  /** First paid thought, first signed tx, first task action (ms), for the creation-to-action timings. */
+  firsts: { thought?: number; tx?: number; task?: number } = {};
+  /** Set by pollTriggers: act on the next tick regardless of the cadence. */
+  wakeAt = 0;
+  triggersAt = 0;
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -142,6 +173,9 @@ export class AgentRunner extends Swarm {
       this.evolvedAt = ex.evolvedAt ?? 0;
       this.launches = ex.launches ?? [];
       this.launchConsideredAt = ex.launchConsideredAt ?? 0;
+      this.cadreBoot = ex.cadreBoot ?? null;
+      this.liveAt = ex.liveAt ?? 0;
+      this.firsts = ex.firsts ?? {};
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
     if (this.self) this.me.persona = personaOf(doc.spec, this.self);
@@ -164,11 +198,15 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, cadreBoot: this.cadreBoot, liveAt: this.liveAt, firsts: this.firsts };
     super.save();
   }
 
   note(kind: string, text: string, x: Partial<LogLine> = {}) {
+    const now = Date.now();
+    if (kind === "thought" && !this.firsts.thought) this.firsts.thought = now;
+    if ((x.tx || x.sol) && x.ok !== false && !this.firsts.tx) this.firsts.tx = now;
+    if (TASK_KINDS.has(kind) && (x.tx || x.request_id) && x.ok !== false && !this.firsts.task) this.firsts.task = now;
     this.log2.push({ t: iso(), kind, text, ...x });
     if (this.log2.length > 400) this.log2 = this.log2.slice(-300);
     this.log(kind, { agent: this.spec.handle, text, ...x });
@@ -225,6 +263,91 @@ export class AgentRunner extends Swarm {
     }
   }
 
+  /** A contract Call from the agent's key through its send chain (one nonce sequence), inside the CADRE cap. */
+  async sendCall(b0: ContractBody & { kind: "Call" }): Promise<{ txHash: string; nonce: bigint; fee: bigint }> {
+    const go = async () => {
+      const hb = this.haltReason("all");
+      if (hb) throw new Error(`halted: ${hb}`);
+      if (!this.params) await this.refreshParams();
+      const w = this.me.wallet;
+      let b = b0;
+      if (b.gasLimit === 0n) {
+        const sim = await this.d.node.call("simulateCall", { from: w.address, address: b.contract, args: Buffer.from(b.args).toString("hex"), value: Number(b.value) });
+        if (!sim?.ok) throw new Error(`simulation failed: ${sim?.error ? Buffer.from(sim.error, "hex").toString("utf8") : "unknown"}`);
+        b = { ...b, gasLimit: BigInt(Math.ceil(sim.gas_used * 1.25)) + 20_000n };
+      }
+      const nonce = await this.nonceOf(w);
+      const len = contractSigningBytes(this.chainId, w.publicKey, nonce, 0n, b).length + 64;
+      const fee = contractFee(this.params, len, b.gasLimit);
+      if (!this.budget.canTransfer(fee + b.value, this.d.now())) throw new BudgetRefused(`CADRE cap: ${fee + b.value} units would pass today's cap`);
+      const sb = contractSigningBytes(this.chainId, w.publicKey, nonce, fee, b);
+      const tx = Uint8Array.from([...sb, ...w.sign(frame(NS_TX, sb))]);
+      try {
+        const s = await this.d.node.sendTx(tx);
+        this.nonces.set(w.address, nonce + 1n);
+        this.budget.bookTransfer(fee + b.value);
+        return { txHash: s.tx_hash, nonce, fee };
+      } catch (e) {
+        if (/nonce/i.test((e as Error).message)) this.nonces.delete(w.address);
+        throw e;
+      }
+    };
+    const p = this.sendChain.then(go);
+    this.sendChain = p.catch(() => {});
+    return p;
+  }
+
+  /** Every paid thought also goes into the agent's own log (the creator's live feed). */
+  override async think(a: Agent, messages: { role: string; content: string }[], maxTokens: number, purpose: string) {
+    const t = await super.think(a, messages, maxTokens, purpose);
+    if (t) this.note("thought", `${purpose.replace(/_/g, " ")}: ${t.text.replace(/\s+/g, " ").trim().slice(0, 160)}`, { request_id: t.requestId, ok: true });
+    return t;
+  }
+
+  override async topup(): Promise<boolean> {
+    const ok = await super.topup();
+    if (ok) this.note("topup", `topped up its own prepaid inference over x402 (${this.rowsFree} rows)`, { ok: true });
+    return ok;
+  }
+
+  /** Cadre fees without a browser step: once, the agent buys CADRE with a little of its own SOL on
+   * PumpSwap and bridges it to its own Cadre account (cadre-api tx builders, signed by its key). */
+  async selfFundCadre(): Promise<string> {
+    const amt = this.o.cadreBootLamports ?? CADRE_BOOT_LAMPORTS;
+    if (amt <= 0n || !this.sovereign) return "off";
+    const b = this.cadreBoot;
+    if (b?.state === "bridged") return "waiting_bridge";
+    if (b?.state === "failed" && this.d.now() - b.at < 600_000) return "failed";
+    try {
+      if (!b || b.state === "failed") {
+        const lam = await this.lamports();
+        if (lam < amt + 20_000_000n) return "low_sol"; // keep 0.02 SOL for its x402 top-ups and Solana fees
+        const before = await this.api.must("GET", `/v1/accounts/${this.address}/balances`).then((x: any) => BigInt(x.solana?.spl ?? 0));
+        const r = await this.solanaAction("/v1/tx/pump-buy", { buyer: this.address, sol_in: amt.toString(), slippage_bps: 300 }, amt + 3_000_000n);
+        let after = before;
+        for (let i = 0; i < 10 && after <= before; i++) {
+          after = await this.api.must("GET", `/v1/accounts/${this.address}/balances`).then((x: any) => BigInt(x.solana?.spl ?? 0));
+          if (after <= before) await new Promise((res) => setTimeout(res, 1500));
+        }
+        if (after <= before) throw new Error(`the CADRE buy ${r.signature} landed but the SPL balance has not grown yet`);
+        this.cadreBoot = { state: "bought", buy: r.signature, spl: (after - before).toString(), at: this.d.now() };
+        this.note("cadre_buy", `bought ${after - before} CADRE base units with ${amt} lamports of its own SOL for its Cadre fees`, { sol: r.signature, ok: true });
+        this.save();
+      }
+      const c = this.cadreBoot!;
+      const r = await this.solanaAction("/v1/tx/bridge-deposit", { owner: this.address, recipient: this.address, amount_spl: c.spl }, 3_000_000n);
+      this.cadreBoot = { ...c, state: "bridged", bridge: r.signature, at: this.d.now() };
+      this.note("cadre_bridge", "bridged that CADRE to its own Cadre account (arrives after Solana finality and the relayer)", { sol: r.signature, ok: true });
+      this.save();
+      return "bridged";
+    } catch (e) {
+      this.cadreBoot = { ...(this.cadreBoot ?? {}), state: this.cadreBoot?.state === "bought" ? "bought" : "failed", at: this.d.now(), error: (e as Error).message.slice(0, 200) } as any;
+      this.note("cadre_boot_error", `could not fund its Cadre fees yet: ${(e as Error).message.slice(0, 200)}`, { ok: false });
+      this.save();
+      return "error";
+    }
+  }
+
   // ---------------------------------------------------------------- bootstrap: profile, registration, link
 
   override async bootstrap(): Promise<boolean> {
@@ -237,7 +360,10 @@ export class AgentRunner extends Swarm {
     const minFee = BigInt(this.params.social_min_fee ?? this.params.min_fee);
     if (BigInt(acct?.balance ?? 0) < 2n * minFee && !s.profileDone) {
       this.state = "waiting_funds";
-      this.why = "the agent holds no CADRE on the Cadre chain for its tx fees yet";
+      const boot = await this.selfFundCadre();
+      this.why = boot === "bridged" || boot === "waiting_bridge" ? "its own CADRE for Cadre fees is on the way (bridged from Solana; arrives after finality and the relayer)"
+        : boot === "low_sol" ? "waiting for SOL in its wallet (it buys its own CADRE for Cadre fees from it)"
+        : "the agent holds no CADRE on the Cadre chain for its tx fees yet";
       return false;
     }
     if (!this.blobUri) {
@@ -285,11 +411,10 @@ export class AgentRunner extends Swarm {
     const legacyLinked = isTownSolana(this.d.node) && !(prof?.operator === this.spec.operator && prof?.operator_linked)
       ? await (this.d.node as TownNode).chainCall("getProfile", { account: this.address }).then((p: any) => p?.operator === this.spec.operator && !!p?.operator_linked).catch(() => false)
       : false;
-    // a swarm member's creator attribution is the creator's one signature over the whole swarm
-    // (doc.swarm, verified before the runtime hosts it, and registered on the swarms contract), so it
-    // does not wait for a per-agent OperatorLink (docs/SWARMS.md 3)
-    const swarmLinked = !!this.doc.swarm && prof?.operator === this.spec.operator;
-    if (!swarmLinked && !legacyLinked && !(prof?.operator === this.spec.operator && prof?.operator_linked)) {
+    // a sovereign (v2) agent's creator attribution is the creator-signed spec in its own profile blob
+    // (verified at creation and by anyone from the chain); it does not wait for an OperatorLink
+    const specAttributed = this.sovereign && prof?.operator === this.spec.operator;
+    if (!specAttributed && !legacyLinked && !(prof?.operator === this.spec.operator && prof?.operator_linked)) {
       this.state = "waiting_link";
       this.why = "the creator's OperatorLink (attribution) to this agent is not on the chain yet";
       // an operator new to the Cadre chain holds no CADRE for the link's fee: the agent sends it once
@@ -308,7 +433,8 @@ export class AgentRunner extends Swarm {
     if (!s.profileDone) {
       s.profileDone = true;
       s.nextAt = this.d.now();
-      this.note("live", swarmLinked ? `running spec v${this.spec.version}; creator attribution by the swarm signature` : `running spec v${this.spec.version}; creator link verified on the chain`);
+      this.liveAt = this.d.now();
+      this.note("live", `running spec v${this.spec.version}; ${specAttributed && !prof?.operator_linked ? "creator attribution by the creator-signed spec in its profile blob" : "creator link verified on the chain"}`);
     }
     if (!this.paused) this.state = "running";
     return true;
@@ -317,6 +443,43 @@ export class AgentRunner extends Swarm {
   /** "" when `what` may run now, else the protocol halt's reason (halt.ts; ALL stops everything). */
   haltReason(what: "all" | "trade" | "launch"): string {
     return this.o.halt?.blocks(what) ?? "";
+  }
+
+  /** Event-driven (owner 2026-10-22): an agent acts now, not at its next cadence slot, when work
+   * waits for it: a hire to deliver (offer), a delivery to judge (hire), or a reply to answer.
+   * DMs are already handled on every tick (Swarm.tick, dms.step). Checked at most every 10 s. */
+  async pollTriggers(): Promise<string | null> {
+    const now = this.d.now();
+    const s = this.ag(this.me);
+    if (!s.profileDone || now - this.triggersAt < 10_000 || (s.nextAt ?? 0) <= now) return null;
+    this.triggersAt = now;
+    const A = this.spec.actions;
+    const get = (p: string) => this.api.must("GET", p).catch(() => null);
+    let why: string | null = null;
+    if (A.offer) {
+      const h = await get(`/v1/market/hires?provider=${this.address}&status=open`);
+      if (h?.hires?.some((x: any) => x.blocks_left > 2)) why = "a hire to deliver";
+    }
+    if (!why && A.hire) {
+      const h = await get(`/v1/market/hires?buyer=${this.address}&evaluator=${this.address}&status=delivered`);
+      if (h?.hires?.some((x: any) => !x.voted?.includes(this.address))) why = "a delivery to judge";
+    }
+    if (!why && A.reply) {
+      const posts = await this.townPosts().catch(() => []);
+      if (this.mentions(this.me, posts).length) why = "a reply to answer";
+    }
+    if (why) this.wakeAt = now;
+    return why;
+  }
+
+  override dueAgents(now: number): Agent[] {
+    const due = super.dueAgents(now);
+    if (due.length) return due;
+    if (this.wakeAt && this.wakeAt <= now && this.ag(this.me).profileDone) {
+      this.wakeAt = 0;
+      return [this.me];
+    }
+    return [];
   }
 
   override async tick(): Promise<string> {
@@ -329,10 +492,12 @@ export class AgentRunner extends Swarm {
       this.why = hb;
       return "halted";
     }
+    await this.pollTriggers().catch(() => null);
     const r = await super.tick();
     if (r === "error") { this.state = "error"; this.why = this.lastError ?? ""; }
     if (this.state === "running") {
       await this.startTrading().catch((e) => this.note("trade_error", `trading did not start: ${(e as Error).message}`, { ok: false }));
+      if (this.o.practice) await this.o.practice.ensure(this).catch((e) => this.note("practice_error", `practice trading did not start: ${(e as Error).message.slice(0, 200)}`, { ok: false }));
       await this.evolve().catch((e) => this.note("evolve_error", (e as Error).message, { ok: false }));
       await this.launchTick().catch((e) => this.note("launch_error", (e as Error).message.slice(0, 200), { ok: false }));
     }
@@ -373,6 +538,7 @@ export class AgentRunner extends Swarm {
   async startTrading() {
     const t = this.spec.trade;
     if (this.trading || !this.sovereign || !t || !this.spec.actions.trade || !this.spec.skills.includes("trade")) return;
+    if (!realSwapsOn(this.spec)) return; // practice instead (practice.ts); real swaps only with trade.real_swaps
     if (!this.o.solRpc) throw new Error("no Solana RPC configured for trading");
     const cadre = new Cadre("http://unused.invalid");
     (cadre as any).rpc = this.d.node;
@@ -491,7 +657,8 @@ export class AgentRunner extends Swarm {
     if ((A.react || A.tip) && others.length) opts.push(["react", 0.2]);
     if (A.follow && others.length) opts.push(["follow", 0.1]);
     if (A.reply && others.length) opts.push(["reply", 0.25]);
-    if (A.trade && !this.sovereign) opts.push(["trade", 0.1]); // v2 agents trade through the engine (startTrading)
+    // trading is practice for user agents (practice.ts); the v1 single PumpSwap buy (trade()) stays in
+    // the code but no user agent reaches it
     if (A.memo && this.memoDue()) opts.push(["memo", 1]);
     if (A.post) opts.push(["post", 0.35]);
     if (!opts.length) return "idle";
@@ -665,7 +832,7 @@ export class AgentRunner extends Swarm {
       state: this.state,
       why: this.state === "running" ? null : this.why || null,
       paused: this.paused,
-      spec: { version: this.spec.version, sha256: this.doc.sha256, profile_uri: this.blobUri, hosting: this.spec.hosting },
+      spec: { version: this.spec.version, sha256: this.doc.sha256, profile_uri: this.blobUri, hosting: this.spec.hosting, template: this.spec.template ?? null },
       budget_today: {
         day: this.budget.st.day,
         rows: this.budget.st.rows, rows_cap: this.cfg.budget.rowsPerDay,
@@ -678,7 +845,10 @@ export class AgentRunner extends Swarm {
       last_error: this.lastError,
       desktops: this.spec.desktops.length ? { requested: this.spec.desktops, running: false, why: "user agent desktops wait for the house desktop controller to host user agents (ECOSYSTEM 7.4)" } : null,
       self: this.self,
-      trading: this.trading ? this.trading.status() : this.spec.trade ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
+      trading: this.trading ? this.trading.status() : realSwapsOn(this.spec) ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
+      practice: this.o.practice?.status(this.address) ?? (practicePlan(this.spec) ? { mode: "practice", state: "not started", why: this.o.practice ? (this.state === "running" ? "starting" : this.why || this.state) : this.o.practiceOff ?? "practice is off on this runtime" } : null),
+      cadre_self_funding: this.cadreBoot,
+      timings: { live_ms: this.liveAt || null, first_thought_ms: this.firsts.thought ?? null, first_tx_ms: this.firsts.tx ?? null, first_task_ms: this.firsts.task ?? null },
       launches: this.spec.launch ? { bounds: this.spec.launch, launched: this.launches, considered_at: this.launchConsideredAt || null, label: "agent-launched (pump.fun create_v2 by this agent's key)" } : null,
       halt: this.o.halt ? this.o.halt.status() : null,
       swarm: this.swarm ? { key: this.swarm.key, id: this.swarm.id, name: this.swarm.name, role: this.swarm.role, is_lead: this.swarm.isLead } : null,

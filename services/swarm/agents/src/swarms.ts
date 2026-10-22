@@ -32,11 +32,9 @@ import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { b58decode } from "../../src/b58.ts";
 import { loadWallet, verifySig, walletFromSeed, type Wallet } from "../../src/wallet.ts";
-import { Cadre, contractFee, contractSigningBytes, type ContractBody } from "../../trading/src/cadre.ts";
-import { frame, NS_TX } from "../../src/chaintx.ts";
+import { Cadre, type ContractBody } from "../../trading/src/cadre.ts";
 import type { AgentRunner } from "./agent.ts";
-import { practiceConfig, SwarmPractice } from "./swarmpractice.ts";
-import { defaultSpecV2, isSovereign, specSha256, type AgentSpec, type SignedSpec } from "./spec.ts";
+import { defaultSpecV2, isSovereign, PRACTICE_DEFAULT_BALANCE, specSha256, type AgentSpec, type SignedSpec } from "./spec.ts";
 import {
   acceptMessage, checkDefinition, createArgs, decodeU64, hexOf, KINDS, loadSwarmsConfig, MAX_BATCH, proofDefinition, queryArgs,
   STYLES, type StyleId, type SwarmKind, type SwarmsConfig, type SwarmSpecProof,
@@ -107,6 +105,8 @@ export interface RuntimeLike {
   verifyAuth(method: string, path: string, h: IncomingMessage["headers"], body: string): string;
   status(agent: string): unknown;
   stopped?: boolean;
+  practice?: { status(agent: string): unknown } | null;
+  practiceOff?: string;
   tickAgent?: (agent: string) => Promise<void>;
   mintToken?: (agent: string, by: string, rotate: boolean) => unknown;
 }
@@ -123,8 +123,6 @@ export class SwarmHost {
   swarms = new Map<string, SwarmRec>();
   env: NodeJS.ProcessEnv;
   maxSwarmAgentsPerCreator: number;
-  practice: SwarmPractice | null = null;
-  practiceWhy = "not started";
 
   constructor(rt: RuntimeLike, Err: HttpErrorCtor, env: NodeJS.ProcessEnv = process.env) {
     this.rt = rt;
@@ -133,9 +131,6 @@ export class SwarmHost {
     this.maxSwarmAgentsPerCreator = Number(env.AGENTS_MAX_SWARM_AGENTS_PER_CREATOR ?? 24);
     this.file = join(rt.cfg.stateDir, "swarms.json");
     if (existsSync(this.file)) for (const s of JSON.parse(readFileSync(this.file, "utf8")).swarms ?? []) this.swarms.set(s.key, s);
-    const pc = practiceConfig(env, rt.cfg.stateDir, rt.cfg.apiUrl, rt.cfg.tickMs);
-    if (pc.cfg) this.practice = new SwarmPractice(pc.cfg, (r, b) => this.sendFromRunner(r, b));
-    else this.practiceWhy = pc.why;
     this.attachAll();
   }
 
@@ -212,7 +207,7 @@ export class SwarmHost {
     if (kind === "trading") { let k = 0; for (let i = 0; i < size; i++) if (i !== leadIx && k < STYLES.length) styles[i] = STYLES[k++].id; }
     const created = now();
     const tag = hexOf(randomBytes(2));
-    const specs = agents.map((a, i) => memberSpec(a, creator, { name, goal, kind, role: roles[i], isLead: i === leadIx, solPerDay: sol[i], handle: handleFor(roles[i], tag, i), offerUnits: this.offerUnits, cadrePerDay: this.floatUnits, created }));
+    const specs = agents.map((a, i) => memberSpec(a, creator, { name, goal, kind, role: roles[i], isLead: i === leadIx, solPerDay: sol[i], handle: handleFor(roles[i], tag, i), offerUnits: this.offerUnits, cadrePerDay: this.floatUnits, created, style: styles[i] }));
     const shas = specs.map((x) => specSha256(x));
     const salt = BigInt(created).toString();
     const proof: Omit<SwarmSpecProof, "creator_sig"> = { format: "cadre-swarm-spec-proof-v1", contract: cfg.contract, creator, name, kind, goal, lead: agents[leadIx], members: agents.map((a, i) => ({ agent: a, role: roles[i] })), salt, specs: shas };
@@ -425,56 +420,18 @@ export class SwarmHost {
         this.save();
       }
     }
-    if (this.practice) {
-      for (const s of this.swarms.values()) {
-        if (s.kind !== "trading") continue;
-        for (const m of s.members) {
-          const r = this.rt.runners.get(m.agent);
-          if (!m.style || !r || r.state !== "running" || this.practice.agents.has(m.agent)) continue;
-          await this.practice.ensure(r, m.style).catch((e) => r.note("practice_error", `practice mode did not start: ${(e as Error).message.slice(0, 200)}`, { ok: false }));
-        }
-      }
-      await this.practice.tick().catch((e) => { this.practice!.why = `tick error: ${(e as Error).message.slice(0, 160)}`; });
-    }
   }
 
-  /** A contract call signed by a runner's key on the runner's own nonce sequence and send chain,
-   * inside its daily CADRE cap (fee only; the storage deposit is held, refundable). */
-  async sendFromRunner(r: AgentRunner, b0: ContractBody & { kind: "Call" }): Promise<string> {
-    const go = async () => {
-      const hb = r.haltReason("all");
-      if (hb) throw new Error(`halted: ${hb}`);
-      if (!r.params) await r.refreshParams();
-      const w = r.me.wallet;
-      const sim = await r.d.node.call("simulateCall", { from: w.address, address: b0.contract, args: Buffer.from(b0.args).toString("hex"), value: Number(b0.value) });
-      if (!sim?.ok) throw new Error(`simulation failed: ${sim?.error ? Buffer.from(sim.error, "hex").toString("utf8") : "unknown"}`);
-      const b = { ...b0, gasLimit: BigInt(Math.ceil(sim.gas_used * 1.25)) + 20_000n };
-      const nonce = await r.nonceOf(w);
-      const len = contractSigningBytes(r.chainId, w.publicKey, nonce, 0n, b).length + 64;
-      const fee = contractFee(r.params, len, b.gasLimit);
-      if (!r.budget.canTransfer(fee + b.value, r.d.now())) throw new Error(`CADRE cap: ${fee + b.value} units would pass today's cap`);
-      const sb = contractSigningBytes(r.chainId, w.publicKey, nonce, fee, b);
-      const tx = Uint8Array.from([...sb, ...w.sign(frame(NS_TX, sb))]);
-      try {
-        const s = await r.d.node.sendTx(tx);
-        r.nonces.set(w.address, nonce + 1n);
-        r.budget.bookTransfer(fee + b.value);
-        return s.tx_hash;
-      } catch (e) {
-        if (/nonce/i.test((e as Error).message)) r.nonces.delete(w.address);
-        throw e;
-      }
-    };
-    const p = r.sendChain.then(go);
-    r.sendChain = p.catch(() => {});
-    return p;
+  /** A contract call from a runner's key: its own nonce sequence, send chain and daily CADRE cap (agent.ts sendCall). */
+  async sendFromRunner(r: AgentRunner, b: ContractBody & { kind: "Call" }): Promise<string> {
+    return (await r.sendCall(b)).txHash;
   }
 
   // ---------------------------------------------------------------- HTTP
 
   styles() {
     return {
-      practice: { enabled: !!this.practice, why: this.practice ? null : this.practiceWhy },
+      practice: { enabled: !!this.rt.practice, why: this.rt.practice ? null : this.rt.practiceOff || "practice is not configured on this runtime" },
       styles: STYLES.map((s) => ({ id: s.id, name: s.name, persona: s.persona, conditions: s.base.conditions, size: s.base.size, max_risk_bps: s.base.max_risk_bps, max_slippage_bps: s.base.max_slippage_bps, practice_balance_lamports: s.base.practice_balance_lamports })),
       note: "the conditions are the house practice agents' (docs/STRATEGIES.md 6), design choices, not measurements; each member of a trading swarm runs a different one",
       kinds: KINDS,
@@ -487,7 +444,7 @@ export class SwarmHost {
       ...this.view(s),
       members: s.members.map((m) => {
         const r = this.rt.runners.get(m.agent);
-        return { ...m, hosted: r ? { state: r.state, why: r.state === "running" ? null : r.why || null, budget_today: r.statusJson().budget_today } : null, practice: this.practice?.status(m.agent) ?? null };
+        return { ...m, hosted: r ? { state: r.state, why: r.state === "running" ? null : r.why || null, budget_today: r.statusJson().budget_today } : null, practice: this.rt.practice?.status(m.agent) ?? null };
       }),
     }));
     return { total: list.length, swarms: list, contract: this.cfg?.contract ?? null };
@@ -537,7 +494,7 @@ const ROLE_LINES: Record<string, string> = {
 };
 
 /** A member's sovereign v2 spec, made by the runtime from the plan (the creator's one signature commits it). */
-export function memberSpec(agent: string, creator: string, x: { name: string; goal: string; kind: SwarmKind; role: string; isLead: boolean; solPerDay: bigint; handle: string; offerUnits: bigint; cadrePerDay: bigint; created: number }): AgentSpec {
+export function memberSpec(agent: string, creator: string, x: { name: string; goal: string; kind: SwarmKind; role: string; isLead: boolean; solPerDay: bigint; handle: string; offerUnits: bigint; cadrePerDay: bigint; created: number; style?: StyleId | null }): AgentSpec {
   const base = defaultSpecV2(agent, creator);
   const roleTitle = x.role.charAt(0).toUpperCase() + x.role.slice(1);
   const line = ROLE_LINES[x.role] ?? `You do ${x.role} work for the swarm.`;
@@ -546,7 +503,9 @@ export function memberSpec(agent: string, creator: string, x: { name: string; go
     persona: `A quick executor in the swarm "${x.name}", working as ${x.role}. ${line}`.slice(0, 2000),
     appearance: `a small ${x.role} mark`.slice(0, 300), goals: [x.goal.slice(0, 200)],
     instructions: x.isLead ? "Act on the goal right away: plan one small task at a time and hire the member that fits." : "When the lead hires you, deliver quickly and briefly.",
-    topics: [x.role.slice(0, 80)], schedule: { cadence_min: 5, quiet_utc: null }, skills: ["town", "x402", "market"],
+    topics: [x.role.slice(0, 80)], schedule: { cadence_min: 5, quiet_utc: null }, skills: x.style ? ["town", "x402", "market", "practice"] : ["town", "x402", "market"],
+    // a trading swarm's worker practices its own style through the runtime's PracticeHost (practice.ts)
+    ...(x.style ? { practice: { style: x.style as any, balance_lamports: PRACTICE_DEFAULT_BALANCE, strategy: `${x.role} in the swarm "${x.name}": ${x.goal}`.slice(0, 600) } } : {}),
     actions: { ...base.actions, post: true, reply: true, react: false, follow: false, tip: false, trade: false, memo: false, hire: x.isLead, mine: false, browse: false, offer: !x.isLead },
     budget: { sol_lamports_per_day: x.solPerDay.toString(), cadre_units_per_day: (x.cadrePerDay > 0n ? x.cadrePerDay : BigInt(base.budget.cadre_units_per_day)).toString(), rows_per_day: base.budget.rows_per_day },
     limits: { tip_units: "0", trade_lamports: "0", ...(x.isLead ? { hire_units: (x.offerUnits * 4n).toString() } : {}) },

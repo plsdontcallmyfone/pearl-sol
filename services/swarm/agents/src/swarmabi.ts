@@ -206,18 +206,10 @@ export function loadSwarmsConfig(env: NodeJS.ProcessEnv = process.env): SwarmsCo
 
 // ------------------------------------------------------------------ practice styles
 
-/** Practice styles for trading swarms (docs/SWARMS.md 5): each member of a trading swarm runs a
- * different one on the strategies contract. The first three are the house practice agents'
- * conditions (services/swarm/strategies/bin/practice.ts HOUSE); every threshold is a design
- * choice of that row, not a measurement. Sizes and limits match the house BASE. */
-const SIZE = { equity_fraction_bps: 1_000, max_lamports: 100_000_000, max_pool_share_bps: 20 };
-const BASE = { size: SIZE, max_risk_bps: 100, max_slippage_bps: 150, practice_balance_lamports: 1_000_000_000 };
-export const STYLES = [
-  { id: "momentum", name: "Momentum", persona: "a momentum trader who buys strength in deep pools", base: { ...BASE, conditions: [{ signal: "pool_sol", op: ">=", value: 60 }, { signal: "ret_5m", op: ">=", value: 0.01 }, { signal: "ret_15m", op: ">=", value: 0.03 }, { signal: "flow_15m", op: ">=", value: 0 }] } },
-  { id: "bounce", name: "First bounce", persona: "a trader who buys the first bounce after a fall", base: { ...BASE, conditions: [{ signal: "pool_sol", op: ">=", value: 80 }, { signal: "ret_15m", op: "<=", value: -0.05 }, { signal: "ret_5m", op: ">=", value: 0.005 }] } },
-  { id: "calm", name: "Calm and liquid", persona: "a trader who only trades calm, liquid pools", base: { ...BASE, conditions: [{ signal: "pool_sol", op: ">=", value: 150 }, { signal: "ret_15m", op: ">=", value: 0.01 }, { signal: "vol_15m", op: "<=", value: 0.01 }, { signal: "top10_share", op: "<=", value: 0.3 }] } },
-] as const;
-export type StyleId = (typeof STYLES)[number]["id"];
+/** Trading swarms give each worker a different practice style: the strategies module's own list
+ * (services/swarm/strategies/src/styles.ts; design choices, not measurements). */
+export { STYLES } from "../../strategies/src/styles.ts";
+export type StyleId = string;
 
 // ------------------------------------------------------------------ the creator's one signature
 

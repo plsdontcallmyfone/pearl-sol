@@ -146,6 +146,8 @@ test("trading goals get distinct practice styles; overrides win", async () => {
   const p = await post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: "Trade pump tokens with three different styles and compare what each learns.", size: 4, total_sol_lamports: "4000" });
   assert.equal(p.body.swarm.kind, "trading");
   assert.deepEqual(p.body.members.map((m: any) => m.practice_style), [null, "momentum", "bounce", "calm"]);
+  assert.equal(p.body.members[1].spec.practice.style, "momentum");
+  assert.ok(p.body.members[1].spec.skills.includes("practice"));
   const q = await post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 3, total_sol_lamports: "3000", overrides: { lead: 2, roles: ["scout", "scribe", "lead"], name: "Harbour" } });
   assert.equal(q.status, 200, JSON.stringify(q.body));
   assert.equal(q.body.swarm.lead, q.body.members[2].agent);

@@ -27,8 +27,19 @@ import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
 import { SwarmHost } from "./swarms.ts";
+import { PracticeHost, practiceConfig } from "./practice.ts";
+import { checkChoices, type Planner } from "./plan.ts";
+import { TokenStore } from "./tokens.ts";
+import { connectRoute, mintToken } from "./connect-routes.ts";
 
-export const VERSION = "0.1.0";
+// 0.2.0 (2026-10-22): trade.take_profit_bps / stop_loss_bps accepted
+// 0.3.0 (2026-10-22): practice trading (spec.practice; trade sections without trade.real_swaps run as
+// practice), spec-signature auth for create (one wallet prompt), self-funded CADRE, spec attribution
+// instead of the OperatorLink wait, event-driven acting, POST /v1/hosted/plan, spec.template
+export const VERSION = "0.3.0";
+export const FEATURES = ["practice", "spec_auth", "self_fund_cadre", "spec_attribution", "events", "plan", "template"] as const;
+/** A create signed only by the spec (no auth headers) must be this fresh (spec.created_ms). */
+export const SPEC_AUTH_MAX_AGE_MS = 10 * 60_000;
 
 export interface RuntimeConfig {
   stateDir: string;
@@ -48,6 +59,15 @@ export interface RuntimeConfig {
   killFile: string;
   /** The protocol halt contract (contracts/halt) every hosted agent obeys; null = none configured. */
   haltContract?: string | null;
+  /** SOL each agent spends once on its own CADRE for Cadre fees (lamports; default CADRE_BOOT_LAMPORTS). */
+  cadreBootLamports?: bigint;
+}
+
+export interface RuntimeExtras {
+  /** Practice host (tests inject one; null = off). Default: practiceConfig(process.env). */
+  practice?: PracticeHost | null;
+  /** The planner for POST /v1/hosted/plan (null = off, the site falls back to keywords). */
+  planner?: Planner | null;
 }
 
 interface Entry { operator: string; doc: SignedSpec; paused: boolean; created_ms: number; updated_ms: number }
@@ -72,13 +92,29 @@ export class Runtime {
   halt: HaltWatch | undefined;
   /** Swarms created here (swarms.ts, docs/SWARMS.md). */
   swarms: SwarmHost;
+  practice: PracticeHost | null = null;
+  practiceOff = "";
+  planner: Planner | null = null;
+  /** Agent tokens + OAuth grants (docs/CONNECT.md "Hosted mode"), hashed at rest. */
+  tokens: TokenStore;
   private makeDeps: (w: Wallet) => Deps;
+  private wake: (() => void) | null = null;
 
-  constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
+  constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps, extras: RuntimeExtras = {}) {
     this.cfg = cfg;
+    if (extras.practice !== undefined) {
+      this.practice = extras.practice;
+      if (!extras.practice) this.practiceOff = "practice is off on this runtime";
+    } else {
+      const pc = practiceConfig(process.env, cfg.stateDir, cfg.apiUrl);
+      if (pc.cfg) this.practice = new PracticeHost(pc.cfg);
+      else this.practiceOff = pc.why;
+    }
+    this.planner = extras.planner ?? null;
     mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
     this.store = new KeyStore(`${cfg.stateDir}/keys`, cfg.masterKeyFile);
     this.api = new ApiClient(cfg.apiUrl);
+    this.tokens = new TokenStore(`${cfg.stateDir}/tokens.json`);
     if (cfg.haltContract) {
       const node = new NodeRpc(cfg.nodeRpc);
       this.halt = new HaltWatch({ contract: cfg.haltContract, query: (address, args) => node.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) });
@@ -113,7 +149,8 @@ export class Runtime {
   runnerOpts(agent: string): RunnerOpts {
     return {
       stateFile: `${this.cfg.stateDir}/agent-${agent}.json`, killFile: this.cfg.killFile, allowHosts: this.cfg.allowHosts, solRpc: this.cfg.solRpc,
-      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
+      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt,
+      practice: this.practice ?? undefined, practiceOff: this.practiceOff || undefined, cadreBootLamports: this.cfg.cadreBootLamports, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
     };
   }
 
@@ -139,6 +176,7 @@ export class Runtime {
     this.checkDoc(doc, operator);
     const agent = doc.spec.agent;
     if (this.entries.has(agent)) throw new HttpError(409, "exists", "this agent is already hosted here; send a new spec version instead");
+    if ([...this.entries.values()].some((e) => e.doc.spec.handle === doc.spec.handle)) throw new HttpError(409, "handle_taken", `@${doc.spec.handle} is taken by another agent on this runtime`);
     if ([...this.entries.values()].filter((e) => e.operator === operator).length >= this.cfg.maxPerOperator) throw new HttpError(429, "operator_limit", `at most ${this.cfg.maxPerOperator} hosted agents per operator on this runtime`);
     if (this.entries.size >= this.cfg.maxAgents) throw new HttpError(503, "runtime_full", `this runtime hosts at most ${this.cfg.maxAgents} agents`);
     let seed: Buffer;
@@ -156,7 +194,20 @@ export class Runtime {
     this.entries.set(agent, { operator, doc, paused: false, created_ms: Date.now(), updated_ms: Date.now() });
     this.saveRegistry();
     this.start(agent);
+    this.wake?.(); // its first tick now, not after the loop's sleep
     return this.status(agent);
+  }
+
+  /** Auth for a create that carries no headers: the creator-signed spec itself (one wallet prompt).
+   * The spec names the operator and the agent and is signed by the operator; the sealed key must
+   * open to that agent, the agent must be new here, and the spec must be fresh, so a replay can
+   * only re-create the same agent, which is refused (409). */
+  specAuth(doc: SignedSpec): string {
+    const v = verifySigned(doc);
+    if (!v.ok) throw new HttpError(401, "unauthorized", `sign this request with the operator's wallet, or send a valid creator-signed spec: ${v.problems.join("; ")}`);
+    if (!isSovereign(doc.spec)) throw new HttpError(401, "unauthorized", "spec-signature auth is for v2 (sovereign) specs; sign legacy requests with the operator's wallet");
+    if (Math.abs(Date.now() - doc.spec.created_ms) > SPEC_AUTH_MAX_AGE_MS) throw new HttpError(401, "stale_signature", `the spec's created_ms is more than ${SPEC_AUTH_MAX_AGE_MS / 60_000} minutes off; sign a fresh spec`);
+    return doc.spec.operator;
   }
 
   own(agent: string, operator: string): Entry {
@@ -225,6 +276,7 @@ export class Runtime {
     const sov = isSovereign(e.doc.spec);
     return {
       ...r.statusJson(), sovereign: sov, legacy: !sov,
+      driven_externally: this.tokens.has(agent), driver: this.tokens.has(agent) ? "driven by an external AI (agent token; it steers decisions, it cannot withdraw, export, change limits, pause or delete)" : null,
       controls: sov ? { creator: "none (attribution only)", stop: "the protocol-wide kill switch only" } : { creator: "legacy v1: the operator may send a new spec, pause, resume, withdraw, export and delete" },
       hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION, custody: "the runtime holds the key (custodial to the runtime, not the creator)" },
     };
@@ -257,9 +309,24 @@ export class Runtime {
   }
 
   async run() {
+    void this.practiceLoop();
     while (!this.stopped && !existsSync(this.cfg.killFile)) {
       await this.loopOnce();
-      await new Promise((res) => setTimeout(res, this.cfg.tickMs));
+      await new Promise<void>((res) => {
+        const t = setTimeout(() => { this.wake = null; res(); }, this.cfg.tickMs);
+        this.wake = () => { clearTimeout(t); this.wake = null; res(); };
+      });
+    }
+  }
+
+  /** The shared practice market (practice.ts) on its own timer, independent of the agents' loop. */
+  async practiceLoop() {
+    const p = this.practice;
+    if (!p) return;
+    while (!this.stopped && !existsSync(this.cfg.killFile)) {
+      const halted = this.halt?.blocks("trade");
+      if (!halted) await p.tick().catch((e) => console.log(JSON.stringify({ event: "practice_tick_error", error: String((e as Error).message).slice(0, 200) })));
+      await new Promise((res) => setTimeout(res, p.cfg.tickMs));
     }
   }
 
@@ -284,7 +351,10 @@ export class Runtime {
       runtime: "cadre-agents", version: VERSION, network: this.cfg.network, seal_pub: this.store.publicKey,
       seal: "X25519 + HKDF-SHA256 (salt eph_pub || seal_pub, info cadre-agents:seal:v1) + AES-256-GCM; seal the 32-byte seed",
       limits: { max_per_operator: this.cfg.maxPerOperator, max_agents: this.cfg.maxAgents },
-      hosted_agents: this.entries.size,
+      hosted_agents: this.entries.size, features: FEATURES,
+      practice: this.practice ? this.practice.info() : { enabled: false, why: this.practiceOff },
+      plan: this.planner ? { enabled: true } : { enabled: false, why: "no planner key on this runtime (AGENTS_PLANNER_KEY); the site matches keywords" },
+      create_auth: "the creator-signed v2 spec alone (no headers) within 10 minutes of its created_ms, or cadre-auth-v1 headers",
       auth: "cadre-auth-v1 headers signed by the operator's Solana wallet (SPEC 5.4), over the runtime path /v1/hosted/...",
       trust: TRUST,
     };
@@ -304,11 +374,28 @@ export class Runtime {
         return { status: 200, body: { total: list.length, agents: list } };
       }
       if (method === "POST") {
-        const op = this.verifyAuth(method, path, h, body);
         const b = json();
-        return { status: 201, body: this.create(op, b.sealed, b.spec) };
+        const op = h["x-cadre-signature"] ? this.verifyAuth(method, path, h, body) : this.specAuth(b.spec);
+        const st = this.create(op, b.sealed, b.spec);
+        if (b.agent_token === true) {
+          const at = mintToken(this, st.agent, op, false);
+          return { status: 201, body: { ...this.status(st.agent), agent_token: at } };
+        }
+        return { status: 201, body: st };
       }
     }
+    if (method === "POST" && path === "/v1/hosted/plan") {
+      const b = json();
+      if (typeof b.text !== "string" || !b.text.trim() || b.text.length > 600) throw new HttpError(400, "bad_request", "text is 1..600 characters");
+      const ch = checkChoices(b.choices);
+      if (typeof ch === "string") throw new HttpError(400, "bad_request", ch);
+      if (!this.planner) throw new HttpError(501, "plan_off", "no planner on this runtime (AGENTS_PLANNER_KEY); match keywords instead");
+      const out = await this.planner.plan(b.text, ch).catch(() => null);
+      if (!out) throw new HttpError(503, "plan_unavailable", "the planner thought did not answer in time or named no listed id; match keywords instead");
+      return { status: 200, body: { ...out, source: "model", note: "one paid Cadre inference thought picked the template id; numbers come from the text on the site" } };
+    }
+    const conn = await connectRoute(this, method, path, h, body, json);
+    if (conn) return conn;
     // the agent may be named by its Cx address (SPEC 2.1); signatures still cover the path as sent
     const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
     if (m) {
@@ -360,7 +447,7 @@ export class Runtime {
 }
 
 /** A Cx address (or base58) as its base58 key; a bad Cx checksum is a 400. */
-function cadreAddr(v: string | null, name: string): string | null {
+export function cadreAddr(v: string | null, name: string): string | null {
   if (v === null) return null;
   const r = cxInput(v);
   if ("error" in r) throw new HttpError(400, "bad_address", `${name}: ${r.error}`);
