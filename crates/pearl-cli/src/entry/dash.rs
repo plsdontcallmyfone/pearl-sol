@@ -94,7 +94,7 @@ fn l(label: &str, value: impl Into<String>, c: u32) -> Line {
     (label.to_string(), value.into(), c)
 }
 
-pub const NO_WALLET: &str = "no wallet: cadre --key FILE";
+pub const NO_WALLET: &str = "no wallet: cadre wallet use --key FILE";
 
 pub fn wallet(sn: &Snapshot) -> Card {
     let title = match &sn.me {
@@ -102,7 +102,7 @@ pub fn wallet(sn: &Snapshot) -> Card {
         None => "Wallet".into(),
     };
     let Some(_) = &sn.me else {
-        return Card { title, head: (NO_WALLET.into(), MUTED), lines: vec![l("watch one", "cadre --address ADDR", DIM)] };
+        return Card { title, head: (NO_WALLET.into(), MUTED), lines: vec![l("watch one", "cadre wallet use --address ADDR", DIM)] };
     };
     let head = match sn.balance() {
         Some(b) => (format!("{} {TICKER}", tok(b)), TEXT),

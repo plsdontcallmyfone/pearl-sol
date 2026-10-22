@@ -27,7 +27,9 @@ mod mock;
 #[cfg(test)]
 mod stub;
 mod term;
+mod trade_cmd;
 mod trades;
+mod wallet_cfg;
 
 use clap::Parser;
 
@@ -162,7 +164,7 @@ mod tests {
     fn palette_lists_every_command() {
         let p = super::palette();
         let names: Vec<&str> = p.iter().map(|c| c.name.as_str()).collect();
-        for want in ["status", "ping", "agents", "agent", "tx", "block", "watch", "verify", "account", "dashboard", "job show", "bridge out", "contract call"] {
+        for want in ["status", "ping", "agents", "agent", "tx", "block", "watch", "verify", "account", "dashboard", "job show", "bridge out", "contract call", "quote buy", "positions", "buy", "sell"] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
         assert!(p.iter().find(|c| c.name == "tx").unwrap().needs_args);

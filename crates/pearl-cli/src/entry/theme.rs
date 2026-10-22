@@ -20,6 +20,10 @@ pub const BLUE: u32 = 0x5c9cf5;
 /// screenshot shows the placeholder a step below muted: measured at its scale it peaks
 /// under the muted footer text although it sits on the lighter panel.
 pub const DIM: u32 = 0x606060;
+/// Readable secondary text on the panel: palette descriptions, esc, the filter hint and the
+/// prompt placeholder (owner 2026-10-21 "hard to read"): about 7.6:1 on PANEL, where muted
+/// was about 4.3:1 and dim about 2.6:1.
+pub const SUBTLE: u32 = 0xa8a8a8;
 /// Robot shades, dense to light (darkStep12, darkStep11, darkStep8, darkStep7).
 pub const ROBOT: [u32; 4] = [0xeeeeee, 0x808080, 0x606060, 0x484848];
 /// Errors (darkRed) and success (darkGreen), for answers and DM results.

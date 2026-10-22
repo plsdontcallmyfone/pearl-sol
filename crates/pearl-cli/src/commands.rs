@@ -34,7 +34,6 @@ pub enum Cmd {
         health: bool,
     },
     /// Everything the dashboard reads, as one object (what `status` printed before 2026-10-21).
-    #[command(alias = "wallet")]
     Overview,
     /// One component with its latency: `ping api`, `ping node0`, `ping https://...`.
     Ping {
@@ -91,6 +90,39 @@ pub enum Cmd {
     /// One market hire (timeline, request, delivery, verdicts), or build one with
     /// --offer/--request/--evaluator (prints the review; signs only with --send and --key).
     Hire(crate::market::HireArgs),
+    /// A Solana trade quote: `quote buy --sol 0.01` or `quote sell --tokens 1000` (CADRE, or --mint).
+    #[command(subcommand)]
+    Quote(crate::trade_cmd::QuoteCmd),
+    /// Balances and trading positions (own wallet, mandates) of an account (default: your key).
+    Positions {
+        #[arg(value_name = "ADDRESS")]
+        account: Option<String>,
+    },
+    /// Buy CADRE (or a pump coin by --mint) with SOL on Solana, signed with --key after a review and y/N.
+    Buy {
+        /// SOL to spend, e.g. 0.01 (pump's fee included).
+        #[arg(long)]
+        sol: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        /// Sign without the y/N prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Sell CADRE (or a pump coin by --mint) for SOL on Solana, signed with --key after a review and y/N.
+    Sell {
+        /// Tokens to sell, e.g. 1000.5 (6 decimals).
+        #[arg(long)]
+        tokens: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Live tail of new blocks and their txs (posts in words); Ctrl-C stops.
     Watch {
         /// Stop after this many blocks.
@@ -117,6 +149,10 @@ pub enum Cmd {
     Balance,
     /// The connected addresses.
     Address,
+    /// The wallet `cadre` uses without --key/--address: `wallet use --key FILE` (signs) or
+    /// `wallet use --address ADDR` (watch only), `wallet show`, `wallet forget`.
+    #[command(subcommand)]
+    Wallet(WalletCmd),
     /// Transfer CADRE on the agent chain: `send <to> <amount>`.
     Send {
         to: String,
@@ -265,6 +301,23 @@ pub enum BridgeCmd {
     },
     /// Escrow, vault, in-flight transfers and the invariant.
     Status,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum WalletCmd {
+    /// Save the wallet to use from now on (~/.cadre/cli.json: the key file's path or the address, never the key).
+    Use {
+        /// Key file (Solana JSON array, base58 or hex), e.g. the Cadre Wallet's Export private key saved to a file.
+        #[arg(long)]
+        key: Option<std::path::PathBuf>,
+        /// Watch this address read-only (Cx or base58).
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// The saved wallet.
+    Show,
+    /// Remove the saved wallet.
+    Forget,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -550,7 +603,7 @@ fn chain_key(s: &str) -> Result<[u8; 32]> {
 }
 
 fn me(ctx: &Ctx) -> Result<String> {
-    ctx.me.as_ref().map(b58).ok_or_else(|| anyhow!("no account: pass --key FILE or --address ADDR"))
+    ctx.me.as_ref().map(b58).ok_or_else(|| anyhow!("no account: run `cadre wallet use --address ADDR` (watch) or `cadre wallet use --key FILE` (sign) once"))
 }
 
 fn opt_tokens(s: &Option<String>) -> Result<Option<u64>> {
@@ -573,6 +626,34 @@ fn state_cell(s: &str) -> (String, Tone) {
     (s.to_string(), status_tone(s))
 }
 
+fn wallet(w: &WalletCmd) -> Result<Out> {
+    use crate::wallet_cfg as wc;
+    match w {
+        WalletCmd::Use { key, address } => {
+            let s = wc::checked(key.clone(), address.clone())?;
+            let p = wc::save(&s)?;
+            let what = match (&s.key, &s.address) {
+                (Some(k), _) => format!("key file {} (signs)", k.display()),
+                (_, Some(a)) => format!("address {a} (watch only)"),
+                _ => unreachable!(),
+            };
+            Ok(Out::new(json!({"saved": p.display().to_string(), "key": s.key.map(|k| k.display().to_string()), "address": s.address}), format!("cadre now uses the {what}; saved in {}", p.display())))
+        }
+        WalletCmd::Show => Ok(match wc::load() {
+            Some(s) => Out::new(json!({"key": s.key.as_ref().map(|k| k.display().to_string()), "address": s.address}), match (&s.key, &s.address) {
+                (Some(k), _) => format!("key file {} (signs)", k.display()),
+                (_, Some(a)) => format!("address {a} (watch only)"),
+                _ => String::new(),
+            }),
+            None => Out::new(json!({"key": null, "address": null}), "no saved wallet: cadre wallet use --key FILE (or --address ADDRESS)"),
+        }),
+        WalletCmd::Forget => {
+            let gone = wc::forget()?;
+            Ok(Out::new(json!({"forgot": gone}), if gone { "saved wallet removed" } else { "no saved wallet" }))
+        }
+    }
+}
+
 pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
     match cmd {
         Cmd::Dashboard => bail!("already in the dashboard"),
@@ -584,6 +665,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             let p = Panel::new("Address").kv("Agent chain", s(&j, "address")).kv("Solana", s(&j, "solana_address")).kv("Key", if ctx.has_key() { "loaded (never printed)" } else { "none (watching)" });
             Ok(Out::new(j, t).view(View::panel(p)))
         }
+        Cmd::Wallet(w) => wallet(w),
         Cmd::Status { health } => {
             let r = crate::health::run_all(ctx);
             let net = format!("{:?}", ctx.opts.network).to_lowercase();
@@ -602,6 +684,10 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Market { sub, list } => crate::market::exec_market(ctx, sub, list),
         Cmd::Offer(a) => crate::market::offer_cmd(ctx, a),
         Cmd::Hire(a) => crate::market::hire_cmd(ctx, a),
+        Cmd::Quote(q) => crate::trade_cmd::quote(ctx, q),
+        Cmd::Positions { account } => crate::trade_cmd::positions(ctx, account.as_deref()),
+        Cmd::Buy { sol, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "buy", sol, *slippage_bps, mint, *yes),
+        Cmd::Sell { tokens, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "sell", tokens, *slippage_bps, mint, *yes),
         Cmd::Watch { count, from, pending } => crate::inspect::watch(ctx, *count, *from, *pending),
         Cmd::Verify { ticket, run, models } => crate::inspect::verify(ctx, ticket, *run, models),
         Cmd::Job(JobCmd::Id(words)) => {

@@ -9,7 +9,13 @@ import { appendFileSync, existsSync } from "node:fs";
 import type { Wallet } from "../../src/wallet.ts";
 import { blake3 } from "../../src/blake3.ts";
 import type { Cadre } from "./cadre.ts";
-import { type Brain, parseStrategy, type Strategy, strategyPrompt } from "./brain.ts";
+import { parseStrategy, type Strategy, strategyPrompt, type Thought } from "./brain.ts";
+
+/** The slow layer's paid thought: the house Brain, or a user agent's runner (useragent.ts). */
+export interface BrainLike {
+  ensureRows(): Promise<void>;
+  think(messages: { role: string; content: string }[], maxTokens: number): Promise<Thought>;
+}
 import { type Book, type Fill, type MarketEvent, quoteOut, type Venue, withSlippage } from "./venues.ts";
 
 export interface RiskRules {
@@ -33,7 +39,7 @@ export interface TraderOpts {
   persona: string;
   house: boolean;
   venue: Venue;
-  brain: Brain | null;
+  brain: BrainLike | null;
   cadre: Cadre;
   poster: Wallet;
   risk: RiskRules;
@@ -48,6 +54,15 @@ export interface TraderOpts {
   apiUrl?: string;
   /** Read the pool this often even without events (ms, default 60,000). */
   pollMs?: number;
+  /** User agents (src/useragent.ts): send the receipt Post through the agent runner's own nonce
+   * tracking and CADRE cap instead of `cadre.sendNative`. */
+  sendPost?: (body: string) => Promise<{ txHash: string; nonce: bigint }>;
+  /** User agents: act on BUY / SELL only at this conviction or higher (default 1). */
+  minConviction?: { buy: number; sell: number };
+  /** User agents: stop trading while this returns a reason (the runner's protocol kill switch, budget). */
+  halt?: () => string;
+  /** User agents: the strategy prompt (persona and the agent's own strategy text) instead of the house one. */
+  prompt?: (m: Parameters<typeof strategyPrompt>[1]) => { role: string; content: string }[];
 }
 
 export interface LatencyRow {
@@ -112,10 +127,11 @@ export class Trader {
       this.book = await this.o.venue.book();
       const held = this.book.base === 0n ? 0n : quoteOut(1, r, this.book.base);
       await this.o.brain.ensureRows();
-      const th = await this.o.brain.think(strategyPrompt(this.o.persona, {
+      const m = {
         venue: this.o.venue.name, price: p, change1h: this.change(3_600_000), change24h: this.change(86_400_000),
         positionShare: Number(held) / Number(this.o.risk.maxPosition), realized: Number(this.book.realized) / 1e9, unit: this.o.venue.unit,
-      }), 4);
+      };
+      const th = await this.o.brain.think(this.o.prompt ? this.o.prompt(m) : strategyPrompt(this.o.persona, m), 4);
       const s = parseStrategy(th.text);
       this.strategy = { ...s, setAt: Date.now(), requestId: th.requestId, text: th.text.slice(0, 40) };
       this.lastThought = { ttftMs: th.ttftMs, totalMs: th.totalMs };
@@ -134,6 +150,8 @@ export class Trader {
     const held = book.base === 0n ? 0n : quoteOut(1, r, book.base);
     const size = (this.o.risk.maxOrder * BigInt(s.conviction)) / 5n;
     if (size <= 0n) return null;
+    const mc = this.o.minConviction;
+    if (mc && ((s.stance === "buy" && s.conviction < mc.buy) || (s.stance === "sell" && s.conviction < mc.sell))) return null;
     if (s.stance === "buy") {
       if (this.refPrice > 0 && p > this.refPrice * (1 + this.o.risk.maxChaseBps / 10_000)) return null; // no chasing
       const room = this.o.risk.maxPosition - held;
@@ -152,6 +170,8 @@ export class Trader {
 
   riskBlock(now: number, book: Book): string {
     if (existsSync(this.o.killFile)) return "kill switch file present";
+    const h = this.o.halt?.();
+    if (h) return h;
     if (this.halted) return this.halted;
     const day = new Date().toISOString().slice(0, 10);
     if (day !== this.day) { this.day = day; this.dayStartRealized = book.realized; this.halted = ""; }
@@ -213,12 +233,12 @@ export class Trader {
     const b = (x: bigint) => (Number(x) / 10 ** this.o.venue.baseDecimals).toString();
     const tk = this.o.venue.baseSymbol;
     const what = f.side === 0 ? `${q(f.amountIn)} ${u} for ${b(f.out)} ${tk}` : `${b(f.amountIn)} ${tk} for ${q(f.out)} ${u}`;
-    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : ""}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
+    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : "own wallet; "}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
     // machine-written (no model text in it), so the model-output filter does not apply; signatures are base58 and would trip its key check
     if (Buffer.byteLength(body) > 1024) { this.o.log("receipt_refused", { agent: this.o.handle, reason: "over 1024 bytes" }); return; }
     const t0 = performance.now();
     try {
-      const s = await this.o.cadre.sendNative(this.o.poster, { kind: "Post", postKind: 0, body });
+      const s = this.o.sendPost ? await this.o.sendPost(body) : await this.o.cadre.sendNative(this.o.poster, { kind: "Post", postKind: 0, body });
       row.receipt_tx = s.txHash;
       row.receipt_sent_ms = +(performance.now() - t0).toFixed(0);
       const inc = await this.o.cadre.waitIncluded(s.txHash, 900_000, 1_000);

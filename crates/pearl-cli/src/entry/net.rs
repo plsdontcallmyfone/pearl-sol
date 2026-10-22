@@ -81,6 +81,8 @@ pub enum Msg {
     Market(Box<Result<crate::market::Snap, String>>),
     /// (offer or hire, its detail cards) for the Market view.
     MarketDetail((crate::market::Pane, u64), Result<crate::commands::Out, String>),
+    /// The Trade view's read (trade.rs).
+    Trade(Box<super::trade::TradeData>),
 }
 
 #[derive(Debug, Clone)]
@@ -148,7 +150,7 @@ impl Net {
         if self.key.is_some() || self.api_key.is_some() {
             None
         } else {
-            Some("Asking is paid from a prepaid balance: start with `cadre --key <wallet.json>` (a funded Cadre wallet) or set CADRE_API_KEY=cadre_sk_...")
+            Some("Asking is paid from a prepaid balance: run `cadre wallet use --key <wallet.json>` once (a funded Cadre wallet) or set CADRE_API_KEY=cadre_sk_...")
         }
     }
 

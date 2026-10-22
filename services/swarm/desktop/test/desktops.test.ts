@@ -28,6 +28,7 @@ class FakeSbx implements SandboxLike {
   cmds: string[] = [];
   seeded = false;
   healthLine: string | null = null;
+  front: string | null = null;
   sandboxId: string;
   constructor(id: string) { this.sandboxId = id; }
   commands = {
@@ -42,6 +43,7 @@ class FakeSbx implements SandboxLike {
       if (cmd.startsWith("cat /home/user/.cadre/stream.sh")) out = this.files_.get("/home/user/.cadre/stream.sh") ?? "";
       if (cmd.startsWith("cat /home/user/.cadre/deskhost.mjs")) out = this.files_.get("/home/user/.cadre/deskhost.mjs") ?? "";
       if (cmd.startsWith("touch /home/user/.cadre/console")) this.files_.set("/home/user/.cadre/console", "");
+      if (cmd.startsWith("cat /home/user/.cadre/front")) out = this.front ?? "work";
       if (cmd.startsWith("rm -f /home/user/.cadre/console")) this.files_.delete("/home/user/.cadre/console");
       if (cmd.includes("/proc/meminfo")) { const n = Math.floor(Date.now() / 1000); out = this.healthLine ?? `${n} ${n - 1} ${n - 3} 1 1 1024 300 0.42`; }
       if (cmd.startsWith("cat /home/user/.cadre/state.json")) out = JSON.stringify({ ext: "extid0000", tabs: [] });
@@ -103,13 +105,13 @@ writeFileSync(join(tmpdir(), "cadre-desk-wallet.tgz"), "fake");
 
 test("stream token: names one desktop, expires, rejects forgeries", () => {
   const s = "k".repeat(32);
-  const t = mintStreamToken(s, "baker_rue", "work", 60);
-  assert.ok(checkStreamToken(s, "baker_rue", "work", t));
-  assert.ok(!checkStreamToken(s, "baker_rue", "social", t));
+  const t = mintStreamToken(s, "meadowsweet27", "work", 60);
+  assert.ok(checkStreamToken(s, "meadowsweet27", "work", t));
+  assert.ok(!checkStreamToken(s, "meadowsweet27", "social", t));
   assert.ok(!checkStreamToken(s, "night_miner", "work", t));
-  assert.ok(!checkStreamToken("other".repeat(7), "baker_rue", "work", t));
-  assert.ok(!checkStreamToken(s, "baker_rue", "work", t, Date.now() + 61_000));
-  assert.ok(!checkStreamToken(s, "baker_rue", "work", "garbage"));
+  assert.ok(!checkStreamToken("other".repeat(7), "meadowsweet27", "work", t));
+  assert.ok(!checkStreamToken(s, "meadowsweet27", "work", t, Date.now() + 61_000));
+  assert.ok(!checkStreamToken(s, "meadowsweet27", "work", "garbage"));
 });
 
 test("ledger: books E2B seconds and vision dollars per agent, caps the day, rolls at midnight UTC", () => {
@@ -154,7 +156,7 @@ test("tasks: a post carries the paid text verbatim and the thought id; tips and 
   assert.equal(fol.url, `${SITE}/u/${target}`);
   assert.equal(chainTask(SITE, { kind: "Transfer", to: key32(target), amount: 1n }), null, "desktops never move funds");
   for (let i = 0; i < 5; i++) assert.equal(workTask(SITE, `${SITE}/explorer`, target, i).signs, false, "work tasks are read-only");
-  for (let i = 0; i < 3; i++) assert.equal(browseTask(SITE, i, [{ handle: "baker_rue" }]).signs, false);
+  for (let i = 0; i < 3; i++) assert.equal(browseTask(SITE, i, [{ handle: "meadowsweet27" }]).signs, false);
 });
 
 test("vision loop: executes the model's actions in order, books its cost, keeps at most two screenshots", async () => {
@@ -183,16 +185,16 @@ test("vision loop: stops at the step limit and at the per-task spend cap", async
 test("desk: created once, found again by metadata after a restart, duplicates killed, renewed before the session limit", async () => {
   const e2b = new FakeE2B();
   const log: Record<string, unknown>[] = [];
-  const d1 = new Desk("baker_rue", "social", "addr", e2b, deskOpts(log));
+  const d1 = new Desk("meadowsweet27", "social", "addr", e2b, deskOpts(log));
   await d1.ensure(() => "SECRET58", () => "pw");
   assert.equal(d1.state, "running");
   const sbx = e2b.boxes.get(d1.id!)!.sbx;
   assert.ok(sbx.seeded, "the browser host started and consumed the key file");
   assert.ok(!sbx.files_.has("/home/user/.cadre/agent-secret"), "the key file is gone after seeding");
   // a restarted controller finds the same sandbox (and kills an accidental duplicate)
-  await e2b.create("t", { metadata: { cadre_desktop: "baker_rue", cadre_role: "social" }, timeoutMs: 1 });
+  await e2b.create("t", { metadata: { cadre_desktop: "meadowsweet27", cadre_role: "social" }, timeoutMs: 1 });
   e2b.boxes.get("sbx2")!.info.startedAt = new Date(Date.now() - 3600_000);
-  const d2 = new Desk("baker_rue", "social", "addr", e2b, deskOpts(log));
+  const d2 = new Desk("meadowsweet27", "social", "addr", e2b, deskOpts(log));
   await d2.ensure(() => "SECRET58", () => "pw");
   assert.equal(d2.id, d1.id);
   assert.ok(e2b.log.includes("kill sbx2"));
@@ -209,8 +211,8 @@ test("controller: a post is typed by the social desktop from the paid thought an
   const keys = join(dir, "keys");
   createKeyFile(join(keys, "operator.json"));
   const op = loadWallet(join(keys, "operator.json"));
-  const ag = createKeyFile(join(keys, "agent-baker_rue.json"));
-  const secret = secretB58(join(keys, "agent-baker_rue.json"));
+  const ag = createKeyFile(join(keys, "agent-meadowsweet27.json"));
+  const secret = secretB58(join(keys, "agent-meadowsweet27.json"));
   let included = false;
   const node = {
     call: async (m: string, p: any) => {
@@ -223,7 +225,7 @@ test("controller: a post is typed by the social desktop from the paid thought an
   const seen: string[] = [];
   const base = scriptedChat(seen);
   const chat: Chat = async (b) => { const r = await base(b); if (JSON.stringify(r.json).includes('"done"')) included = true; return r; };
-  const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles: ["baker_rue"], siteUrl: SITE };
+  const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles: ["meadowsweet27"], siteUrl: SITE };
   const e2b = new FakeE2B();
   const ctl = new Controller(cfg, { budget: { rowsPerDay: 1000, agentRowsCap: 1000, topupLamportsPerDay: 0n, transferUnitsPerDay: 0n, agentFloat: 0n }, maxTokens: 48, judgeMaxTokens: 2, topupRows: 0, minFreeRows: 0, mempoolMax: 500, cadenceScale: 1, killFile: join(dir, "STOP"), stateFile: join(dir, "sw.json"), allowHosts: [], house: true, reactShare: 0, followShare: 0, replyShare: 0 },
     { node: node as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} },
@@ -231,7 +233,7 @@ test("controller: a post is typed by the social desktop from the paid thought an
     { roles: ["social", "work"], agentsN: 1, parallel: 2, browseGapS: 999, workGapS: 999, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw-not-for-models" });
   await ctl.ensureAll();
   assert.equal(ctl.runningDesks().length, 2, "two desktops for one agent");
-  const da = ctl.byHandle.get("baker_rue")!;
+  const da = ctl.byHandle.get("meadowsweet27")!;
   assert.equal(da.wallet.address, ag.address);
   const h = await ctl.viaDesktop(da, { kind: "Post", postKind: 0, body: "Bread at dawn, blocks at noon.", thoughtRef: "req-9" } as any);
   assert.equal(h, "h".repeat(64));
@@ -250,7 +252,7 @@ test("controller: a post is typed by the social desktop from the paid thought an
   ctl.findTx = async () => null;
   await assert.rejects(ctl.viaDesktop(da, { kind: "Post", postKind: 0, body: "x", thoughtRef: "r" } as any), DeskFailed);
   // the day cap pauses every desktop
-  ctl.ledger.e2b("baker_rue", 1e9, 1);
+  ctl.ledger.e2b("meadowsweet27", 1e9, 1);
   await ctl.spendTick();
   assert.equal(ctl.capped, true);
   assert.equal(ctl.runningDesks().length, 0);
@@ -296,7 +298,7 @@ test("Phase A controller: first agents keep two desktops, the rest one; solo wor
   const keys = join(dir, "keys");
   createKeyFile(join(keys, "operator.json"));
   const op = loadWallet(join(keys, "operator.json"));
-  const handles = ["ferry_nan", "cipher_kit", "chef_ottoline"];
+  const handles = ["speedwell41", "nigella71", "honeysuckle92"];
   for (const h of handles) createKeyFile(join(keys, `agent-${h}.json`));
   let included = false;
   const node = { call: async (m: string, p: any) => (m === "getAccount" ? { nonce: 3 } : m === "getAccountTxs" ? { txs: included ? [{ tx_hash: "e".repeat(64), from: p.account, nonce: 3 }] : [] } : m === "getMempool" ? { size: 0, txs: [] } : null) };
@@ -425,4 +427,47 @@ test("self-hosted host: podman run with per-desktop limits and labels, list by l
   const c2 = containerSandbox("n", run);
   await c2.commands.run("echo hi", { background: true });
   assert.ok(calls.some((c) => c.args[0] === "exec" && c.args[1] === "-d"));
+});
+
+test("vision loop: a model error is retried, a refusal (4xx) is not", async () => {
+  let n = 0;
+  const flaky: Chat = async () => (++n < 3 ? { status: 503, json: null } : { status: 200, json: { choices: [{ message: { content: "", tool_calls: [{ id: "d", type: "function", function: { name: "done", arguments: '{"success":true,"summary":"ok"}' } }] } }], usage: { cost: 0.001 } } });
+  const r = await runTask(new FakeSbx("s"), flaky, { model: "m", system: "s", task: "t", maxSteps: 3, maxUsd: 1 });
+  assert.equal(r.ok, true);
+  assert.equal(n, 3);
+  let m = 0;
+  const bad: Chat = async () => { m++; return { status: 400, json: { error: "bad" } }; };
+  const b = await runTask(new FakeSbx("s"), bad, { model: "m", system: "s", task: "t", maxSteps: 3, maxUsd: 1 });
+  assert.equal(b.ok, false);
+  assert.equal(m, 1);
+});
+
+test("Work desktops at their own size: an old 1 GiB Work desktop is replaced, Social desktops are kept, the ledger books each at its own rate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-size-"));
+  const keys = join(dir, "keys");
+  createKeyFile(join(keys, "operator.json"));
+  const op = loadWallet(join(keys, "operator.json"));
+  createKeyFile(join(keys, "agent-speedwell41.json"));
+  const e2b = new FakeE2B();
+  // the old desktops, made before the change (no cadre_size)
+  await e2b.create("cadre-desktop", { metadata: { cadre_desktop: "speedwell41", cadre_role: "social" }, timeoutMs: 1 });
+  await e2b.create("cadre-desktop", { metadata: { cadre_desktop: "speedwell41", cadre_role: "work" }, timeoutMs: 1 });
+  const created: string[] = [];
+  const orig = e2b.create.bind(e2b);
+  e2b.create = async (t: string, o: any) => { created.push(`${t}:${o.metadata.cadre_role}:${o.metadata.cadre_size ?? "-"}`); return orig(t, o); };
+  const cfg = { ...deskConfig({ DESK_WORK_TEMPLATE: "cadre-desktop-1536", DESK_WORK_MEM_MB: "1536" }), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles: ["speedwell41"], siteUrl: SITE };
+  const ctl = new Controller(cfg, swarmCfg(dir), { node: {} as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, async () => ({ status: 500, json: null }),
+    { roles: ["social", "work"], agentsN: 1, parallel: 1, browseGapS: 600, workGapS: 600, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+  await ctl.ensureAll();
+  assert.deepEqual(created, ["cadre-desktop-1536:work:1536"], "only the Work desktop is replaced, from the 1.5 GiB template");
+  assert.ok(e2b.log.includes("kill sbx2") && !e2b.log.includes("kill sbx1"));
+  const da = ctl.byHandle.get("speedwell41")!;
+  assert.equal(Number((ctl.rateOf(da.desks.work) * 3600).toFixed(4)), Number(((0.000014 + 1.5 * 0.0000045) * 3600).toFixed(4)));
+  assert.equal(Number((ctl.rateOf(da.desks.social) * 3600).toFixed(4)), 0.0666);
+  // a restart finds the new one and keeps it
+  const again = new Controller(cfg, swarmCfg(dir), { node: {} as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, async () => ({ status: 500, json: null }),
+    { roles: ["social", "work"], agentsN: 1, parallel: 1, browseGapS: 600, workGapS: 600, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+  await again.ensureAll();
+  assert.equal(created.length, 1, "no further replacement");
+  rmSync(dir, { recursive: true, force: true });
 });

@@ -41,13 +41,15 @@ pub const DEVNET_CODE_HASH: &str = "1647ce2418396531137c6451b9ce5f47dd6ab7197c36
 pub const DEVNET_DEPLOYED_HEIGHT: u64 = 4846;
 /// The house LLM judge (labelled house).
 pub const DEVNET_JUDGE: &str = "F29KnYVTa3CTndnqMA1WspL44EsYF1CKNWva5syT6smx";
-/// House accounts: the market desk and its judge. Their hires are never organic volume.
+/// House accounts: the market desk, its judge and the market ops key. Their hires are never organic volume.
 pub const HOUSE: &[(&str, &str)] = &[
     ("F29KnYVTa3CTndnqMA1WspL44EsYF1CKNWva5syT6smx", "court_clerk"),
     ("92iRhbAMCjdSMDbBwfkxF7h6U2qyd8dHr4cMg7xJzcpU", "scribe_wren"),
     ("BwGJUiA1hTxmfwgzRGVPKshgeXrVrCmbPdM6X6Vuu9X", "ledger_lark"),
     ("GkFq5knZFieWHTu3hK6xJQgdzEnUJ2rVfqbS3ruJ4EbZ", "verse_finch"),
     ("BrEnJ9yVfj6xFRRz1yU5tgBS9rniMpiev4Wunmav85kh", "tally_crow"),
+    // the market ops key (admin, fee_to); its builder-path test hires never count as organic
+    ("J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv", "market_ops"),
 ];
 
 pub const STATUS: [&str; 6] = ["open", "delivered", "completed", "rejected", "expired", "declined"];
