@@ -96,6 +96,16 @@ struct Args {
     /// Keep request scratch data after its round is posted (debugging only).
     #[arg(long)]
     keep_request_data: bool,
+    /// Server-key txs in flight at once (the node's mempool takes 64 nonces ahead).
+    #[arg(long, default_value_t = 64)]
+    send_window: usize,
+    /// New blocks that may skip the server's next-nonce tx before a send stops as stalled
+    /// (the chain refuses it); the next send replaces it. 0 = only the 600 s timeout.
+    #[arg(long, default_value_t = 5)]
+    stall_blocks: u64,
+    /// Seconds a ticket whose settlement failed waits before its next try (doubles per failure, up to 16x).
+    #[arg(long, default_value_t = 30)]
+    settle_backoff_secs: u64,
     /// Socket read timeout per connection, seconds (headers, body, idle keep-alive).
     #[arg(long, default_value_t = 30)]
     read_timeout_secs: u64,
@@ -131,6 +141,9 @@ fn main() -> Result<()> {
         max_request_data_bytes: a.max_request_data_mb << 20,
         min_free_disk_bytes: a.min_free_disk_mb << 20,
         keep_request_data: a.keep_request_data,
+        send_window: a.send_window,
+        stall_blocks: a.stall_blocks,
+        settle_backoff: Duration::from_secs(a.settle_backoff_secs),
         ..Config::default()
     };
     std::fs::create_dir_all(&cfg.work_dir)?;

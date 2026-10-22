@@ -1391,6 +1391,43 @@ CLAUDE.md "Who is working on what".
      (re-put on the node as a stopgap). /v1/launches total 0 is right: CLTEST's creator 7pYUzH... has no
      Cadre profile, so it is not a user agent. Deploy: TRADING.md 10 step 2 again, then the restore curl.
 
+39. GATEWAY STUCK NONCE: ONE REFUSED POSTSEGMENTS BLOCKED EVERY SETTLE (2026-10-22, "gateway stuck nonce" row;
+   SPEC 5.4 "Server nonce" + "Settle order", RPC sendTx):
+   - Incident (box 0, 04:23 to at least 12:56 UTC): rounds_posted stuck at 45; every settle failed with "send
+     PostSegments 0: sendTx: a tx with this nonce is pooled with a fee >= this one" (209 settle_error lines from
+     04:23 to 12:56); request_data.bytes_waiting 68,613,923,840 (63.9 GiB) against the 64 GiB stopgap cap,
+     refused_storage 466 at 12:30 and 498 at 12:56, so paid AI answered 503 insufficient_storage.
+   - Root cause (measured on node 0): the mempool held 32 PostSegments of the gateway key 5wHXuYu1... at nonces
+     6527-6558 (the account's confirmed nonce 6527), all ticket 6f120b62... round 1, matrices 32-63, m 1712. On
+     the chain that round had started with m 1280 (matrices 0-31 included, standing.round_rows 1280), so every
+     one fails at the tip ("round 1 has m 1280, not 1712"). Templates skip a failing tx and nothing evicts it, so
+     6527 stayed pooled forever and every later send at 6527 with the same fee was refused. The gateway had resumed
+     the half-posted round with `round_take` over today's pending list: the first attempt (9 requests, 1,280 rows)
+     was cut after its first 32-tx batch by a gateway restart (02:46 or 03:21 UTC), 3 more requests (429 rows) were
+     served meanwhile, and the resume restacked all 12 (1,709 rows, m 1712). Checked: the first 9 pending requests'
+     matrix-0 A equals the chain's round-1 matrix-0 A blob byte for byte (getBlob), 8 or 10 do not fit m 1280.
+     Not the cause: size or block limits (512-byte txs, max_block_txs 2000), blob availability, fee floor
+     (min_fee 1000), ticket state (open, deadline 14744, 628 rows free).
+   - Fix (services/inference-gateway): (1) a round is recorded (`posting`) before its first tx and resumed with
+     exactly those requests and the chain's m; an older ledger's started round is matched to the oldest-first
+     pending prefix whose A equals a posted matrix's A (`round_recovered`), else an error and nothing sent;
+     (2) sends sign at the confirmed nonce, read the key's own pooled txs (getMempool + getTx), reuse the same tx,
+     replace any other at +10% fee (cap 64 x min_fee), cancel leftovers past the last nonce with a 0 self-transfer;
+     (3) a sliding window of 64 in flight (was batches of 32, each waited on); (4) a tx that 5 new blocks skip
+     stops that send in minutes instead of 600 s, and a failed ticket backs off (30 s doubling, max 16x) while the
+     rest of the pass goes on; (5) settle order: rounds in progress, then most waiting rows under data pressure,
+     else oldest. /v1/stats `settle`. CLI `--send-window`, `--stall-blocks`, `--settle-backoff-secs`.
+   - Tests: tests/stuck_nonce.rs 5 (chain simulation with the node's mempool replacement rule and templates that
+     stop at the first failing tx): the box 0 case end to end (stale m-1712 tx at the confirmed nonce + a leftover:
+     recovered with the 2 original requests, stuck tx replaced, leftover cancelled, next round posts), a recorded
+     round resumed and its pooled tx reused, a refused ticket stalls in a few blocks while the next ticket posts on
+     the stuck nonce in the same pass and the refused one backs off, settle order, replacement fee. Gateway 37/37.
+   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked): binary staged on box 0, install + restart
+     cadre-gateway only, checks and rollback in the row's report. No node, chain or other unit; no ledger edit.
+   - 64 GiB stopgap: keep it until bytes_waiting is under 12 GiB after the new binary drains the backlog, then
+     restore /root/inference.env.pre-drain (16 GiB cap, 8 GiB disk reserve; the only difference is GATEWAY_EXTRA)
+     and restart cadre-gateway once more (safe: rounds in progress are in the ledger now).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
