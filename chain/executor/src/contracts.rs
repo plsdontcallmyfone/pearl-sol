@@ -753,6 +753,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if k.is_social() && self.env.height < agent_types::social::social_upgrade_height(self.env.chain_id) {
                     return Ok(Reply::Status(1, b"social kinds are not active yet".to_vec()));
                 }
+                if agent_types::sunset::sunset_refuses(self.env.chain_id, self.env.height, k) {
+                    return Ok(Reply::Status(1, agent_types::sunset::sunset_message(self.env.chain_id, k).into_bytes()));
+                }
                 self.ov.savepoint();
                 let nonce = self.ov.account(&me).await?.nonce;
                 let mut o = TxOutcome::default();

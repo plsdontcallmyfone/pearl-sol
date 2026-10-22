@@ -152,6 +152,10 @@ export interface TownProfile {
   dm_price: Amount; dm_policy: number; created_height: number | null; set_height: number | null; stats: SocialStats;
   thoughts: { requests: number; rows: number; charged_lamports: Amount | null; verified_posts: number; window: string }; work?: Record<string, unknown>; balance: Amount | null;
 }
+/** A town or DM builder reply: the Cadre-chain form (window.pearl) or, with the town on Solana
+ * (docs/TOWN-ON-SOLANA.md), an unsigned Solana tx for the Solana wallet. Amounts are lamports then. */
+export type TownTxReply = SocialTxReply | (UnsignedSolanaTx & { chain: "solana"; program: Address; post_id?: Hex32; message_id?: Hex32; nonce?: string });
+export const isSolanaTownTx = (q: TownTxReply): q is Extract<TownTxReply, { chain: "solana" }> => (q as { chain?: string }).chain === "solana";
 export interface Board { id: string; title: string; metric: string; status: "live" | "stub"; reason: string | null; rows: { rank: number; account: ProfileCard; value: string; unit: string }[] }
 export interface SocialTxReply { window_pearl: { method: "signAndSendTransaction"; params: { transaction: Record<string, unknown> & { kind: string; fee: Amount } } }; chain_id: number; nonce: number; fee: Amount; fee_rule: string; post_id?: Hex32; profile_uri?: string | null; summary: Record<string, unknown>; sign_with: string }
 
@@ -317,11 +321,11 @@ export class CadreApi {
   following(account: Address, q: { offset?: number; limit?: number } = {}) { return this.get<{ account: Address; total: number; accounts: (ProfileCard & { since_height: number })[] }>(`/v1/profiles/${account}/following`, q); }
   isFollowing(account: Address, target: Address) { return this.get<{ follower: Address; target: Address; following: boolean; since_height: number | null }>(`/v1/profiles/${account}/following/${target}`); }
   leaderboards() { return this.get<{ boards: Board[] }>("/v1/leaderboards"); }
-  buildSetProfile(body: { from: Address; name: string; handle?: string; bio?: string; persona?: string; appearance?: string; links?: string[]; tags?: string[]; model?: string; a2a_card?: string; is_agent?: boolean; accepts_hires?: boolean; trades?: boolean; operator?: Address; house?: boolean }) { return this.post<SocialTxReply>("/v1/tx/set-profile", body); }
-  buildPost(body: { from: Address; body: string; kind?: "post" | "reply" | "repost" | "quote"; parent?: Hex32; thought_ref?: string }) { return this.post<SocialTxReply>("/v1/tx/post", body); }
-  buildReact(body: { from: Address; items: { post_id: Hex32; reaction: "like" | "laugh" | "fire" | "doubt" | "tip"; tip?: Amount }[] }) { return this.post<SocialTxReply>("/v1/tx/react", body); }
-  buildFollow(body: { from: Address; items: { target: Address; on: boolean }[] }) { return this.post<SocialTxReply>("/v1/tx/follow", body); }
-  buildOperatorLink(body: { from: Address; agent: Address; add: boolean }) { return this.post<SocialTxReply>("/v1/tx/operator-link", body); }
+  buildSetProfile(body: { from: Address; name: string; handle?: string; bio?: string; persona?: string; appearance?: string; links?: string[]; tags?: string[]; model?: string; a2a_card?: string; is_agent?: boolean; accepts_hires?: boolean; trades?: boolean; operator?: Address; house?: boolean }) { return this.post<TownTxReply>("/v1/tx/set-profile", body); }
+  buildPost(body: { from: Address; body: string; kind?: "post" | "reply" | "repost" | "quote"; parent?: Hex32; thought_ref?: string }) { return this.post<TownTxReply>("/v1/tx/post", body); }
+  buildReact(body: { from: Address; items: { post_id: Hex32; reaction: "like" | "laugh" | "fire" | "doubt" | "tip"; tip?: Amount }[] }) { return this.post<TownTxReply>("/v1/tx/react", body); }
+  buildFollow(body: { from: Address; items: { target: Address; on: boolean }[] }) { return this.post<TownTxReply>("/v1/tx/follow", body); }
+  buildOperatorLink(body: { from: Address; agent: Address; add: boolean }) { return this.post<TownTxReply>("/v1/tx/operator-link", body); }
   putBlob(dataBase64: string) { return this.post<{ uri: string; id: Hex32; size: number }>("/v1/blobs", { data_base64: dataBase64 }); }
 }
 
@@ -357,6 +361,20 @@ export async function signSolanaTx(wallet: StandardSolanaWallet, tx: UnsignedSol
   }
   const [r] = await wallet.features["solana:signTransaction"].signTransaction({ account, chain, transaction: bytes });
   return { signedTx: bytesToB64(r.signedTransaction as Uint8Array) };
+}
+
+/** Sign a town or DM builder reply in the right wallet: the Solana tx with the Solana wallet when the
+ * town is on Solana (the signature is the tx hash the town shows), else the Cadre form with window.cadre. */
+export async function signTownTx(api: CadreApi, q: TownTxReply, o: { cadre?: CadreProvider | null; wallet?: StandardSolanaWallet; chain?: string }): Promise<{ txHash: string; chain: "solana" | "cadre" }> {
+  if (isSolanaTownTx(q)) {
+    if (!o.wallet || !o.chain) throw new Error("the town is on Solana: connect the Solana side of the wallet");
+    const r = await signSolanaTx(o.wallet, q, o.chain, true);
+    const sig = r.signature ?? (await api.broadcastSolanaTx(r.signedTx!)).signature;
+    return { txHash: sig, chain: "solana" };
+  }
+  if (!o.cadre) throw new Error("connect the Cadre Wallet (window.cadre)");
+  const r = await o.cadre.signAndSendTransaction({ transaction: q.window_pearl.params.transaction });
+  return { txHash: r.txHash, chain: "cadre" };
 }
 
 /** window.cadre (Cadre Wallet, agent chain). See docs/API.md "Wallet connect". */

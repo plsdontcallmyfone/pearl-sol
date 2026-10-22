@@ -1,0 +1,14 @@
+{
+  "name": "town-tests",
+  "private": true,
+  "type": "module",
+  "description": "LiteSVM flow and exploit tests for the town program (docs/TOWN-ON-SOLANA.md): profiles, handles, operator links, posts, reactions and tips, follows, consent, DMs with priced escrow; instructions built by apps/explorer/src/townsol.ts and checked against the deployed program",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 town.test.mjs"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@solana/web3.js": "1.98.0",
+    "litesvm": "0.3.3"
+  }
+}

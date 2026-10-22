@@ -16,6 +16,9 @@ import {
   FLAG, POST_KINDS, REACTIONS, TownIndex, avatar, decodeSocialTx, postId, socialFee,
   type PostRec, type SocialBody,
 } from "../../../../apps/explorer/src/social.ts";
+import * as TS from "../../../../apps/explorer/src/townsol.ts";
+import { isSolHeight, socialBlocks, type SolProfile } from "../townsol.ts";
+import { UNIT_NOTE, needTown, solBuilt } from "./towntx.ts";
 
 const ZERO_HASH = "0".repeat(64);
 const ZERO_KEY = b58encode(new Uint8Array(32));
@@ -48,8 +51,10 @@ export class TownState {
     this.d = d;
   }
 
+  /** The social index over the Cadre chain's blocks plus, with the town on Solana, its pseudo blocks. */
   idx() {
-    return this.index.update(this.d.ix.blocks, this.d.ix.chainInfo?.height ?? 0);
+    const sb = socialBlocks(this.d);
+    return this.index.update(sb.blocks, sb.tip);
   }
 
   /** Gateway receipt of a request id, cached (found: forever; missing or unreachable: 60 s). */
@@ -175,12 +180,26 @@ async function postView(t: TownState, p: PostRec) {
   const tip = t.d.ix.chainInfo?.height ?? p.height;
   const fin = t.d.ix.chainInfo?.finalized_height ?? 0;
   const r = p.thoughtRef ? await t.receipt(p.thoughtRef) : null;
+  const town = t.d.town;
+  if (town && isSolHeight(p.height)) {
+    const at = town.at(p.height)!;
+    const st = town.status;
+    const tips = town.solTips.get(p.postId);
+    return {
+      post_id: p.postId, author: ix.card(p.author), kind: POST_KINDS[p.kind] ?? "post", parent: p.parent, channel: null,
+      body: p.body, blob_uri: p.blobUri, thought_ref: p.thoughtRef, thought: thoughtStatus(p.body, p.thoughtRef, r),
+      chain: "solana" as const, height: at.slot, slot: at.slot, block_hash: null, tx_hash: at.sig, index: p.index, timestamp_ms: p.time,
+      confirmations: Math.max(0, st.slot - at.slot), final: at.slot <= st.finalizedSlot, nonce: town.postRefs.get(p.postId)?.nonce ?? null, read_only: false,
+      reactions: ix.reactionCounts(p.postId), tips_sol: { count: tips?.count ?? 0, lamports: (tips?.total ?? 0n).toString() }, replies: (ix.replies.get(p.postId) ?? []).length,
+    };
+  }
   return {
     post_id: p.postId, author: ix.card(p.author), kind: POST_KINDS[p.kind] ?? "post", parent: p.parent, channel: null,
     body: p.body, blob_uri: p.blobUri, thought_ref: p.thoughtRef, thought: thoughtStatus(p.body, p.thoughtRef, r),
     height: p.height, block_hash: p.blockHash, tx_hash: p.txHash, index: p.index, timestamp_ms: p.time,
     confirmations: Math.max(0, tip - p.height), final: p.height <= fin,
-    reactions: ix.reactionCounts(p.postId), replies: (ix.replies.get(p.postId) ?? []).length,
+    chain: "cadre" as const, read_only: !!town,
+    reactions: ix.reactionCounts(p.postId), tips_sol: null, replies: (ix.replies.get(p.postId) ?? []).length,
   };
 }
 
@@ -202,6 +221,7 @@ function intq(q: URLSearchParams, k: string, d: number, lo: number, hi: number) 
   return n;
 }
 
+const SCORE_RULE_SOL = "top: the number of tips on the post (CADRE tips from the Cadre-chain history and SOL tips on the Solana town, counted, never added across units), then lamports tipped, then posts whose text is a verified paid thought, then newer first";
 const SCORE_RULE = "top: CADRE tipped to the post (React tips, chain units), then posts whose text is a verified paid thought, then newer first; raw reaction counts are shown but never ranked on";
 
 async function chainProfile(d: Deps, account: string): Promise<any> {
@@ -217,6 +237,8 @@ async function chainProfile(d: Deps, account: string): Promise<any> {
 
 async function fullProfile(t: TownState, account: string, withWork: boolean) {
   const d = t.d;
+  const sp = d.town?.profiles.get(account);
+  if (sp) return solProfileView(t, sp, withWork);
   const cp = await chainProfile(d, account);
   if (!cp) return null;
   const blob = await t.profileBlob(cp.profile_uri || null);
@@ -249,6 +271,61 @@ async function fullProfile(t: TownState, account: string, withWork: boolean) {
     thoughts: { requests, rows, charged_lamports: anyCharged ? charged.toString() : null, verified_posts: verified, window: `the account's latest ${mine.length} posts carrying a thought_ref (at most 200)` },
     ...(withWork ? { work: workProfile(d, account) } : {}),
     balance: acct?.balance ?? null,
+  };
+}
+
+/** A profile that lives on the Solana town (the program's Profile, folded from its events). Old
+ * Cadre-chain activity (posts, replies, CADRE tips) still counts in the stats. */
+async function solProfileView(t: TownState, sp: SolProfile, withWork: boolean) {
+  const d = t.d;
+  const town = d.town!;
+  const account = sp.authority;
+  const blob = await t.profileBlob(sp.metaUri);
+  const ix = t.idx();
+  const mine = ix.byAuthor.get(account) ?? [];
+  let posts = 0, replies = 0, recv = 0, given = 0;
+  for (const p of mine) {
+    if (p.kind === 1) replies++;
+    else posts++;
+    recv += (ix.reactions.get(p.postId) ?? []).length;
+  }
+  for (const l of ix.reactions.values()) for (const r of l) if (r.account === account) given++;
+  const cp = await d.node.call<any>("getProfile", { account }).catch(() => null);
+  const thoughtPosts = mine.filter((p) => p.thoughtRef).slice(0, 200);
+  let requests = 0, rows = 0, verified = 0, charged = 0n, anyCharged = false;
+  for (const p of thoughtPosts) {
+    const r = await t.receipt(p.thoughtRef!);
+    if (!r) continue;
+    requests++;
+    rows += r.rows ?? 0;
+    if (r.charged_lamports) {
+      charged += BigInt(r.charged_lamports);
+      anyCharged = true;
+    }
+    if (thoughtStatus(p.body, p.thoughtRef, r).status === "verified") verified++;
+  }
+  const str = (v: unknown) => (typeof v === "string" && v.length ? v : null);
+  const arr = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 32) : []);
+  const acct = await d.node.call<any>("getAccount", { account }).catch(() => null);
+  return {
+    account, chain: "solana", has_profile: true, handle: sp.handle, name: sp.name,
+    is_agent: !!(sp.flags & TS.FLAG.agent), house: !!(sp.flags & TS.FLAG.house), accepts_hires: !!(sp.flags & TS.FLAG.hires), trades: !!(sp.flags & TS.FLAG.trades),
+    operator: sp.operator, operator_linked: sp.operatorLinked, avatar: avatar(account, sp.name, sp.handle),
+    profile_uri: sp.metaUri, profile_hash: sp.metaHash, profile_present: !!blob,
+    bio: str(blob?.bio) ?? (sp.bio || null), persona: str(blob?.persona), appearance: str(blob?.appearance), links: arr(blob?.links), tags: arr(blob?.tags),
+    model: str(blob?.model), a2a_card: str(blob?.a2a_card), cadre_account: sp.cadre, enc_key: sp.encKey,
+    dm_price: sp.dmPrice, dm_price_unit: "lamports", dm_policy: sp.dmPolicy,
+    created_height: null, set_height: null, created_slot: sp.createdSlot, set_slot: sp.setSlot, created_ms: sp.createdTime, set_ms: sp.setTime, profile_tx: sp.sig,
+    stats: {
+      followers: sp.followers, following: sp.following, posts, replies, reactions_received: recv, reactions_given: given,
+      tips_received: cp?.stats?.tips_received ?? "0", tips_sent: cp?.stats?.tips_sent ?? "0",
+      tips_received_lamports: (town.tipsReceived.get(account) ?? 0n).toString(), tips_sent_lamports: (town.tipsSent.get(account) ?? 0n).toString(),
+    },
+    legacy_cadre_profile: cp?.has_profile ? { handle: cp.handle ?? null, name: cp.name ?? null, profile_uri: cp.profile_uri || null, stats: cp.stats ?? null } : null,
+    thoughts: { requests, rows, charged_lamports: anyCharged ? charged.toString() : null, verified_posts: verified, window: `the account's latest ${thoughtPosts.length} posts carrying a thought_ref (at most 200)` },
+    ...(withWork ? { work: workProfile(d, account) } : {}),
+    balance: acct?.balance ?? null,
+    unit_note: UNIT_NOTE,
   };
 }
 
@@ -309,7 +386,8 @@ export function registerTown(api: Api, d: Deps) {
       const offset = intq(c.query, "offset", 0, 0, 1_000_000);
       const scored = await Promise.all(ix.order.slice(0, 1000).map(async (p) => {
         const r = p.thoughtRef ? await t.receipt(p.thoughtRef) : null;
-        return { p, tip: BigInt(ix.reactionCounts(p.postId).tip_total), v: thoughtStatus(p.body, p.thoughtRef, r).status === "verified" ? 1 : 0 };
+        const solTip = d.town?.solTips.get(p.postId)?.total ?? 0n;
+        return { p, tip: d.town ? BigInt(ix.reactionCounts(p.postId).tip_count + (d.town.solTips.get(p.postId)?.count ?? 0)) * 10n ** 30n + solTip : BigInt(ix.reactionCounts(p.postId).tip_total), v: thoughtStatus(p.body, p.thoughtRef, r).status === "verified" ? 1 : 0 };
       }));
       scored.sort((a, b) => (b.tip > a.tip ? 1 : b.tip < a.tip ? -1 : 0) || b.v - a.v || b.p.height - a.p.height || b.p.index - a.p.index);
       page = scored.slice(offset, offset + limit).map((x) => x.p);
@@ -319,13 +397,15 @@ export function registerTown(api: Api, d: Deps) {
     return {
       sort, posts: await posts(t, page), next, pending: await t.pending(), tip_height: d.ix.chainInfo?.height ?? 0,
       house_operators: Array.isArray(params.house_operators) ? params.house_operators : [],
-      score_rule: sort === "top" ? SCORE_RULE + " (over the newest 1000 posts; next is an offset)" : "new: newest first; next is a height:index cursor",
+      score_rule: sort === "top" ? (d.town ? SCORE_RULE_SOL : SCORE_RULE) + " (over the newest 1000 posts; next is an offset)" : d.town ? "new: Cadre-chain history first by height, then the Solana town in slot order, newest first; next is an opaque cursor" : "new: newest first; next is a height:index cursor",
+      ...(d.town ? { chain: "solana", solana_slot: d.town.status.slot, program: d.town.program, unit_note: UNIT_NOTE } : {}),
     };
   }, { cache: 3 });
 
   api.get("/v1/town/stream", (c: Ctx) => {
     const enc = new TextEncoder();
     let unsub: (() => void) | null = null;
+    let unsubSol: (() => void) | null = null;
     let beat: NodeJS.Timeout | null = null;
     let pend: NodeJS.Timeout | null = null;
     const sent = new Set<string>();
@@ -350,6 +430,12 @@ export function registerTown(api: Api, d: Deps) {
           }
           lastH = h;
         });
+        unsubSol = d.town?.onUpdate((added) => {
+          for (const r of added) {
+            const ids = r.events.filter((e) => e.name === "PostCreated").map((e: any) => e.postId as string);
+            if (ids.length) send("block", { chain: "solana", height: r.slot, slot: r.slot, signature: r.sig, posts: ids.length, post_ids: ids });
+          }
+        }) ?? null;
         beat = setInterval(() => {
           try {
             ctl.enqueue(enc.encode(`: heartbeat ${Date.now()}\n\n`));
@@ -370,6 +456,7 @@ export function registerTown(api: Api, d: Deps) {
       },
       cancel() {
         unsub?.();
+        unsubSol?.();
         if (beat) clearInterval(beat);
         if (pend) clearInterval(pend);
       },
@@ -392,7 +479,17 @@ export function registerTown(api: Api, d: Deps) {
     const id = hex64(c.params.post_id, "post_id");
     const ix = t.idx();
     if (!ix.posts.has(id)) throw notFound("post not in the index");
-    return { post_id: id, reactions: (ix.reactions.get(id) ?? []).map((r) => ({ account: r.account, reaction: REACTIONS[r.reaction] ?? String(r.reaction), tip: r.tip, height: r.height, tx_hash: r.txHash })) };
+    const town = d.town;
+    return {
+      post_id: id,
+      reactions: (ix.reactions.get(id) ?? []).map((r) => {
+        if (town && isSolHeight(r.height)) {
+          const lam = town.reactLamports.get(`${r.txHash}:${id}:${r.account}`) ?? "0";
+          return { account: r.account, reaction: REACTIONS[r.reaction] ?? String(r.reaction), tip: lam, tip_unit: "lamports", chain: "solana", height: town.at(r.height)?.slot ?? null, tx_hash: r.txHash };
+        }
+        return { account: r.account, reaction: REACTIONS[r.reaction] ?? String(r.reaction), tip: r.tip, tip_unit: "cadre_units", chain: "cadre", height: r.height, tx_hash: r.txHash };
+      }),
+    };
   }, { cache: 3 });
 
   api.get("/v1/profiles", async (c) => {
@@ -407,6 +504,7 @@ export function registerTown(api: Api, d: Deps) {
       try {
         r = await d.node.call<any>("listProfiles", { offset: off, limit: 200 });
       } catch (e) {
+        if (d.town) break; // the Solana town answers alone; the old chain profiles are a bonus
         if (/unknown method/i.test((e as Error).message)) throw new ApiError(503, "unavailable", "this node does not serve listProfiles (the social upgrade, SPEC 4.6, is not deployed on it)");
         throw new ApiError(503, "node_unavailable", (e as Error).message.slice(0, 200));
       }
@@ -414,18 +512,36 @@ export function registerTown(api: Api, d: Deps) {
       all.push(...r.profiles);
       if (r.profiles.length < 200) break;
     }
+    if (d.town) {
+      // Solana profiles replace the account's old chain profile; set_height sorts them after it
+      const ix = t.idx();
+      const byAcct = new Map(all.map((p) => [p.account, p]));
+      for (const sp of d.town.profiles.values()) {
+        const mine = ix.byAuthor.get(sp.authority) ?? [];
+        byAcct.set(sp.authority, {
+          account: sp.authority, chain: "solana", has_profile: true, handle: sp.handle, name: sp.name, is_agent: !!(sp.flags & 1), house: !!(sp.flags & 2), accepts_hires: !!(sp.flags & 4),
+          trades: !!(sp.flags & 8), operator: sp.operator, operator_linked: sp.operatorLinked, profile_uri: sp.metaUri, created_height: null, set_height: 1e12 + sp.setSlot,
+          created_slot: sp.createdSlot, set_slot: sp.setSlot, solana_bio: sp.bio,
+          stats: { followers: sp.followers, following: sp.following, posts: mine.filter((p) => p.kind !== 1).length, replies: mine.filter((p) => p.kind === 1).length },
+        });
+      }
+      all.length = 0;
+      all.push(...byAcct.values());
+      total = all.length;
+    }
     const key = (p: any) => (sort === "followers" ? p.stats?.followers ?? 0 : sort === "posts" ? (p.stats?.posts ?? 0) + (p.stats?.replies ?? 0) : p.set_height ?? 0);
     all.sort((a, b) => key(b) - key(a) || (b.set_height ?? 0) - (a.set_height ?? 0));
     const page = all.slice(offset, offset + limit);
     const out = await Promise.all(page.map(async (p) => {
       const blob = await t.profileBlob(p.profile_uri || null);
       return {
-        account: p.account, has_profile: !!p.has_profile, handle: p.handle ?? null, name: p.name ?? null, is_agent: !!p.is_agent, house: !!p.house,
+        account: p.account, chain: p.chain ?? "cadre", has_profile: !!p.has_profile, handle: p.handle ?? null, name: p.name ?? null, is_agent: !!p.is_agent, house: !!p.house,
         accepts_hires: !!p.accepts_hires, trades: !!p.trades, operator: p.operator ?? null, operator_linked: !!p.operator_linked,
         avatar: avatar(p.account, p.name ?? null, p.handle ?? null), profile_uri: p.profile_uri || null, profile_present: !!blob,
-        bio: typeof blob?.bio === "string" ? blob.bio : null, appearance: typeof blob?.appearance === "string" ? blob.appearance : null,
+        bio: typeof blob?.bio === "string" ? blob.bio : p.solana_bio || null, appearance: typeof blob?.appearance === "string" ? blob.appearance : null,
         links: Array.isArray(blob?.links) ? blob.links.filter((x: unknown) => typeof x === "string").slice(0, 32) : [],
-        created_height: p.created_height ?? null, set_height: p.set_height ?? null, stats: p.stats,
+        created_height: p.created_height ?? null, set_height: p.chain === "solana" ? null : p.set_height ?? null,
+        ...(p.chain === "solana" ? { created_slot: p.created_slot, set_slot: p.set_slot } : {}), stats: p.stats,
       };
     }));
     return { total, sort, offset, limit, profiles: out };
@@ -434,6 +550,8 @@ export function registerTown(api: Api, d: Deps) {
   api.get("/v1/profiles/by-handle/:handle", async (c) => {
     const h = c.params.handle.replace(/^@/, "").toLowerCase();
     if (!HANDLE_RE.test(h)) throw badRequest("handle is 3..24 of [a-z0-9_]");
+    const solOwner = d.town?.handles.get(h);
+    if (solOwner) return (await fullProfile(t, solOwner, true))!;
     let cp: any;
     try {
       cp = await d.node.call<any>("getHandle", { handle: h });
@@ -470,11 +588,18 @@ export function registerTown(api: Api, d: Deps) {
     const ix = t.idx();
     const m = (dir === "followers" ? ix.followers : ix.follows).get(a) ?? new Map<string, number>();
     const l = [...m.entries()].sort((x, y) => y[1] - x[1]);
-    return { account: a, total: l.length, offset, limit, accounts: l.slice(offset, offset + limit).map(([k, h]) => ({ ...ix.card(k), since_height: h })) };
+    return {
+      account: a, total: l.length, offset, limit,
+      accounts: l.slice(offset, offset + limit).map(([k, h]) => (isSolHeight(h) && d.town ? { ...ix.card(k), chain: "solana", since_height: null, since_slot: d.town.at(h)?.slot ?? null } : { ...ix.card(k), chain: "cadre", since_height: h })),
+    };
   };
   api.get("/v1/profiles/:account/following/:target", async (c) => {
     const a = addr(c.params.account, "account");
     const tg = addr(c.params.target, "target");
+    if (d.town?.follows(a, tg)) {
+      const e = d.town.edges.get(`${a}|${tg}`)!;
+      return { follower: a, target: tg, following: true, chain: "solana", since_height: null, since_slot: e.slot, since_ms: e.time };
+    }
     let r: any;
     try {
       r = await d.node.call<any>("isFollowing", { follower: a, target: tg });
@@ -493,6 +618,7 @@ export function registerTown(api: Api, d: Deps) {
 
   api.post("/v1/tx/set-profile", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solSetProfile(d, b0);
     const from = addr(b0.from, "from");
     const handle = b0.handle === undefined || b0.handle === null ? "" : String(b0.handle).replace(/^@/, "");
     if (handle && !HANDLE_RE.test(handle)) throw badRequest("handle is 3..24 of [a-z0-9_] (or empty)");
@@ -557,6 +683,7 @@ export function registerTown(api: Api, d: Deps) {
 
   api.post("/v1/tx/post", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solPost(t, b0);
     const from = addr(b0.from, "from");
     const kind = b0.kind ?? "post";
     const k = POST_KINDS.indexOf(kind);
@@ -583,6 +710,7 @@ export function registerTown(api: Api, d: Deps) {
 
   api.post("/v1/tx/react", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solReact(t, b0);
     const from = addr(b0.from, "from");
     if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 64) throw badRequest("items is a list of 1..64 reactions");
     let spend = 0n;
@@ -601,6 +729,7 @@ export function registerTown(api: Api, d: Deps) {
 
   api.post("/v1/tx/follow", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solFollow(d, b0);
     const from = addr(b0.from, "from");
     if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 64) throw badRequest("items is a list of 1..64 {target, on}");
     const items = b0.items.map((x: any, i: number) => {
@@ -616,6 +745,7 @@ export function registerTown(api: Api, d: Deps) {
 
   api.post("/v1/tx/operator-link", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solOperatorLink(d, b0);
     const from = addr(b0.from, "from");
     const agent = addr(b0.agent, "agent");
     if (agent === from) throw badRequest("an operator cannot link itself");
@@ -646,4 +776,161 @@ export function registerTown(api: Api, d: Deps) {
     const r = await d.chain<any>("putBlob", { data: bytes.toString("base64") });
     return reply({ status: 201, body: { uri: r.uri, id: r.blob_id, size: r.size ?? bytes.length } });
   }, { cost: 10 });
+}
+
+// ------------------------------------------------------------ Solana builders (TOWN_PROGRAM set)
+
+const bytesUpTo = (v: string, max: number) => {
+  let out = "";
+  for (const ch of v) {
+    if (Buffer.byteLength(out + ch, "utf8") > max) break;
+    out += ch;
+  }
+  return out;
+};
+
+async function profileBlobFields(d: Deps, b0: any): Promise<{ uri: string; hash: string | null; fields: string[] }> {
+  const fields: Record<string, unknown> = {};
+  const s = (k: string, max: number) => {
+    if (b0[k] === undefined || b0[k] === null || b0[k] === "") return;
+    if (typeof b0[k] !== "string" || b0[k].length > max) throw badRequest(`${k} is a string of at most ${max} characters`);
+    fields[k] = b0[k];
+  };
+  s("bio", 2000);
+  s("persona", 4000);
+  s("appearance", 300);
+  s("model", 128);
+  s("a2a_card", 512);
+  for (const k of ["links", "tags"]) {
+    if (b0[k] === undefined) continue;
+    if (!Array.isArray(b0[k]) || b0[k].length > 16 || b0[k].some((x: unknown) => typeof x !== "string" || x.length > 256)) throw badRequest(`${k} is a list of at most 16 strings`);
+    fields[k] = b0[k];
+  }
+  if (!Object.keys(fields).length) return { uri: "", hash: null, fields: [] };
+  const bytes = Buffer.from(JSON.stringify({ format: "cadre-profile-v1", ...fields }), "utf8");
+  const put = await d.chain<any>("putBlob", { data: bytes.toString("base64") });
+  if (hex(blake3(bytes)) !== put.blob_id) throw new ApiError(502, "node_error", "the node stored the profile blob under another id");
+  return { uri: put.uri, hash: put.blob_id, fields: Object.keys(fields) };
+}
+
+async function solSetProfile(d: Deps, b0: any) {
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  const handle = b0.handle === undefined || b0.handle === null ? "" : String(b0.handle).replace(/^@/, "");
+  if (handle && !HANDLE_RE.test(handle)) throw badRequest("handle is 3..24 of [a-z0-9_] (or empty to keep the current one)");
+  const name = typeof b0.name === "string" ? b0.name : "";
+  if (!name || utf8len(name) > TS.LIMITS.name) throw badRequest(`name is 1..${TS.LIMITS.name} bytes of UTF-8 on the Solana town`);
+  const operator = b0.operator === undefined || b0.operator === null || b0.operator === "" ? null : addr(b0.operator, "operator");
+  if (b0.house && !operator) throw badRequest("house needs an operator (a key in the town config's house operators that then links this account)");
+  if (operator === from) throw badRequest("an account cannot name itself as its operator");
+  const prev = town.profiles.get(from);
+  if (!prev && !handle) throw badRequest("a new profile on the Solana town needs a handle (3..24 of [a-z0-9_])");
+  if (handle) {
+    const owner = town.handles.get(handle);
+    if (owner && owner !== from) throw new ApiError(409, "handle_taken", `@${handle} belongs to ${owner} on the Solana town`);
+  }
+  // the full profile JSON lives in the Cadre node's blob store; without the node the profile still
+  // lands with its on-chain fields (name, short bio, DM settings) and says why the blob is missing
+  let blob: { uri: string; hash: string | null; fields: string[] } = { uri: "", hash: null, fields: [] };
+  let blobNote: string | null = null;
+  try {
+    blob = await profileBlobFields(d, b0);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status < 500) throw e;
+    blobNote = `profile blob not stored (${e.message.slice(0, 160)}): only the on-chain fields are set`;
+  }
+  let dmPolicy = prev?.dmPolicy ?? 0;
+  if (b0.dm_policy != null) {
+    dmPolicy = Number(b0.dm_policy);
+    if (!Number.isInteger(dmPolicy) || dmPolicy < 0 || dmPolicy > 3) throw badRequest("dm_policy is 0 (open), 1 (priced), 2 (followers only) or 3 (closed)");
+  }
+  const f: TS.ProfileFields = {
+    name, bio: bytesUpTo(typeof b0.bio === "string" ? b0.bio : "", TS.LIMITS.bio), metaUri: blob.uri, metaHash: blob.hash,
+    encKey: b0.enc_key != null ? addr(b0.enc_key, "enc_key") : prev?.encKey ?? null, cadre: from, flags: profileFlags(b0) & ~TS.FLAG.house, operator,
+    dmPrice: b0.dm_price != null ? amount(b0.dm_price, "dm_price (lamports)").toString() : prev?.dmPrice ?? "0", dmPolicy,
+  };
+  const ixs = prev
+    ? [...(handle && handle !== prev.handle ? [TS.changeHandleIx(from, prev.handle, handle, town.program)] : []), TS.updateProfileIx(from, f, town.program)]
+    : [TS.createProfileIx(from, handle, f, town.program)];
+  return solBuilt(d, ixs, from, {
+    from, handle: handle || prev?.handle || null, name, flags: f.flags, operator, profile_fields: blob.fields, creates: !prev, dm_price_lamports: String(f.dmPrice), dm_policy: dmPolicy,
+  }, { profile_uri: blob.uri || null, ...(blobNote ? { blob_note: blobNote } : {}), note: "house is set by the operator's link (POST /v1/tx/operator-link), never by the profile itself", unit_note: UNIT_NOTE });
+}
+
+async function solPost(t: TownState, b0: any) {
+  const d = t.d;
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  const kind = b0.kind ?? "post";
+  const k = POST_KINDS.indexOf(kind);
+  if (k < 0) throw badRequest("kind is post, reply, repost or quote");
+  const text = typeof b0.body === "string" ? b0.body : "";
+  if (!text && kind !== "repost") throw badRequest("body is required");
+  if (utf8len(text) > TS.LIMITS.body) throw badRequest(`body is ${utf8len(text)} bytes, the town takes at most ${TS.LIMITS.body}`);
+  let parent: string | null = null;
+  if (k > 0) {
+    parent = hex64(b0.parent, "parent");
+    if (!t.idx().posts.has(parent)) throw notFound("parent post is not in the index (neither the Cadre-chain history nor the Solana town)");
+  } else if (b0.parent) throw badRequest("a post (kind post) has no parent");
+  const ref = b0.thought_ref === undefined || b0.thought_ref === null ? "" : String(b0.thought_ref);
+  if (ref && !/^[\x21-\x7e]{1,64}$/.test(ref)) throw badRequest("thought_ref is 1..64 printable ASCII characters without spaces");
+  const nonce = TS.freshNonce();
+  const ix = TS.postIx(from, { nonce, kind: k, parent, body: text, thoughtRef: ref || null }, town.program);
+  return solBuilt(d, [ix], from, { from, kind, parent, bytes: utf8len(text), thought_ref: ref || null }, {
+    post_id: TS.postId(from, nonce), nonce: nonce.toString(), post_id_rule: "sha256(\"cadre-town:post:v1\" || author || nonce u64 LE), fixed by the nonce in this tx",
+  });
+}
+
+async function solReact(t: TownState, b0: any) {
+  const d = t.d;
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 8) throw badRequest("items is a list of 1..8 reactions (one Solana transaction)");
+  let spend = 0n;
+  const ixs = b0.items.map((x: any, i: number) => {
+    const r = REACTIONS.indexOf(x?.reaction);
+    if (r < 0) throw badRequest(`items[${i}].reaction is one of ${REACTIONS.join(", ")}`);
+    const tip = x.tip === undefined || x.tip === null || x.tip === "0" || x.tip === 0 ? 0n : amount(x.tip, `items[${i}].tip (lamports)`);
+    if (r === 4 && tip === 0n) throw badRequest(`items[${i}]: a tip reaction needs tip > 0 (lamports)`);
+    const id = hex64(x.post_id, `items[${i}].post_id`);
+    const ref = town.postRefs.get(id);
+    if (!ref) {
+      if (t.idx().posts.has(id)) throw new ApiError(409, "read_only", `items[${i}]: ${id} is a Cadre-chain history post; it stays readable, reactions go to posts on the Solana town`);
+      throw notFound(`items[${i}]: post ${id} is not in the index`);
+    }
+    if (tip > 0n && ref.author === from) throw badRequest(`items[${i}]: cannot tip your own post`);
+    spend += tip;
+    return TS.reactIx(from, ref.author, ref.nonce, r, tip, town.program);
+  });
+  return solBuilt(d, ixs, from, { from, reactions: ixs.length, tips_total_lamports: spend.toString() }, { unit_note: UNIT_NOTE });
+}
+
+async function solFollow(d: Deps, b0: any) {
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 8) throw badRequest("items is a list of 1..8 {target, on} (one Solana transaction)");
+  const has = town.profiles.has(from);
+  const ixs = b0.items.map((x: any, i: number) => {
+    const target = addr(x?.target, `items[${i}].target`);
+    if (target === from) throw badRequest(`items[${i}]: cannot follow yourself`);
+    if (typeof x.on !== "boolean") throw badRequest(`items[${i}].on is a boolean`);
+    if (!town.profiles.has(target)) throw new ApiError(409, "refused", `items[${i}]: ${target} has no profile on the Solana town yet (a follow lands on its profile)`);
+    if (x.on && town.follows(from, target)) throw new ApiError(409, "refused", `items[${i}]: already following ${target}`);
+    if (!x.on && !town.follows(from, target)) throw new ApiError(409, "refused", `items[${i}]: not following ${target} on the Solana town`);
+    return x.on ? TS.followIx(from, target, has, town.program) : TS.unfollowIx(from, target, has, town.program);
+  });
+  return solBuilt(d, ixs, from, { from, follow: b0.items.filter((x: any) => x.on).length, unfollow: b0.items.filter((x: any) => !x.on).length });
+}
+
+async function solOperatorLink(d: Deps, b0: any) {
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  const agent = addr(b0.agent, "agent");
+  if (agent === from) throw badRequest("an operator cannot link itself");
+  if (typeof b0.add !== "boolean") throw badRequest("add is a boolean");
+  const p = town.profiles.get(agent);
+  if (!p) throw new ApiError(409, "refused", `${agent} has no profile on the Solana town yet: the agent publishes its profile naming the operator first`);
+  if (p.operator !== from) throw new ApiError(409, "refused", `${agent}'s profile names ${p.operator ?? "no operator"}, not ${from}`);
+  const house = (town.config?.houseOperators ?? []).includes(from);
+  return solBuilt(d, [TS.linkOperatorIx(from, agent, b0.add, town.program)], from, { operator: from, agent, add: b0.add, house: b0.add && house });
 }

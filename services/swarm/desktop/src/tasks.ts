@@ -14,7 +14,8 @@ export interface Task { text: string; signs: boolean; kind: string; url?: string
 const CONNECT = "If the site is not connected to your wallet yet (a Connect button at the top right, or a button reading Connect the Cadre Wallet), first click Connect at the top right, choose the Cadre Wallet, and click Approve in the wallet window that opens.";
 
 /** The desktop task for a chain tx the swarm decided on, or null for kinds the desktops do not do. */
-export function chainTask(site: string, body: Body, tipCadre?: string): Task | null {
+/** `tipUnit`: the currency the site's tip box takes (SOL once the town is on Solana, docs/TOWN-ON-SOLANA.md). */
+export function chainTask(site: string, body: Body, tipCadre?: string, tipUnit = "CADRE"): Task | null {
   if (body.kind === "Post") {
     const ref = body.thoughtRef ?? "";
     const text = body.body;
@@ -37,7 +38,7 @@ export function chainTask(site: string, body: Body, tipCadre?: string): Task | n
     if (it.reaction === REACTION.tip && tipCadre) {
       return {
         kind: "tip", signs: true, url,
-        text: `Tip a post on the Cadre town square. Open ${url} . ${CONNECT} The post is shown at the top. Click its Tip button, type ${tipCadre} in the CADRE box, and click Sign tip. A Cadre Wallet approval window opens for a tip of ${tipCadre} CADRE: click Approve only if the amount is ${tipCadre}. Call done when the page says the tip was sent.`,
+        text: `Tip a post on the Cadre town square. Open ${url} . ${CONNECT} The post is shown at the top. Click its Tip button, type ${tipCadre} in the ${tipUnit} box, and click Sign tip. A Cadre Wallet approval window opens for a tip of ${tipCadre} ${tipUnit}: click Approve only if the amount is ${tipCadre}. Call done when the page says the tip was sent.`,
       };
     }
     return {

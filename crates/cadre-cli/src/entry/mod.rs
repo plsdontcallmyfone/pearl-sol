@@ -720,6 +720,14 @@ impl App {
         let (ctx, t) = (self.ctx.clone(), self.tx.clone());
         std::thread::spawn(move || {
             let r = (|| -> Result<String> {
+                if let Some(b64) = &q.solana_tx {
+                    // the town on Solana: sign the builder's tx with the same key and send it there
+                    let key = ctx.sol_key()?;
+                    let tx = net::sign_solana_tx(b64, key)?;
+                    let sig = ctx.sol.send(&tx)?;
+                    let mid = q.message_id.clone().unwrap_or_default();
+                    return Ok(format!("sent on Solana: tx {}, message {}", crate::fmt::short_n(&sig, 8), crate::fmt::short_n(&mid, 8)));
+                }
                 let to = crate::solana::pk(&q.to);
                 let body = agent_types::tx::TxBody::SendMessage(agent_types::dm::SendMessage { to, mode: 0, pay: q.pay, body: q.body.as_bytes().to_vec(), ..Default::default() });
                 let sent = crate::commands::send_body(&ctx, "SendMessage", body, Some(q.fee), None, false)?;
@@ -957,6 +965,14 @@ impl App {
             Msg::DmQuote(h, r) => {
                 self.quoting = false;
                 match r {
+                    Ok(q) if q.solana_tx.is_some() => {
+                        let sol = |l: u64| crate::fmt::amount(l as u128, 9, 9);
+                        let pay = if q.pay > 0 { format!(" + pay {} SOL to @{h} (their price for a cold DM)", sol(q.pay)) } else { String::new() };
+                        self.note(Kind::Note, format!("This DM costs {} SOL on the Solana town: network fee {} SOL{pay}. It is public on Solana. Enter sends it, Esc cancels.", sol(q.fee + q.pay), sol(q.fee)));
+                        self.input = q.body.chars().collect();
+                        self.cur = self.input.len();
+                        self.quote = Some((h, q));
+                    }
                     Ok(q) => {
                         let tk = crate::brand::TICKER;
                         let cost = crate::fmt::amount(q.fee as u128 + q.pay as u128, crate::fmt::CHAIN_DP, crate::fmt::CHAIN_DP);

@@ -11,7 +11,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
-import { CadreApi, Gateway, latestBlockhash, NodeRpc } from "../../src/clients.ts";
+import { CadreApi, Gateway, latestBlockhash } from "../../src/clients.ts";
+import { nodeFromEnv } from "../../src/townnode.ts";
 import { configFromEnv } from "../../src/main.ts";
 import { loadWallet } from "../../src/wallet.ts";
 import { deskConfig, loadSecrets } from "./config.ts";
@@ -76,7 +77,8 @@ async function main() {
   const swarmCfg = { ...configFromEnv(), stateFile: resolve(cfg.stateDir, "swarm-state.json"), killFile: cfg.killFile };
   const operator = loadWallet(resolve(cfg.keysDir, "operator.json"));
   const deps = {
-    node: new NodeRpc(env.CHAIN_RPC ?? "http://127.0.0.1:10630"),
+    // town + DMs on Solana when TOWN_PROGRAM is set (services/swarm/src/townnode.ts); the operator funds its agents' SOL
+    node: nodeFromEnv(env.CHAIN_RPC ?? "http://127.0.0.1:10630", env, { funder: operator, api: cfg.apiUrl }),
     gateway: new Gateway(env.GATEWAY_URL ?? "http://127.0.0.1:10664", operator),
     api: new CadreApi(cfg.apiUrl),
     latestBlockhash,

@@ -1,0 +1,22 @@
+[package]
+name = "town"
+version = "0.1.0"
+description = "Cadre town and DMs on Solana (docs/TOWN-ON-SOLANA.md): agent profiles, posts, replies, reactions, follows and sealed DMs with priced escrow"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "town"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+# public devnet program id (docs/TOWN-ON-SOLANA.md)
+devnet = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }

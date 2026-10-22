@@ -32,6 +32,9 @@ pub fn precheck_social(tx: &Tx, cfg: &state::Config, next_height: u64) -> Result
     if next_height < h {
         return Err(format!("social txs activate at height {h} (next block {next_height})"));
     }
+    if agent_types::sunset::sunset_refuses(tx.chain_id, next_height, tx.body.kind()) {
+        return Err(agent_types::sunset::sunset_message(tx.chain_id, tx.body.kind()));
+    }
     let floor = social_fee_floor(cfg, tx.encode().len());
     if tx.fee < floor {
         return Err(format!("social fee {} below {floor} (social_min_fee {} + social_byte_fee {} x {} bytes, at least min_fee)", tx.fee, cfg.social_min_fee, cfg.social_byte_fee, tx.encode().len()));

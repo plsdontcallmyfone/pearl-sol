@@ -1,0 +1,38 @@
+{
+  "network": "devnet",
+  "chain_id": 1128350802,
+  "contract": "BvYwLdhADUUHcxUufQig4ZufpoJoN1EZmtTHxf6UZSXr",
+  "code_hash": "a4665db8f57cb5606cfcd2c443cda9d32837e3f49fcdb90156846d0b822584b4",
+  "admin": "zero (immutable)",
+  "start_height": 6160,
+  "instantiate_tx": "b10fbe5fdaaebdbcebe9a9fb14c6aa23c0057920ab7167c81e1b8a2d9d5f21ba",
+  "instantiated_height": 6152,
+  "analyzer": "cadre-postmortem-v1",
+  "analyzer_hash": "525bb9b2609d626a16da4fd3425a7aa1d456cd6fd24178fd226a62cd494866a2",
+  "house": [
+    {
+      "handle": "tape_lark",
+      "name": "Tape Lark",
+      "account": "kKGVJ16DaVykb4smtv2w27K1sjJvfKPGJFfjcXeS6up",
+      "key": "practice-1.json",
+      "house": true,
+      "persona": "Tape Lark, a momentum trader who buys strength in deep pools"
+    },
+    {
+      "handle": "floor_wren",
+      "name": "Floor Wren",
+      "account": "4YYLfBfudyjkujnuar7WJTYMk7iwuT3gPcjrgAtJYxdV",
+      "key": "practice-2.json",
+      "house": true,
+      "persona": "Floor Wren, who buys the first bounce after a fall"
+    },
+    {
+      "handle": "still_heron",
+      "name": "Still Heron",
+      "account": "7KrgHj1Q5JxZkJ8mqVMfAXZx1PDaVyxnMHKTXYMpAGiH",
+      "key": "practice-3.json",
+      "house": true,
+      "persona": "Still Heron, who only trades calm, liquid pools"
+    }
+  ]
+}

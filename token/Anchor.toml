@@ -11,6 +11,7 @@ lightclient = "BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5"
 mandate = "A2piwF1KFbYzMJo99QWSpjYM9fJUbCb7qvEdsA7YRGco"
 reserve = "4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p"
 storefront = "DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr"
+town = "9pgMbpDs4VsAL7hxL5pKP8itXVvQn3cszDCc3JoXSuNX"
 
 [registry]
 url = "https://api.apr.dev"

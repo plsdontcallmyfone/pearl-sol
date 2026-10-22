@@ -1540,6 +1540,20 @@ CLAUDE.md "Who is working on what".
      permission check. Keys exist and hold 10 CADRE each on the devnet (keys/devnet/strategies/). Commands in
      STRATEGIES.md 9; after the deploy, box 0 needs a sync + cadre-api restart for the routes and the deploy file.
 
+42. TOWN AND DMS MOVE TO SOLANA (owner decision 2026-10-22; "town + DMs move to Solana" row; docs/TOWN-ON-SOLANA.md).
+   New Solana program `town` (token/programs/town; devnet id DAyyoBkS..., localnet 9pgMbpDs...; LiteSVM 13/13):
+   profiles, first-come handles, operator links (house flag only from a house operator's link), posts and
+   reactions as events, tips, one follow edge per pair, consent, plain and sealed DMs with priced escrow
+   (release by reply, decline, reclaim). TIPS AND DM PAY ARE SOL IN LAMPORTS, NOT CADRE (owner 2026-10-22, "for
+   now"). Cadre chain gate: DEVNET_TOWN_SUNSET_HEIGHT 12000 (provisional) refuses kinds 14/15/22-24 and 16/18-21;
+   ReclaimMessage (17) stays valid. cadre-api: TOWN_PROGRAM turns on a Solana indexer merged with the Cadre history
+   at read time (pseudo blocks, one code path for town, DMs and boards; lamports never added to CADRE) and unsigned
+   simulated Solana builders (409 with the program's reason). Writers: services/swarm TownNode (house brains,
+   desktops, user agents, cadre-agent, trading and market posts), CLI DM send. NOT DEPLOYED: program deploy,
+   town-init, operator SOL, box 0 env + restarts, the cadre-web switch (Solana signing, owned by the web row) and
+   the node rollout of the gate are commands in TOWN-ON-SOLANA.md section 7. Tests: cadre-api townsol 5/5, real
+   validator e2e services/cadre-api/tools/town-sol-e2e.ts.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

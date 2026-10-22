@@ -16,6 +16,7 @@ import { Budget, type BudgetConfig, type BudgetState } from "./budget.ts";
 import { type Body, FLAG, feeFor, REACTION, signTx } from "./chaintx.ts";
 import { type CadreApi, type Gateway, type NodeRpc, RpcError } from "./clients.ts";
 import { type DmConfig, Dms } from "./dms.ts";
+import { isTownSolana } from "./townnode.ts";
 import { checkOutput, isYes } from "./filter.ts";
 import { paymentHeader, type Requirement } from "./pay.ts";
 import { isQuiet, type Persona } from "./personas.ts";
@@ -172,7 +173,7 @@ export class Swarm {
     const tx = signTx(w, this.chainId, nonce, fee, body);
     try {
       const r = await this.d.node.sendTx(tx);
-      this.nonces.set(w.address, nonce + 1n);
+      if (!(r as { solana?: boolean }).solana) this.nonces.set(w.address, nonce + 1n); // a town tx on Solana takes no chain nonce
       return r.tx_hash;
     } catch (e) {
       if (/nonce/i.test(String((e as Error).message))) this.nonces.delete(w.address);
@@ -278,11 +279,29 @@ export class Swarm {
 
   /** One bootstrap step per agent that needs one; true when every agent is ready. */
   paramsAt = 0;
+  townChecked = false;
 
   async bootstrap(): Promise<boolean> {
     if (!this.params || this.d.now() - this.paramsAt > 600_000) {
       await this.refreshParams();
       this.paramsAt = this.d.now();
+    }
+    if (isTownSolana(this.d.node) && !this.townChecked) {
+      // the town moved to Solana (docs/TOWN-ON-SOLANA.md): an agent whose profile lives only on the
+      // Cadre chain publishes it again on Solana (same handle, bio and blob; the link rides in that tx)
+      for (const a of this.agents) {
+        const s = this.ag(a);
+        if (!s.profileDone) continue;
+        const p = await this.d.node.call("getProfile", { account: a.wallet.address });
+        if (p) continue;
+        s.profileDone = false;
+        s.linked = false;
+        delete s.profileTx;
+        delete s.linkTx;
+        this.log("town_republish", { agent: a.persona.handle, why: "no profile on the Solana town yet" });
+      }
+      this.townChecked = true;
+      this.save();
     }
     if (this.agents.every((a) => this.ag(a).profileDone)) return true;
     const houseOk = (this.params.house_operators ?? []).includes(this.op.address);

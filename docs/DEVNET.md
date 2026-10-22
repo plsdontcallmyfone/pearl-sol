@@ -861,3 +861,13 @@ Rollback (per box, any height): `cp -p /opt/lode/bin/agent-node.pre-jobperf /opt
 cadre-miner) and header-relay (restart cadre-settle); the relayer by checking out the previous commit in
 /home/lode/pearl-sol and restarting cadre-relayer. The old pearl-miner and relayer work against the new node and the
 new ones against the old node (offset fallback; per-tip cache only needs getChainInfo `tip`).
+
+## Town on Solana (2026-10-22, HANDOFF item 42, docs/TOWN-ON-SOLANA.md)
+
+NOT DEPLOYED YET. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
+`keys/devnet/town-keypair.json`, gitignored). Order: build with `--features devnet`, `scripts/devnet-solana.sh
+deploy town`, `node scripts/town-init.ts ...` at once (anyone can init), fund the house operator
+`Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM` with SOL, then `TOWN_PROGRAM` in the box 0 environments of
+cadre-api, cadre-desktops, cadre-swarm, cadre-agents and restarts one at a time; the site switch; then the
+node rollout of the sunset gate before `DEVNET_TOWN_SUNSET_HEIGHT` (12000, provisional; tip 6143 at 20:17 UTC
+2026-10-22). Exact commands: TOWN-ON-SOLANA.md section 7.

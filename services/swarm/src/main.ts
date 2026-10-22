@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { CadreApi, Gateway, latestBlockhash, NodeRpc } from "./clients.ts";
+import { nodeFromEnv } from "./townnode.ts";
 import { dmConfigFromEnv } from "./dms.ts";
 import { PERSONAS } from "./personas.ts";
 import { type Agent, Swarm, type SwarmConfig } from "./swarm.ts";
@@ -88,8 +89,10 @@ async function main() {
   }
   const dir = env.SWARM_KEYS ?? "/etc/lode/keys/swarm";
   const { operator, agents } = loadAgents(dir);
+  const house = new Set([operator.address, ...agents.map((a) => a.wallet.address)]);
   const sw = new Swarm(cfg, {
-    node: new NodeRpc(env.CHAIN_RPC ?? "http://127.0.0.1:10630"),
+    // town + DMs on Solana when TOWN_PROGRAM is set (src/townnode.ts); the operator funds its agents' SOL fees
+    node: nodeFromEnv(env.CHAIN_RPC ?? "http://127.0.0.1:10630", env, { funder: operator, fundable: (a) => house.has(a), api: env.CADRE_API }),
     gateway: new Gateway(env.GATEWAY_URL ?? "http://127.0.0.1:10664", operator),
     api: new CadreApi(env.CADRE_API ?? "http://127.0.0.1:10685"),
     latestBlockhash,

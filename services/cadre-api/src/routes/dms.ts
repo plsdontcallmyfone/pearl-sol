@@ -15,6 +15,9 @@ import {
   ACTIONS, CONSENT_STATES, DmIndex, KEY_ENVELOPE_LEN, MODES, POLICIES, ZERO_HASH, ZERO_KEY, channelId, checkSealedChannel, checkSealedDm, decodeDmTx,
   dmFee, isUtf8, messageId, type ChannelRec, type DmBody, type EscrowRec, type MsgRec,
 } from "../../../../apps/explorer/src/dm.ts";
+import * as TS from "../../../../apps/explorer/src/townsol.ts";
+import { SOL_BASE, isSolHeight, socialBlocks } from "../townsol.ts";
+import { UNIT_NOTE, needTown, solBuilt, solGate } from "./towntx.ts";
 
 export const METADATA_NOTE = "Everything on chain is public: a sealed message hides its text, never the sender, recipient (or channel), time, size or pay.";
 const FEE_RULE = "max(min_fee, social_min_fee + social_byte_fee x encoded tx length) (SPEC 4.6, 4.10)";
@@ -37,8 +40,28 @@ export class DmState {
     return this.d.ix.chainInfo?.height ?? 0;
   }
 
+  /** The DM index over the chain's blocks plus the Solana town's pseudo blocks; Solana escrows take
+   * their deadline (unix seconds) and settlement from the program's events, not from heights. */
   idx() {
-    return this.index.update(this.d.ix.blocks, this.tip());
+    const sb = socialBlocks(this.d);
+    const ix = this.index.update(sb.blocks, sb.tip);
+    const town = this.d.town;
+    if (town) {
+      for (const se of town.escrows.values()) {
+        const e = ix.escrows.get(se.messageId);
+        if (!e) continue;
+        e.deadline = se.deadline;
+        e.pay = se.pay;
+        e.settled = se.settled ? { state: se.settled.state, txHash: se.settled.sig, height: se.settled.slot, declined: se.settled.declined } : null;
+      }
+    }
+    return ix;
+  }
+
+  /** Escrow state by its own clock: unix seconds on Solana, heights on the Cadre chain. */
+  escState(e: EscrowRec) {
+    const se = this.d.town?.escrows.get(e.messageId);
+    return se ? this.d.town!.escrowState(se) : DmIndex.escrowState(e, this.tip());
   }
 
   card(a: string) {
@@ -110,6 +133,16 @@ export class DmState {
 
   escrowView(e: EscrowRec) {
     const tip = this.tip();
+    const se = this.d.town?.escrows.get(e.messageId);
+    if (se) {
+      const state = this.d.town!.escrowState(se);
+      const now = Math.floor(Date.now() / 1000);
+      return {
+        message_id: e.messageId, from: e.from, to: e.to, pay: se.pay, pay_unit: "lamports", chain: "solana", height: se.slot, slot: se.slot, deadline: se.deadline, deadline_unit: "unix_seconds",
+        blocks_left: null, seconds_left: se.settled ? 0 : Math.max(0, se.deadline - now), state,
+        settled_tx: se.settled?.sig ?? null, settled_height: se.settled?.slot ?? null, declined: se.settled ? se.settled.declined : null,
+      };
+    }
     const state = DmIndex.escrowState(e, tip);
     return {
       message_id: e.messageId, from: e.from, to: e.to, pay: e.pay, height: e.height, deadline: e.deadline,
@@ -125,12 +158,25 @@ export class DmState {
     const plain = m.mode === 0;
     const r = plain && m.thoughtRef ? await this.town.receipt(m.thoughtRef) : null;
     const e = ix.escrows.get(m.messageId);
+    const town = this.d.town;
+    if (town && isSolHeight(m.height)) {
+      const at = town.at(m.height)!;
+      const fin2 = at.slot <= town.status.finalizedSlot;
+      return {
+        message_id: m.messageId, from: this.card(m.from), to: m.to ? this.card(m.to) : null, channel: null, mode: MODES[m.mode] ?? String(m.mode),
+        body: plain ? m.body : null, body_hex: m.bodyHex, blob_uri: m.blobUri, reply_to: m.replyTo, pay: m.pay, pay_unit: "lamports", reclaim_after: null,
+        thought_ref: m.thoughtRef, thought: plain ? thoughtStatus(m.body ?? "", m.thoughtRef, r) : thoughtStatus("", null, null),
+        chain: "solana", height: at.slot, slot: at.slot, block_hash: null, tx_hash: at.sig, index: m.index, timestamp_ms: m.time,
+        confirmations: Math.max(0, town.status.slot - at.slot), final: fin2, status: fin2 ? "final" : "delivered",
+        escrow: e ? this.escrowView(e) : null, epoch: null,
+      };
+    }
     const final = m.height <= fin;
     return {
       message_id: m.messageId, from: this.card(m.from), to: m.to ? this.card(m.to) : null, channel: m.channel, mode: MODES[m.mode] ?? String(m.mode),
       body: plain ? m.body : null, body_hex: m.bodyHex, blob_uri: m.blobUri, reply_to: m.replyTo, pay: m.pay, reclaim_after: m.reclaimAfter,
       thought_ref: m.thoughtRef, thought: plain ? thoughtStatus(m.body ?? "", m.thoughtRef, r) : thoughtStatus("", null, null),
-      height: m.height, block_hash: m.blockHash, tx_hash: m.txHash, index: m.index, timestamp_ms: m.time,
+      chain: "cadre", pay_unit: "cadre_units", height: m.height, block_hash: m.blockHash, tx_hash: m.txHash, index: m.index, timestamp_ms: m.time,
       confirmations: Math.max(0, tip - m.height), final, status: final ? "final" : "delivered",
       escrow: e ? this.escrowView(e) : null, epoch: m.epoch,
     };
@@ -145,15 +191,14 @@ export class DmState {
     const ix = this.idx();
     const town = this.town.idx();
     const l = ix.thread(account, peer);
-    const consent = ix.consentOf(account, peer);
+    const consent = this.d.town?.consentOf(account, peer)?.state ?? ix.consentOf(account, peer);
     const wrote = l.some((m) => m.from === account);
-    const follows = town.follows.get(account)?.has(peer) ?? false;
+    const follows = (town.follows.get(account)?.has(peer) ?? false) || !!this.d.town?.follows(account, peer);
     const box = consent === 2 ? "blocked" : wrote || follows || consent === 1 ? "primary" : "requests";
-    const tip = this.tip();
     let inn = 0, out = 0;
     for (const m of l) {
       const e = ix.escrows.get(m.messageId);
-      if (!e || DmIndex.escrowState(e, tip) !== "open") continue;
+      if (!e || this.escState(e) !== "open") continue;
       if (e.to === account) inn++;
       else out++;
     }
@@ -252,6 +297,14 @@ export function registerDms(api: Api, d: Deps) {
   const s = new DmState(d);
 
   api.get("/v1/dm/params", async () => {
+    if (d.town) {
+      const c = d.town.config;
+      return {
+        chain: "solana", program: d.town.program, active: !!c && !c.paused, msg_inline_max: TS.LIMITS.body, reclaim_min_secs: c?.reclaimMinSecs ?? null, reclaim_max_secs: c?.reclaimMaxSecs ?? null,
+        paused: c?.paused ?? null, pay_unit: "lamports", channels: "not on the Solana town (old Cadre-chain channels stay readable)",
+        fee_rule: "the Solana network fee (5000 lamports per signature) plus rent for a new consent or escrow account, refunded when it closes", unit_note: UNIT_NOTE,
+      };
+    }
     const [p, params] = await Promise.all([s.rpc<any>("getDmParams", {}), d.chain<any>("getParams", {})]);
     return { ...p, min_fee: params.min_fee ?? null, social_min_fee: params.social_min_fee ?? null, social_byte_fee: params.social_byte_fee ?? null, fee_rule: FEE_RULE };
   }, { cache: 10 });
@@ -259,17 +312,23 @@ export function registerDms(api: Api, d: Deps) {
   api.get("/v1/dm/gate", async (c) => {
     const from = addr(c.query.get("from"), "from");
     const to = addr(c.query.get("to"), "to");
+    if (d.town) return solGate(d.town, from, to);
     return s.rpc("getDmGate", { from, to });
   }, { cache: 2 });
 
-  api.get("/v1/dm/stats/:account", async (c) => s.rpc("getDmStats", { account: addr(c.params.account, "account") }), { cache: 3 });
+  api.get("/v1/dm/stats/:account", async (c) => {
+    const a = addr(c.params.account, "account");
+    return d.town ? solStats(s, a) : s.rpc("getDmStats", { account: a });
+  }, { cache: 3 });
 
   api.get("/v1/inbox/:account", async (c) => {
     const a = addr(c.params.account, "account");
     const box = c.query.get("box") ?? "all";
     if (!["all", "primary", "requests", "blocked"].includes(box)) throw badRequest("box is all, primary, requests or blocked");
     const limit = intq(c.query, "limit", 50, 1, 200);
-    const [stats, prof] = await Promise.all([s.rpc<any>("getDmStats", { account: a }), d.node.call<any>("getProfile", { account: a }).catch(() => null)]);
+    const [stats, prof] = d.town
+      ? [solStats(s, a), { enc_key: d.town.profiles.get(a)?.encKey ?? (await d.node.call<any>("getProfile", { account: a }).catch(() => null))?.enc_key ?? null }]
+      : await Promise.all([s.rpc<any>("getDmStats", { account: a }), d.node.call<any>("getProfile", { account: a }).catch(() => null)]);
     const ix = s.idx();
     const peers = [...(ix.peers.get(a) ?? [])];
     const all = await Promise.all(peers.map((p) => s.threadView(a, p)));
@@ -291,16 +350,19 @@ export function registerDms(api: Api, d: Deps) {
     const a = addr(c.params.account, "account");
     const enc = new TextEncoder();
     let unsub: (() => void) | null = null;
+    let unsubSol: (() => void) | null = null;
     let beat: NodeJS.Timeout | null = null;
     let pend: NodeJS.Timeout | null = null;
     const sent = new Set<string>();
     let lastH = s.tip();
+    const solTip = () => (d.town ? SOL_BASE + d.town.recs.length : 0);
+    let lastS = solTip();
     const states = new Map<string, string>();
     const mine = () => {
       const es = s.escrowsOf(a);
       return [...es.in, ...es.out];
     };
-    for (const e of mine()) states.set(e.messageId, DmIndex.escrowState(e, lastH));
+    for (const e of mine()) states.set(e.messageId, s.escState(e));
     const stream = new ReadableStream<Uint8Array>({
       start(ctl) {
         const send = (ev: string, data: unknown) => {
@@ -311,26 +373,32 @@ export function registerDms(api: Api, d: Deps) {
           }
         };
         ctl.enqueue(enc.encode(`: inbox stream for ${a}, tip ${lastH}\n\n`));
-        unsub = d.ix.onUpdate(async () => {
+        const wake = async () => {
           const h = s.tip();
-          if (h === lastH) return;
-          const from = lastH;
+          const hs = solTip();
+          if (h === lastH && hs === lastS) return;
+          const ranges: [number, number][] = [[lastH + 1, h], [lastS + 1, hs]];
           lastH = h;
+          lastS = hs;
           const ix = s.idx();
           const joined = ix.memberOf.get(a) ?? new Set();
-          for (let x = from + 1; x <= h; x++) {
-            for (const m of ix.byHeight.get(x) ?? []) {
-              if (m.from === a || m.to === a || (m.channel && joined.has(m.channel))) send("message", await s.msgView(m));
+          for (const [lo, hi] of ranges) {
+            for (let x = lo; x <= hi && lo > 0; x++) {
+              for (const m of ix.byHeight.get(x) ?? []) {
+                if (m.from === a || m.to === a || (m.channel && joined.has(m.channel))) send("message", await s.msgView(m));
+              }
             }
           }
           for (const e of mine()) {
-            const st = DmIndex.escrowState(e, h);
+            const st = s.escState(e);
             if (states.get(e.messageId) !== st) {
               states.set(e.messageId, st);
               send("escrow", s.escrowView(e));
             }
           }
-        });
+        };
+        unsub = d.ix.onUpdate(wake);
+        unsubSol = d.town?.onUpdate(() => void wake()) ?? null;
         beat = setInterval(() => {
           try {
             ctl.enqueue(enc.encode(`: heartbeat ${Date.now()}\n\n`));
@@ -353,6 +421,7 @@ export function registerDms(api: Api, d: Deps) {
       },
       cancel() {
         unsub?.();
+        unsubSol?.();
         if (beat) clearInterval(beat);
         if (pend) clearInterval(pend);
       },
@@ -364,7 +433,9 @@ export function registerDms(api: Api, d: Deps) {
     const a = addr(c.params.a, "a");
     const b = addr(c.params.b, "b");
     if (a === b) throw badRequest("a and b are the same account");
-    const [gate, th] = await Promise.all([s.rpc<any>("getDmGate", { from: a, to: b }), s.rpc<any>("getDmThread", { a, b })]);
+    const [gate, th] = d.town
+      ? [solGate(d.town, a, b), { consent_a_for_b: d.town.consentOf(a, b)?.state ?? null, consent_b_for_a: d.town.consentOf(b, a)?.state ?? null }]
+      : await Promise.all([s.rpc<any>("getDmGate", { from: a, to: b }), s.rpc<any>("getDmThread", { a, b })]);
     const { p, next } = page(s.idx().thread(a, b), c.query);
     const pend = (await s.pending()).filter((x) => x.to && ((x.from.account === a && x.to.account === b) || (x.from.account === b && x.to.account === a)));
     return { a, b, messages: await s.msgs(p), next, pending: pend, gate, consent: { a_for_b: th?.consent_a_for_b ?? null, b_for_a: th?.consent_b_for_a ?? null }, metadata_note: METADATA_NOTE };
@@ -390,7 +461,8 @@ export function registerDms(api: Api, d: Deps) {
 
   api.get("/v1/consent/:account", (c) => {
     const a = addr(c.params.account, "account");
-    const m = s.idx().consent.get(a) ?? new Map();
+    const m = new Map(s.idx().consent.get(a) ?? new Map());
+    for (const [peer, v] of d.town?.consent.get(a) ?? []) m.set(peer, { state: v.state, height: v.slot });
     const pick = (st: number) => [...m.entries()].filter(([, v]) => v.state === st).sort((x, y) => y[1].height - x[1].height).map(([k, v]) => ({ ...s.card(k), height: v.height }));
     return { account: a, allow: pick(1), deny: pick(2) };
   }, { cache: 3 });
@@ -439,6 +511,7 @@ export function registerDms(api: Api, d: Deps) {
 
   api.post("/v1/tx/send-message", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solSend(s, b0);
     const from = addr(b0.from, "from");
     const hasTo = b0.to !== undefined && b0.to !== null && b0.to !== "";
     const hasCh = b0.channel !== undefined && b0.channel !== null && b0.channel !== "";
@@ -528,6 +601,8 @@ export function registerDms(api: Api, d: Deps) {
     const b0 = await c.json();
     const from = addr(b0.from, "from");
     const id = hex64(b0.message_id, "message_id");
+    if (d.town?.escrows.has(id)) return solReclaim(s, from, id);
+    // an escrow of the Cadre-chain history: ReclaimMessage (kind 17) stays valid on the chain after the town sunset
     const bb = await builderBase(d, from);
     const e = await s.rpc<any>("getMessageEscrow", { message_id: id });
     if (!e) throw refused("no escrow for this message (never escrowed, already released by a reply, or already reclaimed)");
@@ -539,6 +614,7 @@ export function registerDms(api: Api, d: Deps) {
 
   api.post("/v1/tx/set-consent", async (c) => {
     const b0 = await c.json();
+    if (d.town) return solConsent(s, b0);
     const from = addr(b0.from, "from");
     if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 64) throw badRequest("items is a list of 1..64 {peer, state}");
     const items = b0.items.map((x: any, i: number) => {
@@ -553,6 +629,7 @@ export function registerDms(api: Api, d: Deps) {
   });
 
   api.post("/v1/tx/channel-config", async (c) => {
+    if (d.town) throw new ApiError(410, "gone", "channels did not move to the Solana town; the Cadre-chain channels stay readable (GET /v1/channels)");
     const b0 = await c.json();
     const from = addr(b0.from, "from");
     const create = b0.channel_id === undefined || b0.channel_id === null || b0.channel_id === "";
@@ -602,6 +679,7 @@ export function registerDms(api: Api, d: Deps) {
   });
 
   api.post("/v1/tx/channel-member", async (c) => {
+    if (d.town) throw new ApiError(410, "gone", "channels did not move to the Solana town; the Cadre-chain channels stay readable (GET /v1/channels)");
     const b0 = await c.json();
     const from = addr(b0.from, "from");
     const channel = hex64(b0.channel, "channel");
@@ -651,6 +729,7 @@ export function registerDms(api: Api, d: Deps) {
   });
 
   api.post("/v1/tx/channel-key", async (c) => {
+    if (d.town) throw new ApiError(410, "gone", "channels did not move to the Solana town; the Cadre-chain channels stay readable (GET /v1/channels)");
     const b0 = await c.json();
     const from = addr(b0.from, "from");
     const channel = hex64(b0.channel, "channel");
@@ -676,4 +755,128 @@ export function registerDms(api: Api, d: Deps) {
     const body: DmBody = { kind: "ChannelKey", channel, epoch, envelopes: envs };
     return built(bb, body, { channel: ch, new_epoch: epoch === ch.epoch + 1, summary: { from, channel, epoch, envelopes: envs.length } });
   });
+}
+
+// ------------------------------------------------------------ Solana (TOWN_PROGRAM set)
+
+function solStats(s: DmState, a: string) {
+  const town = s.d.town!;
+  const ix = s.idx();
+  let sent = 0, received = 0, payIn = 0n, payOut = 0n, open = 0, locked = 0n, answered = 0, refunded = 0;
+  for (const p of ix.peers.get(a) ?? []) {
+    for (const m of ix.thread(a, p)) {
+      if (!isSolHeight(m.height)) continue;
+      const sm = town.messages.get(m.messageId);
+      const pay = BigInt(sm?.pay ?? "0");
+      if (m.from === a) {
+        sent++;
+        if (!sm?.escrowed) payOut += pay;
+      } else {
+        received++;
+        if (!sm?.escrowed) payIn += pay;
+      }
+    }
+  }
+  for (const e of town.escrows.values()) {
+    if (e.from === a && !e.settled) {
+      open++;
+      locked += BigInt(e.pay);
+    }
+    if (e.settled?.state === "released") {
+      if (e.to === a) {
+        answered++;
+        payIn += BigInt(e.pay);
+      }
+      if (e.from === a) payOut += BigInt(e.pay);
+    }
+    if (e.settled?.state === "refunded" && e.from === a) refunded++;
+  }
+  return {
+    account: a, chain: "solana", sent, received, pay_in: payIn.toString(), pay_out: payOut.toString(), pay_unit: "lamports",
+    open_escrows: open, locked: locked.toString(), answered, refunded, window: "the Solana town only (Cadre-chain history counts stay on GET /v1/threads)",
+  };
+}
+
+async function solSend(s: DmState, b0: any) {
+  const d = s.d;
+  const town = needTown(d);
+  const from = addr(b0.from, "from");
+  if (b0.channel !== undefined && b0.channel !== null && b0.channel !== "") throw new ApiError(410, "gone", "channels did not move to the Solana town; send a DM with to");
+  const to = addr(b0.to, "to");
+  if (to === from) throw badRequest("cannot message yourself");
+  const mode = b0.mode ?? "plain";
+  const m = MODES.indexOf(mode);
+  if (m < 0) throw badRequest("mode is plain or sealed");
+  let raw: Uint8Array;
+  if (m === 0) {
+    if (typeof b0.body !== "string" || !b0.body) throw badRequest("body (text) is required in plain mode");
+    raw = Buffer.from(b0.body, "utf8");
+  } else {
+    if (typeof b0.body_hex !== "string" || !/^([0-9a-fA-F]{2})+$/.test(b0.body_hex)) throw badRequest("body_hex (the sealed body from window.pearl.dm.seal) is required in sealed mode");
+    if (b0.body !== undefined && b0.body !== null) throw badRequest("a sealed message carries body_hex only; the API never takes a plaintext to seal");
+    raw = Buffer.from(b0.body_hex, "hex");
+    try {
+      checkSealedDm(raw);
+    } catch (e) {
+      throw badRequest(`body_hex is not a sealed DM body: ${(e as Error).message}`);
+    }
+  }
+  if (raw.length > TS.LIMITS.body) throw badRequest(`body is ${raw.length} bytes, the town takes at most ${TS.LIMITS.body}`);
+  const replyTo = b0.reply_to === undefined || b0.reply_to === null || b0.reply_to === "" ? null : hex64(b0.reply_to, "reply_to");
+  const pay = optAmount(b0.pay, "pay (lamports)");
+  const reclaim = b0.reclaim_after === undefined || b0.reclaim_after === null ? 0 : Number(b0.reclaim_after);
+  if (!Number.isInteger(reclaim) || reclaim < 0 || reclaim > 0xffffffff) throw badRequest("reclaim_after is a number of seconds (u32) on the Solana town");
+  const ref = b0.thought_ref === undefined || b0.thought_ref === null ? "" : String(b0.thought_ref);
+  if (ref && !/^[\x21-\x7e]{1,64}$/.test(ref)) throw badRequest("thought_ref is 1..64 printable ASCII characters without spaces");
+  const gate = solGate(town, from, to);
+  if (m === 1 && !gate.sealed_ok) throw refused("the recipient has published no enc_key on its Solana town profile, so it cannot open a sealed message", { gate });
+  if (!gate.can_send) throw refused(gate.reason, { gate });
+  const need = BigInt(gate.required_pay);
+  if (pay < need) throw refused(`the recipient takes cold DMs at a price of ${need} lamports: pay ${pay} is short`, { gate });
+  if (reclaim > 0) {
+    if (pay === 0n) throw badRequest("reclaim_after needs pay > 0");
+    const c = town.config;
+    if (c && (reclaim < c.reclaimMinSecs || reclaim > c.reclaimMaxSecs)) throw badRequest(`reclaim_after must be ${c.reclaimMinSecs}..=${c.reclaimMaxSecs} seconds`);
+  }
+  // a reply in time to a paid DM from `to` releases its escrow: pass that escrow
+  const esc = replyTo ? town.escrows.get(replyTo) : undefined;
+  const replyEscrow = esc && !esc.settled && esc.from === to && esc.to === from ? TS.escrowPda(replyTo!, town.program) : null;
+  const nonce = TS.freshNonce();
+  const ix = TS.sendMessageIx(from, to, {
+    nonce, mode: m, replyTo, pay, reclaimAfterSecs: reclaim, body: raw, thoughtRef: ref || null, withFollowEdge: town.follows(to, from), replyEscrow,
+  }, town.program);
+  return solBuilt(d, [ix], from, {
+    from, to, mode, bytes: raw.length, pay_lamports: pay.toString(), reclaim_after_secs: reclaim, reply_to: replyTo, escrow: reclaim > 0, releases_escrow: !!replyEscrow,
+  }, { gate, message_id: TS.messageId(from, nonce), nonce: nonce.toString(), message_id_rule: "sha256(\"cadre-town:msg:v1\" || from || nonce u64 LE), fixed by the nonce in this tx", metadata_note: METADATA_NOTE, unit_note: UNIT_NOTE });
+}
+
+async function solReclaim(s: DmState, from: string, id: string) {
+  const town = needTown(s.d);
+  const e = town.escrows.get(id)!;
+  if (e.settled) throw refused(`this escrow is already ${e.settled.state}`, { escrow: s.escrowView(s.idx().escrows.get(id)!) });
+  let ix;
+  if (from === e.from) {
+    if (Math.floor(Date.now() / 1000) <= e.deadline) throw refused(`the reply window is open until ${new Date(e.deadline * 1000).toISOString()}`);
+    ix = TS.reclaimIx(from, id, town.program);
+  } else if (from === e.to) ix = TS.declineIx(from, e.from, id, town.program);
+  else throw refused("only the sender (after the window) or the recipient (to decline) can settle this escrow");
+  return solBuilt(s.d, [ix], from, { from, message_id: id, refund_to: e.from, pay_lamports: e.pay, declining: from === e.to });
+}
+
+async function solConsent(s: DmState, b0: any) {
+  const town = needTown(s.d);
+  const from = addr(b0.from, "from");
+  if (!Array.isArray(b0.items) || b0.items.length < 1 || b0.items.length > 8) throw badRequest("items is a list of 1..8 {peer, state} (one Solana transaction)");
+  const ixs = b0.items.map((x: any, i: number) => {
+    const peer = addr(x?.peer, `items[${i}].peer`);
+    if (peer === from || peer === ZERO_KEY) throw badRequest(`items[${i}]: not a valid peer`);
+    const st = CONSENT_STATES.indexOf(x?.state);
+    if (st < 0) throw badRequest(`items[${i}].state is allow, deny or clear`);
+    if (st === 0) {
+      if (!town.consentOf(from, peer)) throw refused(`items[${i}]: nothing to clear for ${peer}`);
+      return TS.clearConsentIx(from, peer, town.program);
+    }
+    return TS.setConsentIx(from, peer, st, town.program);
+  });
+  return solBuilt(s.d, ixs, from, { from, items: b0.items.length });
 }

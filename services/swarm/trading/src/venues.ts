@@ -13,7 +13,8 @@ import { Abi, type Cadre, errText } from "./cadre.ts";
 import { ata, cpOut, decodeMandate, type MandateProgram, pnlOf, type PoolInfo, readReserves, reservesOf, swapEventsFromLogs, VAULT_RENT } from "./solmandate.ts";
 
 export interface MarketEvent { venue: string; base: bigint; quote: bigint; at: number; ref: string }
-export interface Book { quote: bigint; base: bigint; realized: bigint }
+/** cost: the average-cost basis of the open position (quote units), when the venue tracks own fills. */
+export interface Book { quote: bigint; base: bigint; realized: bigint; cost?: bigint }
 export interface Fill {
   ok: boolean; venue: string; side: 0 | 1; amountIn: bigint; minOut: bigint; out: bigint; ref: string; error?: string;
   t: { built: number; sent: number; landed: number }; landedAt: string; fee: bigint;

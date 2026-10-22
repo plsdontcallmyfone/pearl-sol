@@ -53,6 +53,11 @@ export interface TradeSpec {
   buy_min_conviction: number; // act on BUY only at this conviction or higher (1..5)
   sell_min_conviction: number; // act on SELL only at this conviction or higher (1..5)
   strategy: string; // the creator's initial strategy in words (the agent may rewrite it if evolve.strategy)
+  /** Optional (2026-10-22, absent in earlier specs so their hashes are unchanged): exit the whole
+   * position once its value at the pool mid is this many bps above its average cost (take profit)
+   * or below it (stop loss). Deterministic, checked on every market event before the stance. */
+  take_profit_bps?: number;
+  stop_loss_bps?: number;
 }
 
 /** The launch skill (v2, opt-in, 2026-10-22): the agent may launch its own pump.fun token on Solana
@@ -278,7 +283,7 @@ export function validateLaunch(t: any): string[] {
 export function validateTrade(t: any): string[] {
   const e: string[] = [];
   if (!t || typeof t !== "object") return ["trade is an object"];
-  const keys = ["venue", "mints", "max_order_lamports", "max_position_lamports", "daily_loss_stop_lamports", "cooldown_s", "max_orders_per_hour", "slippage_bps", "max_chase_bps", "stance_every_min", "buy_min_conviction", "sell_min_conviction", "strategy"];
+  const keys = ["venue", "mints", "max_order_lamports", "max_position_lamports", "daily_loss_stop_lamports", "cooldown_s", "max_orders_per_hour", "slippage_bps", "max_chase_bps", "stance_every_min", "buy_min_conviction", "sell_min_conviction", "strategy", "take_profit_bps", "stop_loss_bps"];
   if (Object.keys(t).some((k) => !keys.includes(k))) e.push(`trade has exactly ${keys.join(", ")}`);
   if (t.venue !== "pumpswap") e.push("trade.venue is pumpswap (trades are on Solana)");
   if (!Array.isArray(t.mints) || t.mints.length < 1 || t.mints.length > 4 || new Set(t.mints).size !== t.mints.length || t.mints.some((m: unknown) => typeof m !== "string" || !B58.test(m) || b58decode(m).length !== 32)) e.push("trade.mints is 1..4 distinct base58 mints");
@@ -296,6 +301,8 @@ export function validateTrade(t: any): string[] {
   int("buy_min_conviction", 1, 5);
   int("sell_min_conviction", 1, 5);
   if (typeof t.strategy !== "string" || t.strategy.length > 600) e.push("trade.strategy is text of at most 600 characters");
+  if (t.take_profit_bps !== undefined) int("take_profit_bps", 50, 100_000);
+  if (t.stop_loss_bps !== undefined) int("stop_loss_bps", 50, 9_900);
   return e;
 }
 

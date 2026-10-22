@@ -110,6 +110,11 @@ pub struct DmQuote {
     pub body: String,
     pub fee: u64,
     pub pay: u64,
+    /// The town on Solana (docs/TOWN-ON-SOLANA.md): the builder's unsigned Solana tx (base64);
+    /// fee and pay are lamports then. None = a Cadre-chain SendMessage (fee and pay in chain units).
+    pub solana_tx: Option<String>,
+    /// The message id the builder fixed (Solana: sha256 of sender and the tx's nonce).
+    pub message_id: Option<String>,
 }
 
 fn agent(t: Duration) -> ureq::Agent {
@@ -407,7 +412,12 @@ impl Net {
             Err(ureq::Error::Status(c, r)) => bail!("{}", api_error(c, r)),
             Err(e) => bail!("{}", short(&e)),
         };
-        Ok(DmQuote { to: to.into(), body: body.into(), fee: num(&v["fee"]), pay })
+        if v["chain"] == "solana" {
+            let tx = v["transaction"].as_str().ok_or_else(|| anyhow!("the Solana DM builder returned no transaction"))?;
+            // one signature: the sender pays the network fee (5000 lamports) and any pay
+            return Ok(DmQuote { to: to.into(), body: body.into(), fee: 5000, pay, solana_tx: Some(tx.into()), message_id: v["message_id"].as_str().map(String::from) });
+        }
+        Ok(DmQuote { to: to.into(), body: body.into(), fee: num(&v["fee"]), pay, solana_tx: None, message_id: None })
     }
 }
 
@@ -417,6 +427,23 @@ fn num(v: &Value) -> u64 {
         Value::Number(n) => n.as_u64().unwrap_or(0),
         _ => 0,
     }
+}
+
+/// Signs an unsigned one-signer legacy Solana tx from a cadre-api builder (signature slot 0).
+pub fn sign_solana_tx(b64: &str, key: &SigningKey) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let mut tx = base64::engine::general_purpose::STANDARD.decode(b64)?;
+    if tx.len() < 1 + 64 + 3 || tx[0] != 1 {
+        bail!("the builder's transaction is not a one-signer legacy transaction");
+    }
+    // the fee payer (first account key) must be this key
+    let n_keys_at = 65 + 3;
+    if tx.len() < n_keys_at + 1 + 32 || tx[n_keys_at + 1..n_keys_at + 33] != key.verifying_key().to_bytes() {
+        bail!("the builder's transaction is not for this key");
+    }
+    let sig = key.sign(&tx[65..]).to_bytes();
+    tx[1..65].copy_from_slice(&sig);
+    Ok(tx)
 }
 
 /// The signed message of cadre-auth-v2 (SPEC 5.4).
@@ -449,6 +476,27 @@ pub fn receipt_line(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signs_a_builder_solana_tx() {
+        use base64::Engine;
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        // 1 sig slot, header (1, 0, 1), 2 keys (payer, program), blockhash, 1 ix
+        let mut m = vec![1u8, 0, 1, 2];
+        m.extend_from_slice(&key.verifying_key().to_bytes());
+        m.extend_from_slice(&[9u8; 32]);
+        m.extend_from_slice(&[3u8; 32]);
+        m.extend_from_slice(&[1, 1, 1, 0, 1, 42]);
+        let mut wire = vec![1u8];
+        wire.extend_from_slice(&[0u8; 64]);
+        wire.extend_from_slice(&m);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&wire);
+        let tx = sign_solana_tx(&b64, &key).unwrap();
+        let sig = ed25519_dalek::Signature::from_slice(&tx[1..65]).unwrap();
+        key.verifying_key().verify_strict(&m, &sig).unwrap();
+        let other = SigningKey::from_bytes(&[8u8; 32]);
+        assert!(sign_solana_tx(&b64, &other).is_err(), "a tx for another payer is refused");
+    }
 
     #[test]
     fn auth_v2_message_and_headers() {

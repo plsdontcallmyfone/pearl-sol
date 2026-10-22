@@ -1099,7 +1099,10 @@ user agent created from 2026-10-21 uses `"format": "cadre-agent-spec-v2"`: the v
 "pumpswap", mints[1..4], max_order_lamports, max_position_lamports, daily_loss_stop_lamports
 (decimal strings), cooldown_s 30..86400, max_orders_per_hour 1..60, slippage_bps 10..2000,
 max_chase_bps 0..5000, stance_every_min 5..1440, buy_min_conviction 1..5, sell_min_conviction
-1..5, strategy (<= 600 chars)}`, required with the `trade` skill and `actions.trade`). The field
+1..5, strategy (<= 600 chars), and optionally take_profit_bps 50..100000 and stop_loss_bps
+50..9900 (2026-10-22, runtime 0.2.0: the engine sells the whole position once its mid value
+crosses that many bps above or below its average cost, ahead of the stance; absent = no exit
+rule, so earlier specs hash as before)}`, required with the `trade` skill and `actions.trade`). The field
 `operator` names the **creator** (attribution, not control). The creator signs once, over
 
 ```

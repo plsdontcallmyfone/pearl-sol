@@ -6,6 +6,7 @@ import { b58decode, b58encode } from "../../src/b58.ts";
 import { blake3 } from "../../src/blake3.ts";
 import { feeFor, frame, NS_TX, signTx, type Body } from "../../src/chaintx.ts";
 import { NodeRpc } from "../../src/clients.ts";
+import { nodeFromEnv } from "../../src/townnode.ts";
 import type { Wallet } from "../../src/wallet.ts";
 import { waitSettled, policyFromEnv, type PreconfPolicy, type Settled } from "./preconf.ts";
 
@@ -108,7 +109,7 @@ export class Cadre {
   chainId = 0;
   params: Params | null = null;
   nonces = new Map<string, bigint>();
-  constructor(url: string) { this.rpc = new NodeRpc(url); }
+  constructor(url: string) { this.rpc = nodeFromEnv(url, process.env); }
 
   async init() {
     const info = await this.rpc.call("getChainInfo");
@@ -133,7 +134,7 @@ export class Cadre {
   private async push(w: Wallet, tx: Uint8Array, nonce: bigint, fee: bigint): Promise<Sent> {
     const sentAt = Date.now();
     const r = await this.rpc.sendTx(tx);
-    this.nonces.set(w.address, nonce + 1n);
+    if (!(r as { solana?: boolean }).solana) this.nonces.set(w.address, nonce + 1n); // a town tx on Solana takes no chain nonce
     return { txHash: r.tx_hash, nonce, fee, sentAt, bytes: tx.length };
   }
 
