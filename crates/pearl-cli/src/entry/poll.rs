@@ -34,10 +34,11 @@ pub enum Source {
     Status,
     Trade,
     Market,
+    Boards,
 }
 
 impl Source {
-    pub const ALL: [Source; 9] = [Source::Chain, Source::Feed, Source::Agents, Source::Dm, Source::Models, Source::Inbox, Source::Status, Source::Trade, Source::Market];
+    pub const ALL: [Source; 10] = [Source::Chain, Source::Feed, Source::Agents, Source::Dm, Source::Models, Source::Inbox, Source::Status, Source::Trade, Source::Market, Source::Boards];
 
     pub fn period(self) -> Duration {
         Duration::from_secs(match self {
@@ -47,6 +48,7 @@ impl Source {
             Source::Inbox => 10,
             Source::Trade => 15,
             Source::Market => 15,
+            Source::Boards => 30,
         })
     }
 }
@@ -64,6 +66,10 @@ pub struct Wants {
     pub have_model: AtomicBool,
     /// The Trade view has been opened: keep quotes, the leaderboard and fills fresh.
     pub trade: AtomicBool,
+    /// The Boards view has been opened: keep the leaderboards fresh (window and side as codes).
+    pub boards: AtomicBool,
+    pub boards_window: std::sync::atomic::AtomicU8,
+    pub boards_side: std::sync::atomic::AtomicU8,
 }
 
 pub enum Kick {
@@ -108,6 +114,7 @@ fn run(ctx: Arc<Ctx>, net: Net, me: Option<String>, tx: Sender<Msg>, kick: Recei
                 Source::Status => wants.status.load(Ordering::Relaxed),
                 Source::Trade => wants.trade.load(Ordering::Relaxed),
                 Source::Market => wants.market.load(Ordering::Relaxed),
+                Source::Boards => wants.boards.load(Ordering::Relaxed),
                 Source::Inbox => wants.inbox.load(Ordering::Relaxed) && me.is_some(),
                 Source::Models => !wants.have_model.load(Ordering::Relaxed),
                 _ => true,
@@ -125,8 +132,9 @@ fn run(ctx: Arc<Ctx>, net: Net, me: Option<String>, tx: Sender<Msg>, kick: Recei
             last.insert(s, now);
             let (ctx, net, tx, inflight, prev, last_sol, me) = (ctx.clone(), net.clone(), tx.clone(), inflight.clone(), prev.clone(), last_sol.clone(), me.clone());
             let _ = tx.send(Msg::Loading(s, true));
+            let bw = (wants.boards_window.load(Ordering::Relaxed), wants.boards_side.load(Ordering::Relaxed));
             std::thread::spawn(move || {
-                let alive = fetch(s, &ctx, &net, me.as_deref(), &tx, &prev, &last_sol);
+                let alive = fetch(s, &ctx, &net, me.as_deref(), &tx, &prev, &last_sol, bw);
                 inflight.lock().unwrap().remove(&s);
                 if alive {
                     let _ = tx.send(Msg::Loading(s, false));
@@ -144,7 +152,8 @@ fn run(ctx: Arc<Ctx>, net: Net, me: Option<String>, tx: Sender<Msg>, kick: Recei
 }
 
 /// One read; returns false when the UI is gone.
-fn fetch(s: Source, ctx: &Ctx, net: &Net, me: Option<&str>, tx: &Sender<Msg>, prev: &Mutex<Option<Snapshot>>, last_sol: &Mutex<Option<Instant>>) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn fetch(s: Source, ctx: &Ctx, net: &Net, me: Option<&str>, tx: &Sender<Msg>, prev: &Mutex<Option<Snapshot>>, last_sol: &Mutex<Option<Instant>>, bw: (u8, u8)) -> bool {
     let api = net.api.clone();
     let msg = match s {
         Source::Chain => {
@@ -185,6 +194,10 @@ fn fetch(s: Source, ctx: &Ctx, net: &Net, me: Option<&str>, tx: &Sender<Msg>, pr
         Source::Status => Msg::Status(Box::new(crate::health::run_all(ctx))),
         Source::Trade => Msg::Trade(Box::new(super::trade::fetch(api.as_deref(), me))),
         Source::Market => Msg::Market(Box::new(crate::market::snap(ctx).map_err(|e| format!("{e:#}")))),
+        Source::Boards => {
+            let (w, s) = super::boards_view::codes(bw.0, bw.1);
+            Msg::Boards(Box::new(super::boards_view::fetch(api.as_deref(), w, s)))
+        }
     };
     tx.send(msg).is_ok()
 }
