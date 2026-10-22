@@ -692,3 +692,26 @@ Not verified: a real wallet signature through the site wizard (the headless stan
 connects); the hosted path of a v2 agent on box 0 (cadre-agents there runs the old code until the
 deploy); the agent's stance loop stopped placing orders when the devnet gateway answered 502 (the
 engine halts while the agent is not running, as designed).
+
+
+## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
+
+| Suite | Where | Result |
+|---|---|---|
+| tools/cadre/test_batch.py, tiny synthetic Llama (7 mixed requests, pool off and on) | test box; A40 pod CPU | 17/17 (console only; testbox-tiny.log is the earlier pre-pool run, 9/9); 17/17 (a40-tb-tiny.log) |
+| test_batch.py, Llama-3.2-1B-Instruct w7a7, 9 mixed requests, batched vs alone (ids, text, rows, 288 files, logits rows), pool off and on, + cadre-replay local of every unpadded batched request | test box CPU (4 threads) | 28/28 (testbox-real2.log; replay 7/7 honest, 7.4-18.8 s each) |
+| same | A40 (cuda) | 28/28 twice (a40-tb-gpu3.log, a40-tb-gpu4.log; replay 7/7 honest) |
+| CPU vs GPU, same pod, same model files: all A/C files of the 9 batched requests | A40 pod | 9/9 identical |
+| tools/cadre/test_cadre.py (unchanged serial path) | test box | 9/9 |
+| services/inference-gateway (new: backpressure 2, retention 3) | test box | 27/27 |
+| same | Mac | 26/27: server_limits a_silent_client_is_cut_off_by_the_read_timeout fails on macOS, also on unmodified main |
+| throughput, bench_batch.sh (MAINNET 7) | A40; test box 4 and 2 threads | a40-bench-gpu*.jsonl, testbox-bench-cpu-t4-v2.jsonl, testbox-bench-cpu-t2-v2.jsonl |
+| worker peak RSS for box 0 settings | test box, 2 threads | testbox-rss2.txt (3.00 GB at the unit's settings) |
+
+Found and fixed on the way: ThreadingHTTPServer's listen backlog of 5 reset clients at 64 concurrent
+(now 256); per-request capture clones and per-request attention made the GPU launch-bound at 45 tok/s
+(per-step capture + pooled decode attention: 140); a KV pool of 128 x 2048 positions does not fit an
+A40 (51 GB; --pool-positions). Not verified: the batched worker on box 0 itself (rollout handed to the
+orchestrator), a paid gateway round end to end with the new retention on a live chain (tested against a
+mock chain that includes every tx).
+
