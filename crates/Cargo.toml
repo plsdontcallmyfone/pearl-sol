@@ -11,9 +11,9 @@ members = [
     "../services/pool",
     "../services/inference-gateway",
 ]
-# Standalone (own [workspace]): chain-litesvm pulls solana-sdk + LiteSVM; pearl-cli pulls
+# Standalone (own [workspace]): chain-litesvm pulls solana-sdk + LiteSVM; cadre-cli pulls
 # chain/agent-types (Commonware, Rust 1.95, pinned in its rust-toolchain.toml).
-exclude = ["chain-litesvm", "pearl-cli"]
+exclude = ["chain-litesvm", "cadre-cli"]
 
 [workspace.package]
 edition = "2021"

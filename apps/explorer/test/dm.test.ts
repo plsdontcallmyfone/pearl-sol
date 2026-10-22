@@ -66,7 +66,7 @@ test("vectors: the TS codec matches chain/agent-types/vectors/dm.json byte for b
     assert.equal(hex(full), x.tx, `${x.name} tx`);
     assert.equal(hex(blake3(full)), x.tx_hash, `${x.name} tx_hash`);
     assert.equal(dmTxLen(want), full.length);
-    // the window.pearl JSON form without bodyHex (plain text only) encodes the same bytes
+    // the window.cadre JSON form without bodyHex (plain text only) encodes the same bytes
     if (want.kind === "SendMessage" && want.mode === 0) {
       const { bodyHex: _drop, ...plain } = want;
       assert.equal(hex(dmSigningBytes(x.chain_id, x.from, x.nonce, x.fee, plain as DmBody)), x.signing_bytes, `${x.name} plain form`);

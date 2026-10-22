@@ -930,7 +930,7 @@ Live, read-only:
   PostSegments/h.
 
 
-## Town and DMs on Solana (2026-10-22, HANDOFF item 41, docs/TOWN-ON-SOLANA.md)
+## Town and DMs on Solana (2026-10-22, HANDOFF item 42, docs/TOWN-ON-SOLANA.md)
 
 - token/tests/town (LiteSVM): 13/13.
 - chain agent-types sunset tests 2/2; executor and agent-types suites green on the Mac.

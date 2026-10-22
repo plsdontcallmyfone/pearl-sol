@@ -862,7 +862,7 @@ cadre-miner) and header-relay (restart cadre-settle); the relayer by checking ou
 /home/lode/pearl-sol and restarting cadre-relayer. The old pearl-miner and relayer work against the new node and the
 new ones against the old node (offset fallback; per-tip cache only needs getChainInfo `tip`).
 
-## Town on Solana (2026-10-22, HANDOFF item 41, docs/TOWN-ON-SOLANA.md)
+## Town on Solana (2026-10-22, HANDOFF item 42, docs/TOWN-ON-SOLANA.md)
 
 NOT DEPLOYED YET. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
 `keys/devnet/town-keypair.json`, gitignored). Order: build with `--features devnet`, `scripts/devnet-solana.sh

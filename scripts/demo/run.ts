@@ -74,7 +74,7 @@ const BIN = {
   job: resolve(ROOT, "crates/target/release/pearl-job"),
   headerRelay: resolve(ROOT, "services/header-relay/target/release/header-relay"),
   gateway: resolve(ROOT, "crates/target/release/cadre-gateway"),
-  pearl: resolve(ROOT, "crates/pearl-cli/target/release/pearl"),
+  cadre: resolve(ROOT, "crates/cadre-cli/target/release/cadre"),
 };
 // Cadre inference (SPEC 4.5 / 5.4): the quantized model (tools/cadre/quantize.py), the worker's python,
 // the model store the miner, attester and gateway read registered matrices from
@@ -812,11 +812,11 @@ async function stepInference(): Promise<string> {
   // fees: the registrant, the gateway (server) key
   await sendChainTx(user.kp, KIND.Transfer, transferBody(registrant.publicKey, 1_000_000_000n));
   await sendChainTx(user.kp, KIND.Transfer, transferBody(gwKey.kp.publicKey, 1_000_000_000n));
-  const pearl = (args: string[], key: string, timeoutMs = 300_000) => lastJson(run(BIN.pearl, ["--network", "localnet", "--rpc", NODE_RPC, "--key", key, "--json", "--wait", ...args], { timeoutMs }));
+  const pearl = (args: string[], key: string, timeoutMs = 300_000) => lastJson(run(BIN.cadre, ["--network", "localnet", "--rpc", NODE_RPC, "--key", key, "--json", "--wait", ...args], { timeoutMs }));
   // CADRE_REGISTER_RPC: register and upload through another node (scripts/serve8b uses node 2 with a
   // short blob grace and a slow put rate); CADRE_UPLOAD_PARALLEL: chunk uploads in flight
   const regRpc = process.env.CADRE_REGISTER_RPC ?? NODE_RPC;
-  const reg = lastJson(run(BIN.pearl, ["--network", "localnet", "--rpc", regRpc, "--key", resolve(ROOT, KEYS.payer), "--json", "--wait", "model", "register", modelDir,
+  const reg = lastJson(run(BIN.cadre, ["--network", "localnet", "--rpc", regRpc, "--key", resolve(ROOT, KEYS.payer), "--json", "--wait", "model", "register", modelDir,
     "--store", MODEL_STORE, "--parallel", process.env.CADRE_UPLOAD_PARALLEL ?? "4"], { timeoutMs: 3_600_000 }));
   const regHeight = (await node.getChainInfo()).height;
   info("model registered", { model_id: reg.model_id, matrices: reg.matrices, macs_per_row: reg.macs_per_row, chunks: reg.chunks, bytes: reg.bytes, upload_s: reg.upload_s, height: reg.included_height });

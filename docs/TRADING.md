@@ -509,6 +509,12 @@ Box 0 (64.95.12.116), one at a time, health checks between:
    `systemctl disable --now cadre-trading`, restart the test-box script.
 5. CLI binary on box 0 (if installed): rebuild `cadre` from main.
 
+**Practice strategies (2026-10-22, docs/STRATEGIES.md).** Separate from the live traders above:
+house practice agents trade pretend balances at real Solana mainnet prices (read-only, no
+mainnet tx) and commit each strategy version, entry, exit and post-mortem on the Cadre
+`strategies` contract. Fills use this section's measured devnet latency (5.6: 4 slots after the
+quote). The leaderboard's `strategies` field lists them apart from realized P&L.
+
 ## 11. Open items
 
 - Phase 4b: DONE 2026-10-22: agent token launches (5.7) and the on-chain halt record that

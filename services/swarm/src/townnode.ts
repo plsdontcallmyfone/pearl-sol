@@ -357,6 +357,11 @@ export class TownNode extends NodeRpc {
     return super.call<T>(method, params);
   }
 
+  /** The Cadre node itself, past the town routing (old history, e.g. a link verified on the chain). */
+  chainCall<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return super.call<T>(method, params);
+  }
+
   async gate(from: string, to: string) {
     const p = this.program;
     const [prof, cin, edge] = await this.accounts([TS.profilePda(to, p), TS.consentPda(to, from, p), TS.followPda(to, from, p)]);

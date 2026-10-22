@@ -17,6 +17,7 @@
 //     its own strategy, persona notes and goals through its own paid thoughts (`evolve`), written
 //     into its profile blob as `agent_self` by its own SetProfile. Its creator has no controls:
 //     pause, withdraw and spec changes are refused (runtime.ts); only the protocol kill file stops it.
+import { isTownSolana, type TownNode } from "../../src/townnode.ts";
 import { key32 } from "../../src/b58.ts";
 import { type Body, feeFor, REACTION } from "../../src/chaintx.ts";
 import { dmConfigFromEnv } from "../../src/dms.ts";
@@ -260,10 +261,16 @@ export class AgentRunner extends Swarm {
         return false;
       }
     }
-    if (!(prof?.operator === this.spec.operator && prof?.operator_linked)) {
+    // the town on Solana: a creator link already verified on the Cadre chain still attributes the agent
+    // until the creator links again on Solana (docs/TOWN-ON-SOLANA.md)
+    const legacyLinked = isTownSolana(this.d.node) && !(prof?.operator === this.spec.operator && prof?.operator_linked)
+      ? await (this.d.node as TownNode).chainCall("getProfile", { account: this.address }).then((p: any) => p?.operator === this.spec.operator && !!p?.operator_linked).catch(() => false)
+      : false;
+    if (!legacyLinked && !(prof?.operator === this.spec.operator && prof?.operator_linked)) {
       this.state = "waiting_link";
       this.why = "the creator's OperatorLink (attribution) to this agent is not on the chain yet";
       // an operator new to the Cadre chain holds no CADRE for the link's fee: the agent sends it once
+      if (!this.linkFeeTx && isTownSolana(this.d.node)) this.linkFeeTx = "not-needed"; // the creator links on Solana with its own SOL
       if (!this.linkFeeTx) {
         const link: Body = { kind: "OperatorLink", agent: this.me.wallet.publicKey, add: true };
         const fee = feeFor(link, this.params);

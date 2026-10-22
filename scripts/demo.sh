@@ -62,8 +62,8 @@ echo "building agent-node (chain/, pinned toolchain)..."
 (cd "$ROOT/chain" && cargo build --release -q -p agent-node)
 echo "building pearl-job, pearl-miner, pearl-attester, cadre-gateway (crates/)..."
 (cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester -p cadre-gateway)
-echo "building the pearl CLI (crates/pearl-cli)..."
-(cd "$ROOT/crates/pearl-cli" && cargo build --release -q)
+echo "building the cadre CLI (crates/cadre-cli)..."
+(cd "$ROOT/crates/cadre-cli" && cargo build --release -q)
 echo "building header-relay (services/header-relay)..."
 (cd "$ROOT/services/header-relay" && cargo build --release -q)
 for d in relayer crank storefront-x402; do

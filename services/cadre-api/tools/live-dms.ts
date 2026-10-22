@@ -1,7 +1,7 @@
 // Live check of the DM routes and builders (SPEC 4.10, docs/API.md "DMs and channels") against a
 // running cadre-api over a chain with the DM kinds. It makes fresh test keys (written to KEYS_DIR,
 // never printed), funds them with BridgeUnlock txs signed by the localnet attester key, then signs
-// every builder's window.pearl transaction itself and sends it with POST /v1/tx/chain.
+// every builder's window.cadre transaction itself and sends it with POST /v1/tx/chain.
 //
 //   API=http://127.0.0.1:11750 NODE_RPC=http://127.0.0.1:11730 KEYS_DIR=~/dms-api/keys \
 //   ATTESTER_KEY=keys/localnet/attester-keypair.json node services/cadre-api/tools/live-dms.ts
@@ -71,7 +71,7 @@ function check(name: string, ok: boolean, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? `: ${detail}` : ""}`);
 }
 
-/** Sign a builder reply's window.pearl transaction and send it; wait until the API's index has it. */
+/** Sign a builder reply's window.cadre transaction and send it; wait until the API's index has it. */
 async function sendBuilt(k: Key, built: any, label: string) {
   const { fee, ...body } = built.window_pearl.params.transaction;
   const sb = body.kind in DM_KIND ? dmSigningBytes(built.chain_id, k.pub, built.nonce, fee, body as DmBody) : socialSigningBytes(built.chain_id, k.pub, built.nonce, fee, body as SocialBody);

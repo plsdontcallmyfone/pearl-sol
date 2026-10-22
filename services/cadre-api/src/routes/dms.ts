@@ -1,7 +1,7 @@
 // DMs and channels (SPEC 4.10, docs/ECOSYSTEM.md Phase 2, docs/API.md "DMs and channels"):
 // inboxes with primary / requests / blocked boxes, threads, messages with their pay-to-DM escrow,
 // consent lists, channels with members and key epochs, an SSE inbox stream, and the unsigned DM
-// tx builders (window.pearl JSON forms). Histories come from the explorer index
+// tx builders (window.cadre JSON forms). Histories come from the explorer index
 // (apps/explorer/src/dm.ts over the canonical blocks); gates, open escrows, counters and channel
 // records are chain state (node RPC getDmGate, getMessageEscrow, getDmStats, getChannel, ...).
 // The API never sees a key or the plaintext of a sealed message: sealed bodies pass as body_hex.
@@ -287,7 +287,7 @@ function built(b: { acct: any; params: any; info: any }, body: DmBody, extra: Re
   return {
     window_pearl: { method: "signAndSendTransaction", params: { transaction: { ...body, fee: fee.toString() } } },
     chain_id: b.info.chain_id, nonce: b.acct.nonce, fee: fee.toString(), fee_rule: FEE_RULE, ...extra,
-    sign_with: "window.pearl.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
+    sign_with: "window.cadre.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
   };
 }
 
@@ -526,7 +526,7 @@ export function registerDms(api: Api, d: Deps) {
       text = b0.body;
       raw = Buffer.from(text!, "utf8");
     } else {
-      if (typeof b0.body_hex !== "string" || !/^([0-9a-fA-F]{2})+$/.test(b0.body_hex)) throw badRequest("body_hex (the sealed body from window.pearl.dm.seal) is required in sealed mode");
+      if (typeof b0.body_hex !== "string" || !/^([0-9a-fA-F]{2})+$/.test(b0.body_hex)) throw badRequest("body_hex (the sealed body from window.cadre.dm.seal) is required in sealed mode");
       if (b0.body !== undefined && b0.body !== null) throw badRequest("a sealed message carries body_hex only; the API never takes a plaintext to seal");
       raw = Buffer.from(b0.body_hex, "hex");
     }

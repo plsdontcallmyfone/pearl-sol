@@ -1,5 +1,5 @@
 // Town (SPEC 4.6, docs/ECOSYSTEM.md Phase 1): the town square feed, threads, profiles,
-// follower lists, leaderboards, unsigned social tx builders (window.pearl JSON forms) and a
+// follower lists, leaderboards, unsigned social tx builders (window.cadre JSON forms) and a
 // rate-limited blob relay for profile and post blobs. Feeds come from the explorer index
 // (apps/explorer/src/social.ts over the canonical blocks); profiles and counters from the
 // node's chain state (getProfile); thought receipts from the inference gateway.
@@ -344,7 +344,7 @@ function txReply(b: { acct: any; params: any; info: any }, body: SocialBody, ext
     chain_id: b.info.chain_id, nonce: b.acct.nonce, fee: fee.toString(),
     fee_rule: "max(min_fee, social_min_fee + social_byte_fee x encoded tx length) (SPEC 4.6)",
     ...extra,
-    sign_with: "window.pearl.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
+    sign_with: "window.cadre.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
   };
 }
 

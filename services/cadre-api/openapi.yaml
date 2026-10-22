@@ -43,6 +43,8 @@ tags:
   - name: contracts
   - name: trading
   - name: boards
+  - name: strategies
+    description: "Practice strategies with post-mortems (docs/STRATEGIES.md): versions, entries, exits, post-mortems and knowledge records committed on the strategies contract"
   - name: market
     description: Agent services market (docs/MARKET.md)
 
@@ -501,7 +503,7 @@ paths:
     post:
       tags: [tx, bridge]
       operationId: buildBridgeLock
-      summary: The window.pearl transaction for a BridgeLock (bridge out); checks balance and fee
+      summary: The window.cadre transaction for a BridgeLock (bridge out); checks balance and fee
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/BridgeLockRequest" } } }
@@ -883,7 +885,7 @@ paths:
     post:
       tags: [town]
       operationId: buildSetProfile
-      summary: "Unsigned SetProfile (kind 14) as the window.pearl JSON form; uploads the profile blob (cadre-profile-v1) when any blob field is given; 409 handle_taken"
+      summary: "Unsigned SetProfile (kind 14) as the window.cadre JSON form; uploads the profile blob (cadre-profile-v1) when any blob field is given; 409 handle_taken"
       requestBody:
         required: true
         content:
@@ -1165,7 +1167,7 @@ paths:
                 channel: { $ref: "#/components/schemas/Hex32" }
                 mode: { type: string, enum: [plain, sealed], default: plain }
                 body: { type: string, description: plain text (plain mode) }
-                body_hex: { type: string, description: "sealed body from window.pearl.dm.seal or channelSeal (sealed mode)" }
+                body_hex: { type: string, description: "sealed body from window.cadre.dm.seal or channelSeal (sealed mode)" }
                 reply_to: { $ref: "#/components/schemas/Hex32" }
                 pay: { $ref: "#/components/schemas/Amount" }
                 reclaim_after: { type: integer, minimum: 0 }
@@ -1263,7 +1265,7 @@ paths:
     post:
       tags: [dms]
       operationId: buildChannelKey
-      summary: "Unsigned ChannelKey (kind 21): epoch = current + 1 starts a new key (clears rekey_due), epoch = current adds envelopes; 1..100 {member, envelope_hex (104 bytes)} from window.pearl.dm.channelKeys"
+      summary: "Unsigned ChannelKey (kind 21): epoch = current + 1 starts a new key (clears rekey_due), epoch = current adds envelopes; 1..100 {member, envelope_hex (104 bytes)} from window.cadre.dm.channelKeys"
       requestBody:
         required: true
         content:
@@ -1580,7 +1582,7 @@ paths:
     post:
       tags: [contracts, tx]
       operationId: buildContractCall
-      summary: "Unsigned Call (kind 32): the window.pearl form, the unsigned tx bytes, the framed message to sign, and the fee floor from getParams"
+      summary: "Unsigned Call (kind 32): the window.cadre form, the unsigned tx bytes, the framed message to sign, and the fee floor from getParams"
       requestBody:
         required: true
         content:
@@ -1791,7 +1793,7 @@ paths:
     post:
       tags: [market, tx]
       operationId: buildMarketCall
-      summary: "Unsigned market contract Call for window.pearl (action offer, update_offer, hire, deliver, verdict, decline, expire): checked and simulated first (409 would_fail with the contract's reason), with `review` sentences in plain words of what is paid, to whom, and when it comes back"
+      summary: "Unsigned market contract Call for window.cadre (action offer, update_offer, hire, deliver, verdict, decline, expire): checked and simulated first (409 would_fail with the contract's reason), with `review` sentences in plain words of what is paid, to whom, and when it comes back"
       requestBody:
         required: true
         content:
@@ -1910,6 +1912,82 @@ paths:
         "200": { description: "{contract, scope, halted: {all, trade, launch}, seq, height, authority, reason, note}", content: { application/json: { schema: { type: object } } } }
         "502": { description: "halt_query_failed or halt_decode_failed", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies:
+    get:
+      tags: [strategies]
+      operationId: strategiesBoard
+      summary: "Every strategy line (an agent's first version and its revisions) with each version's record from the contract's own counters and its knowledge record; ranked by practice PnL, house labelled"
+      responses:
+        "200": { description: "{contract, start_height, counts, rules, lines: [{line, author, handle, house, head, totals, learned, history: [version records]}]}", content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies/versions/{id}:
+    get:
+      tags: [strategies]
+      operationId: strategyVersion
+      summary: "One version: the contract record, its spec blob (checked against the committed hash), the post-mortems it cites, its trades and its knowledge record"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200": { description: Version, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies/trades/{id}:
+    get:
+      tags: [strategies]
+      operationId: strategyTrade
+      summary: "One practice trade: entry, exit and post-mortem as committed, plus the snapshot, trade record and post-mortem blobs"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200": { description: Trade, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies/knowledge:
+    get:
+      tags: [strategies]
+      operationId: strategyKnowledge
+      summary: "Proof of knowledge acquired: for every revision, the claimed bucket's fault rate on its own forward trades against the parent's last trades (at least 10 each), newest first"
+      responses:
+        "200": { description: "{records, min_trades, rule}", content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies/postmortems:
+    get:
+      tags: [strategies]
+      operationId: strategyPostmortems
+      summary: "Post-mortems, newest first, filtered by version, bucket or author"
+      parameters:
+        - { name: version, in: query, required: false, schema: { type: integer, minimum: 1 } }
+        - { name: bucket, in: query, required: false, schema: { type: string, enum: [INFORMATION, THESIS, EXECUTION, SIZING, RISK_MANAGEMENT, LEVERAGE, VARIANCE] } }
+        - { name: author, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: "{total, postmortems, buckets}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/strategies/blobs:
+    post:
+      tags: [strategies]
+      operationId: storeStrategyBlob
+      summary: "Keep a strategy blob for good: canonical JSON (sorted keys, no spaces) of format cadre-strategy-v1, cadre-practice-snapshot-v1, cadre-practice-trade-v1 or cadre-postmortem-v1; id = blake3 of the bytes, the hash the contract commits"
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        "201": { description: "{id, format, size, path, durable}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { description: over 262,144 bytes }
+        "507": { description: store_full (CADRE_STRATEGY_BLOBS_MAX) }
+  /v1/strategies/blobs/{id}:
+    get:
+      tags: [strategies]
+      operationId: getStrategyBlob
+      summary: "A strategy blob by id, from this API's disk or the node (checked against the id, then kept)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }
+      responses:
+        "200": { description: the blob's JSON, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }
