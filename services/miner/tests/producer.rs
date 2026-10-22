@@ -461,3 +461,27 @@ fn orphan_sweep_pages_by_cursor_and_asks_for_plain_jobs_only() {
     assert!(qs.iter().all(|q| q["kind"] == "job" && q["status"] == "open"), "{qs:?}");
     assert!(qs[0].get("after").is_none() && qs[1]["after"].is_u64(), "first page by offset, then by cursor: {qs:?}");
 }
+
+/// `--payout-address` (the Cadre Wallet's miner): blocks pay the given account, the key in the
+/// struct never signs, and no tx is sent (no delivery).
+#[test]
+fn payout_address_mode_pays_the_address_and_signs_nothing() {
+    let dir = tmp("payout-address");
+    let node = MockNode::new(CHAIN, EASY);
+    let (job, _) = make_job(&dir, [0x0c; 32], 7);
+    node.add_job(job);
+    let payout = [0x77; 32];
+    let (logs, log) = collecting_log();
+    let mut m = Miner::new(&node, None, SigningKey::from_bytes(&[0u8; 32]), cfg(&dir, 2, false), log);
+    m.payout = Some(payout);
+    m.run(&|| false).unwrap();
+
+    let s = node.state.lock().unwrap();
+    assert!(s.blocks.len() >= 2, "{} blocks", s.blocks.len());
+    assert!(s.blocks.iter().all(|b| b.header.miner == payout), "a block paid someone else");
+    drop(s);
+    assert_eq!(node.job(&[0x0c; 32]).unwrap().deliverer, None, "delivered without a key");
+    assert_eq!(events(&logs, "result_submitted") + events(&logs, "complete_sent"), 0);
+    let start = logs.lock().unwrap().iter().find(|v| v["event"] == "start").cloned().unwrap();
+    assert_eq!(start["miner"], bs58::encode(payout).into_string());
+}

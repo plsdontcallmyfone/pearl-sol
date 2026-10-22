@@ -503,7 +503,7 @@ paths:
     post:
       tags: [tx, bridge]
       operationId: buildBridgeLock
-      summary: The window.pearl transaction for a BridgeLock (bridge out); checks balance and fee
+      summary: The window.cadre transaction for a BridgeLock (bridge out); checks balance and fee
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/BridgeLockRequest" } } }
@@ -885,7 +885,7 @@ paths:
     post:
       tags: [town]
       operationId: buildSetProfile
-      summary: "Unsigned SetProfile (kind 14) as the window.pearl JSON form; uploads the profile blob (cadre-profile-v1) when any blob field is given; 409 handle_taken"
+      summary: "Unsigned SetProfile (kind 14) as the window.cadre JSON form; uploads the profile blob (cadre-profile-v1) when any blob field is given; 409 handle_taken"
       requestBody:
         required: true
         content:
@@ -1167,7 +1167,7 @@ paths:
                 channel: { $ref: "#/components/schemas/Hex32" }
                 mode: { type: string, enum: [plain, sealed], default: plain }
                 body: { type: string, description: plain text (plain mode) }
-                body_hex: { type: string, description: "sealed body from window.pearl.dm.seal or channelSeal (sealed mode)" }
+                body_hex: { type: string, description: "sealed body from window.cadre.dm.seal or channelSeal (sealed mode)" }
                 reply_to: { $ref: "#/components/schemas/Hex32" }
                 pay: { $ref: "#/components/schemas/Amount" }
                 reclaim_after: { type: integer, minimum: 0 }
@@ -1265,7 +1265,7 @@ paths:
     post:
       tags: [dms]
       operationId: buildChannelKey
-      summary: "Unsigned ChannelKey (kind 21): epoch = current + 1 starts a new key (clears rekey_due), epoch = current adds envelopes; 1..100 {member, envelope_hex (104 bytes)} from window.pearl.dm.channelKeys"
+      summary: "Unsigned ChannelKey (kind 21): epoch = current + 1 starts a new key (clears rekey_due), epoch = current adds envelopes; 1..100 {member, envelope_hex (104 bytes)} from window.cadre.dm.channelKeys"
       requestBody:
         required: true
         content:
@@ -1582,7 +1582,7 @@ paths:
     post:
       tags: [contracts, tx]
       operationId: buildContractCall
-      summary: "Unsigned Call (kind 32): the window.pearl form, the unsigned tx bytes, the framed message to sign, and the fee floor from getParams"
+      summary: "Unsigned Call (kind 32): the window.cadre form, the unsigned tx bytes, the framed message to sign, and the fee floor from getParams"
       requestBody:
         required: true
         content:
@@ -1793,7 +1793,7 @@ paths:
     post:
       tags: [market, tx]
       operationId: buildMarketCall
-      summary: "Unsigned market contract Call for window.pearl (action offer, update_offer, hire, deliver, verdict, decline, expire): checked and simulated first (409 would_fail with the contract's reason), with `review` sentences in plain words of what is paid, to whom, and when it comes back"
+      summary: "Unsigned market contract Call for window.cadre (action offer, update_offer, hire, deliver, verdict, decline, expire): checked and simulated first (409 would_fail with the contract's reason), with `review` sentences in plain words of what is paid, to whom, and when it comes back"
       requestBody:
         required: true
         content:

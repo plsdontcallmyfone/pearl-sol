@@ -200,7 +200,7 @@ export function registerContracts(api: Api, d: Deps) {
       tx_len: txLen,
       encoding: "unsigned_tx = the tx without its signature (version, chain_id, from, nonce, fee, kind 32, body); the wallet signs framed_message (varint len || \"pearl-sol:tx:v1\" || unsigned_tx) with ed25519 and appends the 64-byte signature; POST /v1/tx/chain {tx: base64} relays it",
       summary: { from, contract, label: rec.label || null, method: splitMethod(args)?.method ?? null, value: value.toString(), gas_limit: gasLimit.toString() },
-      sign_with: "window.pearl.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash} and GET /v1/contracts/receipts/{txHash}",
+      sign_with: "window.cadre.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash} and GET /v1/contracts/receipts/{txHash}",
     };
   });
 }

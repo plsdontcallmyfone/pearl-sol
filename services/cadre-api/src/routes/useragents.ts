@@ -121,7 +121,7 @@ function builtChain(b: { acct: any; params: any; info: any }, from: string, t: A
   return {
     window_pearl: { method: "signAndSendTransaction", params: { transaction: { ...t, fee: fee.toString() } } },
     chain_id: b.info.chain_id, nonce: b.acct.nonce, fee: fee.toString(), ...extra,
-    sign_with: "window.pearl.signAndSendTransaction, or POST /v1/tx/encode {from, transaction} and a Solana wallet's signMessage over sign_message, then POST /v1/tx/chain {tx: signing_bytes || signature}",
+    sign_with: "window.cadre.signAndSendTransaction, or POST /v1/tx/encode {from, transaction} and a Solana wallet's signMessage over sign_message, then POST /v1/tx/chain {tx: signing_bytes || signature}",
   };
 }
 

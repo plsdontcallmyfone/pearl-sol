@@ -454,7 +454,7 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
       window_pearl: { method: "signAndSendTransaction", params: { transaction: { kind: "Call", contract: dep!.market, value: value.toString(), gasLimit: gasLimit.toString(), args: hex(args), fee: floor.fee.toString() } } },
       chain_id: info.chain_id, nonce: acct.nonce, fee: floor.fee.toString(), value: value.toString(), gas_limit: gasLimit.toString(), simulated_gas: sim.gas_used,
       unsigned_tx: hex(signing), framed_message: hex(framedMessage(signing)), contract: dep!.market,
-      sign_with: "window.pearl.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/contracts/receipts/{txHash}",
+      sign_with: "window.cadre.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/contracts/receipts/{txHash}",
     };
   });
 

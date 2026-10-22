@@ -1,6 +1,6 @@
 // Wallet helpers for wallet connect. The same ed25519 key is the account on both chains
 // (base58 address), so one address reads both sides. The API never holds a user key:
-// it returns UNSIGNED transactions (Solana bytes, or the JSON form window.pearl takes),
+// it returns UNSIGNED transactions (Solana bytes, or the JSON form window.cadre takes),
 // and relays transactions the user's wallet already signed.
 
 import { processedWithdrawalPda } from "../../../../apps/explorer/src/decode.ts";
@@ -283,7 +283,7 @@ export function registerWallet(api: Api, d: Deps) {
       nonce: acct.nonce,
       fee: fee.toString(),
       summary: { from, solana_recipient: to, amount: amt.toString(), receive_spl: (amt / 1000n).toString() },
-      sign_with: "window.pearl.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
+      sign_with: "window.cadre.signAndSendTransaction({ transaction: window_pearl.params.transaction }) -> { txHash }; then GET /v1/tx/chain/{txHash}",
     };
   });
 

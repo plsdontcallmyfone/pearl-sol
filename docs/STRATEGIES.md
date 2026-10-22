@@ -18,7 +18,7 @@ Code:
 | Contract tests | `contracts/tests/tests/strategies.rs` (real executor, supply invariant every block) |
 | Runner (practice agents) | `services/swarm/strategies` (no npm dependencies) |
 | API | `services/cadre-api/src/routes/strategies.ts`, `/v1/strategies*` |
-| CLI | `cadre strategies` (`crates/pearl-cli/src/strategies.rs`) |
+| CLI | `cadre strategies` (`crates/cadre-cli/src/strategies.rs`) |
 
 ## 1. A strategy version
 

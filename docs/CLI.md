@@ -1,7 +1,7 @@
-# `cadre` CLI (also `pearl`) and terminal dashboard
+# `cadre` CLI and the Cadre app
 
-`crates/pearl-cli`, binaries `cadre` and `pearl`: the same program (src/lib.rs), two names.
-`cadre` with no command runs `status`, the health of every part of Cadre; `pearl` with no
+`crates/cadre-cli`, binary `cadre` (src/lib.rs).
+`cadre` with no command runs `status`, the health of every part of Cadre; `cadre overview`
 command keeps printing the wallet overview box, so existing scripts see no change. Every other
 command is identical under both names. The health and lookup commands (`status`, `ping`, `tx`,
 `account`, `block`, `agent`, `agents`, `job`, `ticket`, `verify`, `model`, `watch`) are
@@ -9,22 +9,22 @@ read-only: they never sign or send anything. See "Health and lookups" below.
 
 Inline terminal output by default (steps, progress,
 info boxes; owner's Daytona-CLI reference, 2026-10-17), `--json` for scripts and agents, and
-a full-screen retro blue dashboard (ratatui) as `pearl dashboard`. Every number on screen is an RPC
+a full-screen retro blue dashboard (ratatui) as `cadre dashboard`. Every number on screen is an RPC
 read from the agent-chain node, the Solana validator or the pool, or arithmetic over such
-reads (named in `pearl overview --json` under `derived`). There is no price source, so no
+reads (named in `cadre overview --json` under `derived`). There is no price source, so no
 price is shown.
 
 **Naming.** The product name is a placeholder. Everything user-visible (name, ticker, the
-block wordmark, the `<name>` corner mark) comes from `crates/pearl-cli/src/brand.rs`
+block wordmark, the `<name>` corner mark) comes from `crates/cadre-cli/src/brand.rs`
 (`NAME`, `TICKER`); the wordmark is generated from `NAME` by a built-in block font, so a
-rename is a one-line change. The crate is still `pearl-cli`; the product binary is `cadre`.
+rename is a one-line change. The crate is `cadre-cli`; the binary is `cadre`.
 
 ## Build
 
 ```
-cd crates/pearl-cli && cargo build --release      # Rust 1.95.0 (rust-toolchain.toml here)
-crates/pearl-cli/target/release/cadre             # status of the public devnet
-crates/pearl-cli/target/release/cadre --help      # (target/release/pearl is the same program)
+cd crates/cadre-cli && cargo build --release      # Rust 1.95.0 (rust-toolchain.toml here)
+crates/cadre-cli/target/release/cadre             # status of the public devnet
+crates/cadre-cli/target/release/cadre --help
 ```
 
 Or with the miner installer: `install-miner.sh --cli` also builds both and puts them in
@@ -41,15 +41,15 @@ no solana-sdk.
 
 | flag | env | default | |
 |---|---|---|---|
-| `--rpc` | `PEARL_RPC` | `http://127.0.0.1:10630` | agent-chain node |
-| `--sol-rpc` | `PEARL_SOL_RPC` | `http://127.0.0.1:10600` | token chain (Solana) |
-| `--key FILE` | `PEARL_KEY` | none | agent-chain key file (Solana JSON array, base58 or hex). Never printed or written |
-| `--sol-key FILE` | `PEARL_SOL_KEY` | `--key` | Solana key for SPL balance and `bridge in` |
-| `--address ADDR` | `PEARL_ADDRESS` | none | watch an address read-only |
-| `--pool URL` | `PEARL_POOL` | `http://127.0.0.1:10663` | services/pool, read for /Mining |
-| `--credit-url URL` | `PEARL_CREDIT_URL` | none | Agent Credit endpoint (GET 2xx = reachable); unset = "not connected" |
-| `--miner-bin PATH` | `PEARL_MINER_BIN` | `crates/target/release/pearl-miner` | for `mine start` |
-| `--network` | `PEARL_NETWORK` | `devnet` | `devnet`, `testbox` (the test box demo stack: localnet program ids, node on 127.0.0.1, its public cadre-api; run it on that box) or `localnet` (alias `local`) |
+| `--rpc` | `CADRE_RPC` | `http://127.0.0.1:10630` | agent-chain node |
+| `--sol-rpc` | `CADRE_SOL_RPC` | `http://127.0.0.1:10600` | token chain (Solana) |
+| `--key FILE` | `CADRE_KEY` | none | agent-chain key file (Solana JSON array, base58 or hex). Never printed or written |
+| `--sol-key FILE` | `CADRE_SOL_KEY` | `--key` | Solana key for SPL balance and `bridge in` |
+| `--address ADDR` | `CADRE_ADDRESS` | none | watch an address read-only |
+| `--pool URL` | `CADRE_POOL` | `http://127.0.0.1:10663` | services/pool, read for /Mining |
+| `--credit-url URL` | `CADRE_CREDIT_URL` | none | Agent Credit endpoint (GET 2xx = reachable); unset = "not connected" |
+| `--miner-bin PATH` | `CADRE_MINER_BIN` | `crates/target/release/pearl-miner` | for `mine start` |
+| `--network` | `CADRE_NETWORK` | `devnet` | `devnet`, `testbox` (the test box demo stack: localnet program ids, node on 127.0.0.1, its public cadre-api; run it on that box) or `localnet` (alias `local`) |
 | `--endpoint NAME=URL` | `CADRE_<NAME>` | the network's | override one endpoint (repeatable; `NAME=none` leaves it out); names in `cadre ping --list`: nodes (comma list), solana, api, explorer, storefront, relayer, site, docs, gateway, worker, attester, swarm, desktops, agents, pool |
 | `--local` | | off | also check the 127.0.0.1 services of the box it runs on (devnet box 0: gateway 10664, worker 10665, attester 10661, swarm 10668, desktops 10720, user-agent runtime 10730) and use `/etc/lode/solana-rpc-url` when present (shown by file name only, never printed) |
 | `--strict` | | off | `status` / `ping`: exit 1 on a warning too |
@@ -62,7 +62,7 @@ Nothing touches `~/.config/solana` or `solana config`.
 
 ## Your wallet (`cadre wallet`, 2026-10-21)
 
-Without `--key` / `--address` (or `PEARL_KEY` / `PEARL_ADDRESS`) `cadre` uses the wallet saved by
+Without `--key` / `--address` (or `CADRE_KEY` / `CADRE_ADDRESS`) `cadre` uses the wallet saved by
 `cadre wallet use`, so it is set once:
 
     cadre wallet use --address Cx...        # watch only: balances, activity, inbox (no signing)
@@ -80,7 +80,7 @@ alias of `overview` until this; `overview` is unchanged.)
 Plain inline output, not a full-screen app: the terminal's own background and font.
 
 ```
-$ pearl send 7xKX...gAsU 1.5
+$ cadre send 7xKX...gAsU 1.5
 ✓ Signed Transfer (nonce 4, fee 0.000001 TOKEN)
 ✓ Submitted tx 877640ec...1e7d7c1f
 ✓ Included in block 1210
@@ -123,8 +123,8 @@ $ pearl send 7xKX...gAsU 1.5
   OK (in flight) / BROKEN), `lien set|clear|show` (tx box + " Payout lien "), `register`
   (tx box + " Agent "), `agent`, `mine status`, `mine start` (box when the miner exits),
   `status` (overview plus Mining and Market).
-- `pearl` with no command prints the overview box (Wallet, Chain, Bridge, Agent) and a dim
-  line of common commands; it no longer opens the dashboard.
+- `cadre overview` prints the overview box (Wallet, Chain, Bridge, Agent) and a dim
+  line of common commands.
 - Not a TTY, or `NO_COLOR` set (non-empty): no colors, no spinners, one final line per step,
   chips as `[ title ]`, same layout. Unicode box and check characters stay.
 - Renderers: `src/term.rs` (hand-rolled ANSI, no new dependency): `Style`, `Panel`, `Table`,
@@ -132,22 +132,22 @@ $ pearl send 7xKX...gAsU 1.5
   silent `Ui`.
 
 Screenshots of the real ANSI output from the live demo stack: `screenshots/cli/inline-*.png`
-(`crates/pearl-cli/tools/inline-screens.sh KEY`: each command runs in a pty
+(`crates/cadre-cli/tools/inline-screens.sh KEY`: each command runs in a pty
 (`tools/capture.py`), the raw bytes are replayed on a small screen model to HTML on a black
-background (`tools/ansi2html.py`; the prompt line `user@host ~/pearl-sol <command>` is added
+background (`tools/ansi2html.py`; the prompt line `user@host ~/cadre <command>` is added
 there) and captured by Playwright's headless_shell).
 
 ## Entry screen (`cadre` alone on a terminal)
 
 `cadre` with no command, on an interactive terminal (stdin and stdout are TTYs, not `--json`,
-not `TERM=dumb`), opens a full-screen start page modeled on opencode's start screen (owner,
+not `TERM=dumb`), opens a full-screen start page (owner,
 2026-10-21): the owner's spinning ASCII robot (Rushu / Weazel VFX; 36 frames, 44 x 24, 12 fps,
-`crates/pearl-cli/assets/robot-frames.json`, embedded with `include_str!`), the two-tone block
-wordmark "cadre" (muted) + "agents" (bright) in opencode's pixel font, the prompt box, the hints
+`crates/cadre-cli/assets/robot-frames.json`, embedded with `include_str!`), the two-tone block
+wordmark "cadre" (muted) + "agents" (bright) in a two-tone pixel font, the prompt box, the hints
 and a bottom bar (directory and git branch left; network and CLI version right). Code:
 `src/entry/` (mod.rs screen and keys, robot.rs, logo.rs, theme.rs, net.rs). In every other case
-(a pipe, `--json`, `cadre status`, any command) nothing changed: `cadre` runs `status`, `pearl`
-prints the overview (tests/entry_cli.rs).
+(a pipe, `--json`, `cadre status`, any command) nothing changed: `cadre` runs `status`
+(tests/entry_cli.rs).
 
 | Key | |
 |---|---|
@@ -158,9 +158,9 @@ prints the overview (tests/entry_cli.rs).
 | PgUp/PgDn, Up/Down | Scroll the conversation; ctrl+l clears it (back to the start page) |
 | Esc / ctrl+c | Esc closes the palette or cancels a pending DM; on an empty prompt it goes to the last view (Dashboard by default); ctrl+c quits. Raw mode, the alternate screen, bracketed paste and the cursor are restored on exit and in a panic hook |
 
-Colors are opencode's default dark theme: prompt panel `#1e1e1e`, muted `#808080` ("cadre",
+Colors are a dark theme: prompt panel `#1e1e1e`, muted `#808080` ("cadre",
 hint words, footer), text `#eeeeee` ("agents", model, keys), blue `#5c9cf5` (bar, mode label),
-placeholder `#606060`, logo shadows 25% of the ink over opencode's `#0a0a0a` (`#282828`,
+placeholder `#606060`, logo shadows 25% of the ink over the `#0a0a0a` background (`#282828`,
 `#434343`). The screen itself is never painted: everything sits on the terminal's own background
 (only the prompt panel, the logo shadows and the palette paint one), so a terminal theme cannot
 turn painted cells into colored blocks (owner feedback 2026-10-21, over ssh). Checked against the
@@ -338,8 +338,8 @@ Nothing changes on chain; this is display and input only.
 
 Owner feedback 2026-10-21: "it should all be integrated together, if i toggle the dashboard it
 shouldn't reset", and the dashboard must use "the same complete style" as the entry screen.
-`cadre` alone on a terminal, `cadre dashboard` and `pearl dashboard` (alias `tui`) now open ONE
-full-screen app (src/entry/) on Home or on the Dashboard. The old blue `pearl dashboard` TUI
+`cadre` alone on a terminal, `cadre dashboard` and `cadre dashboard` (alias `tui`) now open ONE
+full-screen app (src/entry/) on Home or on the Dashboard. The old blue `cadre dashboard` TUI
 (src/ui.rs: blue background, "$$$$" banner, red beta warning, boxed panels, [1]-[6] tab bar) is
 gone; `cadre snapshot` renders the new Dashboard view to HTML/text. Network and version sit in the
 bottom bar instead of a beta banner. Non-TTY outputs (pipes, `--json`, every other command) are
@@ -410,34 +410,34 @@ binary before this change on live devnet.
 ## Commands (text mode, `--json`, and the dashboard's shell line)
 
 ```
-pearl                                       # overview box (no command); `cadre` alone runs status
-pearl dashboard                             # the Cadre app on its Dashboard view
-pearl balance | address | overview          # overview = everything the dashboard reads (was `status`)
-pearl status [--health] | ping <target>     # health of everything (see above)
-pearl send <to> <amount> [--fee T]
-pearl jobs [--status open] [--limit 20]
-pearl job show <id>                         # any unique id prefix
-pearl job post --pay W --fee P [--m 64 --n 64 --k 2048 --deadline 500 --max-blocks 10
+cadre                                       # overview box (no command); `cadre` alone runs status
+cadre dashboard                             # the Cadre app on its Dashboard view
+cadre balance | address | overview          # overview = everything the dashboard reads (was `status`)
+cadre status [--health] | ping <target>     # health of everything (see above)
+cadre send <to> <amount> [--fee T]
+cadre jobs [--status open] [--limit 20]
+cadre job show <id>                         # any unique id prefix
+cadre job post --pay W --fee P [--m 64 --n 64 --k 2048 --deadline 500 --max-blocks 10
                --evaluator ADDR --threshold 1 --seed S | --data job.blob]
-pearl blocks [n] | activity [--limit 20] | tx <hash|Solana signature>
-pearl account <a> | block <n|hash> | agents | job <id> | verify <ticket> [--run] | watch
-pearl bridge in <amount>                    # Solana deposit for your chain address
-pearl bridge out <amount> [--to SOLANA]     # BridgeLock; released when K deep
-pearl bridge status
-pearl lien set <solana-recipient> <bps> [--until H --cap T --release-key ADDR]
-pearl lien clear --release-key-file F [--account A] | lien show
-pearl register <name> [uri] | agent [address|@handle] [--explorer URL]
-pearl mine start [--threads 2] | mine stop | mine status
-pearl buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
-pearl snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
-pearl contract build [DIR]                  # cargo build --target wasm32-unknown-unknown + chain checks
-pearl contract deploy FILE.wasm|DIR         # DeployCode (skipped when the code is already deployed)
-pearl contract instantiate CODE_HASH [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE --gas G]
-pearl contract new FILE.wasm|DIR [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE]
-pearl contract call ADDR METHOD [TYPE:VALUE ...] [--value CADRE --gas G --dry-run --decode TYPES]
-pearl contract query ADDR METHOD [TYPE:VALUE ...] [--decode u64,addr,str]
-pearl contract show ADDR | ls [--limit 20] | events ADDR | receipt TX
-pearl contract migrate ADDR CODE_HASH [TYPE:VALUE ...] | admin ADDR NEW|none
+cadre blocks [n] | activity [--limit 20] | tx <hash|Solana signature>
+cadre account <a> | block <n|hash> | agents | job <id> | verify <ticket> [--run] | watch
+cadre bridge in <amount>                    # Solana deposit for your chain address
+cadre bridge out <amount> [--to SOLANA]     # BridgeLock; released when K deep
+cadre bridge status
+cadre lien set <solana-recipient> <bps> [--until H --cap T --release-key ADDR]
+cadre lien clear --release-key-file F [--account A] | lien show
+cadre register <name> [uri] | agent [address|@handle] [--explorer URL]
+cadre mine start [--threads 2] | mine stop | mine status
+cadre buyback [--limit 10]                  # storefront buyback: share, vault, totals, latest buys
+cadre snapshot out.html [--width 140 --height 46 --tab jobs]   # render the dashboard
+cadre contract build [DIR]                  # cargo build --target wasm32-unknown-unknown + chain checks
+cadre contract deploy FILE.wasm|DIR         # DeployCode (skipped when the code is already deployed)
+cadre contract instantiate CODE_HASH [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE --gas G]
+cadre contract new FILE.wasm|DIR [TYPE:VALUE ...] [--label L --admin me|none|ADDR --value CADRE]
+cadre contract call ADDR METHOD [TYPE:VALUE ...] [--value CADRE --gas G --dry-run --decode TYPES]
+cadre contract query ADDR METHOD [TYPE:VALUE ...] [--decode u64,addr,str]
+cadre contract show ADDR | ls [--limit 20] | events ADDR | receipt TX
+cadre contract migrate ADDR CODE_HASH [TYPE:VALUE ...] | admin ADDR NEW|none
 ```
 
 Contract arguments are `TYPE:VALUE` with TYPE u8 u16 u32 u64 bool addr hash bytes (hex) str
@@ -451,7 +451,7 @@ most 6 decimals). `job post` generates random int7 matrices (or reads a PSD1 blo
 data blob on the node, computes `hash_a` / `hash_b` against the job key of the very tx it then
 signs, checks P against `min_protocol_fee_effective`, and sends PostJob; the default evaluator
 is the chain's first attester. `mine start` in the dashboard runs `pearl-miner` with your key
-as payout in the background (log in `$TMPDIR/pearl-cli-miner-<pid>.log`), stopped by
+as payout in the background (log in `$TMPDIR/cadre-cli-miner-<pid>.log`), stopped by
 `mine stop` or on quit; only that child is ever stopped. In text mode it runs in the
 foreground, one line per block found, Ctrl-C stops it; with `--json` the miner's own JSON
 log lines go to stdout as before.
@@ -467,7 +467,7 @@ profiles"): P and storefront SOL behind completed work first, then distinct paye
 share, self-dealing excluded, rejected and delivered-then-expired P, acceptance by P, share
 signed by a third-party evaluator, time to completion, mining, buying, evaluating, the agent
 card's health, and a table of completed jobs with who signed each. Explorer: `--explorer URL`
-or `PEARL_EXPLORER`, else the network's (devnet `https://explorer.64-95-12-116.sslip.io`,
+or `CADRE_EXPLORER`, else the network's (devnet `https://explorer.64-95-12-116.sslip.io`,
 localnet `http://127.0.0.1:10670`). If the explorer cannot be reached the record is left out
 with the reason (`profile: null, profile_error` in `--json`); nothing is computed locally.
 `--json` passes the explorer's object through under `profile` (with its `sources`).
@@ -475,12 +475,12 @@ with the reason (`profile: null, profile_error` in `--json`); nothing is compute
 `--json` prints one object per command; errors print `{"ok": false, "error": "..."}` and exit 1.
 
 Nonces: the next nonce is past the account's tip nonce, past any of its txs still in the
-node's mempool (`getMempool` + `getTx`, so separate `pearl` processes can send back to back)
+node's mempool (`getMempool` + `getTx`, so separate `cadre` processes can send back to back)
 and past the last one this process used.
 
 ## Tests
 
-`cd crates/pearl-cli && cargo test` (84 unit + 5 in tests/entry_cli.rs, 2026-10-21 Cadre app: state kept across view switches by keys, the palette and `/dashboard` (`switching_views_keeps_everything`), every view rendered at 120x40 / 160x50 / tiny sizes with no em dash, the dashboard's card / table mapping field by field and its empty states, selection by job id across refreshes, the Send form's confirm, activity ingest and collapse, DM state, command output as cards, `pearl dashboard` on a pipe and `cadre snapshot` in the new style; earlier the entry screen: frames load and size, half robot, layout at every size, rendering into a test buffer, keys, wallet signature, a streamed answer from a loopback gateway, and the pipe / `--json` / `pearl` paths unchanged plus a pty run that enters and restores the alternate screen). The health and lookup commands run
+`cd crates/cadre-cli && cargo test` (84 unit + 5 in tests/entry_cli.rs, 2026-10-21 Cadre app: state kept across view switches by keys, the palette and `/dashboard` (`switching_views_keeps_everything`), every view rendered at 120x40 / 160x50 / tiny sizes with no em dash, the dashboard's card / table mapping field by field and its empty states, selection by job id across refreshes, the Send form's confirm, activity ingest and collapse, DM state, command output as cards, `cadre dashboard` on a pipe and `cadre snapshot` in the new style; earlier the entry screen: frames load and size, half robot, layout at every size, rendering into a test buffer, keys, wallet signature, a streamed answer from a loopback gateway, and the pipe / `--json` / `pearl` paths unchanged plus a pty run that enters and restores the alternate screen). The health and lookup commands run
 against `src/mock.rs`: one loopback server that plays a whole network (node JSON-RPC and Solana
 JSON-RPC on POST; cadre-api, explorer, storefront, relayer and site on GET), with knobs for a
 forked node, a dead relayer, an unreachable node and a cadre-api summary without its Solana
@@ -500,7 +500,7 @@ followed to final in text mode and unchanged JSON), job / lien / agent / overvie
 pearl-miner log lines, formatting, amount parsing, shell-line parsing, PDA / ATA
 vectors (from @solana/web3.js), legacy tx layout, account parsers, derived figures and the
 invariant, and render tests of the old blue dashboard (removed 2026-10-21 with src/ui.rs).
-`PEARL_SAMPLE_OUT=dir cargo test sample_out` writes the sample screen as HTML.
+`CADRE_SAMPLE_OUT=dir cargo test sample_out` writes the sample screen as HTML.
 
 Live check (2026-10-17, `DEMO_KEEP_UP=1 scripts/demo.sh`, 9/9 PASS, then
 `scripts/demo.sh down`), as the demo user key `.demo/keys/user.json`, all through the CLI:
@@ -515,11 +515,11 @@ Live check of the inline restyle (2026-10-17, stack left running, user key
 withdrawal found, released on Solana by the proof path after 5m 43s), `bridge in 1`
 (confirmed, unlocked by the relayer, final), `bridge status` (OK), `lien show`, `status`,
 `jobs`; NO_COLOR in a pty prints no escape codes.
-`python3 crates/pearl-cli/pty-smoke.py BIN KEY OUT` drives the real dashboard in a pty
+`python3 crates/cadre-cli/pty-smoke.py BIN KEY OUT` drives the real dashboard in a pty
 (tabs, detail popup, `mine start` / `mine status` / `mine stop`, `quit`): all checks found,
 exit 0, the spawned miner mined 3 blocks and was stopped by PID.
 
-Screenshots: `crates/pearl-cli/screenshot.sh KEY` renders each tab from the live stack
+Screenshots: `crates/cadre-cli/screenshot.sh KEY` renders each tab from the live stack
 (TestBackend buffer -> HTML -> headless Chromium) into `screenshots/cli/live-<tab>.png`.
 
 ## Trades (docs/TRADING.md)
@@ -568,7 +568,7 @@ cadre-api serves them for the same contract, else the market contract read strai
 (`queryContract` for config, counts, offers and hires; `getContractEvents` for the timeline;
 `getBlob` for specs, requests, deliveries and verdict reasons, checked against their blake3 ids).
 The record and event decoders are a Rust port of apps/explorer/src/market.ts, tested on vectors
-that codec produced (crates/pearl-cli/tests/fixtures/market_vectors.json, regenerated by the `.ts`
+that codec produced (crates/cadre-cli/tests/fixtures/market_vectors.json, regenerated by the `.ts`
 next to it). The default market is the devnet one (deploy/market-devnet.json compiled in:
 `E1kpbaHn...dsym`; the house desk agents, the LLM judge and the market ops key `J4F39n...` are labelled house, so their hires never count as organic); `--market ADDR` or
 `CADRE_MARKET` picks another, `--source auto|api|node` forces a source.
@@ -584,7 +584,7 @@ next to it). The default market is the devnet one (deploy/market-devnet.json com
 | `cadre offer --title T --price X --turnaround N [--category C] [--description D] [--deliverable D] [--policy buyer\|list] [--evaluator A] [--paused]` | the same for listing an offer (spec blob `cadre-offer-v1`) |
 
 Signing: nothing is signed unless `--send` is given together with a key (`--key FILE` or
-`PEARL_KEY`); then the blob is uploaded (`putBlob`) and the call goes through `cadre contract
+`CADRE_KEY`); then the blob is uploaded (`putBlob`) and the call goes through `cadre contract
 call`'s own path (simulate, gas, fee, sign, follow to inclusion), and the new id is printed. On
 the node path the record follows the indexer rules except what needs indexed profiles and
 transfers: house accounts are excluded from organic volume, operator links and the funding

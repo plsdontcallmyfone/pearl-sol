@@ -12,7 +12,7 @@ t() { local name="$1"; shift; local s=$(date +%s); local out; out="$("$@" 2>&1)"
   echo "$([ $rc = 0 ] && echo PASS || echo FAIL) $name ($(( $(date +%s) - s )) s): $sum"; [ $rc = 0 ] || { fails=$((fails+1)); echo "$out" | tail -40; }; }
 t chain bash -c "cd $ROOT/chain && cargo test --workspace --release -q"
 t crates bash -c "cd $ROOT/crates && cargo test --workspace --release -q"
-t pearl-cli bash -c "cd $ROOT/crates/pearl-cli && cargo test --release -q"
+t cadre-cli bash -c "cd $ROOT/crates/cadre-cli && cargo test --release -q"
 t header-relay bash -c "cd $ROOT/services/header-relay && cargo test --release -q"
 t header-relay-devnet-build bash -c "cd $ROOT/services/header-relay && cargo build --release -q --features devnet"
 t bridge-litesvm bash -c "cd $ROOT/token/tests/bridge-litesvm && cargo test --release -q"

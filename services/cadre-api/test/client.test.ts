@@ -1,6 +1,6 @@
 // The typed client (client/index.ts) against the server + fake stack: typed reads, ETag
 // reuse, error class, the x402 pay-and-complete flow with a Wallet Standard-shaped wallet,
-// bridge out through a window.pearl-shaped provider, SSE streaming.
+// bridge out through a window.cadre-shaped provider, SSE streaming.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import type { Server } from "node:http";
 import { configFromEnv, Deps } from "../src/deps.ts";
 import { build } from "../src/app.ts";
-import { CadreApi, CadreApiError, bridgeOut, formatUnits, payAndComplete, type PearlProvider, type StandardSolanaWallet } from "../client/index.ts";
+import { CadreApi, CadreApiError, bridgeOut, formatUnits, payAndComplete, type CadreProvider, type StandardSolanaWallet } from "../client/index.ts";
 import { MODEL, OWNER, SERVER, makeState, startFakeStack } from "./fake.ts";
 
 const web3 = createRequire(new URL("../../storefront-x402/package.json", import.meta.url))("@solana/web3.js");
@@ -82,10 +82,10 @@ test("payAndComplete: 402 -> payment tx -> wallet partial-signs -> X-PAYMENT", a
   assert.ok(vt.signatures[0].every((b: number) => b === 0), "fee payer slot left for the storefront");
 });
 
-test("bridgeOut through window.pearl, chat stream", async () => {
+test("bridgeOut through window.cadre, chat stream", async () => {
   let got: any = null;
-  const pearl = { isPearlWallet: true, address: OWNER, async signAndSendTransaction(i: any) { got = i; return { txHash: "ab".repeat(32) }; } } as unknown as PearlProvider;
-  const r = await bridgeOut(api, pearl, "2000000");
+  const wallet = { isCadreWallet: true, address: OWNER, async signAndSendTransaction(i: any) { got = i; return { txHash: "ab".repeat(32) }; } } as unknown as CadreProvider;
+  const r = await bridgeOut(api, wallet, "2000000");
   assert.equal(r.txHash, "ab".repeat(32));
   assert.deepEqual(got.transaction, { kind: "BridgeLock", solanaRecipient: OWNER, amount: "2000000", fee: "1000" });
   const chunks: string[] = [];
