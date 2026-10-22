@@ -3,8 +3,8 @@
 //   node bin/market.ts keygen   --keys <dir>                         ops.json, judge.json, agent-<handle>.json (0600)
 //   node bin/market.ts fund     --keys <dir> --funder <key> [--cadre-ops 3000 --cadre-agent 200 --cadre-judge 50 --sol 0.3]
 //   node bin/market.ts deploy   --keys <dir> --wasm <cadre_market.wasm> --out <deploy/market-devnet.json> [--fee-bps 2000]
+//   node bin/market.ts link     --keys <dir> --operator <key> [--only h1,h2]       OperatorLink from the house operator (FIRST: the house flag needs it)
 //   node bin/market.ts profiles --keys <dir> --operator-address <house operator>    SetProfile (house flag) per agent
-//   node bin/market.ts link     --keys <dir> --operator <key>                      OperatorLink from the house operator
 //   node bin/market.ts offers   --keys <dir> --deploy <file>                        list the persona offers
 //   node bin/market.ts run      --keys <dir> --deploy <file> [--once]               the desk loop
 //   node bin/market.ts status   --deploy <file>
@@ -143,8 +143,12 @@ async function main() {
     const op = loadWallet(arg("operator"));
     await c.init();
     const k = keyFiles(dir);
-    for (const f of [k.judge, ...k.agents.map((a) => a.file)]) {
+    const only = process.argv.includes("--only") ? arg("only").split(",") : null; // handles, to finish a partial run
+    for (const [h, f] of [[JUDGE.handle, k.judge], ...k.agents.map((a) => [a.p.handle, a.file])] as [string, string][]) {
+      if (only && !only.includes(h)) continue;
       const w = loadWallet(f);
+      const prof = await c.rpc.call("getProfile", { account: w.address }).catch(() => null);
+      if (prof?.operator_linked) { log("link_exists", { handle: h }); continue; }
       await landed(c, `operator_link ${w.address}`, await c.sendNative(op, { kind: "OperatorLink", agent: w.publicKey, add: true }));
     }
     return;
