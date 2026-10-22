@@ -1385,6 +1385,35 @@ CLAUDE.md "Who is working on what".
      "Launches + halt"). Then optional: a fully agent-driven launch (a v2 test agent with the launch
      skill, self-hosted on the test box). The site wizard has no launch toggle yet (~/cadre-web).
 
+39. CHAIN SPEED: WEAK-BLOCK PRE-CONFIRMATIONS + 30 S TARGET WITH UNCLE CREDIT (owner "yeah proceed on speed then
+   pls" 2026-10-21; docs/SPEED.md spec + measurements, research/SPEED.md sources; branch speed).
+   - Phase 1 (p2p/RPC only): weak blocks = template headers whose Pearl proof meets target << weak_shift (5 at 60 s,
+     4 at 30 s: one about every 1.9 s), gossiped as "CWB1" messages on the tips channel (old nodes ignore non-40-byte
+     tips, so no handshake change), checked (tx_root over the items, target, timestamp, job, weak PoW; invalid = peer
+     blocked); tx status pending / preconfirmed {weak_count, weak_miners, weak_share, first_seen_ms, latest_age_ms,
+     confidence} / included / final in getTx, getTxStatus, getWeakBlocks, ws topic weak, submitWeakBlock; a
+     preconfirmed tx cannot be replaced by a same-nonce tx; pearl-miner and `agent-node mine` submit weak hits.
+     Clients: cadre-api tx_status + GET /v1/tx/chain/{hash}/status, explorer badge with the risk note, `cadre tx
+     [--watch]`, extension + pearl-wallet (8b3ac7f15), trading gate services/swarm/trading/src/preconf.ts (NOT hooked
+     yet: the two-line hook for the trading row is in TEST-REPORT "Chain speed").
+   - Measured: sent -> preconfirmed on another node 1.05 s median, 3.7 s p90 (sent -> included 41 s median); weak
+     message 25,025 bytes, check 0.43 ms. Guarantee: evidence of hashrate mining the tx, NOT inclusion (SPEED.md 2.5).
+   - Phase 2 (consensus, devnet height 6000): block 6000 migrates target 60 -> 30 s, K 30 -> 60 (30 min kept),
+     emission 7 ppm -> 3,500 ppb (config key 45, same 1.003%/day); uncles: up to 2 stale job blocks at depth 1-2,
+     1/2 and 1/4 of their subsidy, nephew 1/32, from the pool and the job cap, mature at H + K, tx_root records 0x03
+     (137 bytes), body section 0x02; fork choice unchanged (light client unchanged there). Light client: speed schedule
+     (set_speed) upgraded on devnet 2026-10-21 slot 513664592, inert until set_speed.
+   - Orphans: cross-box 4-node test 0 of 32 at 60 s, 0 of 79 at 30 s, 7 of 1,313 (0.53%) at 3 s, per-peer delay 12 ms
+     median; live devnet 4 depth-1 reorgs in 892 blocks (about 0.45%), effective tau 0.27 s, so about 0.9% stale at
+     30 s, credited as uncles. Light client: 0.311 SOL/day measured now; 0.58-0.93 SOL/day at 30 s (SPEED.md 7.5).
+   - Tests: chain 228 pass (58 suites), crates 74, pearl-cli 119, LiteSVM lightclient 26, header-relay 8, explorer 65,
+     cadre-api 98 (+2 env failures, @solana/web3.js missing in that tree, same on main); 8.8 h Phase 2 soak; fresh
+     sync of the live devnet from genesis with the staged binary (TEST-REPORT "Chain speed").
+   - ROLLOUT (handed to the orchestrator): staged /home/lode/stage-speed/{agent-node 8b4b3f74..., pearl-miner
+     9d78dda6...} on boxes 0-2; box 1, 2, 0 BEFORE height 6000 (about 18:40 UTC 2026-10-22), then the light client
+     set_speed(6000, 30000, 60) before its tip reaches 6000. Exact commands, checks and rollback: DEVNET.md "Speed
+     rollout". If it cannot finish by about 5980, move the height first (never straddle it).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

@@ -1518,13 +1518,13 @@ fn run_line(ctx: &Ctx, line: &str, is_cmd: bool) -> Result<crate::commands::Out>
         }
         if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
             // a tx hash, else a block hash
-            return match exec(ctx, &Cmd::Tx { hash: q.into() }, true) {
+            return match exec(ctx, &Cmd::Tx { hash: q.into(), watch: false, timeout: 0 }, true) {
                 Ok(o) => Ok(o),
                 Err(e) => exec(ctx, &Cmd::Block { id: q.into() }, true).map_err(|_| e),
             };
         }
         if q.len() >= 80 && bs58::decode(q).into_vec().is_ok_and(|v| v.len() == 64) {
-            return exec(ctx, &Cmd::Tx { hash: q.into() }, true);
+            return exec(ctx, &Cmd::Tx { hash: q.into(), watch: false, timeout: 0 }, true);
         }
         if q.starts_with('@') || (q.len() >= 32 && q.len() <= 48) {
             return exec(ctx, &Cmd::Account { address: q.into() }, true);

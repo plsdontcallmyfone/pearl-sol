@@ -262,6 +262,14 @@ body's records to equal the ones execution produced ("uncle record mismatch").
 Templates offer uncles automatically: live, non-canonical job blocks this node connected, eligible
 under the rules above for the template's parent, highest reward first. A miner needs no change.
 
+As built (317e61a, 7610305, 49c6700): an uncle on an inference segment job moves only the job's
+own totals (cap_remaining, subsidy_paid), not its ticket's or model's paid-subsidy rollups; weak
+messages carry the template's uncle item count in flag bits 1-2 (the uncle record items sit
+between the contracts record and the coinbase, so the tx hashes are found by counting back);
+test-only chain ids `0x7E570000 + h` migrate at height h; `getChainInfo.speed_height` is the
+migration height (null without one), `getParams` has `speed_height` (uncle rules, 0 off devnet)
+and `speed_migration_height`.
+
 ### 3.4 Parameters at 30 s, with reasons
 
 | parameter | 60 s | 30 s | why |
@@ -317,5 +325,78 @@ finality committee, a DAG.
 
 ## 7. Measurements
 
-Filled in from the runs: 7.1 proof sizes and verify times, 7.2 pre-confirmation latency, 7.3
-propagation split, 7.4 orphan rates at 60 s and 30 s, 7.5 light-client cost.
+All on 2026-10-21/22. Raw logs: test box `~/speed/p1net` (7.1-7.2), `~/speed/soak` (7.4 soak); the
+propagation runs were collected to the orchestrator's scratchpad (`speed/prop/`).
+
+### 7.1 Proof and weak-block sizes, verify time
+
+Real Pearl fallback proofs (k 2048, r 128, 4x8 tile), test box: proof 24,724 bytes (SPEC 3.1's
+"about 12.6 KB" predates the rank-penalty port); weak message 25,025 bytes median; `check_weak`
+427 us median, 1,128 us p90. At one weak block per 1.9 s that is about 13 KB/s per peer link and
+under 0.1% of a core.
+
+### 7.2 Pre-confirmation latency (Phase 1)
+
+3 nodes on the test box, real verifier, 60 s target (66.2 s mean over the window), 4 one-thread
+miners, 36 transfers 60 s apart, each read on a node other than the one it was sent to
+(`agent-node preconf-probe`):
+
+| | median | p90 | max |
+|---|---|---|---|
+| sent -> preconfirmed (other node) | 1,052 ms | 3,744 ms | 9,328 ms |
+| sent -> included | 41,234 ms | 234,080 ms | 414,124 ms |
+| weak blocks per block | 31 | 97 | 184 |
+
+All 36 were preconfirmed before inclusion. With only two payout keys among the miners, 35 of 36 were
+`low` at first sight (the confidence label needs 2+ miners).
+
+### 7.3 Propagation split
+
+Per gossiped block on loopback: decode 6-18 us, PoW verify 423 us median (1,040 p90), execution
+152 us (406 p90), whole add_block 7.2 ms median (12.5 p90, mostly state build and the archive
+write); origin submit to first peer receive 7 ms median. Tx bytes are not the cost, so compact
+blocks were not built (2.7).
+
+### 7.4 Orphan (stale) rates at 60 s and 30 s
+
+Cross-box test (4 nodes: test box + devnet boxes 0-2, own chain, full mesh over ssh tunnels,
+fallback blocks with real proofs, one miner thread per box; devnet services untouched):
+
+| run | target | blocks | mean interval | stale | per-peer delay median / p90 / max |
+|---|---|---|---|---|---|
+| p60 | 60 s | 32 | 120.5 s (under-calibrated) | 0 | 12 / 20 / 156 ms |
+| p30 | 30 s | 79 | 40.5 s | 0 | 12 / 21 / 79 ms |
+| p3 (amplifier) | 3 s | 1,313 | 3.9 s | 7 (0.53%) | 11 / 17 / 25,835 ms (one ssh stall) |
+
+Live devnet (heads on all three nodes from the test box, 2026-10-21 21:16 to 2026-10-22 12:20 UTC,
+heights 4733-5624, 892 blocks, 60.8 s mean): 4 depth-1 reorgs (4951, 5000, 5119, 5408), a stale
+rate of about 0.45% (a lower bound: the monitor reconnected a few times). Inverting
+stale = 1 - exp(-tau/T) gives an effective tau of 60 x -ln(1 - 0.0045) = 0.27 s on the live
+devnet (job blocks, loaded box 0), against 0.012 s for empty fallback blocks between idle nodes.
+At 30 s the same tau gives 1 - exp(-0.27/30) = 0.9%: those stale job blocks are what uncles credit
+(1/2 at depth 1). The three boxes share one region; miners elsewhere add their link latency to tau
+(research/SPEED.md 9: 2 s of delay is 6.45% stale at 30 s).
+
+Phase 2 soak (test box, 4 nodes, migration at height 15 on a test chain id, about 8.8 h): 973
+blocks, 31.5 s mean after the migration (28.9 s over the last 30), finality lag exactly 60, tips
+equal on all four nodes in 524 of 524 one-minute samples, 1 stale block (a fallback block, which
+the uncle rule excludes), 0 uncles (fallback-only mining; uncles are proven by the network tests
+with 300 ms links: 6 of 6 racing rounds credited the stale block as an uncle on every node).
+
+### 7.5 Light-client cost (Solana devnet, measured)
+
+Relay txs of boxes 1 and 2 over the 24 h before slot time 1792618550: 62,251 txs (31,011 + 31,240),
+all one signature at 5,000 lamports and no priority fee, for 1,537 headers (56.2 s mean blocks):
+0.3113 SOL/day, 40.5 txs and 202,509 lamports per header. Per day, (202,509 + priority x 12.2M CU)
+x headers:
+
+| priority (micro-lamports/CU) | 60 s (1,440 headers) | 30 s (2,880 headers) |
+|---|---|---|
+| 0 | 0.2916 SOL | 0.5832 SOL |
+| 1,000 | 0.3092 SOL | 0.6184 SOL |
+| 10,000 | 0.4673 SOL | 0.9346 SOL |
+
+CU per header after the schedule change: submit_header 31,746 -> 31,818, completing jackpot
+640,831 -> 640,893 (about +130 CU of about 10.2M; every tx under 1.4M; tx count unchanged).
+Refundable rent: +167,040 lamports once (schedule bytes) and about +0.125 SOL locked while K = 60
+keeps 30 more header records (4,176,000 lamports each).

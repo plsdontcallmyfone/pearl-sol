@@ -816,3 +816,45 @@ plus a curve buy and sell by the same key. The first builder attempt with a comp
 was 1,254 bytes and refused by the RPC (limit 1,232); the builder now drops that instruction and checks
 the size.
 
+
+## Chain speed: weak-block pre-confirmations + 30 s target (2026-10-21/22, HANDOFF 39, docs/SPEED.md)
+
+All Rust on the test box (-j 4, release), merged tree (branch speed at 49c6700 + test fixes):
+
+| suite | result |
+|---|---|
+| chain workspace (`cargo test --workspace --no-fail-fast`) | 228 pass, 0 fail, 58 suites |
+| crates: pearl-job, pearl-node, pearl-miner | 74 pass |
+| pearl-cli | 119 pass |
+| token/tests/lightclient-litesvm (incl. new speed.rs 5: realloc/admin, 60 s at S and 30 s at S+1, K floor, reorg across S, CU) | 26 pass |
+| services/header-relay | 8 pass |
+| apps/explorer | 65 pass |
+| services/cadre-api | 98 pass, 2 fail (client.test.ts and sol.test.ts: `@solana/web3.js` not installed in that tree; the same on main) |
+| extension | 121 pass (solana.test.ts needs the token IDL build) |
+| ~/pearl-wallet | 284 pass (2 drift.spec IDL failures predate this) |
+| trading preconf gate | 4 pass |
+
+New tests: consensus-pow/tests/weak.rs (codec, accept/reject, real Pearl weak-only proof is not a block), rpc preconf
+units (count, share, confidence, pruning, cap, replacement refusal), agent-node tests/weak_network.rs (3 nodes with
+latency: preconfirmed on other nodes, then included, then final; 40-byte tips still work; garbage weak proof gets the
+peer blocked), executor speed tests (migration once at S and only on migrating chains, emission per day 1.00294%
+before and after, uncle reward math per depth, cap bound, lien split, key 45 activation), chain-level uncle tests
+(each rule refused incl. uncle of an uncle and double inclusion, reorg makes an uncle eligible again, 30 s from S+1,
+finality pause at S), body codec, a 4-node network on 300 ms links (6 of 6 racing rounds credited the stale block
+as an uncle on every node), a fresh node syncing through the speed height.
+
+Live checks: a fresh node with the staged binary 8b4b3f74... synced the public devnet from genesis on the test box (2026-10-22 13:41 UTC: height 5701, finalized 5671 = da8aa41e9ed0c174..., the same hash as node 1 at 5671; 0 invalid or mismatch log lines; stopped by PID, data removed); the Phase 2
+fork's earlier build matched node 0 at 1, 3260, 4200, 4700, 4799, 4800, 4801, 5000 and the finalized hash at 5072.
+Measurements: docs/SPEED.md 7.
+
+Trading hook (for the trading row; not applied because services/swarm/trading was not on this branch when the gate
+was written): in `services/swarm/trading/src/cadre.ts` import `{ waitSettled, policyFromEnv }` from `./preconf.ts`
+and add `waitSettled(txHash, notional, p = policyFromEnv()) { return waitSettled(this.rpc, txHash, notional, p); }`
+to the Cadre class; in `src/trader.ts`, after `const f = await this.o.venue.trade(...)` on the Cadre venue, `const
+settled = await this.o.cadre.waitSettled(f.ref, order.amountIn);`, log `settled.status` / `settled.risk` and append
+`settled.risk` to the receipt body. Policy defaults (not measured, a choice): act on preconfirmed only at confidence
+>= medium and notional <= TRADE_PRECONF_CAP (10 CADRE), wait for included up to TRADE_INCLUDED_CAP (1,000 CADRE),
+final above.
+
+Explorer note: `decodeLcConfig` shows the light client's base `finalityK` (30); after 6000 the schedule at offset 318
+holds 60 (display only).
