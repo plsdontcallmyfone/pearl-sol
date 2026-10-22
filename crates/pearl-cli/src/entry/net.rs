@@ -77,6 +77,8 @@ pub enum Msg {
     Thread(String, Result<Value, String>),
     /// The Send tab's transfer finished.
     Sent(Result<String, String>),
+    /// The Trade view's read (trade.rs).
+    Trade(Box<super::trade::TradeData>),
 }
 
 #[derive(Debug, Clone)]

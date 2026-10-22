@@ -12,6 +12,8 @@
 //! 5 Activity   blocks, txs, town posts and trades as they happen
 //! 6 Status     every health check (what `cadre status` prints)
 //! 7 Lookup     a tx, block, account or @handle, or any command, drawn as cards
+//! 8 Trade      Solana trading: the CADRE PumpSwap quote, your positions, the leaderboard
+//!              (user agents apart from house traders) and the latest fills (trade.rs)
 //!
 //! One poller (poll.rs) feeds every view; switching views never refetches or resets the
 //! conversation, a selection, a scroll position, a filter or a half-typed input. Palette
@@ -27,6 +29,7 @@ pub mod net;
 pub mod poll;
 pub mod robot;
 pub mod theme;
+pub mod trade;
 pub mod views;
 
 use std::collections::{HashMap, HashSet};
@@ -90,10 +93,11 @@ pub enum ViewId {
     Activity,
     Status,
     Lookup,
+    Trade,
 }
 
 impl ViewId {
-    pub const ALL: [ViewId; 7] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup];
+    pub const ALL: [ViewId; 8] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup, ViewId::Trade];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -104,6 +108,7 @@ impl ViewId {
             ViewId::Activity => "activity",
             ViewId::Status => "status",
             ViewId::Lookup => "lookup",
+            ViewId::Trade => "trade",
         }
     }
 
@@ -116,6 +121,7 @@ impl ViewId {
             ViewId::Activity => "Live blocks, txs, posts and trades",
             ViewId::Status => "Health of every component",
             ViewId::Lookup => "A tx, block, account or @handle, or any command",
+            ViewId::Trade => "Trade on Solana: CADRE quote, your positions, leaderboard, fills",
         }
     }
 
@@ -138,6 +144,7 @@ impl ViewId {
             "activity" | "watch" | "feed" => ViewId::Activity,
             "status" | "health" => ViewId::Status,
             "lookup" | "find" => ViewId::Lookup,
+            "trade" | "trading" | "positions" | "leaderboard" => ViewId::Trade,
             _ => return None,
         })
     }
@@ -255,6 +262,7 @@ pub(crate) struct App {
     agents_v: views::AgentsState,
     inbox_v: views::InboxState,
     activity: views::Activity,
+    trade_v: trade::TradeState,
     status_scroll: u16,
     lookup_input: Vec<char>,
     lookup_cur: usize,
@@ -367,6 +375,7 @@ impl App {
             agents_v: views::AgentsState::default(),
             inbox_v: views::InboxState::default(),
             activity: views::Activity::default(),
+            trade_v: trade::TradeState::default(),
             status_scroll: 0,
             lookup_input: vec![],
             lookup_cur: 0,
@@ -437,6 +446,13 @@ impl App {
                 }
             }
             ViewId::Agents => self.load_card(),
+            ViewId::Trade => {
+                if let Some(p) = &self.poll {
+                    if !p.wants.trade.swap(true, Ordering::Relaxed) {
+                        let _ = p.kick.send(poll::Kick::One(Source::Trade));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -749,6 +765,7 @@ impl App {
                 }
             }
             Msg::Status(r) => self.report = Some(*r),
+            Msg::Trade(d) => self.trade_v.data = Some(*d),
             Msg::CmdDone(id, r) => {
                 if let Some(l) = self.lookups.iter_mut().find(|l| l.id == id) {
                     l.out = Some(r);
@@ -884,11 +901,11 @@ impl App {
             self.palette_key(k, ctrl);
             return;
         }
-        // view keys that work everywhere: F1..F7, alt+1..7, ctrl+1..7 (where the terminal sends them)
+        // view keys that work everywhere: F1..F8, alt+1..8, ctrl+1..8 (where the terminal sends them)
         let num = match k.code {
-            KeyCode::F(n) if (1..=7).contains(&n) => Some(n as usize),
-            KeyCode::Char(c @ '1'..='7') if ctrl || alt => Some(c as usize - '0' as usize),
-            KeyCode::Char(c @ '1'..='7') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
+            KeyCode::F(n) if (1..=8).contains(&n) => Some(n as usize),
+            KeyCode::Char(c @ '1'..='8') if ctrl || alt => Some(c as usize - '0' as usize),
+            KeyCode::Char(c @ '1'..='8') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
             _ => None,
         };
         if let Some(v) = num.and_then(ViewId::from_num) {
@@ -914,6 +931,7 @@ impl App {
             ViewId::Activity => self.activity_key(k),
             ViewId::Status => self.status_key(k),
             ViewId::Lookup => self.lookup_key(k, ctrl),
+            ViewId::Trade => self.trade_key(k),
         }
     }
 
@@ -1236,6 +1254,20 @@ impl App {
         }
     }
 
+    fn trade_key(&mut self, k: KeyEvent) {
+        let t = &mut self.trade_v;
+        match k.code {
+            KeyCode::Esc => self.go(ViewId::Home),
+            KeyCode::Up | KeyCode::Char('k') => t.scroll = t.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => t.scroll += 1,
+            KeyCode::PageUp => t.scroll = t.scroll.saturating_sub(15),
+            KeyCode::PageDown => t.scroll += 15,
+            KeyCode::Home | KeyCode::Char('g') => t.scroll = 0,
+            KeyCode::Char('r') => self.kick(poll::Kick::One(Source::Trade)),
+            _ => {}
+        }
+    }
+
     fn status_key(&mut self, k: KeyEvent) {
         match k.code {
             KeyCode::Esc => self.go(ViewId::Home),
@@ -1430,6 +1462,7 @@ fn draw_header(buf: &mut Buffer, pen: &Pen, app: &App, w: u16) {
         ViewId::Activity => Source::Feed,
         ViewId::Agents => Source::Agents,
         ViewId::Inbox => Source::Inbox,
+        ViewId::Trade => Source::Trade,
         _ => Source::Chain,
     };
     if app.loading.contains(&src) && app.updated.get(&src).is_none() {
@@ -1455,13 +1488,14 @@ fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
     let mut parts: Vec<(&str, &str)> = match app.view {
         ViewId::Dashboard if app.dash.detail.is_some() => vec![("↑↓", "scroll"), ("esc", "close")],
         ViewId::Dashboard if app.dash.tab == dash::Tab::Send && app.dash.send.confirm => vec![("enter", "sign and send"), ("esc", "edit")],
-        ViewId::Dashboard if app.dash.tab == dash::Tab::Send => vec![("enter", "next"), ("tab", "tabs"), ("f1-f7", "views")],
-        ViewId::Dashboard => vec![("↑↓", "select"), ("enter", "open"), ("←→", "tab"), ("1-7", "views"), ("esc", "home")],
+        ViewId::Dashboard if app.dash.tab == dash::Tab::Send => vec![("enter", "next"), ("tab", "tabs"), ("f1-f8", "views")],
+        ViewId::Dashboard => vec![("↑↓", "select"), ("enter", "open"), ("←→", "tab"), ("1-8", "views"), ("esc", "home")],
         ViewId::Agents => vec![("↑↓", "select"), ("enter", "reload"), ("[ ]", "scroll card"), ("m", "message"), ("esc", "home")],
         ViewId::Inbox => vec![("↑↓", "select"), ("enter", "open"), ("m", "reply on home"), ("esc", "home")],
         ViewId::Activity => vec![("a b t p x", "filter"), ("↑↓", "scroll"), ("g", "newest"), ("esc", "home")],
         ViewId::Status => vec![("↑↓", "scroll"), ("r", "check again"), ("esc", "home")],
-        ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f7", "views"), ("esc", "home")],
+        ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f8", "views"), ("esc", "home")],
+        ViewId::Trade => vec![("↑↓", "scroll"), ("r", "read again"), ("esc", "home")],
         ViewId::Home => vec![],
     };
     parts.push(("ctrl+p", "commands"));
@@ -1599,6 +1633,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             }
             ViewId::Status => draw_status(buf, &pen, app, body, ms),
             ViewId::Lookup => cursor = draw_lookup(buf, &pen, app, body, ms),
+            ViewId::Trade => trade::draw_trade(buf, &pen, body, &app.trade_v, app.me.as_deref(), ms, app.loading.contains(&Source::Trade)),
             ViewId::Home => {}
         }
         if hints_y > body.y {

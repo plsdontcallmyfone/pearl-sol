@@ -6,7 +6,7 @@
 // reject on is checked first and answered with 409 / 422 instead of a tx that must fail.
 
 import { findPda, utf8 } from "../../../../apps/explorer/src/codec.ts";
-import { Api, ApiError, badRequest } from "../http.ts";
+import { Api, ApiError, badRequest, notFound } from "../http.ts";
 import type { Deps } from "../deps.ts";
 import {
   ammBuybackRecipients,
@@ -71,9 +71,9 @@ export const PUMP_FEE_BPS_MAX = 125n;
 const CRANK_MAX_SOL_IN = 1_000_000_000n;
 const CRANK_MIN_OUT_BPS = 300n;
 
-export async function pumpQuote(d: Deps, solIn: bigint) {
-  const b = await d.bridge();
-  const [curveAcc, poolAcc] = await d.accounts([bondingCurvePda(b.mint), canonicalPool(b.mint)]);
+export async function pumpQuote(d: Deps, solIn: bigint, mintIn?: string) {
+  const mint = mintIn ?? (await d.bridge()).mint;
+  const [curveAcc, poolAcc] = await d.accounts([bondingCurvePda(mint), canonicalPool(mint)]);
   if (!curveAcc) throw new ApiError(503, "curve_missing", "no pump bonding curve for the mint on this cluster");
   const curve = decodeCurve(curveAcc.data);
   if (!curve.complete) {
@@ -94,9 +94,9 @@ export async function pumpQuote(d: Deps, solIn: bigint) {
  * out of the PumpSwap pool after graduation. Capped at the real SOL the venue holds (both
  * programs pay at most that; virtual reserves only price).
  */
-export async function pumpSellQuote(d: Deps, tokensIn: bigint) {
-  const b = await d.bridge();
-  const [curveAcc, poolAcc] = await d.accounts([bondingCurvePda(b.mint), canonicalPool(b.mint)]);
+export async function pumpSellQuote(d: Deps, tokensIn: bigint, mintIn?: string) {
+  const mint = mintIn ?? (await d.bridge()).mint;
+  const [curveAcc, poolAcc] = await d.accounts([bondingCurvePda(mint), canonicalPool(mint)]);
   if (!curveAcc) throw new ApiError(503, "curve_missing", "no pump bonding curve for the mint on this cluster");
   const curve = decodeCurve(curveAcc.data);
   if (!curve.complete) {
@@ -268,18 +268,36 @@ async function poolKeysFor(d: Deps, mint: string): Promise<PoolKeys & { baseRese
   return { pool, baseMint: k.baseMint, quoteMint: k.quoteMint, baseVault: k.baseVault, quoteVault: k.quoteVault, baseReserve: tokenAccountAmount(bv.data), quoteReserve: q + pl.virtualQuote };
 }
 
+/** The pump coin a trade names: CADRE by default, or any pump create_v2 coin (Token-2022 mint with
+ * a pump bonding curve; after graduation its canonical PumpSwap pool). Trades are Solana only. */
+async function tradeMint(d: Deps, raw: unknown): Promise<{ mint: string; cadre: boolean }> {
+  const cfg = await d.bridge();
+  if (raw === undefined || raw === null || raw === "" || raw === cfg.mint) {
+    if (cfg.tokenProgram !== TOKEN_2022) throw new ApiError(503, "unexpected_token_program", "the bridge mint is not a Token-2022 mint (pump create_v2 coins are)");
+    return { mint: cfg.mint, cadre: true };
+  }
+  const mint = addr(raw, "mint");
+  const [m, curve] = await d.accounts([mint, bondingCurvePda(mint)]);
+  if (!m) throw notFound(`no mint account ${mint} on this cluster`);
+  if (m.owner !== TOKEN_2022) throw new ApiError(422, "unsupported_mint", "only pump create_v2 coins (Token-2022 mints) trade here");
+  if (!curve) throw new ApiError(422, "unsupported_mint", "this mint has no pump bonding curve: only pump coins (curve, then their canonical PumpSwap pool) trade here");
+  return { mint, cadre: false };
+}
+
 export function registerMarket(api: Api, d: Deps) {
   api.get("/v1/pump/quote", async (c) => {
     const side = c.query.get("side") ?? "buy";
     if (side === "sell") {
       const tokensIn = amount(c.query.get("tokens_in") ?? c.query.get("amount_spl"), "tokens_in");
-      const q = await pumpSellQuote(d, tokensIn);
-      return { side: "sell", ...q, note: "fee-free constant-product quote of the SOL a sell of tokens_in returns; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
+      const { mint } = await tradeMint(d, c.query.get("mint"));
+      const q = await pumpSellQuote(d, tokensIn, mint);
+      return { side: "sell", mint, ...q, note: "fee-free constant-product quote of the SOL a sell of tokens_in returns; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
     }
     if (side !== "buy") throw badRequest("side is buy or sell");
     const solIn = amount(c.query.get("sol_in"), "sol_in");
-    const q = await pumpQuote(d, solIn);
-    return { side: "buy", ...q, note: "fee-free constant-product quote; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
+    const { mint } = await tradeMint(d, c.query.get("mint"));
+    const q = await pumpQuote(d, solIn, mint);
+    return { side: "buy", mint, ...q, note: "fee-free constant-product quote; the fill is lower by pump's fee (1.25% on the curve, tiered on PumpSwap) and by slippage" };
   }, { cache: 3 });
 
   api.get("/v1/crank", async () => {
@@ -300,15 +318,13 @@ export function registerMarket(api: Api, d: Deps) {
     const solIn = amount(b0.sol_in, "sol_in");
     const slip = bps(b0.slippage_bps, "slippage_bps", 100n);
     const minOverride = b0.min_tokens_out === undefined || b0.min_tokens_out === null ? null : amount(b0.min_tokens_out, "min_tokens_out");
-    const cfg = await d.bridge();
-    const mint = cfg.mint;
-    if (cfg.tokenProgram !== TOKEN_2022) throw new ApiError(503, "unexpected_token_program", "the bridge mint is not a Token-2022 mint (pump create_v2 coins are)");
+    const { mint } = await tradeMint(d, b0.mint);
     const bal = await d.solana<any>("getBalance", [buyer, { commitment: "confirmed" }]);
     const have = BigInt(bal?.value ?? 0);
     if (have < solIn) throw new ApiError(422, "insufficient_funds", `the buyer holds ${have} lamports, the buy spends up to ${solIn} (plus the tx fee and first-time account rent)`);
     // pump's exact-SOL-in buys swap sol_in / (1 + fee): quote that net amount, fee-free
     const net = (solIn * 10_000n) / (10_000n + PUMP_FEE_BPS_MAX);
-    const q = await pumpQuote(d, net);
+    const q = await pumpQuote(d, net, mint);
     const quoted = BigInt(q.tokens_out_spl);
     checkMinOut(minOverride, quoted, "min_tokens_out");
     const minOut = minOverride ?? lessBps(quoted, slip);
@@ -355,18 +371,16 @@ export function registerMarket(api: Api, d: Deps) {
     const amt = amount(b0.amount_spl ?? b0.tokens_in, "amount_spl");
     const slip = bps(b0.slippage_bps, "slippage_bps", 100n);
     const minOverride = b0.min_sol_out === undefined || b0.min_sol_out === null ? null : amount(b0.min_sol_out, "min_sol_out");
-    const cfg = await d.bridge();
-    const mint = cfg.mint;
-    if (cfg.tokenProgram !== TOKEN_2022) throw new ApiError(503, "unexpected_token_program", "the bridge mint is not a Token-2022 mint (pump create_v2 coins are)");
+    const { mint, cadre } = await tradeMint(d, b0.mint);
     if (amt <= 0n) throw badRequest("amount_spl must be positive");
     const tokenAccount = ata(seller, mint, TOKEN_2022);
     const [ta] = await d.accounts([tokenAccount]);
     const have = ta && ta.owner === TOKEN_2022 ? tokenAccountAmount(ta.data) : 0n;
-    if (have < amt) throw new ApiError(422, "insufficient_tokens", `the seller's CADRE account holds ${have} SPL base units, the sell needs ${amt}`, { token_account: tokenAccount, balance_spl: have.toString() });
+    if (have < amt) throw new ApiError(422, "insufficient_tokens", `the seller's ${cadre ? "CADRE" : "token"} account holds ${have} SPL base units, the sell needs ${amt}`, { token_account: tokenAccount, balance_spl: have.toString() });
     const bal = await d.solana<any>("getBalance", [seller, { commitment: "confirmed" }]);
     const lamports = BigInt(bal?.value ?? 0);
     if (lamports < 5_000n) throw new ApiError(422, "insufficient_funds", `the seller holds ${lamports} lamports; the seller pays the tx fee (and, after graduation, a wSOL account's rent that the tx returns)`);
-    const q = await pumpSellQuote(d, amt);
+    const q = await pumpSellQuote(d, amt, mint);
     const gross = BigInt(q.sol_out_lamports);
     // pump takes its fee from the SOL out: allow the most it can be
     const net = lessBps(gross, PUMP_FEE_BPS_MAX);

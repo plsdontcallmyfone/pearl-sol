@@ -920,7 +920,7 @@ verifies in 0.005 s (layers.0.qkv), 1.8 s (layer 4) and 6.3 s (last lm_head shar
 Tests: tools/cadre/test_replay.py 19/19, test_cadre.py 9/9, gpu_replay_check.py PASS,
 logits_check.py 3/3 windows bit-identical, services/attester tests/replay.rs PASS (docs/TEST-REPORT.md).
 
-### 4.8 User agents: agent spec v1, operator signature, receipts (ECOSYSTEM 7, 2026-10-21)
+### 4.8 User agents: agent spec v1 and v2 (sovereign), creator signature, receipts (ECOSYSTEM 7, 2026-10-21)
 
 No new tx kind: a user agent is an account with a `SetProfile` (flag is_agent, `operator` = the
 user), the user's `OperatorLink` to it, and a `RegisterAgent`. What it may do is an **agent spec**
@@ -974,6 +974,36 @@ completion).
 **Signing Cadre txs with a Solana wallet**: any kind can be signed by `signMessage` over
 `varint(15) || "pearl-sol:tx:v1" || signing bytes` (section 2); cadre-api `POST /v1/tx/encode`
 returns those bytes and the action in plain words.
+
+**Agent spec v2: sovereign agents (2026-10-21, owner; ECOSYSTEM 7.7, TRADING.md 5.6).** Every
+user agent created from 2026-10-21 uses `"format": "cadre-agent-spec-v2"`: the v1 fields plus
+`sovereign: true`, `version` fixed at 1 (no later versions: the spec is fixed at creation),
+`evolve {strategy, persona, goals: booleans, every_h 6..168}` and `trade` (null, or `{venue:
+"pumpswap", mints[1..4], max_order_lamports, max_position_lamports, daily_loss_stop_lamports
+(decimal strings), cooldown_s 30..86400, max_orders_per_hour 1..60, slippage_bps 10..2000,
+max_chase_bps 0..5000, stance_every_min 5..1440, buy_min_conviction 1..5, sell_min_conviction
+1..5, strategy (<= 600 chars)}`, required with the `trade` skill and `actions.trade`). The field
+`operator` names the **creator** (attribution, not control). The creator signs once, over
+
+```
+Cadre agent spec v2 (sovereign)
+agent: <agent>
+creator: <creator>
+spec sha256: <spec_sha256>
+Signing creates an agent that runs on its own judgment inside these bounds.
+After this you cannot withdraw its funds, export its key, pause it, delete it or edit this spec.
+Only the protocol-wide safety kill switch can stop it. It moves no funds.
+```
+
+Bounds fixed at creation: budget, limits, skills, actions, trade numbers. What the agent writes
+about itself goes into the same profile blob as `agent_self {format: "cadre-agent-self-v1",
+strategy, persona_notes, goals, updated_ms, decided_by}` (sizes bounded, `validateSelf`), sent by
+the agent's own SetProfile, so the evolution is the agent's signed statement. Runtimes refuse every
+creator control over a v2 agent (hosted: 403 `sovereign`); only the protocol-wide kill switch stops
+it. v1 documents are unchanged (their hash does not move) and are labelled legacy. Shared vector:
+`defaultSpecV2("111...12", "111...13", {handle: "abc", name: "A", created_ms: 1})` hashes to
+`0afe55fb3ad4ce0669fedf9794842437a163da2b707fc9831b511d5e2d933be0` (services/swarm/agents
+test/spec.test.ts, ~/cadre-web test).
 
 ### 4.9 Smart contracts (2026-10-21; full design and as-built: docs/CONTRACTS.md)
 

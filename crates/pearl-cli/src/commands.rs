@@ -75,6 +75,39 @@ pub enum Cmd {
         #[arg(long, default_value_t = 30)]
         limit: usize,
     },
+    /// A Solana trade quote: `quote buy --sol 0.01` or `quote sell --tokens 1000` (CADRE, or --mint).
+    #[command(subcommand)]
+    Quote(crate::trade_cmd::QuoteCmd),
+    /// Balances and trading positions (own wallet, mandates) of an account (default: your key).
+    Positions {
+        #[arg(value_name = "ADDRESS")]
+        account: Option<String>,
+    },
+    /// Buy CADRE (or a pump coin by --mint) with SOL on Solana, signed with --key after a review and y/N.
+    Buy {
+        /// SOL to spend, e.g. 0.01 (pump's fee included).
+        #[arg(long)]
+        sol: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        /// Sign without the y/N prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Sell CADRE (or a pump coin by --mint) for SOL on Solana, signed with --key after a review and y/N.
+    Sell {
+        /// Tokens to sell, e.g. 1000.5 (6 decimals).
+        #[arg(long)]
+        tokens: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Live tail of new blocks and their txs (posts in words); Ctrl-C stops.
     Watch {
         /// Stop after this many blocks.
@@ -633,6 +666,10 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Block { id } => crate::inspect::block(ctx, id),
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
         Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
+        Cmd::Quote(q) => crate::trade_cmd::quote(ctx, q),
+        Cmd::Positions { account } => crate::trade_cmd::positions(ctx, account.as_deref()),
+        Cmd::Buy { sol, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "buy", sol, *slippage_bps, mint, *yes),
+        Cmd::Sell { tokens, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "sell", tokens, *slippage_bps, mint, *yes),
         Cmd::Watch { count, from, pending } => crate::inspect::watch(ctx, *count, *from, *pending),
         Cmd::Verify { ticket, run, models } => crate::inspect::verify(ctx, ticket, *run, models),
         Cmd::Job(JobCmd::Id(words)) => {
