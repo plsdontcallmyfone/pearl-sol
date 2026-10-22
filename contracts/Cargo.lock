@@ -47,3 +47,10 @@ version = "0.1.0"
 dependencies = [
  "cadre-contract-sdk",
 ]
+
+[[package]]
+name = "cadre-swarms"
+version = "0.1.0"
+dependencies = [
+ "cadre-contract-sdk",
+]
