@@ -14,6 +14,13 @@ name = "cadre-contract-sdk"
 version = "0.1.0"
 
 [[package]]
+name = "cadre-halt"
+version = "0.1.0"
+dependencies = [
+ "cadre-contract-sdk",
+]
+
+[[package]]
 name = "cadre-mandate"
 version = "0.1.0"
 dependencies = [
@@ -22,6 +29,20 @@ dependencies = [
 
 [[package]]
 name = "cadre-market"
+version = "0.1.0"
+dependencies = [
+ "cadre-contract-sdk",
+]
+
+[[package]]
+name = "cadre-poolprobe"
+version = "0.1.0"
+dependencies = [
+ "cadre-contract-sdk",
+]
+
+[[package]]
+name = "cadre-strategies"
 version = "0.1.0"
 dependencies = [
  "cadre-contract-sdk",
