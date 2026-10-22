@@ -1318,6 +1318,53 @@ CLAUDE.md "Who is working on what".
    - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
      indexer's first poll are not recorded (counters link the Config account instead).
 
+37. BLOB DATA LIFECYCLE: SEGMENT A RETENTION, QUOTAS WITH BACKPRESSURE, BACKLOG DRAIN (2026-10-22, "blob
+   lifecycle" row; SPEC 4.5 "Segment data retention", SPEC 5.4 "Node blob backpressure", RPC getBlobStats):
+   - Incident: node 0's blob store hit its 8 GB quota; every settle failed ("putBlob: blob store full"), request
+     scratch piled up (109 GB, then 67 GB). The orchestrator raised node 0 to 30 GB and the gateway retention
+     (item 35) stopped new scratch.
+   - Root cause (measured on node 0 at height 5009): 6.48 GB of segment A, 5.67 GB of it for segments never mined.
+     A segment stayed Open, so its A was kept until its ticket's deadline (balance tickets: 10,000 blocks, about a
+     week). The chain mines about 60 segments an hour; house traffic posted about 290 an hour (rounds of 144),
+     and templates offer only the newest 4096 jobs (devnet nodes ran 512), so most of that A could never be mined.
+   - Rule (node policy over chain state; SPEC 4.5): keep A while (1) mining: mineable at the tip or at F, within
+     the newest 4096 jobs and `segment_mine_blocks` (1440) of posting; or (2) replay (node.json `keep_replay`,
+     default true): ticket live at F until deadline + W, closed at F until close + W. W = `segment_replay_blocks`,
+     AdminConfig key 48, default 720, in its own record (tag 52; devnet activation 5800, only for SETTING it). Model
+     blobs stay pinned; profile/post/DM/ticket/job blobs unchanged.
+   - Backpressure: putBlob stops 5% under quota ("blob store nearly full ... RPC puts stop at N"); the gateway
+     answers 503 insufficient_storage when the node's `rpc_headroom_bytes` cannot take the A of every waiting row
+     plus the request's; an attester replay checks rebuilt A by commitment and fetches A only to locate a mismatch.
+   - getBlobStats: `classes` (model, segment_a, social, ticket, job, other; count, bytes, kept, prunable),
+     `referenced_bytes`, `prunable_bytes`, `rpc_headroom_bytes`, `puts_open`, `retention`.
+   - Measured sizes (1B, 144 matrices): 231,424 bytes of A blobs per row (113 distinct inputs x 2048; gate/up and the
+     16 lm_head shards share); scratch 2,708,480 per row; so a 8192-row ticket holds at most 1.90 GB of A, a
+     2048-row one 474 MB. Drain: node 0's store grew 1.56 GB while 17.4 GB of scratch posted (8.9%). Traffic: about
+     2,200 rows an hour, 20 live balances with 59,392 rows of budget (25,296 used), 1.04 min a block.
+   - Steady state under the rule: replay node (box 0) about 15 GB typical, 26 GB worst case (model 1.79 + live
+     tickets up to 13.7 + closed in the window about 6.1 + mining tail); mining-only node: model + newest 4096 jobs'
+     A, measured 4.8 GB of A (simulated on the live state), at most 16 GB at any traffic. Recommended quotas: box 0
+     40 GB (disk 145 GB: about 25 GB other, 16 GB scratch cap, 20 GB reserve), boxes 1-2 16 GB with keep_replay false
+     (48 GB disks, 32 GB free). Boxes 1-2 need segment A only to mine (their miners are 2/3 of the hashpower) and keep
+     only what is mineable; they were at 7.72 of 8 GB when measured.
+   - Backlog: no ticket needed a refund (deadlines 14,300-15,000, rows reserved when served, the gateway sweep and the
+     CompleteJob pro rata cover dead tickets); with node 0 at 30 GB it posts by itself (71.2 GB 02:07 -> 53.7 GB
+     02:45 UTC, about 27 GB/h). Stopgap applied by the orchestrator (seen 03:14 UTC) so paid AI flows during the
+     drain: GATEWAY_EXTRA `--max-request-data-mb 65536 --min-free-disk-mb 20480` (backup
+     /root/inference.env.pre-drain); revert once `request_data.bytes_waiting` < 16 GiB.
+   - Tests (test box, -j 4): chain 196 pass, 0 fail (new: bin/agent-node/tests/blob_lifecycle.rs 3 = retention by
+     state + model pinned + stats, stats + put backpressure, reorg around a mined and a pruned segment + fresh node
+     after pruning; executor/tests/blobparams.rs 2; blobs + state units); gateway 30 (new tests/node_blobs.rs 3);
+     attester 20 incl. the real-model replay (honest Accept 12.1 s, altered A and wrong C rejected). Live: the staged
+     agent-node synced devnet from genesis on the test box (5077, finalized hash 4038f7df... equal to box 0) with
+     keep_replay false and a 600 MB quota: it fetched only segment A of mineable segments, getBlobStats classes
+     added up; stopped by PID, data removed.
+   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked). Staged in /home/lode/stage-bloblife/ from
+     main a72713b: agent-node 556739d3... (boxes 0-2), cadre-gateway 38271463..., pearl-attester 33c5b897... (box 0).
+     The node change is not consensus (nothing sets key 48 until every node runs it and height >= 5800), old and new
+     nodes mix, rollback is a binary swap. One box at a time, 1, 2, 0, health checks between. See DEVNET.md "Blob
+     lifecycle rollout" for the exact commands.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
