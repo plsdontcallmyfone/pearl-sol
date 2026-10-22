@@ -1202,6 +1202,87 @@ CLAUDE.md "Who is working on what".
    and site redeploy (MARKET.md 11). Open: the contract cannot pay the mining pool (fee_to instead),
    no SOL hire via the storefront, no open bids (MARKET 12).
 
+35. BATCHED INFERENCE WORKER + GATEWAY BACKPRESSURE + REQUEST DATA RETENTION (owner-approved 2026-10-21,
+   "batched inference worker" row; SPEC 4.7 "Batching", SPEC 5.4 "Worker concurrency" and "Request data
+   retention", MAINNET 7, research/SUPPLY-DESIGN.md 4.5; data in docs/measurements/batching-2026-10-21/):
+   - Worker (tools/cadre/batch.py, the server default under cadre-glue-v1): continuous batching. One
+     scheduler thread runs a forward over every active request's rows (decode rows + prefill chunks up to
+     --max-step-rows), the int32 GEMMs stacked, attention per request (on CUDA one pooled, masked,
+     zero-padded attention for all decode rows; KV pool of --max-batch slots), batched greedy pick, FIFO
+     admission, --max-batch 16 / --max-queue 64 (one more: 503 Retry-After) / --max-live-rows 8192 /
+     --flush-rows 128; each step records which rows are whose and a request's A/C rows go to its own
+     files. --max-batch 1 or --glue fp32 = the old one-at-a-time worker. HTTP backlog 256 (the default 5
+     reset clients at 64 concurrent, measured).
+   - Chain: unchanged. Batching shares the worker's GEMMs, never a segment: each ticket still posts one
+     segment per matrix per round with exactly its own rows, so per-segment accounting and rows charged
+     per ticket are the same. No chain change was needed.
+   - Bit identity (tools/cadre/test_batch.py): 9 mixed real requests (prompts 42-164 tokens, one longer
+     than a prefill chunk, a stop string, pad on and off, 4 slots so 5 wait and join mid-decode, 2 late
+     joiners): batched == alone for output ids, text, rows, finish, all 288 A/C files and every token's
+     binary64 logits row, with and without the KV pool; test box CPU 28/28, A40 28/28 (twice), tiny
+     synthetic model 17/17 (box and pod). The evaluator's Rust replay (cadre-replay local) accepted every
+     batched request (7 unpadded of 9) on CPU and on the A40. CPU vs GPU: the A40's files equal the same
+     pod's Xeon files byte for byte for all 9 requests. (A pod-quantized model differs from the box's
+     registered one: calibration is not bit-reproducible across machines, so compare on the same files.)
+   - Measured, A40 $0.59/hr, 64 prompt + 64 output per request, segment files written: one at a time 7.57
+     tok/s ($21.65 per 1M), batched 12.2 (1), 72.5 (8), 99.9 (16), 140.0 (32, $1.17 per 1M), 130.6 (64);
+     without segment files 318-321 tok/s ($0.51). Test box CPU (8 vCPU shared, load 3-6): 4 threads 2.50 ->
+     17.49 tok/s at 16 (7.0x), 2 threads (box 0's) 1.71 -> 11.70 (6.8x); ttft with 4 queued 57-85 s one at a
+     time vs 2.5-4.5 s batched. Tables: MAINNET 7. Pod 23:12-01:03 UTC, $1.08, terminated, no pod left.
+   - Price (owner decision D2): recommended $2.34 per 1M rows (2x the batched A40 cost, was $3.86), key 25
+     `price_mlamports_per_gflop` 8,767 at SOL 108.09 (was 14,736); 11.6x the cheapest market completion
+     price (was 19x). SUPPLY-DESIGN 4.5. Nothing set on any chain.
+   - Gateway: --max-inference 32 at the worker (503 overloaded, Retry-After 2, before rows are reserved or
+     x402 is charged); a worker 503 is a 503 (reservation released). Retention (orchestrator priority after
+     box 0's disk filled 2026-10-22 00:12 UTC with 109 GB of request dirs): a request's A/C dir is deleted as
+     soon as its round is posted and booked; each settlement pass sweeps dirs of dead tickets and orphans
+     (10 min grace); --max-request-data-mb 16384 caps data waiting for rounds (+ in-flight estimates) and
+     --min-free-disk-mb 8192 keeps a disk reserve: a paid request past either answers 503
+     insufficient_storage (Retry-After 30) before any rows are reserved or paid; above half the cap rounds
+     post early (the 3 h big-balance period is what let 109 GB pile up). /v1/stats `inference`,
+     `request_data`. Sizing: 2.7 MB per row; batching at box 0's measured 11.7 tok/s (2 threads) is about
+     23 rows/s, about 62 MB/s of scratch, so the cap is reached in about 4.5 min of full load and rounds then
+     post every pass instead of every 3 h; disk use is bounded by the cap, not the round period.
+   - Tests: gateway 27/27 on the test box (new: backpressure 2, retention 3); test_cadre 9/9; the
+     server_limits silent-client test fails on macOS on unmodified main too (Linux passes).
+   - Memory (box 0's worker unit caps 4 GB): peak RSS at 8 concurrent 256-prompt requests, 2 threads:
+     batched max-batch 8, step 64, live 2048, flush 32 = 3.00 GB; the one-at-a-time worker on the same
+     prompts 3.37 GB; max-batch 16 (step 64, live 4096) 3.56 GB; max-batch 8 at step 256 = 4.76 GB (over the
+     cap). deploy/systemd/cadre-worker.service now sets the 3.00 GB settings (CADRE_MAX_BATCH=8 ...).
+   - BOX 0 ROLLOUT (handed to the orchestrator; this row restarted nothing). Window: one at a time, worker
+     then gateway, health checks between; requests in flight at the worker restart fail with their rows
+     released. From the Mac, main pushed with this item's commits:
+       0. baseline: `sshb 0 root 'df -h /var/lib/lode; systemctl is-active cadre-worker cadre-gateway;
+          curl -s 127.0.0.1:10665/health; curl -s 127.0.0.1:10664/v1/stats'` (if free disk is under about
+          10 GB, add `--min-free-disk-mb 4096` to GATEWAY_EXTRA first, or every paid request answers 503)
+       1. `scripts/devnet-deploy.sh sync`
+       2. gateway binary only: `sshb 0 lode 'bash -lc "cd ~/pearl-sol/crates && cargo build --release -j 2 -p
+          cadre-gateway"'` then `sshb 0 root 'cp /opt/lode/bin/cadre-gateway /opt/lode/bin/cadre-gateway.prev
+          && install -m 755 /home/lode/pearl-sol/crates/target/release/cadre-gateway /opt/lode/bin/'`
+       3. worker: `sshb 0 root 'cp /etc/systemd/system/cadre-worker.service /root/cadre-worker.service.prev &&
+          install -m 644 /home/lode/pearl-sol/deploy/systemd/cadre-worker.service /etc/systemd/system/ &&
+          systemctl daemon-reload && systemctl restart cadre-worker'`; health: `until curl -sf
+          127.0.0.1:10665/health; do sleep 2; done` must show `"batching": {"mode": "continuous", "max_batch":
+          8, ...}`; smoke: `curl -s 127.0.0.1:10665/generate -H 'content-type: application/json' -d
+          '{"prompt_ids": [128000, 9906, 1917], "max_new_tokens": 4}'` answers output_ids
+       4. gateway: `systemctl restart cadre-gateway`; `curl -sf 127.0.0.1:10664/health`; `curl -s
+          127.0.0.1:10664/v1/stats` shows `inference` and `request_data`
+       5. watch 15 min: worker /health `active`/`waiting`, `systemctl show cadre-worker -p MemoryCurrent`
+          (under 4 GB), `journalctl -u cadre-worker -u cadre-gateway -n 50`, `du -sh
+          /var/lib/lode/gateway/requests` falling as rounds post (`request_data.deleted` rising); house
+          thought latency in the swarm logs
+       6. after one posted round shows `deleted` > 0: `systemctl disable --now cadre-gateway-prune.timer`
+     Rollback: worker to one at a time without a code change: `mkdir -p
+     /etc/systemd/system/cadre-worker.service.d && printf '[Service]\nEnvironment=CADRE_MAX_BATCH=1\n' >
+     /etc/systemd/system/cadre-worker.service.d/10-serial.conf && systemctl daemon-reload && systemctl
+     restart cadre-worker`; old unit: `install -m 644 /root/cadre-worker.service.prev
+     /etc/systemd/system/cadre-worker.service`; gateway: `install -m 755 /opt/lode/bin/cadre-gateway.prev
+     /opt/lode/bin/cadre-gateway && systemctl restart cadre-gateway` (keep the prune timer then).
+     Box 0's house swarm, desktops, trading and user agents share this worker: one at a time they queued
+     (trading thoughts 5.7-108.5 s, mostly queue); batched, 8 decode together (box 0 itself not measured).
+   - Open: the segment files are half the GPU cost (an in-memory hand-off to the gateway, C kept as its
+     hash); the 8B batched (not measured); a GPU worker next to the gateway (MAINNET 11 item 10).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

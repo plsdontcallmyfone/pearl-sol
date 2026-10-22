@@ -38,7 +38,8 @@ overhang and force the venue off pump.fun.
 Why, in five points:
 1. **The mint cannot fix the real gap without paying for fake work.** The measured GPU cost of
    the 1B ($1.93 per 1M tokens on an A40) is 9.6x the cheapest market price for the same model
-   ($0.201 per 1M on OpenRouter). Closing that gap with minted tokens needs a mint multiple of
+   ($0.201 per 1M on OpenRouter). (Update 2026-10-21, section 4.5: the batched worker measures
+   $1.17, 5.8x; recommended D2 $2.34 per 1M rows.) Closing that gap with minted tokens needs a mint multiple of
    about k = 8.9. Self-dealing pays from k = 0.18 for anyone with spare hardware, and from about
    0.69 for a farmer paying the honest cost (sections 4.4, 5).
 2. **Below the farm line the mint is small.** A farm-safe mint adds at most about 15.7% of gross
@@ -405,6 +406,33 @@ Two properties follow directly from the formula:
   shape, section 2).
 - **At early volumes the mint is economically small.** At one busy A40 (7.3M rows a day) a k = 1
   T-base mint is worth about $27.6 a day (0.97515 x $28.31) to all miners combined.
+
+### 4.5 After batching (2026-10-21, measured; docs/MAINNET.md section 7)
+
+The 9.6x cost gap above was measured with a worker serving one request at a time. The batched
+worker (tools/cadre/batch.py, continuous batching, bit-identical per request, SPEC 4.7) on the
+same A40 at $0.59/hr, cadre-glue-v1, 64 prompt + 64 output tokens per request, segment files
+written: 140.0 tok/s at 32 concurrent requests (139.4 in a second run), so
+
+| figure | before (one request at a time) | after (batched, measured) |
+|---|---|---|
+| GPU cost per 1M output tokens, 1B | $1.93 (fp32 glue, 8 processes); $21.65 for cadre-glue-v1 one at a time | **$1.17** (cadre-glue-v1, 32 concurrent) |
+| same, compute only (no segment files) | n/a | $0.51-0.52 (318-321 tok/s at 64-128) |
+| cost / cheapest market completion price ($0.201) | 9.6x | **5.8x** (2.6x compute only) |
+| cost per 1M chain rows at this mix (127 rows per 64 output tokens) | n/a | $0.59 |
+
+Recommended new D2 (owner decision; same rule as 2026-10-20, 2x the measured cost on the
+output-token basis, which is conservative because prompt rows cost less than decode rows):
+**$2.34 per 1M rows** (was $3.86, -39%). At SOL/USD 108.09 (the 4.1 input): 2.342e-6 / 108.09 x
+1e9 = 21.67 lamports per row; one 1B row is 2.4715 GFLOP, so config key 25
+`price_mlamports_per_gflop` = **8,767** (was 14,736). Against the market it is 11.6x the cheapest
+completion price (was 19x) and 87x the prompt price (was 143x). Server revenue per 1M rows at the
+new price: 0.93615 x $2.34 = $2.19; break-even utilization stays 53.4% on the output-token basis
+(the price is 2x the cost by construction) and is 27% on the per-row basis of this mix ($0.59 /
+$2.19). What would close the rest of the gap, from the same run: the segment files are half the
+cost (compute only is $0.52), so a gateway that takes A/C from the worker in memory and keeps C
+only as its commitment would bring the cost to about 2.6x the market completion price; that is not
+built. The 8B was not measured batched, so the 8B rows of 4.3 are unchanged.
 
 ## 5. Wash trading and farming (computed)
 

@@ -10,8 +10,14 @@ For each request the worker keeps every matrix's A (int7 activations, all rows o
 request stacked: prompt, then each generated token) and C, and writes them for the gateway,
 which posts them as the ticket's segments.
 
+Serving: continuous batching by default (tools/cadre/batch.py, cadre-glue-v1 only): one scheduler
+thread runs every active request's next rows in one forward (the int32 GEMMs stacked, attention
+per request on its own KV cache), requests join and leave between steps, each request's A/C rows
+stay its own and are bit-identical to serving it alone (test_batch.py). `--max-batch 1` (or the
+fp32 glue) serves one request at a time as before. A full queue answers 503 with Retry-After.
+
 HTTP (127.0.0.1 only):
-  GET  /health
+  GET  /health  (+ "batching": mode, max_batch, active, waiting, live_rows, steps, tokens, busy_frac)
   POST /tokenize {"text"} | {"messages", "tools"?}   -> {"ids"} (messages: the model's chat
        template, or the Llama 3 header format when the tokenizer has none)
   POST /generate {"prompt_ids", "max_new_tokens", "out_dir", "stop"?, "stream"?, "pad"?}
@@ -121,6 +127,7 @@ class Model:
         self.attn_scale = t["rope_inv_freq"].get("attention_scaling", 1.0)
         self.tok = None
         self.lock = threading.Lock()
+        self.batcher = None  # batch.Batcher once start_batching() runs (the server's default)
         # cadre-glue-v1 (SPEC 4.7, tools/cadre/glue.py): deterministic glue, the same A on every
         # device and in every batch shape, so an evaluator can replay it; "fp32": the old glue
         assert glue in ("cadre-glue-v1", "fp32"), glue
@@ -129,6 +136,13 @@ class Model:
         if glue == "cadre-glue-v1":
             import glue as gluemod
             self.det = gluemod.DetGlue(self)
+
+    def start_batching(self, **kw):
+        """Serve /generate through continuous batching (tools/cadre/batch.py); needs cadre-glue-v1."""
+        import batch
+        self.tokenizer()
+        self.batcher = batch.Batcher(self, **kw)
+        return self.batcher
 
     def tokenizer(self):
         if self.tok is None:
@@ -342,8 +356,10 @@ def serve(model, host, port):
 
         def do_GET(self):
             if self.path == "/health":
-                return self.reply(200, {"ok": True, "name": model.man["name"], "model_id": model.man.get("model_id"), "matrices": len(model.mats), "pid": os.getpid(),
-                                        "device": str(model.dev), "glue": model.glue})
+                h = {"ok": True, "name": model.man["name"], "model_id": model.man.get("model_id"), "matrices": len(model.mats), "pid": os.getpid(),
+                     "device": str(model.dev), "glue": model.glue}
+                h["batching"] = model.batcher.health() if model.batcher is not None else {"mode": "serial", "max_batch": 1}
+                return self.reply(200, h)
             self.reply(404, {"error": "not found"})
 
         def do_POST(self):
@@ -360,6 +376,8 @@ def serve(model, host, port):
                     stop = body.get("stop") or []
                     stop = [stop] if isinstance(stop, str) else list(stop)
                     pad = bool(body.get("pad", True))
+                    if model.batcher is not None:
+                        return self.generate_batched(ids, n, body.get("out_dir"), stop, pad, bool(body.get("stream")))
                     if not body.get("stream"):
                         return self.reply(200, model.generate(ids, n, body.get("out_dir"), stop=stop, pad=pad))
                     self.send_response(200)
@@ -376,7 +394,50 @@ def serve(model, host, port):
             except Exception as e:  # noqa: BLE001
                 self.reply(400, {"error": f"{type(e).__name__}: {e}"})
 
-    srv = ThreadingHTTPServer((host, port), H)
+        def generate_batched(self, ids, n, out_dir, stop, pad, stream):
+            """/generate through the continuous batcher: same request and reply as the serial path."""
+            import batch
+            try:
+                job = model.batcher.submit(ids, n, out_dir, stop=stop, pad=pad)
+            except batch.Busy as e:
+                b = json.dumps({"error": f"busy: {e}", "type": "overloaded"}).encode()
+                self.send_response(503)
+                self.send_header("content-type", "application/json")
+                self.send_header("retry-after", "1")
+                self.send_header("content-length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+                return
+            if not stream:
+                try:
+                    return self.reply(200, batch.wait(model, job))
+                except RuntimeError as e:
+                    return self.reply(500, {"error": str(e)})
+            self.send_response(200)
+            self.send_header("content-type", "application/x-ndjson")
+            self.end_headers()
+
+            def emit(token, delta):
+                try:
+                    self.wfile.write((json.dumps({"token": token, "text": delta}) + "\n").encode())
+                    self.wfile.flush()
+                except OSError:
+                    model.batcher.cancel(job)  # the client left: free its slot
+            try:
+                r = batch.wait(model, job, on_token=emit)
+                self.wfile.write((json.dumps({"done": True, **r}) + "\n").encode())
+            except RuntimeError as e:
+                self.wfile.write((json.dumps({"error": str(e)}) + "\n").encode())
+            except OSError:
+                model.batcher.cancel(job)
+                return
+            self.wfile.flush()
+
+    class Srv(ThreadingHTTPServer):
+        request_queue_size = 256  # listen backlog: the default 5 resets concurrent clients (measured at 64)
+        daemon_threads = True
+
+    srv = Srv((host, port), H)
     print(json.dumps({"msg": "cadre worker started", "url": f"http://{host}:{port}", "model": model.man["name"], "pid": os.getpid()}), flush=True)
     srv.serve_forever()
 
@@ -391,6 +452,16 @@ def main():
     ap.add_argument("--glue", default=os.environ.get("CADRE_GLUE", "cadre-glue-v1"), help="cadre-glue-v1 (default, replayable) or fp32")
     ap.add_argument("--ppl", type=int, default=0, help="WikiText-2 test PPL over N windows of 1024 tokens, then exit")
     ap.add_argument("--seqlen", type=int, default=1024)
+    ap.add_argument("--max-batch", type=int, default=int(os.environ.get("CADRE_MAX_BATCH", "16")),
+                    help="requests decoded together (continuous batching, cadre-glue-v1 only); 1 = the old one-at-a-time worker")
+    ap.add_argument("--max-queue", type=int, default=int(os.environ.get("CADRE_MAX_QUEUE", "64")), help="requests waiting for a slot; more get 503")
+    ap.add_argument("--max-step-rows", type=int, default=int(os.environ.get("CADRE_MAX_STEP_ROWS", "256")), help="rows per forward step (decode rows + prefill chunk)")
+    ap.add_argument("--max-live-rows", type=int, default=int(os.environ.get("CADRE_MAX_LIVE_ROWS", "8192")),
+                    help="sum of prompt + max_new over active requests (KV cache memory: about 196 KB per row on Llama-3.2-1B)")
+    ap.add_argument("--flush-rows", type=int, default=int(os.environ.get("CADRE_FLUSH_ROWS", "128")),
+                    help="rows of A/C (all requests) held before they go to the segment files (about 2.7 MB per row on Llama-3.2-1B)")
+    ap.add_argument("--kv-pool", default=os.environ.get("CADRE_KV_POOL", "auto"), help="on / off / auto (on for cuda): one KV pool of max_batch slots, batched decode attention")
+    ap.add_argument("--pool-positions", type=int, default=int(os.environ.get("CADRE_POOL_POSITIONS", "2048")), help="positions per pool slot (longer requests get their own cache)")
     a = ap.parse_args()
     if a.threads:
         torch.set_num_threads(a.threads)
@@ -409,6 +480,10 @@ def main():
             print(json.dumps({"window": i, "ppl_so_far": math.exp(nll / cnt)}), file=sys.stderr, flush=True)
         print(json.dumps({"ppl": math.exp(nll / cnt), "tokens": cnt, "windows": a.ppl, "s": round(time.time() - t0, 1)}))
         return
+    if a.max_batch > 1 and model.det is not None:
+        model.start_batching(max_batch=a.max_batch, max_queue=a.max_queue, max_step_rows=max(a.max_step_rows, a.max_batch),
+                             max_live_rows=a.max_live_rows, flush_rows=a.flush_rows,
+                             kv_pool=None if a.kv_pool == "auto" else a.kv_pool == "on", pool_positions=a.pool_positions)
     serve(model, a.host, a.port)
 
 

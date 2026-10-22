@@ -6,6 +6,11 @@ After=network-online.target
 User=lode
 EnvironmentFile=/etc/lode/inference.env
 Environment=HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONUNBUFFERED=1
+# continuous batching (tools/cadre/batch.py, SPEC 4.7 "Batching"): 8 requests decoded together, prefill
+# chunks of 64 rows, 2048 live rows; measured peak 3.0 GB RSS at 8 concurrent 256-token prompts (the
+# one-at-a-time worker peaked at 3.37 GB on the same prompts; docs/measurements/batching-2026-10-21).
+# CADRE_MAX_BATCH=1 is the old one-at-a-time worker (rollback without a code change).
+Environment=CADRE_MAX_BATCH=8 CADRE_MAX_STEP_ROWS=64 CADRE_MAX_LIVE_ROWS=2048 CADRE_FLUSH_ROWS=32 CADRE_MAX_QUEUE=64
 WorkingDirectory=/var/lib/lode
 ExecStart=/bin/sh -c 'exec /home/lode/cadre-venv/bin/python /home/lode/pearl-sol/tools/cadre/worker.py --model $CADRE_MODEL_DIR --port 10665 --threads $WORKER_THREADS'
 # measured peak 2.3 GB RSS for 64 tokens (docs/HANDOFF.md item 17); the cap keeps an outlier off the node

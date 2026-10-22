@@ -833,6 +833,28 @@ generation_config), else when max_new_tokens is reached. Text = `decode(output_i
 skip_special_tokens)` (Llama 3: byte-level BPE, then transformers' `clean_up_tokenization`), cut
 at the first occurrence of each stop string in list order. `text_sha256` = sha256 of that text.
 
+**Batching (continuous, tools/cadre/batch.py, 2026-10-21).** The worker serves many requests
+at once without changing any of them. One scheduler thread runs a forward step over the rows of
+every active request: one decode row per generating request plus prompt chunks (prefill) up to
+`--max-step-rows`. Every per-row operation above runs on all rows stacked (the int32 GEMMs see
+m = the step's rows), attention reads each request's own KV cache (on CUDA the decode rows of all
+requests in one pooled, zero-padded, masked attention: padded weights are exactly 0, so they add
+exact zeros), and the greedy pick is per row. So every request's A rows, C rows, logits and
+tokens are bit-identical to serving it alone (tools/cadre/test_batch.py checks all 288 files of
+each of 9 mixed requests and every logits row; the Rust replay accepts each). Rules:
+- Rows stay per request: a step records which rows are whose; each request's A/C rows (prompt,
+  then each fed-back token, in order) go to that request's own files, exactly as when served
+  alone, and the gateway stacks them into that ticket's rounds as before (5.4). One segment per
+  ticket per matrix per round, as before: the batch shares the worker's GEMMs, never a segment,
+  so the chain's per-segment accounting and the rows charged per ticket are unchanged. No chain
+  change.
+- Requests join between steps (FIFO admission, the head is never skipped) and leave the step
+  after their last token. At most `--max-batch` (16) active, `--max-queue` (64) waiting (one more
+  answers 503 with Retry-After), `--max-live-rows` (8192) prompt + max_new summed over active
+  requests (KV memory), `--flush-rows` (128) rows of A/C held before they go to the files.
+- The fp32 glue is not batch-invariant, so `--glue fp32` (and `--max-batch 1`) serves one
+  request at a time as before.
+
 **Replay bundle.** A served request records `glue`, `prompt_ids`, `output_ids`,
 `max_new_tokens`, `stop` (gateway ledger), and close_ticket writes them into every request of
 the response blob, with `"glue": "cadre-glue-v1"` at the top when every request ran it. The A
@@ -1637,6 +1659,27 @@ Authentication (requests that draw on a balance), either:
 Limits (security pass V-7): at most `--max-in-flight` (64) requests at once, more answer 503;
 a socket read timeout of `--read-timeout-secs` (30) on every connection (headers, body, idle
 keep-alive; a body not received in time answers 408); bodies over 4 MiB answer 413.
+
+Worker concurrency (2026-10-21): the worker batches (4.7 "Batching"), so the gateway sends
+concurrent requests to it at once. At most `--max-inference` (32) inference requests are at the
+worker; one more answers 503 `overloaded` with `Retry-After: 2` before any rows are reserved or
+any x402 payment is taken. Keep it at or below the worker's `--max-batch + --max-queue`; a worker
+whose queue is full answers 503 and the gateway passes that on as 503 (reservation released).
+`GET /v1/stats` reports `inference: {at_worker, max, refused_busy}`.
+
+Request data retention (2026-10-22, after box 0's disk filled with 109 GB of request dirs): a
+served request's scratch files (`work_dir/requests/<id>`: A and C of every matrix, `rows x
+sum(k + 4n)` bytes, 2.7 MB per row on Llama-3.2-1B) are read only to build its round. They are
+deleted as soon as the round is posted and in the ledger (A is then on the node as blobs, C is
+committed as c_hash); a settlement pass also deletes the data of requests whose ticket is no
+longer open or closing, and orphan dirs (not in the ledger, not being generated, older than 10
+min). `--max-request-data-mb` (16384) caps the data waiting for rounds plus the estimate of
+requests being generated: a paid request that would pass it, or leave the disk under
+`--min-free-disk-mb` (8192), answers 503 `insufficient_storage` with `Retry-After: 30` before
+any rows are reserved or paid; above half the cap, waiting rounds are posted at the next pass
+instead of at their round period (3 h for large balances). `--keep-request-data` keeps them
+(debugging). `GET /v1/stats` reports `request_data: {bytes_waiting, max_bytes,
+disk_free_bytes, min_free_disk_bytes, refused_storage, deleted}`.
 
 Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
 | Method, path | Auth | What |

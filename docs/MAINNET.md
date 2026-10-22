@@ -184,6 +184,47 @@ no idle time), and the worker serves one request at a time per process.
 | 1B through the test box gateway (paid chat, 32 tokens, GPU worker over an ssh tunnel) | 21.13 tok/s decode; 8.7 s wall incl. ttft 1.53 s and 5.4 s copying segment files | 7.76 on decode alone |
 | for comparison: the CPU worker on the 4-core test box, same chat | 0.376 tok/s; 110.6 s wall | (CPU box, not priced here) |
 
+Batched worker (measured 2026-10-21 on one A40 at $0.59/hr, RunPod secure cloud, same 1B Instruct w7a7,
+cadre-glue-v1, the worker of tools/cadre/batch.py over HTTP; each request 64 prompt + 64 output tokens,
+2 requests per client back to back, segment files written as the gateway asks; raw lines in
+docs/measurements/batching-2026-10-21/a40-bench-gpu2.jsonl, a40-bench-gpu3.jsonl, a40-bench-gpu4.jsonl).
+Cost per 1M output tokens = $0.59 / (tok/s x 3600) x 1e6, GPU only, as above. Since 2026-10-21 the worker
+runs cadre-glue-v1 (verifiable), whose one-at-a-time decode is 2.8x slower on a GPU than the fp32 glue
+the table above measured; batching is what pays for it.
+
+| A40 worker, cadre-glue-v1 | concurrent requests | output tok/s summed | per-request latency (mean) | time to first token (mean) | $ per 1M output tokens |
+|---|---|---|---|---|---|
+| one at a time (`--max-batch 1`) | 1 | 7.57 | 8.4 s | 0.14 s | 21.65 |
+| one at a time | 4 | 7.58 | 27.6 s | 19.3 s (queueing) | 21.62 |
+| batched | 1 | 12.17 | 5.2 s | 0.09 s | 13.47 |
+| batched | 8 | 64.5-72.5 | 7.0-7.8 s | 0.36-0.39 s | 2.26-2.54 |
+| batched | 16 | 94.9-99.9 | 10.1-10.6 s | 0.71-0.75 s | 1.64-1.73 |
+| batched | 32 | 139.4-140.0 | 14.4 s | 1.16-1.21 s | **1.17** |
+| batched | 64 | 119.3-130.6 | 30.8-33.3 s | 1.77-1.92 s | 1.25-1.37 |
+| batched, no segment files (compute only) | 32 / 64 / 128 | 248.8 / 317.8 / 321.3 | 8.0 / 12.5 / 12.6 s | 0.61 / 1.03 / 1.08 s | 0.66 / 0.52 / 0.51 |
+
+The best measured production figure is 140.0 tok/s at 32 concurrent requests: **$1.17 per 1M output
+tokens**, 18.5x cheaper than the same glue one at a time and 1.65x cheaper than the fp32 8-process figure
+($1.93) that the D2 price was set from. Per chain row (prompt rows count too; this mix is 127 rows per 64
+output tokens) it is $0.59 per 1M rows. Above 32 the step time grows faster than the batch, and writing
+2.7 MB of A/C files per row is half the cost: without them the same card does 318-321 tok/s ($0.51-0.52),
+the ceiling a faster segment path (in-memory hand-off to the gateway, or C kept only as its hash) could
+reach. Bit identity on the card: batched = alone for all 288 files of 9 mixed requests, and the A40's files
+equal the same pod's Xeon Gold 6342 files byte for byte; the Rust replay (cadre-replay local) accepted
+every GPU-batched request (a40-tb-gpu4.log). Pod session: 23:12-01:03 UTC, $1.08 (balance 48.99 ->
+47.91), terminated, no pod left.
+
+CPU, the test box (8 vCPU Xeon Gold 6142, shared with other sessions' builds and miners, load 3-6;
+testbox-bench-cpu-t4-v2.jsonl, testbox-bench-cpu-t2-v2.jsonl; same requests):
+
+| test box worker | threads | 1 at a time | batched 1 | 2 | 4 | 8 | 16 (output tok/s summed) | latency / ttft at 16 |
+|---|---|---|---|---|---|---|---|---|
+| cadre-glue-v1 | 4 | 2.50 (2.56 at 4 queued) | 2.95 | 5.32 | 8.26 | 12.89 | 17.49 | 57.9 s / 7.0 s |
+| cadre-glue-v1 | 2 (box 0's setting) | 1.71 (1.72 at 4 queued) | 1.86 | 3.34 | 5.60 | 8.61 | 11.70 | 86.6 s / 12.7 s |
+
+With 4 queued requests the one-at-a-time worker gave time to first token 57.3 s (4 threads) and 85.3 s
+(2 threads), the queueing the house agents see on box 0; batched at 4 it is 2.5 s and 4.5 s.
+
 The whole RunPod session (one pod, 34 min up, bootstrap, 1B and 8B quantization, benches, checks,
 accuracy evals, the paid chat) cost $0.33 by the account balance (50.00 -> 49.67).
 
@@ -255,11 +296,15 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
 5. Keyed Solana RPC provider and plan.
 6. Inference price (SPEC 4.5 OPEN DECISION) and the storefront knobs (PRICE_BASE_LAMPORTS,
    PRICE_LAMPORTS_PER_GFLOP, OVERHEAD_LAMPORTS); a model registration deposit (default none).
+   Recommended 2026-10-21 (batched worker, research/SUPPLY-DESIGN.md 4.5): D2 at 2x the measured batched
+   A40 cost, $2.34 per 1M rows (was $3.86), config key 25 `price_mlamports_per_gflop` = 8,767 at SOL/USD
+   108.09 (was 14,736). Owner decision; nothing was changed on any chain.
 7. Whether to publish the miner source (or binaries) so the public installer works.
 8. Relay reward pool funding, and whether third parties relay.
 9. Mainnet genesis target and whether the same three boxes (or more operators) run the chain.
-10. A GPU worker for inference: measured on an A40 (section 7: 25 tok/s per 1B worker process, 85 tok/s
-    summed over 8 on one card, 8.0-8.6 tok/s for an 8B); which provider, how many cards, and whether
+10. A GPU worker for inference: measured on an A40 (section 7: batched cadre-glue-v1 worker 140 tok/s at
+    32 concurrent requests, $1.17 per 1M output tokens; the older fp32 figures 25 tok/s per 1B process, 85
+    summed over 8, 8.0-8.6 tok/s for an 8B one at a time; the 8B is not measured batched); which provider, how many cards, and whether
     the worker runs next to the gateway (the shim over ssh adds the segment-file copy to every request).
     The chain side for an 8B is DONE (2026-10-20, owner-approved): RegisterModel takes up to 1024
     matrices (SPEC 4.5), from genesis on a mainnet chain (devnet from height 4200).
