@@ -147,8 +147,10 @@ async function main() {
     for (const [h, f] of [[JUDGE.handle, k.judge], ...k.agents.map((a) => [a.p.handle, a.file])] as [string, string][]) {
       if (only && !only.includes(h)) continue;
       const w = loadWallet(f);
-      const prof = await c.rpc.call("getProfile", { account: w.address }).catch(() => null);
-      if (prof?.operator_linked) { log("link_exists", { handle: h }); continue; }
+      // the link is an OperatorLink tx naming this agent (role operator); a profile may not exist yet
+      const hist = await c.rpc.call("getAccountTxs", { account: w.address }).catch(() => null);
+      const txs: any[] = hist?.txs ?? (Array.isArray(hist) ? hist : []);
+      if (txs.some((t) => t.kind === "OperatorLink" && t.role === "operator" && t.from === op.address)) { log("link_exists", { handle: h }); continue; }
       await landed(c, `operator_link ${w.address}`, await c.sendNative(op, { kind: "OperatorLink", agent: w.publicKey, add: true }));
     }
     return;
