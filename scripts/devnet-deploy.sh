@@ -169,7 +169,7 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     scpb 0 "$tmp/web.bundle" "lode@$BOX0_IP:web.bundle"
     sshb 0 lode "mkdir -p ~/site-installer/scripts"
     scpb 0 "$tmp/install-miner.sh" "lode@$BOX0_IP:site-installer/scripts/install-miner.sh"
-    sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
+    sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git checkout -- public/install-miner.sh && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
       cd ~/cadre-web && git log --oneline -1 && export PATH=\$HOME/.local/node/bin:\$PATH NEXT_TELEMETRY_DISABLED=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
       npm ci --no-audit --no-fund >/dev/null
       CADRE_SOL=\$HOME/site-installer NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
