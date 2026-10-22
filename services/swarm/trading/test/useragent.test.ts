@@ -144,3 +144,41 @@ test("bonding curve reserves parse (virtual token at 8, virtual SOL at 16, compl
   assert.equal(curveReserves(d).complete, true);
   assert.throws(() => curveReserves(Buffer.alloc(20)));
 });
+
+test("take profit and stop loss (optional spec fields): whole-position exits ahead of the stance, named in the receipt", async () => {
+  assert.deepEqual(riskFromSpec({ ...trade, take_profit_bps: 5000, stop_loss_bps: 2000 }).takeProfitBps, 5000);
+  assert.equal(riskFromSpec(trade).takeProfitBps, undefined, "absent fields stay absent");
+  const ev = (v: FakeVenue, ref: string) => ({ venue: "pumpswap", base: v.r.base, quote: v.r.quote, at: performance.now(), ref });
+  // take profit: the position is worth about twice its cost; the stance says hold
+  const a = mk("HOLD 1");
+  a.t.o.risk = { ...a.t.o.risk, takeProfitBps: 5000, stopLossBps: 2000 };
+  a.v.b = { quote: 1_000_000_000n, base: 1_000_000n, realized: 0n, cost: 50_000_000n };
+  a.t.book = a.v.b;
+  await a.t.onEvent(ev(a.v, "slot:1"));
+  assert.equal(a.v.trades.length, 1);
+  assert.deepEqual([a.v.trades[0].side, a.v.trades[0].amountIn], [1, 1_000_000n], "sells the whole position");
+  assert.match(a.posts[0], /; own wallet; take profit at \d+ bps; stance hold 1/);
+  // stop loss: the position is worth about half its cost
+  const b = mk("BUY 5");
+  await b.t.think();
+  b.t.o.risk = { ...b.t.o.risk, stopLossBps: 2000 };
+  b.v.b = { quote: 1_000_000_000n, base: 1_000_000n, realized: 0n, cost: 200_000_000n };
+  b.t.book = b.v.b;
+  await b.t.onEvent(ev(b.v, "slot:1"));
+  assert.equal(b.v.trades[0].side, 1, "the stop loss wins over a BUY stance");
+  assert.match(b.posts[0], /stop loss at -\d+ bps/);
+  // inside both bounds: the stance decides as before
+  const c = mk("HOLD 1");
+  c.t.o.risk = { ...c.t.o.risk, takeProfitBps: 5000, stopLossBps: 5000 };
+  c.v.b = { quote: 1_000_000_000n, base: 1_000_000n, realized: 0n, cost: 99_000_000n };
+  c.t.book = c.v.b;
+  await c.t.onEvent(ev(c.v, "slot:1"));
+  assert.equal(c.v.trades.length, 0);
+  // no cost basis (house venues): no exit
+  const d = mk("HOLD 1");
+  d.t.o.risk = { ...d.t.o.risk, takeProfitBps: 50 };
+  d.v.b = { quote: 1_000_000_000n, base: 1_000_000n, realized: 0n };
+  d.t.book = d.v.b;
+  await d.t.onEvent(ev(d.v, "slot:1"));
+  assert.equal(d.v.trades.length, 0);
+});

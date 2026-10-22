@@ -120,3 +120,12 @@ test("agent_self is bounded and goes into the profile blob", () => {
   assert.equal(j.agent_spec_sha256, d.sha256);
   assert.equal(JSON.parse(profileBlob(d).toString("utf8")).agent_self, undefined);
 });
+
+test("trade take_profit_bps / stop_loss_bps: optional, bounded, absent keeps the hash", () => {
+  const MINT2 = "BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e";
+  assert.deepEqual(validateTrade({ ...defaultTrade(MINT2), take_profit_bps: 3000, stop_loss_bps: 1500 }), []);
+  assert.ok(validateTrade({ ...defaultTrade(MINT2), take_profit_bps: 10 }).some((x) => /take_profit_bps/.test(x)));
+  assert.ok(validateTrade({ ...defaultTrade(MINT2), stop_loss_bps: 10_000 }).some((x) => /stop_loss_bps/.test(x)));
+  assert.ok(validateTrade({ ...defaultTrade(MINT2), stop_loss_bps: 1.5 }).length);
+  assert.ok(!("take_profit_bps" in defaultTrade(MINT2)), "the default trade section has no exits, so earlier specs hash the same");
+});

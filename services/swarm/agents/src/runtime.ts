@@ -27,7 +27,7 @@ import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0"; // 0.2.0 (2026-10-22): trade.take_profit_bps / stop_loss_bps accepted
 
 export interface RuntimeConfig {
   stateDir: string;
