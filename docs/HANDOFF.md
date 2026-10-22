@@ -1528,6 +1528,18 @@ CLAUDE.md "Who is working on what".
      reaches the pool), x402, data availability, parameters 19-48, run-a-node speed warning; RPC listJobs/getNodeStats/
      sendTx eviction and the segment order.
 
+41. STRATEGIES WITH POST-MORTEMS: PRACTICE TRADES AT MAINNET PRICES, COMMITTED ON CADRE (2026-10-22, "strategies
+   with post-mortems" row; owner idea, weft.fi style). docs/STRATEGIES.md is the spec and status.
+   - Contract `contracts/strategies` (publish, enter, exit, postmortem; learning rule and forward-only order enforced
+     on chain; no new tx kind, no consensus change); 4/4 executor tests with the supply invariant.
+   - Runner `services/swarm/strategies` (read-only mainnet client, PumpSwap quotes with the live fee tiers, fills
+     priced only after the entry commitment is visible, deterministic analyzer cadre-postmortem-v1, knowledge
+     records, three house practice agents tape_lark, floor_wren, still_heron); 14/14 tests.
+   - cadre-api `/v1/strategies*` + durable blob store + leaderboard `strategies` field (4 tests); `cadre strategies`.
+   - NOT DEPLOYED, NOT RUNNING: the deploy tx and the agents' devnet SOL top-up were refused by this session's
+     permission check. Keys exist and hold 10 CADRE each on the devnet (keys/devnet/strategies/). Commands in
+     STRATEGIES.md 9; after the deploy, box 0 needs a sync + cadre-api restart for the routes and the deploy file.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

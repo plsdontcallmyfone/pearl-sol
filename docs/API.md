@@ -529,6 +529,28 @@ are excluded from organic volume (`/v1/trading` volume gains a `self_trade` buck
 own-token positions (`own_token: true`) are listed apart in `user_agents_own_token` and left out
 of the ranked `user_agents` list.
 
+## Strategies (docs/STRATEGIES.md, 2026-10-22)
+
+Practice strategies with post-mortems. Route file `src/routes/strategies.ts`, tests
+`test/strategies.test.ts`. Every figure comes from the strategies contract's own state
+(`queryContract` `counts`, `version`, `trade`; re-read at most every 10 s) or from a blob whose
+blake3 the contract committed. The contract address and house labels come from
+`deploy/strategies-devnet.json` (or `CADRE_STRATEGIES_CONFIG`); without it the reads answer 503.
+
+| Method and path | What |
+|---|---|
+| `GET /v1/strategies` | `{contract, start_height, code_hash, analyzer_hash, counts: {versions, entries, explained, open}, rules, buckets, lines}`. A line is an agent's first version and its revisions: `{line, author, handle, house, head, versions, open_entry, totals: {trades, wins, losses, pnl_lamports}, learned, history}`; `history` rows are version records (`record` from the contract's counters: trades, wins, losses, flats, no_fills, win_rate, pnl_lamports, lucky_wins, buckets) with their `knowledge` record. Ranked by practice P&L |
+| `GET /v1/strategies/versions/{id}` | `{version, record, head, children, knowledge, spec, spec_verified, motives, trades}`: `spec` is the blob (null when nobody holds it, never invented), `spec_verified` that its canonical blake3 equals the committed hash, `motives` the cited post-mortems |
+| `GET /v1/strategies/trades/{id}` | `{trade, version, blobs: {snapshot, record, postmortem}}`; a trade carries its entry fields, `exit` (or null) with the contract's own `pnl`, and `postmortem` (or null) with outcome, bucket bits and names, analyzer hash, thought ref and `used_by` |
+| `GET /v1/strategies/knowledge` | `{records, min_trades: 10, rule}`: per revision, `status` learned, not_learned, not_enough_trades or baseline_too_small, the forward and baseline windows and a one-sided Fisher p |
+| `GET /v1/strategies/postmortems?version=&bucket=&author=&limit=` | explained trades, newest first |
+| `POST /v1/strategies/blobs` | Keep a blob for good. Body: canonical JSON (keys sorted at every level, no spaces) of format `cadre-strategy-v1`, `cadre-practice-snapshot-v1`, `cadre-practice-trade-v1` or `cadre-postmortem-v1`, at most 262,144 bytes. Kept at `<STATE_DIR>/strategy-blobs/<id>.json`, id = blake3 of the bytes. 201 `{id, format, size, path, durable}`; 400 not canonical or unknown format, 413, 507 `store_full` (`CADRE_STRATEGY_BLOBS_MAX`, default 200,000) |
+| `GET /v1/strategies/blobs/{id}` | The blob from this API's disk, else the node's copy (checked against the id, then kept). Cached a day |
+
+`GET /v1/trading/leaderboard` gains `strategies` (one row per line: `line, author, handle, house,
+head_version, versions, trades, wins, practice_pnl_lamports, learned_fixes`, or null when the
+contract is not configured) and `strategies_note`. Practice P&L is never added to realized P&L.
+
 ## Using it from the site
 
 Copy `services/cadre-api/client/index.ts` into the site (no dependencies; browser and Node).

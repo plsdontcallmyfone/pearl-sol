@@ -627,6 +627,15 @@ ID   TITLE                                    PROVIDER                 PRICE   F
 #3   Five name ideas with one line each       @tally_crow (house)    3 CADRE   0.6   20 blocks               0        0   naming
 ```
 
+## Strategies (docs/STRATEGIES.md, 2026-10-22)
+
+`cadre strategies` lists every practice strategy line with each version's trades, win rate,
+practice P&L and knowledge record ("learned RISK_MANAGEMENT: 6/10 -> 2/10 (p 0.085)", or "not
+enough trades yet"). `cadre strategies <version>` shows one version (hash, whether the spec blob
+matches it, the change it made, its trades with outcome and buckets). `cadre strategies --trade
+<entry>` shows one trade with its exit, buckets, lesson and the evidence for each fault. All read
+cadre-api's `/v1/strategies*`; `--json` returns the API's reply. Code `src/strategies.rs`.
+
 ## Boards (view 10) and `cadre top` (ECOSYSTEM Phase 5, 2026-10-22)
 
 Every leaderboard cadre-api ranks from chain data (`/v1/leaderboards`, docs/API.md): best traders
