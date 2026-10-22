@@ -24,7 +24,7 @@ use crate::{blake3_hash, DecodeError, Hash, Header, Pubkey};
 /// Cadre public devnet chain id (deploy/genesis.json).
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Height of the block whose execution migrates the devnet to 30 s blocks (docs/SPEED.md 3.1).
-pub const DEVNET_SPEED_HEIGHT: u64 = 5400;
+pub const DEVNET_SPEED_HEIGHT: u64 = 5760;
 /// Test-only chain ids: `TEST_SPEED_CHAIN_BASE + h` (h < 0x10000) migrate at height `h`, so tests
 /// and soaks exercise the devnet migration at a low height. No real chain uses this range.
 pub const TEST_SPEED_CHAIN_BASE: u32 = 0x7E57_0000;
@@ -185,6 +185,7 @@ mod tests {
 
     #[test]
     fn heights_and_shares() {
+        assert_eq!(DEVNET_SPEED_HEIGHT, 5760);
         assert_eq!(speed_upgrade_height(DEVNET_CHAIN_ID), DEVNET_SPEED_HEIGHT);
         assert_eq!(speed_migration_height(DEVNET_CHAIN_ID), Some(DEVNET_SPEED_HEIGHT));
         assert_eq!(speed_upgrade_height(1), 0);

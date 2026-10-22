@@ -120,7 +120,7 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   least K deep.
 
 Speed (2026-10-21, docs/SPEED.md 3): the header is unchanged. On the devnet, block
-`DEVNET_SPEED_HEIGHT` (5400) runs a one-time config migration: target 60 s -> 30 s from its child,
+`DEVNET_SPEED_HEIGHT` (5760) runs a one-time config migration: target 60 s -> 30 s from its child,
 K 30 -> 60 (finality stays 30 min; finality pauses until the tip is 60 above the old floor), and
 `emission_ppb` 3500 (3.4). Fork choice stays the heaviest chain by its own headers' work; uncles do
 not count. The Solana light client follows the target time and K by height (`set_speed`, 5.3).

@@ -125,7 +125,7 @@ bridge acts only on final events.
  "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
 `speed_height` (docs/SPEED.md 3.1): the height of the block that runs the one-time 60 s -> 30 s
-migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 5400; test chain ids
+migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 5760; test chain ids
 `0x7E570000 + h`), or null for chains without one.
 
 ### getParams `{}`
