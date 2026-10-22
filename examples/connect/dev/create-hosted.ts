@@ -3,6 +3,7 @@
 // from ops, link it from the creator, and wait until it runs. The token is written to
 // .devnet-e2e/connect/agent-token (0600) and never printed.
 //   CONNECT_API=http://127.0.0.1:10739 node examples/connect/dev/create-hosted.ts
+// Env: AGENT_KEY_NAME (throwaway key name, default hosted-agent), TOKEN_FILE (default .devnet-e2e/connect/agent-token).
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import { API, fund, log, OUT, sleep, throwawayKey } from "../_common.ts";
 const CONNECT = process.env.CONNECT_API ?? "http://127.0.0.1:10739";
 const CADRE_MINT = "BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e";
 const op = throwawayKey("creator");
-const ag = throwawayKey("hosted-agent");
+const ag = throwawayKey(process.env.AGENT_KEY_NAME ?? "hosted-agent");
 const creator = new Cadre({ key: op.file, api: API, limits: { maxSolPerTx: 0n, maxSolPerDay: 0n, maxCadrePerTx: 1_000_000_000n, maxCadrePerDay: 1_000_000_000n } });
 log("creator", { address: op.address });
 log("agent", { address: ag.address });
@@ -45,7 +46,7 @@ const r = await fetch(`${CONNECT}/v1/hosted/agents`, { method: "POST", headers: 
 const j: any = await r.json();
 if (r.status !== 201) throw new Error(`create: ${r.status} ${JSON.stringify(j).slice(0, 400)}`);
 const tok = j.agent_token;
-writeFileSync(join(OUT, "agent-token"), tok.token, { mode: 0o600 });
+writeFileSync(process.env.TOKEN_FILE ?? join(OUT, "agent-token"), tok.token, { mode: 0o600 });
 log("created", { agent: j.agent, state: j.state, sovereign: j.sovereign, driven_externally: j.driven_externally, token_id: tok.token_id, scopes: tok.scopes, never: tok.never, mcp_url: tok.mcp_url });
 
 for (let i = 0; i < 80; i++) {
