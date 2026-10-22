@@ -1422,8 +1422,17 @@ CLAUDE.md "Who is working on what".
      recovered with the 2 original requests, stuck tx replaced, leftover cancelled, next round posts), a recorded
      round resumed and its pooled tx reused, a refused ticket stalls in a few blocks while the next ticket posts on
      the stuck nonce in the same pass and the refused one backs off, settle order, replacement fee. Gateway 37/37.
-   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked): binary staged on box 0, install + restart
-     cadre-gateway only, checks and rollback in the row's report. No node, chain or other unit; no ledger edit.
+   - ROLLOUT DONE: the orchestrator installed cadre-gateway cb2a6b3b... on box 0 and restarted it at 12:59:19 UTC
+     (rollback copies /opt/lode/bin/cadre-gateway.pre-stucknonce, /var/lib/lode/gateway/ledger.json.pre-stucknonce).
+     After (measured): the first pass prepared 941712d7 round 0 (1,924 rows, about 5.2 GB of scratch read) and at
+     13:02:33 replaced the 32 stuck txs (6527-6558, fee 1100); round_posted 13:08:59; 6f120b62 round 1 recovered
+     13:32:29 (9 requests, m 1280) and posted its last 112 segments 13:36:45. By 14:44 UTC: 10 rounds posted
+     (rounds_posted 45 -> 55, 16,552 rows), nonce 6527 -> 8066, mempool empty, tx_stalls 0, bytes_waiting
+     68,613,923,840 -> 54,405,237,760 (net -8.1 GB/h while 52 new paid requests were served: refused_storage
+     only 10 since the restart, all in the first minutes). A cadre-node restart at 13:48:53 (not this row) made 18
+     tickets fail getTicket once; they backed off and the pass went on. Throughput is bounded by blocks (about 1.1
+     min each, 64 server txs per block by the mempool's nonce window, so at least 3 blocks per 144-segment round)
+     plus the round's scratch read; a later speedup is preparing the next round while the current one confirms.
    - 64 GiB stopgap: keep it until bytes_waiting is under 12 GiB after the new binary drains the backlog, then
      restore /root/inference.env.pre-drain (16 GiB cap, 8 GiB disk reserve; the only difference is GATEWAY_EXTRA)
      and restart cadre-gateway once more (safe: rounds in progress are in the ledger now).

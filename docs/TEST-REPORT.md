@@ -831,8 +831,10 @@ On the test box 64.95.13.106 (~/stucknonce, `cargo test -j 4 -p cadre-gateway --
 | services/inference-gateway (all) | 37/37 pass |
 
 Box 0 before the fix (12:56 UTC): gateway account confirmed nonce 6527 with 32 refused PostSegments
-pooled at 6527-6558; rounds_posted 45; bytes_waiting 68,613,923,840; refused_storage 498. After: see
-HANDOFF 39 once the orchestrator has installed the staged binary.
+pooled at 6527-6558; rounds_posted 45; bytes_waiting 68,613,923,840; refused_storage 498. After
+(installed 12:59:19, read 14:44 UTC): stuck txs replaced 13:02:33, 6f120b62 round 1 recovered with its 9
+requests (m 1280); rounds_posted 55; nonce 8066; mempool empty; tx_stalls 0; bytes_waiting
+54,405,237,760; refused_storage 10 since the restart (paid requests flow again).
 
 
 ## Chain speed: weak-block pre-confirmations + 30 s target (2026-10-21/22, HANDOFF 39, docs/SPEED.md)
