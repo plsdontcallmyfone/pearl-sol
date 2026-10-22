@@ -7,9 +7,11 @@
 //             writes the name, symbol and description; only the agent's persona, the creator's
 //             theme (part of the signed spec) and its own record go into the prompt, never other
 //             accounts' text; the answer goes through the swarm's output filter;
-//   3. label  a cadre-launch-meta-v1 blob on Cadre (agent_launched: true, the agent, its creator,
-//             the deciding request id), served by cadre-api as the token's metadata uri; the
-//             description starts with "Launched by the AI agent @handle on Cadre";
+//   3. label  cadre-launch-meta-v1 metadata (agent_launched: true, the agent, its creator, the
+//             deciding request id) stored by cadre-api POST /v1/launches/metadata, which keeps the
+//             bytes on its own disk for good and also puts them on Cadre as a blob (node blobs no
+//             chain state names are pruned, and a token's uri must never 404); the uri is the
+//             short GET /v1/l/<id>; the description starts with "Launched by the AI agent @handle on Cadre";
 //   4. launch cadre-api POST /v1/tx/pump-create (create_v2 + the dev buy in one tx, dev buy at
 //             most launch.max_dev_buy_lamports and inside the day's SOL cap), signed by the agent
 //             key and a fresh mint key (thrown away after), sent through /v1/tx/solana;
@@ -90,7 +92,8 @@ export interface LaunchHost {
   lamports(): Promise<bigint>;
   record(): string;
   think(messages: { role: string; content: string }[], maxTokens: number): Promise<{ text: string; requestId: string } | null>;
-  putBlob(data: Buffer): Promise<{ uri: string }>;
+  /** cadre-api POST /v1/launches/metadata: the durable copy (and a Cadre blob); returns its id (hex). */
+  storeMeta(meta: Record<string, unknown>): Promise<{ id: string }>;
   build(body: unknown, signers: Wallet[]): Promise<{ signature: string; summary: any }>;
   confirm(sig: string): Promise<{ ok: boolean; err: unknown }>;
   receipt(text: string, sigs: string[]): Promise<string | null>;
@@ -121,8 +124,13 @@ export async function maybeLaunch(h: LaunchHost): Promise<string> {
   if (!idea) { h.note("launch_no", "decided not to launch a token (or the idea did not pass the filter)", { request_id: t.requestId }); return "judged_no"; }
   const description = `Launched by the AI agent @${h.handle} on Cadre (agent ${h.address}). ${idea.description}`;
   const meta = { format: "cadre-launch-meta-v1", name: idea.name, symbol: idea.symbol, description, image: null, agent_launched: true, agent: h.address, agent_creator: h.operator, spec_sha256: h.specSha256, thought_ref: t.requestId, launched_ms: now };
-  const put = await h.putBlob(Buffer.from(JSON.stringify(meta), "utf8"));
-  const id = put.uri.replace(/^blob:/, "");
+  let id: string;
+  try {
+    ({ id } = await h.storeMeta(meta));
+  } catch (e) {
+    h.note("launch_failed", `the metadata was not stored durably, so no launch: ${(e as Error).message.slice(0, 200)}`, { request_id: t.requestId, ok: false });
+    return "failed";
+  }
   // the short form (cadre-api GET /v1/l/<blob id in base58>): the create tx must fit 1,232 bytes
   const uri = `${h.apiUrl.replace(/\/$/, "")}/v1/l/${b58encode(Buffer.from(id, "hex"))}`;
   const mintKey = walletFromSeed(randomBytes(32));

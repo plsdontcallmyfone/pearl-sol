@@ -816,6 +816,24 @@ plus a curve buy and sell by the same key. The first builder attempt with a comp
 was 1,254 bytes and refused by the RPC (limit 1,232); the builder now drops that instruction and checks
 the size.
 
+Follow-up the same day: launch metadata kept durably by cadre-api (the blob lifecycle pruned the first
+CLTEST metadata blob). cadre-api launches.test.ts 9/9 (new: POST /v1/launches/metadata stores the
+exact bytes, id = blake3, and GET /v1/l and /v1/launches/metadata still serve after the node returns
+nothing; 400/413/404 cases); services/swarm/agents 34/34 (no launch when the metadata store fails).
+
+## Gateway stuck nonce (2026-10-22, "gateway stuck nonce" row, HANDOFF 39)
+
+On the test box 64.95.13.106 (~/stucknonce, `cargo test -j 4 -p cadre-gateway --release`).
+
+| Suite | Result |
+|---|---|
+| services/inference-gateway tests/stuck_nonce.rs (new) 5 | 5/5 pass, 5 runs in a row |
+| services/inference-gateway (all) | 37/37 pass |
+
+Box 0 before the fix (12:56 UTC): gateway account confirmed nonce 6527 with 32 refused PostSegments
+pooled at 6527-6558; rounds_posted 45; bytes_waiting 68,613,923,840; refused_storage 498. After: see
+HANDOFF 39 once the orchestrator has installed the staged binary.
+
 
 ## Chain speed: weak-block pre-confirmations + 30 s target (2026-10-21/22, HANDOFF 39, docs/SPEED.md)
 

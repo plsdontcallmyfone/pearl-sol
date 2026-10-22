@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::{cursor, execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
@@ -102,6 +102,34 @@ pub enum ViewId {
 
 impl ViewId {
     pub const ALL: [ViewId; 10] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup, ViewId::Trade, ViewId::Market, ViewId::Boards];
+    /// The footer strip and the number keys (owner 2026-10-22: trading is one thing agents do,
+    /// not a place of its own): hire, trade and boards live inside Agents as sections.
+    pub const TOP: [ViewId; 7] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup];
+    /// What agents do, as the sections of the Agents view, in order.
+    pub const SECTIONS: [ViewId; 4] = [ViewId::Agents, ViewId::Market, ViewId::Trade, ViewId::Boards];
+
+    /// The footer entry a view belongs to: a section of Agents belongs to Agents.
+    pub fn group(self) -> ViewId {
+        if ViewId::SECTIONS.contains(&self) { ViewId::Agents } else { self }
+    }
+
+    /// The section's name in the Agents bar.
+    pub fn section_label(self) -> &'static str {
+        match self {
+            ViewId::Agents => "town",
+            ViewId::Market => "hire",
+            ViewId::Trade => "trade",
+            ViewId::Boards => "boards",
+            _ => self.name(),
+        }
+    }
+
+    /// The next (or previous) section of Agents.
+    pub fn next_section(self, back: bool) -> ViewId {
+        let i = ViewId::SECTIONS.iter().position(|v| *v == self).unwrap_or(0);
+        let n = ViewId::SECTIONS.len();
+        ViewId::SECTIONS[if back { (i + n - 1) % n } else { (i + 1) % n }]
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -135,7 +163,7 @@ impl ViewId {
 
     /// 1-based number of the view (its key).
     pub fn num(self) -> usize {
-        ViewId::ALL.iter().position(|v| *v == self).unwrap() + 1
+        ViewId::TOP.iter().position(|v| *v == self.group()).unwrap() + 1
     }
 
     /// The key that opens the view: 1-9, and 0 for view 10.
@@ -144,7 +172,7 @@ impl ViewId {
     }
 
     pub fn from_num(n: usize) -> Option<ViewId> {
-        ViewId::ALL.get(n.checked_sub(1)?).copied()
+        ViewId::TOP.get(n.checked_sub(1)?).copied()
     }
 
     pub fn parse(s: &str) -> Option<ViewId> {
@@ -511,6 +539,44 @@ impl App {
     }
 
     /// Text goes to an input in this view (so digits and letters are not view keys).
+    /// Number keys switch views unless they would be typed: on Home and Lookup only while the
+    /// prompt is empty (owner 2026-10-22: pressing 1, 2, 3 on Home did nothing).
+    fn digits_switch(&self) -> bool {
+        match self.view {
+            ViewId::Home => self.input.is_empty(),
+            ViewId::Lookup => self.lookup_input.is_empty(),
+            _ => !self.typing(),
+        }
+    }
+
+    /// A click on the view strip opens that view; the wheel scrolls like up/down.
+    fn mouse(&mut self, m: MouseEvent, w: u16, h: u16) {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.palette.is_some() {
+                    return;
+                }
+                let body = body_rect(w, h);
+                if self.view.group() == ViewId::Agents && body.height > 6 && m.row == body.y {
+                    if let Some(v) = section_cells(body).into_iter().find(|(a, b, _)| m.column >= *a && m.column < *b).map(|c| c.2) {
+                        self.go(v);
+                    }
+                    return;
+                }
+                if let (_, Some(fy)) = frame_rows(h) {
+                    if m.row == fy {
+                        if let Some(v) = strip_cells(self, w).into_iter().find(|(a, b, _)| m.column >= *a && m.column < *b).map(|c| c.2) {
+                            self.go(v);
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => self.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            MouseEventKind::ScrollDown => self.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            _ => {}
+        }
+    }
+
     fn typing(&self) -> bool {
         match self.view {
             ViewId::Home | ViewId::Lookup => true,
@@ -975,14 +1041,25 @@ impl App {
         let num = match k.code {
             KeyCode::F(n) if (1..=10).contains(&n) => Some(n as usize),
             KeyCode::Char('0') if ctrl || alt => Some(10),
-            KeyCode::Char('0') if !self.typing() && k.modifiers.is_empty() => Some(10),
+            KeyCode::Char('0') if self.digits_switch() && k.modifiers.is_empty() => Some(10),
             KeyCode::Char(c @ '1'..='9') if ctrl || alt => Some(c as usize - '0' as usize),
-            KeyCode::Char(c @ '1'..='9') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
+            KeyCode::Char(c @ '1'..='9') if self.digits_switch() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
             _ => None,
         };
         if let Some(v) = num.and_then(ViewId::from_num) {
-            self.go(v);
+            if v == ViewId::Agents && self.view.group() == ViewId::Agents {
+                self.go(self.view.next_section(false));
+            } else {
+                self.go(v);
+            }
             return;
+        }
+        // , and . move between the Agents sections (town, hire, trade, boards)
+        if self.view.group() == ViewId::Agents && k.modifiers.is_empty() {
+            if let KeyCode::Char(c @ (',' | '.')) = k.code {
+                self.go(self.view.next_section(c == ','));
+                return;
+            }
         }
         match k.code {
             KeyCode::Char('p') if ctrl => {
@@ -1663,30 +1740,76 @@ fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
 }
 
 /// The bottom bar: directory and branch, the views (current one bright), network and version.
-fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
+/// The footer's side texts: (cwd shown, its end column, network/version text, its start column).
+fn footer_sides(app: &App, w: u16) -> (String, u16, String, u16) {
     let right_s = format!("{} · {}", app.network, env!("CARGO_PKG_VERSION"));
-    let rw = str_w(&right_s);
-    let rx = w.saturating_sub(2 + rw);
-    let cx = put(buf, 2, y, &clip(&app.cwd, rx.saturating_sub(4) as usize / 2), pen.fg(MUTED), rx.saturating_sub(2));
-    put(buf, rx, y, &right_s, pen.fg(MUTED), w);
-    // the view strip, centered between the two when it fits
-    let strip: Vec<(String, bool)> = ViewId::ALL.iter().map(|v| (v.name().to_string(), *v == app.view)).collect();
-    let sw: u16 = strip.iter().map(|(s, _)| str_w(s) + 2).sum::<u16>() + 2 * (strip.len() as u16 - 1);
+    let rx = w.saturating_sub(2 + str_w(&right_s));
+    let cwd = clip(&app.cwd, rx.saturating_sub(4) as usize / 2);
+    let cx = 2 + str_w(&cwd);
+    (cwd, cx, right_s, rx)
+}
+
+/// Where each view sits in the footer strip: (from column, to column, view). Empty when the
+/// strip does not fit. Shared by drawing and by mouse clicks.
+fn strip_cells(app: &App, w: u16) -> Vec<(u16, u16, ViewId)> {
+    let (_, cx, _, rx) = footer_sides(app, w);
+    let label = |i: usize, v: &ViewId| str_w(&format!("{} {}", (i + 1) % 10, v.name()));
+    let sw: u16 = ViewId::TOP.iter().enumerate().map(|(i, v)| label(i, v)).sum::<u16>() + 2 * (ViewId::TOP.len() as u16 - 1);
     let room_l = cx + 3;
     let room_r = rx.saturating_sub(3);
     if room_r <= room_l || room_r - room_l < sw {
-        return;
+        return vec![];
     }
     // centered on the screen, under the content; between the two side texts only when they would overlap
     let centered = w.saturating_sub(sw) / 2;
     let mut x = if centered >= room_l && centered + sw <= room_r { centered } else { room_l + (room_r - room_l - sw) / 2 };
-    for (i, (s, on)) in strip.iter().enumerate() {
-        if i > 0 {
-            x += 2;
-        }
-        x = put(buf, x, y, &((i + 1) % 10).to_string(), pen.fg(if *on { BLUE } else { DIM }), w);
-        x = put(buf, x + 1, y, s, if *on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
+    let mut out = vec![];
+    for (i, v) in ViewId::TOP.iter().enumerate() {
+        let lw = label(i, v);
+        out.push((x, x + lw, *v));
+        x += lw + 2;
     }
+    out
+}
+
+fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
+    let (cwd, _, right_s, rx) = footer_sides(app, w);
+    put(buf, 2, y, &cwd, pen.fg(MUTED), rx.saturating_sub(2));
+    put(buf, rx, y, &right_s, pen.fg(MUTED), w);
+    for (i, (x, _, v)) in strip_cells(app, w).into_iter().enumerate() {
+        let on = v == app.view.group();
+        let nx = put(buf, x, y, &((i + 1) % 10).to_string(), pen.fg(if on { BLUE } else { DIM }), w);
+        put(buf, nx + 1, y, v.name(), if on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
+    }
+}
+
+/// The Agents sections bar: (from column, to column, section) on the body's first row.
+fn section_cells(body: Rect) -> Vec<(u16, u16, ViewId)> {
+    let mut x = body.x + 1;
+    let mut out = vec![];
+    for v in ViewId::SECTIONS {
+        let lw = str_w(v.section_label());
+        out.push((x, x + lw, v));
+        x += lw + 4;
+    }
+    out
+}
+
+/// Town, hire, trade, boards: the things agents do, the current one bright, with the keys.
+fn draw_sections(buf: &mut Buffer, pen: &Pen, app: &App, body: Rect) {
+    let cells = section_cells(body);
+    for (x, _, v) in &cells {
+        let on = *v == app.view;
+        put(buf, *x, body.y, v.section_label(), if on { pen.fg(TEXT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { pen.fg(MUTED) }, body.right());
+    }
+    if let Some((_, end, _)) = cells.last() {
+        put(buf, end + 4, body.y, ", . or 3: next", pen.fg(DIM), body.right());
+    }
+}
+
+/// The Agents body below its sections bar.
+fn below_sections(body: Rect) -> Rect {
+    Rect::new(body.x, body.y + 2, body.width, body.height.saturating_sub(2))
 }
 
 /// `s` cut to `max` columns with a trailing ellipsis.
@@ -1765,7 +1888,11 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         cursor = home::draw(buf, &pen, app, w, h);
     } else {
         draw_header(buf, &pen, app, w);
-        let body = body_rect(w, h);
+        let mut body = body_rect(w, h);
+        if app.view.group() == ViewId::Agents && body.height > 6 {
+            draw_sections(buf, &pen, app, body);
+            body = below_sections(body);
+        }
         let (hints_y, _) = frame_rows(h);
         match app.view {
             ViewId::Dashboard => {
@@ -1900,12 +2027,12 @@ pub fn dashboard_buffer(sn: &Snapshot, network: &str, w: u16, h: u16, tab: dash:
 
 fn restore() {
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste, terminal::LeaveAlternateScreen, cursor::SetCursorStyle::DefaultUserShape, cursor::Show);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, terminal::LeaveAlternateScreen, cursor::SetCursorStyle::DefaultUserShape, cursor::Show);
 }
 
 fn enter() -> Result<()> {
     terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), terminal::EnterAlternateScreen, EnableBracketedPaste, cursor::SetCursorStyle::SteadyBlock)?;
+    execute!(std::io::stdout(), terminal::EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture, cursor::SetCursorStyle::SteadyBlock)?;
     Ok(())
 }
 
@@ -1960,6 +2087,10 @@ pub fn run(l: Launch) -> Result<i32> {
                 match event::read()? {
                     Event::Key(k) => app.key(k),
                     Event::Paste(s) => app.paste(&s),
+                    Event::Mouse(m) => {
+                        let (w, h) = terminal::size().unwrap_or((80, 24));
+                        app.mouse(m, w, h);
+                    }
                     Event::Resize(..) => {}
                     _ => {}
                 }
@@ -2085,7 +2216,7 @@ mod tests {
             let row: Vec<char> = rows(&b)[fy as usize].chars().collect();
             let text: String = row.iter().collect();
             let at = |pat: &str| text.char_indices().position(|(i, _)| text[i..].starts_with(pat)).unwrap();
-            let last = format!("{} {}", ViewId::ALL[ViewId::ALL.len() - 1].key_label(), ViewId::ALL[ViewId::ALL.len() - 1].name());
+            let last = format!("{} {}", ViewId::TOP[ViewId::TOP.len() - 1].key_label(), ViewId::TOP[ViewId::TOP.len() - 1].name());
             let (start, end) = (at("1 home"), at(&last) + last.chars().count());
             let (l, r) = (start as i32, row.len() as i32 - end as i32);
             let row = text;
@@ -2199,28 +2330,24 @@ mod tests {
         }
     }
 
-    /// View 10 (Boards) is the tenth in the registry and opens on key 0, alt+0 and F10; its
-    /// footer key label is 0.
+    /// Boards is the last section of Agents (owner 2026-10-22: hire, trade and boards are things
+    /// agents do): key 3 opens Agents and steps through its sections; boards still parses.
     #[test]
-    fn boards_is_view_ten_on_key_zero() {
-        assert_eq!(ViewId::from_num(10), Some(ViewId::Boards));
-        assert_eq!(ViewId::Boards.num(), 10);
-        assert_eq!(ViewId::Boards.key_label(), "0");
+    fn boards_is_a_section_of_agents() {
+        assert_eq!(ViewId::from_num(10), None);
+        assert_eq!(ViewId::Boards.num(), 3);
+        assert_eq!(ViewId::Boards.group(), ViewId::Agents);
         assert_eq!(ViewId::parse("top"), Some(ViewId::Boards));
         assert_eq!(ViewId::parse("leaderboard"), Some(ViewId::Trade));
         let k = |c: KeyCode, m: KeyModifiers| KeyEvent::new(c, m);
         let mut a = test_app();
         a.key(k(KeyCode::F(2), KeyModifiers::NONE));
-        a.key(k(KeyCode::Char('0'), KeyModifiers::NONE));
-        assert_eq!(a.view, ViewId::Boards);
-        a.key(k(KeyCode::Char('1'), KeyModifiers::NONE));
-        a.key(k(KeyCode::Char('0'), KeyModifiers::ALT));
+        for _ in 0..4 {
+            a.key(k(KeyCode::Char('3'), KeyModifiers::NONE));
+        }
         assert_eq!(a.view, ViewId::Boards);
         a.key(k(KeyCode::Char('w'), KeyModifiers::NONE));
         assert_eq!(a.boards_v.window(), "all");
-        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
-        a.key(k(KeyCode::F(10), KeyModifiers::NONE));
-        assert_eq!(a.view, ViewId::Boards);
     }
 
     /// Owner 2026-10-21: "if i toggle the dashboard it shouldn't reset". Ask something on
@@ -2296,6 +2423,45 @@ mod tests {
         assert_eq!(a.transcript.len(), 3, "a /command does not add to the conversation");
     }
 
+    /// Owner 2026-10-22: "click 1 or 2 or 3 and it doesn't change". On Home a number key opens
+    /// that view while the prompt is empty and is typed once something is written; a click on
+    /// the footer strip opens the view under it.
+    #[test]
+    fn number_keys_and_clicks_switch_views() {
+        let k = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut a = test_app();
+        a.key(k('2'));
+        assert_eq!(a.view, ViewId::Dashboard);
+        a.go(ViewId::Home);
+        a.key(k('h'));
+        a.key(k('3'));
+        assert_eq!(a.view, ViewId::Home, "a digit after text is typed");
+        assert_eq!(a.input.iter().collect::<String>(), "h3");
+        a.input.clear();
+        let (w, h) = (150u16, 58u16);
+        let fy = frame_rows(h).1.unwrap();
+        for (x0, x1, v) in strip_cells(&a, w) {
+            a.go(ViewId::Home);
+            a.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: (x0 + x1) / 2, row: fy, modifiers: KeyModifiers::NONE }, w, h);
+            assert_eq!(a.view, v, "click at {x0}..{x1}");
+        }
+        assert_eq!(strip_cells(&a, w).len(), ViewId::TOP.len());
+        // the Agents sections: 3 again, , and ., and a click on the bar
+        a.go(ViewId::Home);
+        a.key(k('3'));
+        assert_eq!(a.view, ViewId::Agents);
+        a.key(k('3'));
+        assert_eq!(a.view, ViewId::Market);
+        a.key(k('.'));
+        assert_eq!(a.view, ViewId::Trade);
+        a.key(k(','));
+        assert_eq!(a.view, ViewId::Market);
+        let body = body_rect(w, h);
+        let (x0, x1, v) = section_cells(body)[3];
+        a.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: (x0 + x1) / 2, row: body.y, modifiers: KeyModifiers::NONE }, w, h);
+        assert_eq!((a.view, v), (ViewId::Boards, ViewId::Boards));
+    }
+
     #[test]
     fn keys_tab_palette_and_quit() {
         let k = |c: KeyCode, m: KeyModifiers| KeyEvent::new(c, m);
@@ -2305,9 +2471,11 @@ mod tests {
         assert_eq!(a.label(), "@tide");
         a.key(k(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(a.label(), "Ask");
-        // digits type on Home; they switch views elsewhere
+        // on Home a digit is typed once the prompt has text (with it empty, it switches views)
+        a.key(k(KeyCode::Char('a'), KeyModifiers::NONE));
         a.key(k(KeyCode::Char('2'), KeyModifiers::NONE));
-        assert_eq!((a.view, a.input.iter().collect::<String>()), (ViewId::Home, "2".to_string()));
+        assert_eq!((a.view, a.input.iter().collect::<String>()), (ViewId::Home, "a2".to_string()));
+        a.key(k(KeyCode::Backspace, KeyModifiers::NONE));
         a.key(k(KeyCode::Backspace, KeyModifiers::NONE));
         a.key(k(KeyCode::Char('3'), KeyModifiers::ALT));
         assert_eq!(a.view, ViewId::Agents);

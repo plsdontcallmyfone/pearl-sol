@@ -1858,6 +1858,17 @@ paths:
       responses:
         "200": { description: "{launches: [{mint, name, symbol, uri, agent, handle, agent_creator, verified, signature, at, dev_buy_lamports, dev_buy_tokens_spl, bonding_curve, label: agent-launched, house: false}], total, rule}", content: { application/json: { schema: { type: object } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/launches/metadata:
+    post:
+      tags: [launches]
+      operationId: storeLaunchMetadata
+      summary: "Store launch metadata durably: the exact JSON bytes kept on this API's disk (id = blake3, the Cadre blob id) and put on the node as a blob, so a token's uri never 404s"
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        "201": { description: "{id, id_b58, path: /v1/l/<id_b58>, size, durable, node_blob}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { description: over 2,048 bytes }
+        "507": { description: store_full (CADRE_LAUNCH_META_MAX) }
   /v1/launches/metadata/{id}:
     get:
       tags: [launches]

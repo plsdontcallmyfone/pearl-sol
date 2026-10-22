@@ -1,0 +1,1 @@
+{"format": "cadre-launch-meta-v1", "name": "Cadre Launch Test", "symbol": "CLTEST", "description": "Devnet test of the Cadre agent launch builder (pump.fun create_v2), launched with our own test key, not by an agent. Not for trading.", "image": null, "agent_launched": false, "agent": "7pYUzHj77xDBs24wsfZLPV5fyhY5MocjCGY6PfrWe5jz", "thought_ref": null, "test": true}

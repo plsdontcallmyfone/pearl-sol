@@ -130,39 +130,41 @@ pub struct PreparedSegment {
 /// with zero rows to `m`; C likewise. `hash_a = commit_a(job_key, A)`, `c_hash =
 /// blake3_keyed(C, job_key)`; the A URI is the activation blob's (content-addressed) id.
 pub fn prepare_round(model: &ModelInfo, dirs: &[(PathBuf, u32)], m: u32, blocks_per_segment: u32) -> Result<Vec<PreparedSegment>> {
+    (0..model.matrices.len()).map(|i| prepare_matrix(model, dirs, m, i, blocks_per_segment)).collect()
+}
+
+/// One matrix of [`prepare_round`].
+pub fn prepare_matrix(model: &ModelInfo, dirs: &[(PathBuf, u32)], m: u32, i: usize, blocks_per_segment: u32) -> Result<PreparedSegment> {
     let total: u32 = dirs.iter().map(|d| d.1).sum();
     ensure!(total <= m && m % model.period() == 0, "round of {total} rows does not fit m = {m}");
-    let mut out = Vec::with_capacity(model.matrices.len());
-    for (i, (k, n)) in model.matrices.iter().enumerate() {
-        let (k, n) = (*k as usize, *n as usize);
-        let mut a: Vec<i8> = Vec::with_capacity(m as usize * k);
-        let mut c: Vec<i32> = Vec::with_capacity(m as usize * n);
-        for (dir, rows) in dirs {
-            let ab = std::fs::read(dir.join(format!("a/{i}.i8"))).with_context(|| format!("read A of matrix {i} in {}", dir.display()))?;
-            ensure!(ab.len() >= *rows as usize * k, "A of matrix {i} in {}: {} bytes, need {} rows", dir.display(), ab.len(), rows);
-            a.extend(ab[..*rows as usize * k].iter().map(|&x| x as i8));
-            let cb = std::fs::read(dir.join(format!("c/{i}.i32"))).with_context(|| format!("read C of matrix {i}"))?;
-            ensure!(cb.len() >= *rows as usize * n * 4, "C of matrix {i} in {}: too short", dir.display());
-            c.extend(cb[..*rows as usize * n * 4].chunks_exact(4).map(|x| i32::from_le_bytes(x.try_into().unwrap())));
-        }
-        a.resize(m as usize * k, 0);
-        c.resize(m as usize * n, 0);
-        let key = model.job_key(i as u16);
-        let a_blob = standing::encode_activation_blob(m, k as u32, &a)?;
-        let spec = SegmentSpec {
-            matrix: i as u16,
-            m,
-            k: k as u32,
-            n: n as u32,
-            max_blocks: blocks_per_segment.max(1),
-            hash_a: commit_a(&key, &a),
-            hash_b: model.hash_b.get(i).copied().unwrap_or([0; 32]),
-            c_hash: result_hash(&key, &c),
-            a_uri: pearl_job::data::blob_uri(&pearl_job::data::blob_id(&a_blob)),
-        };
-        out.push(PreparedSegment { spec, a_blob });
+    let (k, n) = *model.matrices.get(i).ok_or_else(|| anyhow!("model has no matrix {i}"))?;
+    let (k, n) = (k as usize, n as usize);
+    let mut a: Vec<i8> = Vec::with_capacity(m as usize * k);
+    let mut c: Vec<i32> = Vec::with_capacity(m as usize * n);
+    for (dir, rows) in dirs {
+        let ab = std::fs::read(dir.join(format!("a/{i}.i8"))).with_context(|| format!("read A of matrix {i} in {}", dir.display()))?;
+        ensure!(ab.len() >= *rows as usize * k, "A of matrix {i} in {}: {} bytes, need {} rows", dir.display(), ab.len(), rows);
+        a.extend(ab[..*rows as usize * k].iter().map(|&x| x as i8));
+        let cb = std::fs::read(dir.join(format!("c/{i}.i32"))).with_context(|| format!("read C of matrix {i}"))?;
+        ensure!(cb.len() >= *rows as usize * n * 4, "C of matrix {i} in {}: too short", dir.display());
+        c.extend(cb[..*rows as usize * n * 4].chunks_exact(4).map(|x| i32::from_le_bytes(x.try_into().unwrap())));
     }
-    Ok(out)
+    a.resize(m as usize * k, 0);
+    c.resize(m as usize * n, 0);
+    let key = model.job_key(i as u16);
+    let a_blob = standing::encode_activation_blob(m, k as u32, &a)?;
+    let spec = SegmentSpec {
+        matrix: i as u16,
+        m,
+        k: k as u32,
+        n: n as u32,
+        max_blocks: blocks_per_segment.max(1),
+        hash_a: commit_a(&key, &a),
+        hash_b: model.hash_b.get(i).copied().unwrap_or([0; 32]),
+        c_hash: result_hash(&key, &c),
+        a_uri: pearl_job::data::blob_uri(&pearl_job::data::blob_id(&a_blob)),
+    };
+    Ok(PreparedSegment { spec, a_blob })
 }
 
 /// The oldest pending requests (in order) whose rows, padded to the row period, fit `cap`;
@@ -265,6 +267,20 @@ pub struct TicketState {
     /// SPEC 5.4 "Ticket block budget"). None: not known yet (read from the chain at settle).
     #[serde(default)]
     pub max_rounds: Option<u32>,
+    /// The round being posted (recorded before its first PostSegments is signed, cleared when the
+    /// round is in `rounds`): a round the chain has started is resumed with exactly these
+    /// requests, never with whatever is pending by then (devnet box 0 2026-10-22: a resumed
+    /// round restacked with later requests named m 1712 against the chain's 1280, every
+    /// PostSegments was refused at the tip and sat in the mempool holding the server's nonce).
+    #[serde(default)]
+    pub posting: Option<PostingRound>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PostingRound {
+    pub round: u16,
+    pub m: u32,
+    pub requests: Vec<String>,
 }
 
 impl TicketState {
@@ -362,6 +378,19 @@ pub struct Config {
     pub min_free_disk_bytes: u64,
     /// Keep request scratch data after its round is posted (debugging only).
     pub keep_request_data: bool,
+    /// Server-key txs in flight at once: the node's mempool takes nonces up to 64 ahead of the
+    /// account's confirmed nonce (chain/mempool `max_ahead`), so a round of 144 segments goes out
+    /// in a sliding window of this many instead of batches waited on one by one.
+    pub send_window: usize,
+    /// A server tx at the account's next nonce that this many new blocks skip is refused by the
+    /// chain (templates drop a tx that fails at the tip and the mempool keeps it): the send stops
+    /// with an error instead of waiting out its timeout, and the next send replaces it.
+    pub stall_blocks: u64,
+    /// Highest fee a replacement may pay, as a multiple of the chain's min_fee.
+    pub max_fee_multiple: u64,
+    /// A ticket whose settlement failed waits this long before the next try (doubling per
+    /// consecutive failure, at most 16 times), so one ticket never holds every settle pass.
+    pub settle_backoff: Duration,
 }
 
 impl Default for Config {
@@ -390,6 +419,10 @@ impl Default for Config {
             max_request_data_bytes: 16 << 30,
             min_free_disk_bytes: 8 << 30,
             keep_request_data: false,
+            send_window: 64,
+            stall_blocks: 5,
+            max_fee_multiple: 64,
+            settle_backoff: Duration::from_secs(30),
         }
     }
 }
@@ -431,6 +464,34 @@ pub struct Gateway {
     node_blob: Mutex<Option<(Option<u64>, Instant)>>,
     /// Paid requests refused because the node's blob store is nearly full, since start.
     pub refused_node_storage: AtomicUsize,
+    /// Server txs that replaced another of the server's pooled txs at the same nonce (a stuck or
+    /// stale one), orphans cancelled with a 0 self-transfer, and sends stopped as stalled.
+    pub tx_replaced: AtomicUsize,
+    pub tx_cancelled: AtomicUsize,
+    pub tx_stalls: AtomicUsize,
+    /// Tickets whose last settlement failed: (try again at, consecutive failures, last error).
+    settle_retry: Mutex<BTreeMap<String, (Instant, u32, String)>>,
+}
+
+/// One of the server's own txs in the node's mempool (getMempool + getTx).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PooledTx {
+    pub hash: String,
+    pub fee: u64,
+    /// Kind byte and body bytes, to tell the same tx at a higher fee from another one.
+    pub kind: u8,
+    pub body: Vec<u8>,
+}
+
+/// The fee a tx must pay to replace a pooled one (chain/mempool `replacement_floor`: 10% more,
+/// at least 1).
+pub fn replacement_fee(old: u64) -> u64 {
+    old.saturating_add((old / 10).max(1))
+}
+
+/// Is `msg` a node refusing a tx because another one holds its nonce in the mempool?
+pub fn is_nonce_pooled(msg: &str) -> bool {
+    msg.contains("is pooled with a fee") || msg.contains("replacement fee")
 }
 
 /// How long a getBlobStats read of the node's blob headroom is reused.
@@ -552,6 +613,10 @@ impl Gateway {
             data_deleted: AtomicUsize::new(0),
             node_blob: Mutex::new(None),
             refused_node_storage: AtomicUsize::new(0),
+            tx_replaced: AtomicUsize::new(0),
+            tx_cancelled: AtomicUsize::new(0),
+            tx_stalls: AtomicUsize::new(0),
+            settle_retry: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -789,6 +854,9 @@ impl Gateway {
             "tickets": l.tickets.len(), "rounds_posted": l.tickets.values().map(|t| t.rounds.len()).sum::<usize>(),
             "inference": {"at_worker": self.inferring.load(Ordering::SeqCst), "max": self.cfg.max_inference, "refused_busy": self.refused_busy.load(Ordering::SeqCst)},
             "request_data": data,
+            "settle": {"tx_replaced": self.tx_replaced.load(Ordering::SeqCst), "tx_cancelled": self.tx_cancelled.load(Ordering::SeqCst),
+                "tx_stalls": self.tx_stalls.load(Ordering::SeqCst), "rounds_in_progress": l.tickets.values().filter(|t| t.posting.is_some()).count(),
+                "backoff": self.settle_backlog_json()},
             "note": "measured on this gateway's worker; nothing estimated",
         })
     }
@@ -878,6 +946,7 @@ impl Gateway {
                     ticket_id: id.clone(), order: None, wallet: b58(w), rows, lamports_per_row: None, reserved: 0, pending: vec![], rounds: vec![],
                     state: "open".into(), single: false, created_ms: now_ms(), error: None, deadline_height: j["deadline_height"].as_u64(), round_secs: None,
                     max_rounds: j["max_blocks"].as_u64().map(|b| (b / self.round_blocks().max(1) as u64) as u32),
+                    posting: None,
                 });
             });
         }
@@ -921,6 +990,7 @@ impl Gateway {
             ticket_id: ticket.clone(), order: v["id"].as_str().map(String::from), wallet: wallet.clone(), rows,
             lamports_per_row: paid.map(|p| p.div_ceil(rows)), reserved: 0, pending: vec![], rounds: vec![], state: "open".into(),
             single: false, created_ms: now_ms(), error: None, deadline_height: None, round_secs, max_rounds: Some(max_rounds),
+            posting: None,
         };
         self.with_ledger(|l| l.tickets.insert(ticket.clone(), t));
         (self.log)(json!({"event": "topup", "ticket": ticket, "wallet": wallet, "rows": rows, "order": v["id"]}));
@@ -1047,6 +1117,7 @@ impl Gateway {
                     ticket_id: id.clone(), order: v["id"].as_str().map(String::from), wallet, rows, lamports_per_row: paid.map(|x| x.div_ceil(rows)),
                     reserved: need, pending: vec![], rounds: vec![], state: "open".into(), single: true, created_ms: now_ms(), error: None, deadline_height: None,
                     round_secs: None, max_rounds: Some(1),
+                    posting: None,
                 };
                 self.with_ledger(|l| l.tickets.insert(id.clone(), t));
                 id
@@ -1180,66 +1251,164 @@ impl Gateway {
 
     /// Send a tx from the server key and wait for it to be included.
     fn send_wait(&self, body: Body, what: &str) -> Result<String> {
-        let _g = self.send_lock.lock().unwrap();
-        let me = self.server();
-        let info = self.node.call("getChainInfo", json!({}))?;
-        let params = self.node.call("getParams", json!({}))?;
-        let chain_id = info["chain_id"].as_u64().ok_or_else(|| anyhow!("no chain_id"))? as u32;
-        let fee = pearl_node::num(&params["min_fee"]).unwrap_or(1000);
-        let nonce = self.node.get_account(&me)?.nonce;
-        let wire = tx::sign(&Tx { chain_id, from: me, nonce, fee, body }, &self.key)?;
-        let h = self.node.send_tx(&wire).with_context(|| format!("send {what}"))?;
-        let t0 = Instant::now();
-        loop {
-            let t = self.node.call("getTx", json!({"tx_hash": h}))?;
-            if t["status"] == json!("included") {
-                return Ok(h);
-            }
-            ensure!(t0.elapsed() < Duration::from_secs(300), "{what} tx {h} not included after 300 s");
-            std::thread::sleep(self.cfg.poll);
-        }
+        Ok(self.send_many(vec![body], what)?.remove(0))
     }
 
-    /// Send several txs from the server key back to back (consecutive nonces) and wait until
-    /// every one is included. Returns their hashes.
+    /// The server's own txs in the node's mempool by nonce (empty when the node has no
+    /// getMempool; such a node also refuses nothing for a pooled nonce).
+    pub fn own_pooled(&self) -> BTreeMap<u64, PooledTx> {
+        let me = b58(&self.server());
+        let mut out = BTreeMap::new();
+        let Ok(mp) = self.node.call("getMempool", json!({})) else { return out };
+        for h in mp["txs"].as_array().into_iter().flatten().filter_map(|h| h.as_str()) {
+            let Ok(t) = self.node.call("getTx", json!({"tx_hash": h})) else { continue };
+            if t["from"].as_str() != Some(me.as_str()) || t["status"] != json!("pending") {
+                continue;
+            }
+            use base64::Engine;
+            let Some(wire) = t["tx"].as_str().and_then(|x| base64::engine::general_purpose::STANDARD.decode(x).ok()) else { continue };
+            if wire.len() < 54 + 64 {
+                continue;
+            }
+            let nonce = u64::from_le_bytes(wire[37..45].try_into().unwrap());
+            let fee = u64::from_le_bytes(wire[45..53].try_into().unwrap());
+            out.insert(nonce, PooledTx { hash: h.to_string(), fee, kind: wire[53], body: wire[54..wire.len() - 64].to_vec() });
+        }
+        out
+    }
+
+    /// Sign `body` at `nonce` and send it. A pooled tx of ours at that nonce with the same body
+    /// is reused; another one (stuck: refused at the tip, or stale from an earlier attempt) is
+    /// replaced with the mempool's replacement fee.
+    #[allow(clippy::too_many_arguments)]
+    fn send_at(&self, chain_id: u32, min_fee: u64, nonce: u64, body: &Body, pooled: &mut BTreeMap<u64, PooledTx>, what: &str) -> Result<String> {
+        let me = self.server();
+        let enc = body.encode()?;
+        let cap = min_fee.max(1).saturating_mul(self.cfg.max_fee_multiple.max(1));
+        for attempt in 0..2 {
+            let old = pooled.get(&nonce).cloned();
+            if let Some(o) = &old {
+                if o.kind == body.kind() && o.body == enc {
+                    return Ok(o.hash.clone()); // the same tx, sent before (maybe at a higher fee)
+                }
+            }
+            let fee = old.as_ref().map_or(min_fee, |o| replacement_fee(o.fee).max(min_fee));
+            ensure!(fee <= cap, "{what}: replacing the server's pooled tx at nonce {nonce} needs fee {fee}, above the cap {cap} ({}x min_fee)", self.cfg.max_fee_multiple);
+            let wire = tx::sign(&Tx { chain_id, from: me, nonce, fee, body: body.clone() }, &self.key)?;
+            match self.node.send_tx(&wire) {
+                Ok(h) => {
+                    if let Some(o) = old.filter(|_| what != "cancel") {
+                        self.tx_replaced.fetch_add(1, Ordering::SeqCst);
+                        (self.log)(json!({"event": "tx_replaced", "what": what, "nonce": nonce, "old": o.hash, "old_fee": o.fee, "new": h, "fee": fee}));
+                    }
+                    pooled.insert(nonce, PooledTx { hash: h.clone(), fee, kind: body.kind(), body: enc.clone() });
+                    return Ok(h);
+                }
+                // the same tx from an earlier attempt is still in the pool
+                Err(e) if format!("{e:#}").contains("already") => return Ok(hex::encode(blake3::hash(&wire).as_bytes())),
+                // the pool changed since it was read (or was never read): read it again, once
+                Err(e) if attempt == 0 && is_nonce_pooled(&format!("{e:#}")) => {
+                    let fresh = self.own_pooled();
+                    match fresh.get(&nonce) {
+                        Some(p) => {
+                            pooled.insert(nonce, p.clone());
+                        }
+                        None => return Err(e).with_context(|| format!("send {what} at nonce {nonce}: the node says the nonce is pooled but getMempool does not list it")),
+                    }
+                }
+                Err(e) => return Err(e).with_context(|| format!("send {what} at nonce {nonce}")),
+            }
+        }
+        bail!("send {what} at nonce {nonce}: still refused after replacing the pooled tx")
+    }
+
+    /// Send txs from the server key at consecutive nonces from the account's confirmed nonce and
+    /// wait until every one is included. Returns their hashes. Robust against the server's own
+    /// leftovers in the mempool (SPEC 5.4 "Server nonce"): a pooled tx at one of these nonces
+    /// is reused when it is the same tx and replaced otherwise; leftovers past the last nonce are
+    /// cancelled (0 self-transfer) so they cannot collide with later txs; at most `send_window`
+    /// are in flight; a tx at the next nonce that `stall_blocks` new blocks skip stops the send
+    /// with an error (the chain refuses it) instead of holding the settle pipeline.
     fn send_many(&self, bodies: Vec<Body>, what: &str) -> Result<Vec<String>> {
+        if bodies.is_empty() {
+            return Ok(vec![]);
+        }
         let _g = self.send_lock.lock().unwrap();
         let me = self.server();
         let info = self.node.call("getChainInfo", json!({}))?;
         let params = self.node.call("getParams", json!({}))?;
         let chain_id = info["chain_id"].as_u64().ok_or_else(|| anyhow!("no chain_id"))? as u32;
         let fee = pearl_node::num(&params["min_fee"]).unwrap_or(1000);
-        let mut hs = Vec::with_capacity(bodies.len());
-        // the mempool takes at most 64 nonces ahead of the account: batches of 32, each
-        // included before the next is signed
-        let bodies: Vec<Body> = bodies;
-        for batch in bodies.chunks(32) {
-            let nonce = self.node.get_account(&me)?.nonce;
-            let mut bh = Vec::with_capacity(batch.len());
-            for (i, body) in batch.iter().enumerate() {
-                let wire = tx::sign(&Tx { chain_id, from: me, nonce: nonce + i as u64, fee, body: body.clone() }, &self.key)?;
-                let h = match self.node.send_tx(&wire) {
-                    Ok(h) => h,
-                    // the same tx from an earlier attempt is still in the pool
-                    Err(e) if format!("{e:#}").contains("already") => hex::encode(blake3::hash(&wire).as_bytes()),
-                    Err(e) => return Err(e).with_context(|| format!("send {what} {}", hs.len() + i)),
-                };
-                bh.push(h);
+        let height = |v: &Value| v["height"].as_u64().unwrap_or(0);
+        let base = self.node.get_account(&me)?.nonce;
+        let mut pooled = self.own_pooled();
+        let window = self.cfg.send_window.clamp(1, 64) as u64;
+        let mut hs: Vec<String> = Vec::with_capacity(bodies.len());
+        let mut done = 0usize; // included, in order
+        let mut confirmed = base;
+        let mut progress = (Instant::now(), height(&info), confirmed);
+        let mut foreign = 0u32;
+        loop {
+            // fill the window
+            while hs.len() < bodies.len() && base + (hs.len() as u64) < confirmed + window {
+                let n = base + hs.len() as u64;
+                let h = self.send_at(chain_id, fee, n, &bodies[hs.len()], &mut pooled, what).with_context(|| format!("{what} {}", hs.len()))?;
+                hs.push(h);
             }
-            let t0 = Instant::now();
-            for h in &bh {
-                loop {
-                    let t = self.node.call("getTx", json!({"tx_hash": h}))?;
-                    if t["status"] == json!("included") {
-                        break;
+            if hs.len() == bodies.len() {
+                // leftovers of ours past the last nonce: cancel them
+                let last = base + bodies.len() as u64 - 1;
+                let orphans: Vec<u64> = pooled.range(last + 1..).map(|(n, _)| *n).filter(|n| *n < confirmed + window).collect();
+                for n in orphans {
+                    let cancel = Body::Transfer { to: me, amount: 0 };
+                    if pooled.get(&n).is_some_and(|p| p.kind == cancel.kind() && p.body == cancel.encode().unwrap_or_default()) {
+                        continue;
                     }
-                    ensure!(t0.elapsed() < Duration::from_secs(600), "{what} tx {h} not included after 600 s");
-                    std::thread::sleep(self.cfg.poll);
+                    match self.send_at(chain_id, fee, n, &cancel, &mut pooled, "cancel") {
+                        Ok(h) => {
+                            self.tx_cancelled.fetch_add(1, Ordering::SeqCst);
+                            (self.log)(json!({"event": "tx_cancelled", "nonce": n, "tx": h}));
+                        }
+                        Err(e) => (self.log)(json!({"event": "tx_cancel_error", "nonce": n, "error": format!("{e:#}")})),
+                    }
                 }
             }
-            hs.extend(bh);
+            // collect inclusions in nonce order
+            while done < hs.len() {
+                let t = self.node.call("getTx", json!({"tx_hash": hs[done]}))?;
+                if t["status"] == json!("included") {
+                    done += 1;
+                    foreign = 0;
+                    continue;
+                }
+                if confirmed > base + done as u64 {
+                    // the chain used this nonce for another tx of ours (an earlier attempt's)
+                    foreign += 1;
+                    ensure!(foreign < 3, "{what} tx {} at nonce {}: the chain included another tx of this key at that nonce", hs[done], base + done as u64);
+                }
+                break;
+            }
+            if done == hs.len() && hs.len() == bodies.len() {
+                return Ok(hs);
+            }
+            std::thread::sleep(self.cfg.poll);
+            confirmed = self.node.get_account(&me)?.nonce;
+            let tip = self.node.call("getChainInfo", json!({})).map(|v| height(&v)).unwrap_or(progress.1);
+            if confirmed > progress.2 {
+                progress = (Instant::now(), tip, confirmed);
+            } else {
+                let skipped = tip.saturating_sub(progress.1);
+                let stuck = hs.get(done).cloned().unwrap_or_default();
+                if self.cfg.stall_blocks > 0 && skipped >= self.cfg.stall_blocks {
+                    self.tx_stalls.fetch_add(1, Ordering::SeqCst);
+                    bail!("{what} tx {stuck} at nonce {}: {skipped} blocks skipped it (the chain refuses it at the tip); the next send replaces it", base + done as u64);
+                }
+                if progress.0.elapsed() >= Duration::from_secs(600) {
+                    self.tx_stalls.fetch_add(1, Ordering::SeqCst);
+                    bail!("{what} tx {stuck} not included after 600 s");
+                }
+            }
         }
-        Ok(hs)
     }
 
     /// Background loop: one settlement pass every `round_every`.
@@ -1254,9 +1423,27 @@ impl Gateway {
     /// near its deadline, closing, or a one-request ticket.
     pub fn settle_pass(&self) {
         let Ok(_g) = self.settle_lock.try_lock() else { return };
-        let ids: Vec<String> = self.ledger.lock().unwrap().tickets.iter().filter(|(_, t)| t.state == "open" || t.state == "closing" || t.state == "delivered").map(|(k, _)| k.clone()).collect();
-        for id in ids {
-            if let Err(e) = self.settle_ticket(&id) {
+        for id in self.settle_order() {
+            if let Some((at, _, _)) = self.settle_retry.lock().unwrap().get(&id) {
+                if Instant::now() < *at {
+                    continue; // failed recently: the other tickets go first
+                }
+            }
+            let r = self.settle_ticket(&id);
+            {
+                let mut sr = self.settle_retry.lock().unwrap();
+                match &r {
+                    Ok(()) => {
+                        sr.remove(&id);
+                    }
+                    Err(e) => {
+                        let fails = sr.get(&id).map_or(0, |x| x.1) + 1;
+                        let wait = self.cfg.settle_backoff.saturating_mul(1 << (fails - 1).min(4));
+                        sr.insert(id.clone(), (Instant::now() + wait, fails, format!("{e:#}")));
+                    }
+                }
+            }
+            if let Err(e) = r {
                 let msg = format!("{e:#}");
                 if is_blob_store_full(&msg) {
                     // the node refused the round's A blobs: refuse new paid work at once instead of
@@ -1267,6 +1454,35 @@ impl Gateway {
             }
         }
         self.sweep_request_data();
+    }
+
+    /// The order a settle pass visits tickets (SPEC 5.4 "Settle order"): a round the chain has
+    /// started (recorded as posting) first, so it completes; then, under data pressure, the most
+    /// waiting rows first (a round costs one tx per matrix whatever its rows, so the fullest
+    /// rounds free the most scratch per tx); otherwise the oldest waiting request first.
+    pub fn settle_order(&self) -> Vec<String> {
+        let pressure = self.data_pressure();
+        let l = self.ledger.lock().unwrap();
+        let mut v: Vec<(bool, u64, u64, String)> = l
+            .tickets
+            .iter()
+            .filter(|(_, t)| t.state == "open" || t.state == "closing" || t.state == "delivered")
+            .map(|(k, t)| {
+                let rows: u64 = t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum();
+                let oldest = t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.at_ms).min().unwrap_or(u64::MAX);
+                (t.posting.is_none(), if pressure { u64::MAX - rows } else { oldest }, if pressure { oldest } else { u64::MAX - rows }, k.clone())
+            })
+            .collect();
+        v.sort();
+        v.into_iter().map(|x| x.3).collect()
+    }
+
+    /// Tickets now waiting after a failed settlement: (ticket, consecutive failures, seconds
+    /// until the next try, last error).
+    pub fn settle_backlog_json(&self) -> Value {
+        let now = Instant::now();
+        let sr = self.settle_retry.lock().unwrap();
+        Value::Array(sr.iter().map(|(k, (at, n, e))| json!({"ticket": k, "failures": n, "retry_in_s": at.saturating_duration_since(now).as_secs(), "error": e})).collect())
     }
 
     // ------------------------------------------------------------ request data retention
@@ -1423,8 +1639,12 @@ impl Gateway {
             let l = self.ledger.lock().unwrap();
             t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum()
         };
+        let chain_rounds = st["rounds"].as_u64().unwrap_or(0) as u16;
+        let resume = (chain_rounds as usize) > t.rounds.len();
         let due = !t.pending.is_empty()
-            && (t.single
+            && (resume
+                || t.posting.is_some()
+                || t.single
                 || t.state == "closing"
                 || self.oldest_pending_age(&t) >= self.round_period(t.rows, t.round_secs)
                 || pending_rows >= self.round_rows_cap() as u64
@@ -1433,9 +1653,9 @@ impl Gateway {
         if due {
             // a round the chain has started but this ledger has not recorded (an earlier attempt
             // stopped half way) is resumed: same round, only the matrices still missing
-            let chain_rounds = st["rounds"].as_u64().unwrap_or(0) as u16;
-            let round = if (chain_rounds as usize) > t.rounds.len() { chain_rounds - 1 } else { chain_rounds };
-            self.post_round(&tid, id, &t, round)?;
+            let round = if resume { chain_rounds - 1 } else { chain_rounds };
+            let chain_m = resume.then(|| st["round_rows"].as_u64().unwrap_or(0) as u32);
+            self.post_round(&tid, id, &t, round, chain_m)?;
         }
         let t = self.ledger.lock().unwrap().tickets.get(id).cloned().unwrap();
         let free = self.ledger.lock().unwrap().free_in_budget(&t, p, cap);
@@ -1455,15 +1675,68 @@ impl Gateway {
         Duration::from_millis(now_ms().saturating_sub(oldest))
     }
 
-    fn post_round(&self, tid: &[u8; 32], id: &str, t: &TicketState, round: u16) -> Result<()> {
-        let reqs: Vec<Served> = {
+    /// The requests of round `round`: the recorded posting set, or for a round the chain has
+    /// started (`chain_m` = its m) without one, the oldest-first prefix of the pending requests
+    /// whose A matches a segment already on the chain; otherwise the oldest pending that fit.
+    fn round_requests(&self, tid: &[u8; 32], t: &TicketState, round: u16, chain_m: Option<u32>) -> Result<Vec<Served>> {
+        let period = self.model.period() as u64;
+        let (all, recorded): (Vec<Served>, Option<Vec<Served>>) = {
             let l = self.ledger.lock().unwrap();
-            let all: Vec<Served> = t.pending.iter().filter_map(|r| l.requests.get(r).cloned()).collect();
-            round_take(all, self.round_rows_cap(), self.model.period())
+            let all = t.pending.iter().filter_map(|r| l.requests.get(r).cloned()).collect();
+            let rec = t.posting.as_ref().filter(|p| p.round == round).map(|p| p.requests.iter().filter_map(|r| l.requests.get(r).cloned()).collect::<Vec<_>>());
+            (all, rec)
         };
+        if let Some(rec) = recorded.filter(|r| !r.is_empty()) {
+            let m = round_up(rec.iter().map(|r| r.rows as u64).sum(), period) as u32;
+            ensure!(chain_m.map_or(true, |cm| cm == m), "round {round}: the recorded requests make m {m}, the chain's round has m {}", chain_m.unwrap_or(0));
+            return Ok(rec);
+        }
+        let Some(cm) = chain_m else {
+            return Ok(round_take(all, self.round_rows_cap(), self.model.period()));
+        };
+        // a round started on the chain before this ledger recorded its requests: it was the
+        // oldest pending that fit then, so a prefix of today's pending list; find the one whose A
+        // is the A of a matrix already posted
+        let mut posted = None;
+        for i in 0..self.model.matrices.len() {
+            if let Some(j) = self.node.get_job(&standing::segment_id(tid, i as u16, round))? {
+                posted = Some((i, j));
+                break;
+            }
+        }
+        let (i, job) = posted.ok_or_else(|| anyhow!("round {round} is on the chain (m {cm}) but none of its segments is"))?;
+        let mut sum = 0u64;
+        for n in 1..=all.len() {
+            sum += all[n - 1].rows as u64;
+            let m = round_up(sum, period);
+            if m > cm as u64 {
+                break;
+            }
+            if m < cm as u64 {
+                continue;
+            }
+            let dirs: Vec<(PathBuf, u32)> = all[..n].iter().map(|r| (r.dir.clone(), r.rows)).collect();
+            let seg = prepare_matrix(&self.model, &dirs, cm, i, self.cfg.blocks_per_segment)?;
+            if seg.spec.a_uri == job.data_uri && seg.spec.hash_a == job.hash_a {
+                (self.log)(json!({"event": "round_recovered", "ticket": hex::encode(tid), "round": round, "m": cm, "requests": n, "pending": all.len()}));
+                return Ok(all[..n].to_vec());
+            }
+        }
+        bail!("round {round} is on the chain with m {cm}, and no oldest-first prefix of the {} pending requests rebuilds the A of its matrix {i}; it needs a manual repair", all.len())
+    }
+
+    fn post_round(&self, tid: &[u8; 32], id: &str, t: &TicketState, round: u16, chain_m: Option<u32>) -> Result<()> {
+        let reqs = self.round_requests(tid, t, round, chain_m)?;
         ensure!(!reqs.is_empty(), "a pending request is larger than one round ({} rows)", self.round_rows_cap());
         let rows: u32 = reqs.iter().map(|r| r.rows).sum();
         let m = round_up(rows as u64, self.model.period() as u64) as u32;
+        let ids: Vec<String> = reqs.iter().map(|r| r.request_id.clone()).collect();
+        // record the round before any of it reaches the chain, so a resume posts the same rows
+        self.with_ledger(|l| {
+            if let Some(tt) = l.tickets.get_mut(id) {
+                tt.posting = Some(PostingRound { round, m, requests: ids.clone() });
+            }
+        });
         let dirs: Vec<(PathBuf, u32)> = reqs.iter().map(|r| (r.dir.clone(), r.rows)).collect();
         let segs = prepare_round(&self.model, &dirs, m, self.cfg.blocks_per_segment)?;
         for s in &segs {
@@ -1481,7 +1754,6 @@ impl Gateway {
             bodies.push(Body::PostSegments { ticket_id: *tid, round, head, segments: vec![s.spec.clone()] });
         }
         let txs = self.send_many(bodies, "PostSegments")?;
-        let ids: Vec<String> = reqs.iter().map(|r| r.request_id.clone()).collect();
         self.with_ledger(|l| {
             let mut off = 0u32;
             for r in &reqs {
@@ -1494,6 +1766,7 @@ impl Gateway {
             if let Some(tt) = l.tickets.get_mut(id) {
                 tt.pending.retain(|x| !ids.contains(x));
                 tt.rounds.push(RoundRec { round, m, requests: ids.clone(), txs: txs.clone() });
+                tt.posting = None;
             }
         });
         (self.log)(json!({"event": "round_posted", "ticket": id, "round": round, "m": m, "requests": ids.len(), "segments": segs.len(), "txs": txs}));
