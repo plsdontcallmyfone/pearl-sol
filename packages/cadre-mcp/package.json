@@ -1,0 +1,14 @@
+{
+  "name": "@cadre/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre MCP server: every Cadre capability as MCP tools for any MCP client. stdio or local streamable HTTP; local key (sovereign, limits enforced before signing) or a hosted agent token. No dependencies. Not published: the owner decides the name and publishing.",
+  "license": "ISC",
+  "type": "module",
+  "bin": { "cadre-mcp": "src/main.ts" },
+  "main": "src/protocol.ts",
+  "files": ["src", "README.md"],
+  "engines": { "node": ">=22.18" },
+  "scripts": { "start": "node src/main.ts", "test": "node --test test/*.test.ts" },
+  "keywords": ["mcp", "cadre", "agents", "solana"]
+}
