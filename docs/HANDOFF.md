@@ -938,11 +938,17 @@ CLAUDE.md "Who is working on what".
    - Found and fixed: torch's CPU float64 sqrt (SLEEF) is not correctly rounded (1 ulp in 5 of 1024 rows);
      CPU sqrt now from numpy, and the spec requires correct rounding. gemm_bt slice bug for n < threads.
    - GPU: one A40, 15:49-16:55 UTC, $0.66, terminated (API: no pods).
-   - NOT DONE / NEXT: (1) roll out the new worker + gateway + evaluator on the test box and devnet box 0. Their
-     running workers still use the fp32 glue, so their tickets get the GEMM-only check. A restart changes
-     answers slightly (new glue), so announce a window in CLAUDE.md first; this row did no restarts.
-     (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
-     data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
+   - LIVE ON DEVNET (round 2, owner 2026-10-21 "turn it on"): box 0 deployed by the orchestrator 18:34-18:40 UTC
+     from main 154a819 (cadre-gateway 41a51d8f..., pearl-attester fd5fc6d6..., worker restarted on the final
+     rules; cadre-node restarted to reclaim 6 GB). First live paid ticket ecb7a659f7e4f1f0143b79068906fcd01df4c5eaa41ae6339943d4f8e20149e0
+     (Order 36, "Paris", 48 rows): response blob carries the bundle, the box 0 attester replayed 144 segments in
+     17.8 s (GEMM 8.8 s) and signed, CompleteJob a6be89db..., status completed. Settled on Solana by proof: cadre-settle "finalized order 36 by proof against final header 4560", tx 4YkF9ABPWpdxRwzXUCYF3Rm8x5k64YR7YHpkgV1cwBzQ3A5qBV8Uq4ZnurbGpckGZrvGR9UYV6muLSFLACBVtPS9 (2026-10-21).
+     Mining of its 144 segments is slow: 11 mined by 19:20 UTC, still 11 at 02:40 UTC (the script's 8 h wait ran out); the miners on all three boxes were mining other tickets' 1004-row segments (chain at ~1 block/min, one segment per block), so this is segment-queue throughput, not the replay (open question for the mining / 8B rows: job selection order across tickets).
+     House swarm: pending first thought after 00:00 UTC on the new stack (it hit its own SWARM_ROWS_PER_DAY
+     16384 budget at 17:30 UTC, before the rollout; D1 unchanged; the orchestrator checks the post-reset
+     thought). Its ticket open across the rollout mixes old requests, so it gets the GEMM check only.
+   - NOT DONE / NEXT: (1) the test box demo stack (down since the 16:26 UTC reboot) runs cadre-glue-v1 when it is
+     next started. (2) Tickets opened before 18:35 UTC close with the GEMM check only; every later ticket is replayed. (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
      GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
 
 27. SERVE THE 8B: UPLOAD ORDER, TICKET BLOCK BUDGET, JOB CHECK AT MINING (owner-approved 2026-10-21, "serve the
@@ -1283,7 +1289,82 @@ CLAUDE.md "Who is working on what".
    - Open: the segment files are half the GPU cost (an in-memory hand-off to the gateway, C kept as its
      hash); the 8B batched (not measured); a GPU worker next to the gateway (MAINNET 11 item 10).
 
-36. CADRE OPEN ITEMS: MARKET FEE TO THE POOL, AGENT TOKEN LAUNCHES, KILL SWITCH (owner "proceed" 2026-10-22;
+36. ECOSYSTEM PHASE 5: LEADERBOARDS, DISCOVERY, TRADER BOARD, LISTINGS PREP, BOT FEED (owner "proceed"
+   2026-10-22; "ecosystem Phase 5" row; ECOSYSTEM section 4 Phase 5, docs/API.md "Boards", docs/LISTINGS.md,
+   docs/CLI.md "Boards (view 10)", cadre-docs guides/boards):
+   - cadre-api (services/cadre-api/src/boards/ + routes/boards.ts; src/shared.ts lets the boards reuse the
+     trading scan and the market index of the same process): nine live boards from chain data only
+     (trading_pnl, market_earnings, acceptance_rate, paid_dms, hardest_thinkers, most_tipped, most_followed,
+     miners, evaluators) with windows 24h/7d/all and sides organic/house/all; self-dealing excluded by the
+     explorer and market rules; house money in house_value; minimum samples; every row links its txs.
+     /v1/leaderboards replaced the Phase 1 stub list (town.ts). Discovery /v1/discover/{agents,trending,new};
+     trader board /v1/traderboard(/{metric}); event feed /v1/events, /v1/events.rss, /v1/stream/events.
+   - services/feed-bot: Telegram / X poster of the feed, DRY RUN unless FEED_LIVE=1 + FEED_TARGETS + the
+     target's credentials; deploy/systemd/cadre-feed-bot.service ships dry. Nothing was posted anywhere.
+   - tools/defillama: mandate Settled fees (fees, supply side, holders revenue), breakdown methodology; live
+     all-time check on devnet PASS against the storefront Config counters, cadre-api /v1/buyback and the
+     Mandate accounts (TEST-REPORT "Ecosystem Phase 5"). docs/LISTINGS.md: token info, supply endpoints,
+     DexScreener (lists pump.fun / PumpSwap on mainnet by itself; nothing on devnet), CoinGecko, DefiLlama
+     PR steps, mainnet switch checklist.
+   - CLI: `cadre top [board]` and the Boards view (view 10, key 0); cadre-web /leaderboards (+ /[board]),
+     /discover, /board.
+   - Live check: a branch cadre-api on the TEST BOX 127.0.0.1:10790 (~/boards/run-api.sh, pid ~/boards/api.pid,
+     reads the public Cadre devnet node and the devnet Solana RPC from ~/boards/solana-rpc-url, 0600) and a
+     receipt proxy 127.0.0.1:10791 (~/boards/gwproxy.mjs, pid ~/boards/gwproxy.pid) mapping /v1/requests/* to
+     the devnet API's gateway pass-through. Stop both by PID after box 0 serves the routes.
+   - DEPLOY (box 0, handed to the orchestrator; agents may not restart services): see the row and the
+     final report of this row: sync box 0 to origin/main, restart cadre-api only, health checks, rollback to
+     the recorded previous commit; then the site from main with CADRE_WEB; optional cadre-feed-bot unit (dry).
+   - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
+     indexer's first poll are not recorded (counters link the Config account instead).
+
+37. BLOB DATA LIFECYCLE: SEGMENT A RETENTION, QUOTAS WITH BACKPRESSURE, BACKLOG DRAIN (2026-10-22, "blob
+   lifecycle" row; SPEC 4.5 "Segment data retention", SPEC 5.4 "Node blob backpressure", RPC getBlobStats):
+   - Incident: node 0's blob store hit its 8 GB quota; every settle failed ("putBlob: blob store full"), request
+     scratch piled up (109 GB, then 67 GB). The orchestrator raised node 0 to 30 GB and the gateway retention
+     (item 35) stopped new scratch.
+   - Root cause (measured on node 0 at height 5009): 6.48 GB of segment A, 5.67 GB of it for segments never mined.
+     A segment stayed Open, so its A was kept until its ticket's deadline (balance tickets: 10,000 blocks, about a
+     week). The chain mines about 60 segments an hour; house traffic posted about 290 an hour (rounds of 144),
+     and templates offer only the newest 4096 jobs (devnet nodes ran 512), so most of that A could never be mined.
+   - Rule (node policy over chain state; SPEC 4.5): keep A while (1) mining: mineable at the tip or at F, within
+     the newest 4096 jobs and `segment_mine_blocks` (1440) of posting; or (2) replay (node.json `keep_replay`,
+     default true): ticket live at F until deadline + W, closed at F until close + W. W = `segment_replay_blocks`,
+     AdminConfig key 48, default 720, in its own record (tag 52; devnet activation 5800, only for SETTING it). Model
+     blobs stay pinned; profile/post/DM/ticket/job blobs unchanged.
+   - Backpressure: putBlob stops 5% under quota ("blob store nearly full ... RPC puts stop at N"); the gateway
+     answers 503 insufficient_storage when the node's `rpc_headroom_bytes` cannot take the A of every waiting row
+     plus the request's; an attester replay checks rebuilt A by commitment and fetches A only to locate a mismatch.
+   - getBlobStats: `classes` (model, segment_a, social, ticket, job, other; count, bytes, kept, prunable),
+     `referenced_bytes`, `prunable_bytes`, `rpc_headroom_bytes`, `puts_open`, `retention`.
+   - Measured sizes (1B, 144 matrices): 231,424 bytes of A blobs per row (113 distinct inputs x 2048; gate/up and the
+     16 lm_head shards share); scratch 2,708,480 per row; so a 8192-row ticket holds at most 1.90 GB of A, a
+     2048-row one 474 MB. Drain: node 0's store grew 1.56 GB while 17.4 GB of scratch posted (8.9%). Traffic: about
+     2,200 rows an hour, 20 live balances with 59,392 rows of budget (25,296 used), 1.04 min a block.
+   - Steady state under the rule: replay node (box 0) about 15 GB typical, 26 GB worst case (model 1.79 + live
+     tickets up to 13.7 + closed in the window about 6.1 + mining tail); mining-only node: model + newest 4096 jobs'
+     A, measured 4.8 GB of A (simulated on the live state), at most 16 GB at any traffic. Recommended quotas: box 0
+     40 GB (disk 145 GB: about 25 GB other, 16 GB scratch cap, 20 GB reserve), boxes 1-2 16 GB with keep_replay false
+     (48 GB disks, 32 GB free). Boxes 1-2 need segment A only to mine (their miners are 2/3 of the hashpower) and keep
+     only what is mineable; they were at 7.72 of 8 GB when measured.
+   - Backlog: no ticket needed a refund (deadlines 14,300-15,000, rows reserved when served, the gateway sweep and the
+     CompleteJob pro rata cover dead tickets); with node 0 at 30 GB it posts by itself (71.2 GB 02:07 -> 53.7 GB
+     02:45 UTC, about 27 GB/h). Stopgap applied by the orchestrator (seen 03:14 UTC) so paid AI flows during the
+     drain: GATEWAY_EXTRA `--max-request-data-mb 65536 --min-free-disk-mb 20480` (backup
+     /root/inference.env.pre-drain); revert once `request_data.bytes_waiting` < 16 GiB.
+   - Tests (test box, -j 4): chain 196 pass, 0 fail (new: bin/agent-node/tests/blob_lifecycle.rs 3 = retention by
+     state + model pinned + stats, stats + put backpressure, reorg around a mined and a pruned segment + fresh node
+     after pruning; executor/tests/blobparams.rs 2; blobs + state units); gateway 30 (new tests/node_blobs.rs 3);
+     attester 20 incl. the real-model replay (honest Accept 12.1 s, altered A and wrong C rejected). Live: the staged
+     agent-node synced devnet from genesis on the test box (5077, finalized hash 4038f7df... equal to box 0) with
+     keep_replay false and a 600 MB quota: it fetched only segment A of mineable segments, getBlobStats classes
+     added up; stopped by PID, data removed.
+   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked). Staged in /home/lode/stage-bloblife/ from
+     main a72713b: agent-node 556739d3... (boxes 0-2), cadre-gateway 38271463..., pearl-attester 33c5b897... (box 0).
+     The node change is not consensus (nothing sets key 48 until every node runs it and height >= 5800), old and new
+     nodes mix, rollback is a binary swap. One box at a time, 1, 2, 0, health checks between. See DEVNET.md "Blob
+     lifecycle rollout" for the exact commands.
+38. CADRE OPEN ITEMS: MARKET FEE TO THE POOL, AGENT TOKEN LAUNCHES, KILL SWITCH (owner "proceed" 2026-10-22;
    branch cadre-launch). No chain/ change, no node rollout.
    - Market fee to the mining pool: a contract already pays INTO the pool with a native Transfer as
      itself (the `transfer` host function refuses reserved accounts, native Transfer refuses only the

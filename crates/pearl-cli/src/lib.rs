@@ -6,6 +6,7 @@
 //! (src/main.rs, src/bin/cadre.rs) call [`main`]; the name they run as picks the default.
 
 mod agent;
+mod boards;
 mod brand;
 mod commands;
 mod contract;

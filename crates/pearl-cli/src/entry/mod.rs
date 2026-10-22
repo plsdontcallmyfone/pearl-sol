@@ -31,6 +31,7 @@ pub mod poll;
 pub mod robot;
 pub mod theme;
 pub mod trade;
+pub mod boards_view;
 pub mod views;
 
 use std::collections::{HashMap, HashSet};
@@ -96,10 +97,11 @@ pub enum ViewId {
     Lookup,
     Trade,
     Market,
+    Boards,
 }
 
 impl ViewId {
-    pub const ALL: [ViewId; 9] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup, ViewId::Trade, ViewId::Market];
+    pub const ALL: [ViewId; 10] = [ViewId::Home, ViewId::Dashboard, ViewId::Agents, ViewId::Inbox, ViewId::Activity, ViewId::Status, ViewId::Lookup, ViewId::Trade, ViewId::Market, ViewId::Boards];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -112,6 +114,7 @@ impl ViewId {
             ViewId::Lookup => "lookup",
             ViewId::Trade => "trade",
             ViewId::Market => "market",
+            ViewId::Boards => "boards",
         }
     }
 
@@ -126,12 +129,18 @@ impl ViewId {
             ViewId::Lookup => "A tx, block, account or @handle, or any command",
             ViewId::Trade => "Trade on Solana: CADRE quote, your positions, leaderboard, fills",
             ViewId::Market => "Services market: offers, hires, timelines and verdicts",
+            ViewId::Boards => "Leaderboards from chain data: traders, earnings, DMs, thinkers, tips, miners, evaluators",
         }
     }
 
     /// 1-based number of the view (its key).
     pub fn num(self) -> usize {
         ViewId::ALL.iter().position(|v| *v == self).unwrap() + 1
+    }
+
+    /// The key that opens the view: 1-9, and 0 for view 10.
+    pub fn key_label(self) -> String {
+        (self.num() % 10).to_string()
     }
 
     pub fn from_num(n: usize) -> Option<ViewId> {
@@ -150,6 +159,7 @@ impl ViewId {
             "lookup" | "find" => ViewId::Lookup,
             "trade" | "trading" | "positions" | "leaderboard" => ViewId::Trade,
             "market" | "services" | "offers" | "hires" => ViewId::Market,
+            "boards" | "top" | "leaderboards" => ViewId::Boards,
             _ => return None,
         })
     }
@@ -270,6 +280,7 @@ pub(crate) struct App {
     inbox_v: views::InboxState,
     activity: views::Activity,
     trade_v: trade::TradeState,
+    boards_v: boards_view::BoardsState,
     status_scroll: u16,
     lookup_input: Vec<char>,
     lookup_cur: usize,
@@ -385,6 +396,7 @@ impl App {
             inbox_v: views::InboxState::default(),
             activity: views::Activity::default(),
             trade_v: trade::TradeState::default(),
+            boards_v: boards_view::BoardsState::default(),
             status_scroll: 0,
             lookup_input: vec![],
             lookup_cur: 0,
@@ -467,6 +479,15 @@ impl App {
                 if let Some(p) = &self.poll {
                     if !p.wants.trade.swap(true, Ordering::Relaxed) {
                         let _ = p.kick.send(poll::Kick::One(Source::Trade));
+                    }
+                }
+            }
+            ViewId::Boards => {
+                if let Some(p) = &self.poll {
+                    p.wants.boards_window.store(self.boards_v.window as u8, Ordering::Relaxed);
+                    p.wants.boards_side.store(self.boards_v.side as u8, Ordering::Relaxed);
+                    if !p.wants.boards.swap(true, Ordering::Relaxed) {
+                        let _ = p.kick.send(poll::Kick::One(Source::Boards));
                     }
                 }
             }
@@ -798,6 +819,7 @@ impl App {
             }
             Msg::Status(r) => self.report = Some(*r),
             Msg::Trade(d) => self.trade_v.data = Some(*d),
+            Msg::Boards(d) => self.boards_v.data = Some(*d),
             Msg::Market(r) => {
                 self.market = Some(*r);
                 // the selected card follows the new read
@@ -951,7 +973,9 @@ impl App {
         }
         // view keys that work everywhere: F1..F9, alt+1..9, ctrl+1..9 (where the terminal sends them)
         let num = match k.code {
-            KeyCode::F(n) if (1..=9).contains(&n) => Some(n as usize),
+            KeyCode::F(n) if (1..=10).contains(&n) => Some(n as usize),
+            KeyCode::Char('0') if ctrl || alt => Some(10),
+            KeyCode::Char('0') if !self.typing() && k.modifiers.is_empty() => Some(10),
             KeyCode::Char(c @ '1'..='9') if ctrl || alt => Some(c as usize - '0' as usize),
             KeyCode::Char(c @ '1'..='9') if !self.typing() && k.modifiers.is_empty() => Some(c as usize - '0' as usize),
             _ => None,
@@ -981,6 +1005,7 @@ impl App {
             ViewId::Lookup => self.lookup_key(k, ctrl),
             ViewId::Trade => self.trade_key(k),
             ViewId::Market => self.market_key(k),
+            ViewId::Boards => self.boards_key(k),
         }
     }
 
@@ -1347,6 +1372,36 @@ impl App {
         }
     }
 
+    fn boards_key(&mut self, k: KeyEvent) {
+        let b = &mut self.boards_v;
+        let mut reread = false;
+        match k.code {
+            KeyCode::Esc => return self.go(ViewId::Home),
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => b.next_board(1),
+            KeyCode::BackTab | KeyCode::Left => b.next_board(-1),
+            KeyCode::Up | KeyCode::Char('k') => b.scroll = b.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => b.scroll += 1,
+            KeyCode::Char('w') => {
+                b.cycle_window();
+                reread = true;
+            }
+            KeyCode::Char('h') | KeyCode::Char('s') => {
+                b.cycle_side();
+                reread = true;
+            }
+            KeyCode::Char('r') => reread = true,
+            _ => {}
+        }
+        if reread {
+            let (w, s) = (b.window as u8, b.side as u8);
+            if let Some(p) = &self.poll {
+                p.wants.boards_window.store(w, Ordering::Relaxed);
+                p.wants.boards_side.store(s, Ordering::Relaxed);
+            }
+            self.kick(poll::Kick::One(Source::Boards));
+        }
+    }
+
     fn trade_key(&mut self, k: KeyEvent) {
         let t = &mut self.trade_v;
         match k.code {
@@ -1557,6 +1612,7 @@ fn draw_header(buf: &mut Buffer, pen: &Pen, app: &App, w: u16) {
         ViewId::Inbox => Source::Inbox,
         ViewId::Trade => Source::Trade,
         ViewId::Market => Source::Market,
+        ViewId::Boards => Source::Boards,
         _ => Source::Chain,
     };
     if app.loading.contains(&src) && app.updated.get(&src).is_none() {
@@ -1591,6 +1647,7 @@ fn draw_view_hints(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
         ViewId::Lookup => vec![("enter", "look up"), ("↑↓", "scroll"), ("f1-f9", "views"), ("esc", "home")],
         ViewId::Trade => vec![("↑↓", "scroll"), ("r", "read again"), ("esc", "home")],
         ViewId::Market => vec![("↑↓", "select"), ("tab", "offers / hires"), ("[ ]", "scroll card"), ("r", "read again"), ("esc", "home")],
+        ViewId::Boards => vec![("tab ←→", "board"), ("w", "window"), ("h", "house side"), ("↑↓", "scroll"), ("esc", "home")],
         ViewId::Home => vec![],
     };
     parts.push(("ctrl+p", "commands"));
@@ -1627,7 +1684,7 @@ fn draw_footer(buf: &mut Buffer, pen: &Pen, app: &App, y: u16, w: u16) {
         if i > 0 {
             x += 2;
         }
-        x = put(buf, x, y, &(i + 1).to_string(), pen.fg(if *on { BLUE } else { DIM }), w);
+        x = put(buf, x, y, &((i + 1) % 10).to_string(), pen.fg(if *on { BLUE } else { DIM }), w);
         x = put(buf, x + 1, y, s, if *on { pen.fg(TEXT).add_modifier(Modifier::BOLD) } else { pen.fg(MUTED) }, w);
     }
 }
@@ -1734,6 +1791,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             ViewId::Lookup => cursor = draw_lookup(buf, &pen, app, body, ms),
             ViewId::Trade => trade::draw_trade(buf, &pen, body, &app.trade_v, app.me.as_deref(), ms, app.loading.contains(&Source::Trade)),
             ViewId::Market => crate::market::draw_view(buf, &pen, body, app.market.as_ref(), &app.market_v, ms),
+            ViewId::Boards => boards_view::draw_boards(buf, &pen, body, &app.boards_v, ms, app.loading.contains(&Source::Boards)),
             ViewId::Home => {}
         }
         if hints_y > body.y {
@@ -2027,7 +2085,7 @@ mod tests {
             let row: Vec<char> = rows(&b)[fy as usize].chars().collect();
             let text: String = row.iter().collect();
             let at = |pat: &str| text.char_indices().position(|(i, _)| text[i..].starts_with(pat)).unwrap();
-            let last = format!("{} {}", ViewId::ALL.len(), ViewId::ALL[ViewId::ALL.len() - 1].name());
+            let last = format!("{} {}", ViewId::ALL[ViewId::ALL.len() - 1].key_label(), ViewId::ALL[ViewId::ALL.len() - 1].name());
             let (start, end) = (at("1 home"), at(&last) + last.chars().count());
             let (l, r) = (start as i32, row.len() as i32 - end as i32);
             let row = text;
@@ -2139,6 +2197,30 @@ mod tests {
         for x in 0..120 {
             assert_eq!(b[(x, 0)].bg, ratatui::style::Color::Reset);
         }
+    }
+
+    /// View 10 (Boards) is the tenth in the registry and opens on key 0, alt+0 and F10; its
+    /// footer key label is 0.
+    #[test]
+    fn boards_is_view_ten_on_key_zero() {
+        assert_eq!(ViewId::from_num(10), Some(ViewId::Boards));
+        assert_eq!(ViewId::Boards.num(), 10);
+        assert_eq!(ViewId::Boards.key_label(), "0");
+        assert_eq!(ViewId::parse("top"), Some(ViewId::Boards));
+        assert_eq!(ViewId::parse("leaderboard"), Some(ViewId::Trade));
+        let k = |c: KeyCode, m: KeyModifiers| KeyEvent::new(c, m);
+        let mut a = test_app();
+        a.key(k(KeyCode::F(2), KeyModifiers::NONE));
+        a.key(k(KeyCode::Char('0'), KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Boards);
+        a.key(k(KeyCode::Char('1'), KeyModifiers::NONE));
+        a.key(k(KeyCode::Char('0'), KeyModifiers::ALT));
+        assert_eq!(a.view, ViewId::Boards);
+        a.key(k(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(a.boards_v.window(), "all");
+        a.key(k(KeyCode::F(1), KeyModifiers::NONE));
+        a.key(k(KeyCode::F(10), KeyModifiers::NONE));
+        assert_eq!(a.view, ViewId::Boards);
     }
 
     /// Owner 2026-10-21: "if i toggle the dashboard it shouldn't reset". Ask something on

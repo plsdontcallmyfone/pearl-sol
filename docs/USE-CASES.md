@@ -173,8 +173,10 @@ What you can claim: "every answer is exactly what the registered int7 model prod
 input under greedy decoding, and anyone can check it on a CPU". What you cannot claim yet:
 that cheating costs a bond (slashing is designed, not built), that the int7 model equals the
 original fp16 model (it is measured close, research/VERIFIABLE-AI.md), privacy (none), or
-sampled (temperature) output. Workers started before this change (devnet box 0, the test box)
-still run the fp32 glue until they restart, and their tickets get only the GEMM check.
+sampled (temperature) output. Live on the public devnet since 2026-10-21 18:35 UTC: the first
+paid ticket (ecb7a659..., "Paris") was replayed and accepted by the box 0 evaluator in 17.8 s
+(docs/PROOFS.md row 11, DEVNET "Verifiable answers"). Tickets holding requests served before
+the rollout get only the GEMM check.
 
 ## What Cadre deliberately does not do
 

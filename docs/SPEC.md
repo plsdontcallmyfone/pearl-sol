@@ -612,6 +612,61 @@ How a paid inference request maps to jobs, pay and fees:
 Totals per request: buyer pays `sol_in + overhead`; the server earns W plus, when it mines
 its own segments, up to `alpha x P` of subsidy and the blocks' fees.
 
+**Segment data retention (2026-10-22, after node 0's blob store filled on devnet).** Node
+policy over consensus state: which segment A blobs a node keeps. Consensus never reads a blob
+(blocks verify without A), so none of this can fork the chain; only the window W below is chain
+state.
+- Why: before this rule a segment's A was kept while the segment was Open, i.e. until its
+  ticket's deadline (balance tickets: 10,000 blocks, about a week). Measured on devnet node 0 at
+  height 5009: 6.48 GB of segment A, 5.67 GB of it for segments never mined. The chain mines one
+  segment per block (about 60 an hour) while the house traffic posted about 290 an hour, and a
+  template offers only the newest `TEMPLATE_JOB_SCAN` jobs, so most of that A could never be used.
+- Bytes (Llama-3.2-1B, 144 matrices): A is one k = 2048 byte row per matrix per row, but
+  matrices with the same input share one blob (gate and up; the 16 lm_head column shards), so a
+  row costs 113 x 2048 = 231,424 bytes of blobs (+12 bytes of header per blob). The gateway's
+  scratch is 2,708,480 bytes per row (A 294,912 + C 2,413,568), so 8.5% of it becomes blobs
+  (measured during the 2026-10-22 drain: 8.9%). A ticket of R rows holds at most R x 231,424
+  bytes: 1.90 GB at R = 8192, 474 MB at 2048. One blob holds at most 2047 rows (4 MiB).
+- Rule. With tip H, finalized block F (H - K), W = `segment_replay_blocks` and the node's
+  `segment_mine_blocks` M, a node keeps segment s's A blob while either holds (then the usual
+  `grace_blocks` after):
+  1. mining: s is mineable at the tip or at F (so a block mined on it is K deep before A
+     goes, and a reorg above F can only make it mineable again while A is still held), its job
+     index is within the newest `TEMPLATE_JOB_SCAN` (4096) jobs, and `H <= posted + M` (M = 0:
+     no limit); the need lasts until `min(posted + M, deadline)`;
+  2. replay (nodes with `keep_replay`, the default): the ticket is live at F, until its
+     deadline + W; once the ticket is closed at F (Completed or Expired, final), until its close
+     height + W. Evaluators replay a Delivered ticket (4.7) and challengers build fraud proofs
+     from the posted A, so it outlives the ticket by W.
+  A blob shared by several segments is kept while any of them needs it. Model registry blobs
+  (manifests and every chunk a held manifest lists) are pinned while the model is registered,
+  as before; profile, post, DM, ticket and plain-job blobs keep their existing rules.
+- Parameters. `segment_replay_blocks` W: AdminConfig key 48 (u32, 0..=1,000,000, default 720
+  blocks, half a day of 60 s blocks), stored in its own record `["blob-params"]` (schema tag 52,
+  `tag | version 1 | u32`; absent = defaults, a value equal to the default deletes it, so the
+  config record's encoding never changes). Key 49 is reserved. Settable from the chain's
+  `blob_params_upgrade_height`: Cadre devnet 5800, every other chain from genesis; below it the
+  key is refused as an older node refuses it ("unknown config key"), so only SETTING it needs
+  every node upgraded first. `segment_mine_blocks` M (default 1440) and `keep_replay` (default
+  true; a mining-only node sets false and keeps A for mining only) are node.json `blobs` options.
+- The evaluator (services/attester replay.rs) checks each rebuilt A against the segment's
+  hash_a first and fetches the posted A only to locate a mismatch for the fraud proof, so an
+  honest ticket's replay reads no A blobs (the commitment binds: equal hash_a means equal A).
+- Backpressure: RPC putBlob stops `rpc_reserve_bytes` (default 5% of `max_total_bytes`, at
+  least two of the largest blobs) below the quota with "blob store nearly full (... RPC puts
+  stop at N ...)"; fetches of referenced blobs may still use the reserve. The gateway reads
+  `rpc_headroom_bytes` (getBlobStats, every 10 s) and answers a paid request 503
+  `insufficient_storage` when the A of every row waiting for a round plus this request would not
+  fit (5.4 "Request data retention"); a settle pass refused for space refuses new paid work at
+  once.
+- Sizing at today's traffic (2026-10-22 devnet: about 2,200 rows an hour, 20 live balances with
+  59,392 rows of budget, 1.04 minutes a block): a replay node holds the model (1.79 GB), the live
+  tickets' A (at most their whole budget, 13.7 GB; measured 25,296 rows used = 5.9 GB), the A of
+  tickets closed in the last W blocks (12 h x 2,200 rows x 231 KB = about 6.1 GB) and the mining
+  tail (newest 4096 jobs, measured 4.8 GB, mostly overlapping the live tickets): about 15 GB
+  typical, 26 GB worst case. A mining-only node holds the model plus the newest 4096 jobs' A:
+  measured 4.8 GB, at most 4096 x 4 MiB = 16 GB at any traffic.
+
 ### 4.6 Social layer: profiles, posts, reactions, follows (Cadre town, ECOSYSTEM Phase 1, 2026-10-20)
 
 Every social action is a chain tx (docs/ECOSYSTEM.md 2.1 and 2.3). Kinds 14, 15, 22, 23 and 24
@@ -1715,6 +1770,13 @@ any rows are reserved or paid; above half the cap, waiting rounds are posted at 
 instead of at their round period (3 h for large balances). `--keep-request-data` keeps them
 (debugging). `GET /v1/stats` reports `request_data: {bytes_waiting, max_bytes,
 disk_free_bytes, min_free_disk_bytes, refused_storage, deleted}`.
+Node blob backpressure (2026-10-22, the node's blob store filled next): the gateway also reads
+the node's getBlobStats `rpc_headroom_bytes` (at most every 10 s; an older node: `max_total_bytes -
+total_bytes`; no getBlobStats: no check) and answers a paid request 503 `insufficient_storage`
+(Retry-After 60) before any rows are reserved when `(rows waiting for a round + this request's
+rows) x sum(k)` does not fit; a settle pass the node refuses with "blob store full" or "nearly
+full" sets the headroom to 0 until the next read. /v1/stats `request_data.node_blob_headroom_bytes`,
+`refused_node_storage`. 4.5 "Segment data retention" has the node side.
 
 Endpoints (JSON; errors are `{"error": {"message", "type", "code"}}` with a 4xx/5xx status):
 | Method, path | Auth | What |

@@ -79,7 +79,7 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     pub model_pins: HashMap<BlobId, Vec<BlobId>>,
     /// [`Core::blob_refs`] of the tip it was computed on: getBlob of a missing id reads it
     /// instead of rescanning up to BLOB_SCAN_JOBS jobs per call (security pass 2026-10-21).
-    pub refs_cache: Option<(Hash, Arc<HashMap<BlobId, u64>>)>,
+    pub refs_cache: Option<(Hash, Arc<HashMap<BlobId, BlobRef>>)>,
     /// Last template request: `(time, tip, miner, choice, mempool size, template id)`.
     /// getBlockTemplate is public and executes up to max_block_txs txs, so repeats within
     /// [`TEMPLATE_REUSE_MS`] get the same template (security pass 2026-10-21).
@@ -107,6 +107,94 @@ pub fn manifest_blobs(data: &[u8]) -> Vec<BlobId> {
 }
 
 pub const MAX_TEMPLATES: usize = 64;
+
+/// What a referenced blob is for (getBlobStats `classes`). When several references name one
+/// blob the first class in this order wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlobClass {
+    /// A registered model's manifest (its chunks are pinned through the manifest).
+    Model,
+    /// A segment's activation matrix A (`PostSegments.a_uri`).
+    SegmentA,
+    /// A profile blob (SPEC 4.6).
+    Social,
+    /// An inference ticket's request or response blob.
+    Ticket,
+    /// A plain job's data or result.
+    Job,
+}
+
+impl BlobClass {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::SegmentA => "segment_a",
+            Self::Social => "social",
+            Self::Ticket => "ticket",
+            Self::Job => "job",
+        }
+    }
+}
+
+/// One blob reference: the last height something needs it at (the grace period is added by
+/// [`blobs::keep`]; `u64::MAX` = needed for as long as the chain says so) and its class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobRef {
+    pub until: u64,
+    pub class: BlobClass,
+}
+
+fn add_ref(refs: &mut HashMap<BlobId, BlobRef>, id: BlobId, until: u64, class: BlobClass) {
+    let e = refs.entry(id).or_insert(BlobRef { until, class });
+    e.until = e.until.max(until);
+    e.class = e.class.min(class);
+}
+
+/// Segment A retention (SPEC 4.5 "Segment data retention"; node policy over consensus state).
+/// `seg` is the segment at the tip, `seg_f` at the finalized block F (None: posted above F),
+/// `ticket` / `ticket_f` its ticket at the tip / at F. Returns the last height A is needed at:
+/// - mining: while the segment is mineable at the tip or at F (so a block on it is K deep
+///   before its A goes), its job index is within the newest `template_scan` jobs (older ones
+///   are never offered by a template) and the tip is within `mine_blocks` of its posting
+///   (0 = no limit): until `min(posted + mine_blocks, deadline)`;
+/// - replay (when `keep_replay`): while the ticket is live at F, until its deadline plus
+///   `replay_blocks`; once it is closed at F (Completed or Expired, final), until its close
+///   height plus `replay_blocks`.
+#[allow(clippy::too_many_arguments)]
+pub fn segment_a_until(
+    seg: &schema::JobRecord,
+    seg_f: Option<&schema::JobRecord>,
+    ticket: Option<&schema::JobRecord>,
+    ticket_f: Option<&schema::JobRecord>,
+    tip: u64,
+    f_height: u64,
+    job_count: u64,
+    template_scan: u64,
+    mine_blocks: u64,
+    keep_replay: bool,
+    replay_blocks: u64,
+) -> u64 {
+    let mineable_tip = executor::check_mineable(seg, tip + 1).is_ok();
+    let mineable_f = seg_f.map_or(true, |s| executor::check_mineable(s, f_height + 1).is_ok());
+    let offered = seg.index.saturating_add(template_scan) >= job_count;
+    let mining = if (mineable_tip || mineable_f) && offered {
+        if mine_blocks > 0 { seg.created_height.saturating_add(mine_blocks).min(seg.deadline_height) } else { seg.deadline_height }
+    } else {
+        0
+    };
+    let replay = if !keep_replay {
+        0
+    } else {
+        match (ticket_f, ticket) {
+            (Some(t), _) if !t.status.is_live() => t.closed_height.saturating_add(replay_blocks),
+            (Some(t), _) => t.deadline_height.saturating_add(replay_blocks),
+            (None, Some(t)) => t.deadline_height.saturating_add(replay_blocks),
+            // the ticket is unknown (a corrupt chain): the segment's own deadline bounds it
+            (None, None) => seg.deadline_height.saturating_add(replay_blocks),
+        }
+    };
+    mining.max(replay)
+}
 
 #[derive(Debug, Clone)]
 pub struct SubmitResult {
@@ -194,7 +282,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         if store.has(&id).is_some() {
             return Ok((id, false));
         }
-        store.check(data.len())?;
+        // RPC writers stop short of the quota (backpressure, SPEC 4.5 "Segment data retention")
+        store.check_rpc(data.len())?;
         if !store.take_rpc(data.len(), now_ms) {
             return Err(PutError::RateLimited);
         }
@@ -275,20 +364,62 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         v
     }
 
+    /// The blob parameters (SPEC 4.5 "Segment data retention") in the tip state.
+    pub async fn blob_params(&self) -> Result<state::blobparams::BlobParams, ChainError> {
+        Ok(match self.chain.read_tip(&state::blobparams::blob_params_key()).await? {
+            Some(b) => state::blobparams::BlobParams::decode(&b).map_err(|e| ChainError::Internal(e.to_string()))?,
+            None => Default::default(),
+        })
+    }
+
+    async fn job_at(&self, at: Option<&Hash>, id: &Hash) -> Result<Option<schema::JobRecord>, ChainError> {
+        let v = match at {
+            Some(h) => self.chain.read_at(h, &schema::job_key(id)).await?,
+            None => self.chain.read_tip(&schema::job_key(id)).await?,
+        };
+        v.map(|v| schema::JobRecord::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))).transpose()
+    }
+
     /// Last height each referenced blob is needed at, from the jobs in the tip state:
     /// open jobs until their deadline, delivered jobs until they close, closed jobs
-    /// until their close height (the grace period is added by [`blobs::keep`]).
-    pub async fn blob_refs(&self) -> Result<HashMap<BlobId, u64>, ChainError> {
-        let mut refs: HashMap<BlobId, u64> = HashMap::new();
+    /// until their close height (the grace period is added by [`blobs::keep`]); segment A
+    /// blobs by [`segment_a_until`] (reads the finalized state too).
+    pub async fn blob_refs(&self) -> Result<HashMap<BlobId, BlobRef>, ChainError> {
+        let mut refs: HashMap<BlobId, BlobRef> = HashMap::new();
         let c = match self.chain.read_tip(&schema::counters_key()).await? {
             Some(b) => schema::Counters::decode(&b).map_err(|e| ChainError::Internal(e.to_string()))?,
             None => return Ok(refs),
         };
+        let tip = self.chain.tip_height();
+        let (f_hash, f_height) = (self.chain.finalized().hash, self.chain.finalized().header.height);
+        let (mine_blocks, keep_replay) = match &self.blobs {
+            Some(b) => (b.config().segment_mine_blocks, b.config().keep_replay),
+            None => (blobs::DEFAULT_SEGMENT_MINE_BLOCKS, true),
+        };
+        let replay_blocks = self.blob_params().await?.segment_replay_blocks as u64;
+        // tickets at the tip and at F, read once per ticket
+        let mut tickets: HashMap<Hash, (Option<schema::JobRecord>, Option<schema::JobRecord>)> = HashMap::new();
         for i in c.job_count.saturating_sub(BLOB_SCAN_JOBS)..c.job_count {
             let Some(b) = self.chain.read_tip(&schema::job_index_key(i)).await? else { continue };
             let id = schema::decode_job_index(&b).map_err(|e| ChainError::Internal(e.to_string()))?;
             let Some(v) = self.chain.read_tip(&schema::job_key(&id)).await? else { continue };
             let j = schema::JobRecord::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))?;
+            if let Some((ticket_id, _, _)) = j.segment() {
+                let Some(a) = blobs::parse_uri(&j.data_uri) else { continue };
+                let seg_f = self.job_at(Some(&f_hash), &id).await?;
+                if !tickets.contains_key(&ticket_id) {
+                    let t = self.job_at(None, &ticket_id).await?;
+                    let tf = self.job_at(Some(&f_hash), &ticket_id).await?;
+                    tickets.insert(ticket_id, (t, tf));
+                }
+                let (t, tf) = &tickets[&ticket_id];
+                let until = segment_a_until(
+                    &j, seg_f.as_ref(), t.as_ref(), tf.as_ref(), tip, f_height, c.job_count,
+                    consensus_pow::chain::TEMPLATE_JOB_SCAN, mine_blocks, keep_replay, replay_blocks,
+                );
+                add_ref(&mut refs, a, until, BlobClass::SegmentA);
+                continue;
+            }
             let mut until = match j.status {
                 schema::JobStatus::Open => j.deadline_height,
                 schema::JobStatus::Delivered => u64::MAX,
@@ -299,26 +430,91 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 // its segments are mineable (SPEC 4.5), not just a grace period after completion
                 until = until.max(j.deadline_height);
             }
+            let class = if j.is_ticket() { BlobClass::Ticket } else { BlobClass::Job };
             for b in [blobs::parse_uri(&j.data_uri), blobs::parse_uri(&j.result_uri)].into_iter().flatten() {
-                let e = refs.entry(b).or_insert(0);
-                *e = (*e).max(until);
+                add_ref(&mut refs, b, until, class);
             }
         }
         // Registered models: their manifests are kept (and fetched when missing).
         for m in self.models().await? {
             if let Some(b) = blobs::parse_uri(&m.manifest_uri) {
-                refs.insert(b, u64::MAX);
+                add_ref(&mut refs, b, u64::MAX, BlobClass::Model);
             }
         }
         // Profiles (SPEC 4.6): a profile's blob is kept while the profile names it.
         for b in self.profile_blobs().await.map_err(|e| ChainError::Internal(e.message))? {
-            refs.insert(b, u64::MAX);
+            add_ref(&mut refs, b, u64::MAX, BlobClass::Social);
         }
         Ok(refs)
     }
 
+    /// getBlobStats: totals, limits, the retention parameters and a breakdown of the stored
+    /// blobs by class (model, segment_a, social, ticket, job, other = referenced by nothing:
+    /// posts, DMs, uploads waiting for their tx) and by fate at the next prune pass (kept or
+    /// prunable). Bytes are payload bytes (what `max_total_bytes` counts).
+    pub async fn blob_stats(&mut self) -> Result<Value, ChainError> {
+        let refs = self.blob_refs_cached().await?;
+        let pinned = self.model_pinned().await;
+        let replay_blocks = self.blob_params().await?.segment_replay_blocks;
+        let tip = self.chain.tip_height();
+        let Some(b) = self.blobs.as_ref() else { return Err(ChainError::Internal("this node has no blob store".into())) };
+        let c = b.config();
+        let grace = c.grace_blocks;
+        #[derive(Default, Clone, Copy)]
+        struct Tally {
+            count: u64,
+            bytes: u64,
+            kept: u64,
+            kept_bytes: u64,
+            prunable: u64,
+            prunable_bytes: u64,
+        }
+        let mut by: std::collections::BTreeMap<&'static str, Tally> = std::collections::BTreeMap::new();
+        for k in ["model", "segment_a", "social", "ticket", "job", "other"] {
+            by.insert(k, Tally::default());
+        }
+        let (mut ref_bytes, mut prune_bytes) = (0u64, 0u64);
+        for (id, m) in b.entries() {
+            let r = refs.get(id);
+            let class = if pinned.contains(id) { "model" } else { r.map_or("other", |r| r.class.name()) };
+            let keep = pinned.contains(id) || blobs::keep(m, r.map(|r| r.until), tip, grace);
+            let t = by.get_mut(class).unwrap();
+            t.count += 1;
+            t.bytes += m.size;
+            if keep {
+                t.kept += 1;
+                t.kept_bytes += m.size;
+            } else {
+                t.prunable += 1;
+                t.prunable_bytes += m.size;
+                prune_bytes += m.size;
+            }
+            if r.is_some() || pinned.contains(id) {
+                ref_bytes += m.size;
+            }
+        }
+        let classes: serde_json::Map<String, Value> = by
+            .into_iter()
+            .map(|(k, t)| {
+                (k.to_string(), json!({"count": t.count, "bytes": t.bytes, "kept": t.kept, "kept_bytes": t.kept_bytes,
+                                       "prunable": t.prunable, "prunable_bytes": t.prunable_bytes}))
+            })
+            .collect();
+        Ok(json!({
+            "count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(), "fetch_in_flight": self.blob_fetch.in_flight(),
+            "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
+            "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune,
+            "rpc_reserve_bytes": c.rpc_reserve(), "rpc_put_limit_bytes": c.rpc_put_limit(), "rpc_headroom_bytes": b.rpc_headroom(),
+            "puts_open": b.rpc_headroom() >= c.max_blob_bytes as u64,
+            "referenced_bytes": ref_bytes, "unreferenced_bytes": b.total_bytes() - ref_bytes, "prunable_bytes": prune_bytes,
+            "retention": {"segment_mine_blocks": c.segment_mine_blocks, "keep_replay": c.keep_replay,
+                          "segment_replay_blocks": replay_blocks, "template_job_scan": consensus_pow::chain::TEMPLATE_JOB_SCAN},
+            "classes": classes,
+        }))
+    }
+
     /// [`Core::blob_refs`] at the current tip, computed at most once per tip.
-    pub async fn blob_refs_cached(&mut self) -> Result<Arc<HashMap<BlobId, u64>>, ChainError> {
+    pub async fn blob_refs_cached(&mut self) -> Result<Arc<HashMap<BlobId, BlobRef>>, ChainError> {
         let tip = self.chain.tip().hash;
         if let Some((h, r)) = &self.refs_cache {
             if *h == tip {
@@ -399,7 +595,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let pinned = self.model_pinned().await;
         let store = self.blobs.as_mut().unwrap();
         let grace = store.config().grace_blocks;
-        let removed = store.prune(|id, m| pinned.contains(id) || blobs::keep(m, refs.get(id).copied(), tip, grace)).await;
+        let removed = store.prune(|id, m| pinned.contains(id) || blobs::keep(m, refs.get(id).map(|r| r.until), tip, grace)).await;
         if !removed.is_empty() {
             info!(count = removed.len(), "pruned blobs");
         }
@@ -407,7 +603,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         // needs that this node lacks.
         let missing: Vec<BlobId> = refs
             .iter()
-            .filter(|(id, until)| until.saturating_add(grace) >= tip && store.has(id).is_none())
+            .filter(|(id, r)| r.until.saturating_add(grace) >= tip && store.has(id).is_none())
             .map(|(id, _)| *id)
             .collect();
         for id in missing {
@@ -421,7 +617,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     return false;
                 }
                 let meta = blobs::Meta { size: 0, stored_height: **since };
-                !blobs::keep(&meta, refs.get(*id).copied(), tip, grace)
+                !blobs::keep(&meta, refs.get(*id).map(|r| r.until), tip, grace)
             })
             .map(|(id, _)| *id)
             .collect();

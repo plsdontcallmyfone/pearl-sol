@@ -12,6 +12,10 @@
 //!   plus a grace period); [`BlobStore::prune`] removes the rest.
 //! - Abuse limits: a size cap per blob, a cap on total bytes, and token buckets for RPC
 //!   puts (per node) and for blobs pushed by each peer.
+//! - Backpressure (2026-10-22, SPEC 4.5 "Segment data retention"): RPC puts stop
+//!   `rpc_reserve_bytes` below `max_total_bytes` ([`PutError::NearlyFull`]), so the last part of
+//!   the quota stays for blobs the chain references (fetched from peers) and a writer such as
+//!   the inference gateway sees a clear refusal before the store is full.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -78,6 +82,17 @@ pub struct BlobConfig {
     /// Token bucket for blobs a single peer pushes to us.
     pub peer_rate_bytes_per_s: u64,
     pub peer_burst_bytes: u64,
+    /// RPC puts (putBlob) are refused once they would leave less than this free under
+    /// `max_total_bytes`; 0 = automatic, `max_total_bytes / 20` (5%) but at least two of the
+    /// largest blobs. Fetches of referenced blobs may still use it.
+    pub rpc_reserve_bytes: u64,
+    /// Segment A blobs are kept for mining at most this many blocks after their segment was
+    /// posted (node policy, SPEC 4.5 "Segment data retention"); 0 = until the segment's deadline.
+    pub segment_mine_blocks: u64,
+    /// Keep segment A blobs for evaluator replay and fraud proofs while the ticket is live and
+    /// for `segment_replay_blocks` (chain parameter) after it closes. A node that only mines
+    /// sets false and keeps A for mining only.
+    pub keep_replay: bool,
 }
 
 impl Default for BlobConfig {
@@ -90,7 +105,26 @@ impl Default for BlobConfig {
             put_burst_bytes: 16 << 20,
             peer_rate_bytes_per_s: 1 << 20,
             peer_burst_bytes: 16 << 20,
+            rpc_reserve_bytes: 0,
+            segment_mine_blocks: DEFAULT_SEGMENT_MINE_BLOCKS,
+            keep_replay: true,
         }
+    }
+}
+
+/// Default `segment_mine_blocks`: one day of 60 s blocks.
+pub const DEFAULT_SEGMENT_MINE_BLOCKS: u64 = 1440;
+
+impl BlobConfig {
+    /// Bytes RPC puts leave free under `max_total_bytes` (see `rpc_reserve_bytes`).
+    pub fn rpc_reserve(&self) -> u64 {
+        let r = if self.rpc_reserve_bytes > 0 { self.rpc_reserve_bytes } else { (self.max_total_bytes / 20).max(2 * self.max_blob_bytes as u64) };
+        r.min(self.max_total_bytes)
+    }
+
+    /// Total bytes up to which RPC puts are accepted.
+    pub fn rpc_put_limit(&self) -> u64 {
+        self.max_total_bytes - self.rpc_reserve()
     }
 }
 
@@ -109,6 +143,9 @@ pub enum PutError {
     TooLarge { size: usize, max: usize },
     #[error("blob store full ({total} of {max} bytes used)")]
     Full { total: u64, max: u64 },
+    /// RPC puts only: the store is within `rpc_reserve_bytes` of its quota.
+    #[error("blob store nearly full ({total} of {max} bytes used; RPC puts stop at {limit} so the rest stays for blobs the chain references); retry after the prune pass frees room")]
+    NearlyFull { total: u64, limit: u64, max: u64 },
     #[error("rate limited: try again later")]
     RateLimited,
     #[error("content does not match the blob id")]
@@ -239,6 +276,21 @@ impl<S: Storage> BlobStore<S> {
             return Err(PutError::Full { total: self.total, max: self.cfg.max_total_bytes });
         }
         Ok(())
+    }
+
+    /// Capacity check of an RPC put: [`BlobStore::check`] plus the RPC reserve.
+    pub fn check_rpc(&self, size: usize) -> Result<(), PutError> {
+        self.check(size)?;
+        let limit = self.cfg.rpc_put_limit();
+        if self.total + size as u64 > limit {
+            return Err(PutError::NearlyFull { total: self.total, limit, max: self.cfg.max_total_bytes });
+        }
+        Ok(())
+    }
+
+    /// Bytes RPC puts may still add.
+    pub fn rpc_headroom(&self) -> u64 {
+        self.cfg.rpc_put_limit().saturating_sub(self.total)
     }
 
     /// RPC put budget (per node).
@@ -380,6 +432,34 @@ mod tests {
             assert_eq!(s.len(), 1);
             assert_eq!(s.has(&b), Some(Meta { size: 100, stored_height: 7 }));
             assert_eq!(s.get(&b).await.unwrap(), Some(vec![2u8; 100]));
+        });
+    }
+
+    #[test]
+    fn rpc_reserve_backpressure() {
+        let cfg = BlobConfig { max_blob_bytes: 100, max_total_bytes: 1000, ..Default::default() };
+        // automatic reserve: 5% of 1000 = 50, at least two max blobs = 200
+        assert_eq!(cfg.rpc_reserve(), 200);
+        assert_eq!(cfg.rpc_put_limit(), 800);
+        let big = BlobConfig { max_total_bytes: 30_000_000_000, ..Default::default() };
+        assert_eq!(big.rpc_reserve(), 1_500_000_000);
+        let fixed = BlobConfig { rpc_reserve_bytes: 7, max_total_bytes: 1000, ..cfg.clone() };
+        assert_eq!(fixed.rpc_put_limit(), 993);
+        deterministic::Runner::default().start(|ctx| async move {
+            let mut s = BlobStore::open(ctx.child("r"), "t-reserve", cfg, 0).await.unwrap();
+            for i in 0..8u8 {
+                s.check_rpc(100).unwrap();
+                s.put(&[i; 100], 1).await.unwrap();
+            }
+            assert_eq!(s.rpc_headroom(), 0);
+            let e = s.check_rpc(100).unwrap_err();
+            assert_eq!(e, PutError::NearlyFull { total: 800, limit: 800, max: 1000 });
+            assert!(e.to_string().contains("nearly full"), "{e}");
+            // a referenced blob fetched from a peer may still use the reserve
+            s.check(100).unwrap();
+            s.put(&[100u8; 100], 1).await.unwrap();
+            s.put(&[101u8; 100], 1).await.unwrap();
+            assert!(matches!(s.check(1), Err(PutError::Full { .. })));
         });
     }
 }

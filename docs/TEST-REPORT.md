@@ -734,6 +734,30 @@ window.pearl; the builder path was proven by signing its unsigned_tx with a key 
 (non-house) hire on devnet (none was made, so organic volume is truthfully 0); the public devnet
 cadre-api and site serve the market only after the deploy in MARKET.md 11.
 
+## Ecosystem Phase 5: boards, discovery, trader board, listings, bot feed (2026-10-22, HANDOFF 36)
+
+| Suite | Where | Result |
+|---|---|---|
+| cadre-api boards (test/boards.test.ts): board math on synthetic facts (self-dealt never counts, house apart, distinct payers, minimum sample and payers gate, windows on block time, house / organic / all sides, rate in ppm, positive boards skip zero rows, realized PnL per sell sums to the trading route's average cost) + every route on an in-memory index with fake market and trading handles (earnings with self-dealt and funded payers excluded, acceptance 2 of 3 with the min-sample cut, tips with the self tip excluded and the 10-day-old tip only in `all`, paid followers vs raw, answered vs unanswered paid DMs, trading 3-sell minimum, self-mined block and own-job verdicts excluded, discovery filters, trader board metrics, event feed JSON / RSS / SSE, no em dashes) | Mac + test box | 20/20 |
+| cadre-api full suite incl. town (new leaderboards test: every board live, house rows only on the house side), openapi parity (every new route documented) | test box | 103 tests: 94 pass, 0 fail, 9 skipped (client and sol need storefront-x402 node_modules: installed in the box copy) |
+| feed-bot (dry run by default, live only with all three switches, first run takes no backlog, hourly cap, cursor survives a restart, 280-character texts keep the link) | Mac | 4/4 |
+| DefiLlama adapter unit (storefront events, window, paging, mandate Settled offsets, mandate fees in the right fields) | test box | 4/4 |
+| DefiLlama live, all-time, Cadre devnet (storefront 9XjvGk2x..., mandate BG5WkxZy..., dedicated devnet RPC) | test box | PASS: fees 599,081,615 = total_sol 539,173,466 + shares held 59,908,149; supply side = total_sol; holders revenue 29,657,293 = bb_accrued = cadre-api /v1/buyback accrued; mandate protocol fees 0 = the Mandate accounts' fees_protocol (no settle has run on devnet) |
+| cadre-web /leaderboards (+ /[board]), /discover, /board: tsc, lint, unit, next build; e2e/boards.mjs headless Chromium on the test box at 1440 and 390 widths against the branch cadre-api on real devnet data (no horizontal overflow, no monospace, no em dashes, every board shows rows or its empty reason) | test box | 78 unit; 12/12 screens (screenshots/boards/); cadre-web b6b9fc7 |
+| cadre-docs guides/boards build + check | test box | 54 pages x 2 viewports, 1,952 links OK |
+| pearl-cli Boards view 10 + `cadre top` (formatting per unit, the 9 boards parsed from a live fixture, window / side refusal, view 10 on 0 / alt+0 / F10, canvas at 80 and 140 columns, no em dashes; `top` text and JSON against a fixture server) | test box | 109 unit + 7 integration |
+
+Live on the test box against the public Cadre devnet (branch cadre-api 127.0.0.1:10790, devnet node RPC,
+devnet Solana RPC), 2026-10-22 ~03:00 UTC: all nine boards answer; examples (window all): market_earnings
+1 Cx4956...6f64 9,148,670.61 CADRE organic from 3 payers (+661,671.35 CADRE house), 2 Cxe21a...FF6C
+5,201,854.77 CADRE from 3 payers; trading_pnl 1 @tide_ledger 57,920 lamports over 3 sells; miners 1
+Cxe21a...FF6C 470 paid of 1,901 blocks; evaluators 1 Cx7DcD... 13 verdicts (+2 house, 1 own-job excluded);
+hardest_thinkers organic empty, house side 19 rows (25 receipts read; every thought was paid by the house
+wallet Cu4bS9...); paid_dms, most_tipped, most_followed empty (no tips, follows or paid DMs on devnet yet:
+shown as empty, never filled). Trader board: SOL spent on AI all time 272,542,596 lamports organic,
+11,442,615 house; paid-block share all time 214,711 ppm. Event feed: 58 events; the feed bot's dry run
+printed 6 (new agents, a paid-blocks milestone, two completed house hires, block 5,000) and sent nothing.
+
 ## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
 
 | Suite | Where | Result |
@@ -755,7 +779,21 @@ A40 (51 GB; --pool-positions). Not verified: the batched worker on box 0 itself 
 orchestrator), a paid gateway round end to end with the new retention on a live chain (tested against a
 mock chain that includes every tx).
 
-## Cadre open items: fee to the pool, agent launches, halt record (2026-10-22, HANDOFF 36)
+
+## Blob data lifecycle (2026-10-22, "blob lifecycle" row, HANDOFF 37)
+
+Test box 64.95.13.106, ~/bloblife, `-j 4`, main a72713b.
+
+| Suite | Result |
+|---|---|
+| chain workspace `cargo test --release` | 196 passed, 0 failed, 2 ignored |
+| new: agent-node tests/blob_lifecycle.rs | 3/3: segment A retention by state (mined, final, ticket closed, replay window, mining window) on a replay node and a mining-only node + model blobs pinned + getBlobStats classes; stats breakdown + putBlob "blob store nearly full" backpressure and recovery after the prune; reorg around a mined segment (A kept, mineable again on the new branch), reorg around a pruned one (not wanted back) and a fresh node syncing after pruning (equal finalized hash, pinned manifest fetched, A of a mineable segment fetched, pruned A never wanted) |
+| new: executor tests/blobparams.rs | 2/2: key 48 refused below devnet 5800 ("unknown config key") and accepted from it, config record untouched; admin only, range, reserved key 49, default value deletes the record |
+| blobs + state units | rpc_reserve_backpressure, blobparams roundtrip/bounds, all green |
+| cadre-gateway (crates workspace) | 30/30; new tests/node_blobs.rs 3/3: 503 insufficient_storage before reserving when the node lacks headroom (waiting rows count), a settle refused for space blocks new paid work at once, an older node's quota minus total and no getBlobStats at all |
+| pearl-attester | 20/20; tests/replay.rs with the real model (CADRE_REPLAY_MODEL llama-3.2-1b-instruct-w7a7-k2048, runs ~/verify-ai/rt/req0,req1): honest 96-row 144-segment ticket Accept in 12.1 s (commitment-first A check), altered A rejected naming segment 4df38dcc... (matrix 61, row 90 col 7), wrong C rejected (product) |
+| live follower | staged agent-node 556739d3... from genesis against the devnet seeds, keep_replay false, 600 MB quota: tip 5077 and finalized hash 4038f7df25c530a1 equal to box 0; fetched only mineable segments' A (316 blobs, 432 MB) + manifest + profiles + ticket blobs; stopped by PID, data removed |
+## Cadre open items: fee to the pool, agent launches, halt record (2026-10-22, HANDOFF 38)
 
 All on the test box 64.95.13.106 (~/cadre-launch) unless noted.
 

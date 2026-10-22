@@ -164,6 +164,8 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
   knobs `price_base_lamports`, `price_mlamports_per_gflop`, `price_overhead_lamports` (decimal
   strings, or null when unset: storefront-x402 then uses its own defaults). Keys 19-26 are
   settable from the chain's social upgrade height (devnet `DEVNET_SOCIAL_HEIGHT`).
+- `segment_replay_blocks` (key 48, own record, SPEC 4.5 "Segment data retention"; default 720) and
+  `blob_params_activation_height` (the height from which key 48 may be set: devnet 5800, else 0).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
   shape (default 4 x 8 since 2026-10-17, k and r from fallback_config; PROOF-FORMAT.md 7.4). A block
   is verified with the parameters of its parent state, so an AdminConfig change applies from
@@ -508,7 +510,9 @@ instead of an off-chain URL. `id = blake3(bytes)`, URI `blob:<64 lowercase hex>`
 and every chunk of each registered model whose manifest it holds (never pruned).
 `{"blob_id": "hex", "uri": "blob:hex", "size": 131088, "new": true}`. `new` false = already
 stored (no rate cost). Errors: `empty blob`, `blob is N bytes, max_blob_bytes is M`,
-`blob store full (...)`, `rate limited: try again later`.
+`blob store full (...)`, `blob store nearly full (T of M bytes used; RPC puts stop at L ...)` (RPC puts
+stop `rpc_reserve_bytes` below the quota, SPEC 4.5 "Segment data retention"; back off and retry after
+the prune pass), `rate limited: try again later`.
 
 ### getBlob `{"blob_id": "hex" | "blob:hex"}` (`"id"` / `"uri"` accepted)
 `{"blob_id", "uri", "size", "data": "base64"}`, or null if this node does not hold it. On a
@@ -522,6 +526,15 @@ that holds it can also serve it).
 `{"count", "total_bytes", "fetching", "fetch_in_flight", "max_blob_bytes", "max_total_bytes", "grace_blocks",
 "put_rate_bytes_per_s", "last_prune_height"}`. `fetching` counts blobs wanted from peers (at most
 1024); `fetch_in_flight` the ones asked for right now (at most 16, the rest wait their turn).
+Since 2026-10-22 (SPEC 4.5 "Segment data retention") also: `rpc_reserve_bytes`, `rpc_put_limit_bytes`
+(= max_total_bytes - reserve), `rpc_headroom_bytes` (what putBlob still accepts), `puts_open`
+(headroom >= max_blob_bytes), `referenced_bytes` (pinned or referenced by chain state),
+`unreferenced_bytes`, `prunable_bytes` (would go at the next prune pass), `retention`
+`{segment_mine_blocks, keep_replay, segment_replay_blocks, template_job_scan}` and `classes`: for each
+of `model` (manifests and pinned chunks), `segment_a`, `social` (profiles), `ticket` (request and
+response blobs), `job` (plain job data and results), `other` (referenced by nothing: posts, DMs,
+uploads not yet referenced) `{count, bytes, kept, kept_bytes, prunable, prunable_bytes}`. Byte counts
+are payload bytes (what max_total_bytes counts; each file on disk has a 4 KiB header more).
 
 ## Storefront orders and the protocol fee floor
 
