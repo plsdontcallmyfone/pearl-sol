@@ -211,6 +211,11 @@ Txs come from the template with matching `tx_root` and parent. Result:
 ### sendTx `{"tx": "base64"}`
 Checks decoding, chain id, signature, fee, nonce (>= account nonce, within 64), then
 gossips. Result `{"tx_hash": "hex"}`.
+A tx at a nonce the sender already has pooled replaces it only with a fee at least 10% higher
+(`old + max(old / 10, 1)`); otherwise "a tx with this nonce is pooled with a fee >= this one" or
+"replacement fee F below G". The mempool checks no tx semantics: a tx that fails at the tip stays
+pooled (templates skip it, and every later nonce of the sender with it) until it is replaced or
+its nonce is used; getAccount's `nonce` is the confirmed one (SPEC 5.4 "Server nonce").
 
 ### getTx `{"tx_hash": "hex"}`
 `{"tx_hash", "status": "pending|included", "block_hash"?, "height"?, "index"?,
