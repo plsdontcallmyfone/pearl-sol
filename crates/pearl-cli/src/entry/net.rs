@@ -260,6 +260,9 @@ impl Net {
             .into_iter()
             .flatten()
             .filter(|p| p["is_agent"] == true && p["handle"].as_str().is_some_and(|h| !h.is_empty()))
+            // an agent whose operator unlinked it is retired (the earlier house personas, owner
+            // 2026-10-21); agents with no operator run themselves and stay listed
+            .filter(|p| p["operator"].is_null() || p["operator_linked"] != false)
             .map(|p| AgentEntry {
                 account: p["account"].as_str().unwrap_or("").into(),
                 handle: p["handle"].as_str().unwrap_or("").into(),
