@@ -54,13 +54,10 @@ export function fillFromTx(t: any, owner: string, mint: string): { side: 0 | 1; 
   const fee = BigInt(meta.fee ?? 0);
   const dSol = BigInt(meta.postBalances[i]) - BigInt(meta.preBalances[i]);
   if (dTok > 0n) {
-    // a first buy creates the token account: its rent stays the agent's, it is not a trade cost
-    const had = (meta.preTokenBalances ?? []).some((b: any) => b.mint === mint && b.owner === owner);
+    // rent deposits for accounts this tx created (the token account on a first buy, PumpSwap's
+    // per-user volume account) are not a trade cost: every account that went from 0 to a balance
     let rent = 0n;
-    if (!had) {
-      const post = (meta.postTokenBalances ?? []).find((b: any) => b.mint === mint && b.owner === owner);
-      if (post) rent = BigInt(meta.postBalances[post.accountIndex] ?? 0);
-    }
+    for (let j = 0; j < keys.length; j++) if (j !== i && BigInt(meta.preBalances[j] ?? 0) === 0n && BigInt(meta.postBalances[j] ?? 0) > 0n) rent += BigInt(meta.postBalances[j]);
     const spent = -dSol - fee - rent;
     return { side: 0, amountIn: spent > 0n ? spent : 0n, out: dTok };
   }

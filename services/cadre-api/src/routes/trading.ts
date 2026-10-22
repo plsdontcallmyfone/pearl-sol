@@ -151,9 +151,10 @@ export function walletFill(t: any, owner: string, mint: string): { side: "buy" |
   const fee = BigInt(meta.fee ?? 0);
   const dSol = BigInt(meta.postBalances[i]) - BigInt(meta.preBalances[i]);
   if (dTok > 0n) {
-    const had = (meta.preTokenBalances ?? []).some((b: any) => b.mint === mint && b.owner === owner);
-    const post = had ? null : (meta.postTokenBalances ?? []).find((b: any) => b.mint === mint && b.owner === owner);
-    const rent = post ? BigInt(meta.postBalances[post.accountIndex] ?? 0) : 0n;
+    // rent deposits for accounts this tx created (the token account, PumpSwap's per-user volume
+    // account) are not a trade cost: every account that went from 0 to a balance, other than the owner
+    let rent = 0n;
+    for (let j = 0; j < keys.length; j++) if (j !== i && BigInt(meta.preBalances[j] ?? 0) === 0n && BigInt(meta.postBalances[j] ?? 0) > 0n) rent += BigInt(meta.postBalances[j]);
     const spent = -dSol - fee - rent;
     return { side: "buy", amount_in: spent > 0n ? spent : 0n, amount_out: dTok };
   }
@@ -212,7 +213,15 @@ class TradingIndex {
   }
 
   /** Own-wallet fills of every user trader, from its Solana signatures (each tx's balance changes). */
-  async userTrades(): Promise<Trade[]> {
+  userTradesP: Promise<Trade[]> | null = null;
+  /** One scan at a time: concurrent readers share the scan in flight (else a second caller would see the
+   * scan stamped but its signatures not read yet). */
+  userTrades(): Promise<Trade[]> {
+    if (!this.userTradesP) this.userTradesP = this.userTradesScan().finally(() => { this.userTradesP = null; });
+    return this.userTradesP;
+  }
+
+  async userTradesScan(): Promise<Trade[]> {
     const users = await this.userTraders().catch(() => []);
     for (const u of users) {
       if (Date.now() - (this.userScanAt.get(u.account) ?? 0) < 30_000) continue;
@@ -431,7 +440,7 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
           position_spl: p.position.toString(), cost_basis_lamports: p.cost_basis.toString(), realized_pnl_lamports: p.realized.toString(),
           marked_at_mid_lamports: pool ? midValue(p.position, pool.base_reserve, pool.quote_reserve).toString() : null,
           trades: fills.length, last_trade_at: fills.length ? fills[fills.length - 1].at : null,
-          method: "average cost over this agent's own PumpSwap fills, each read from the landed Solana tx's balance changes (fee and new token-account rent excluded)",
+          method: "average cost over this agent's own PumpSwap fills, each read from the landed Solana tx's balance changes (the tx fee and rent deposits for accounts the tx created excluded)",
         });
       }
     }

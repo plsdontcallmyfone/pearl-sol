@@ -251,7 +251,7 @@ export class AgentRunner extends Swarm {
     }
     if (!(prof?.operator === this.spec.operator && prof?.operator_linked)) {
       this.state = "waiting_link";
-      this.why = "the operator's OperatorLink to this agent is not on the chain yet";
+      this.why = "the creator's OperatorLink (attribution) to this agent is not on the chain yet";
       // an operator new to the Cadre chain holds no CADRE for the link's fee: the agent sends it once
       if (!this.linkFeeTx) {
         const link: Body = { kind: "OperatorLink", agent: this.me.wallet.publicKey, add: true };
@@ -267,7 +267,7 @@ export class AgentRunner extends Swarm {
     if (!s.profileDone) {
       s.profileDone = true;
       s.nextAt = this.d.now();
-      this.note("live", `running spec v${this.spec.version}; operator link verified on the chain`);
+      this.note("live", `running spec v${this.spec.version}; creator link verified on the chain`);
     }
     if (!this.paused) this.state = "running";
     return true;
