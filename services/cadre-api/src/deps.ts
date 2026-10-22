@@ -73,7 +73,7 @@ export class Deps {
     this.nodeGate = new RpcGate(Number(process.env.CADRE_NODE_RPC_CONCURRENCY ?? 3) || 3);
     this.ix = ix ?? new Indexer({
       nodeUrl: cfg.nodeRpc, solUrl: cfg.solanaRpc, stateDir: cfg.stateDir, pollMs: cfg.pollMs, solPollMs: Number(process.env.SOL_POLL_MS ?? 0),
-      jobsFullMs: Number(process.env.CADRE_JOBS_FULL_MS ?? 600_000), nodeGate: this.nodeGate, log: (m) => console.log(JSON.stringify({ msg: m })),
+      jobsFullMs: Number(process.env.CADRE_JOBS_FULL_MS ?? 600_000), jobsPollMs: Number(process.env.CADRE_JOBS_POLL_MS ?? 30_000), nodeGate: this.nodeGate, log: (m) => console.log(JSON.stringify({ msg: m })),
     });
     this.node = new JsonRpc(cfg.nodeRpc, 15_000, this.nodeGate);
     this.sol = new SolanaRpc(cfg.solanaRpc);

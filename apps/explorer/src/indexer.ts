@@ -91,6 +91,8 @@ export interface IndexerOptions {
    * listJobs loads every job (up to 10,000) for each page, so a full scan per poll saturated it. */
   jobsFullMs?: number;
   jobsRefreshPerPoll?: number;
+  /** Incremental job reads at most this often (default 15000; every listJobs call costs the node a load of every job). */
+  jobsPollMs?: number;
   /** Shared limit on requests in flight to the node (cadre-api passes its gate). */
   nodeGate?: RpcGate | null;
   log?: (msg: string) => void;
@@ -121,6 +123,7 @@ export class Indexer {
   lcTxs = new Map<string, SolTx[]>();
   backfillCursor = 0; // next height to fetch going down (0 = done)
   private jobsFullAt = 0;
+  private jobsAt = 0;
   private jobsTotal = 0;
   private jobsCursor = 0;
   private lastTip = "";
@@ -133,7 +136,7 @@ export class Indexer {
   private listeners = new Set<() => void>();
 
   constructor(opts: IndexerOptions) {
-    this.o = { pollMs: 3000, solPollMs: 0, backfillPerPoll: 2000, jobsFullMs: 300_000, jobsRefreshPerPoll: 100, nodeGate: null, log: (m) => console.log(m), ...opts };
+    this.o = { pollMs: 3000, solPollMs: 0, backfillPerPoll: 2000, jobsFullMs: 300_000, jobsRefreshPerPoll: 100, jobsPollMs: 15_000, nodeGate: null, log: (m) => console.log(m), ...opts };
     this.node = new JsonRpc(opts.nodeUrl, 30_000, this.o.nodeGate);
     this.sol = new SolanaRpc(opts.solUrl);
   }
@@ -200,6 +203,7 @@ export class Indexer {
     this.buybackTxs = [];
     this.backfillCursor = 0;
     this.jobsFullAt = 0;
+    this.jobsAt = 0;
     this.jobsTotal = 0;
     this.lastTip = "";
     this.status.resets++;
@@ -280,9 +284,12 @@ export class Indexer {
       this.jobs.clear();
       for (const j of jobs) this.jobs.set(j.job_id, j);
       this.jobsFullAt = now;
+      this.jobsAt = now;
       this.jobsTotal = total;
       return;
     }
+    if (now - this.jobsAt < this.o.jobsPollMs) return;
+    this.jobsAt = now;
     // newest jobs: from just below the last known end, one page at a time (the list is oldest first)
     let offset = Math.max(0, this.jobsTotal - 20);
     for (let pages = 0; pages < 5; pages++) {

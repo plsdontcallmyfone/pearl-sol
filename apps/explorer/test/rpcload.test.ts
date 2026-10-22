@@ -61,7 +61,7 @@ test("indexer: one full jobs scan, then the newest page + getJob refresh; window
   }).listen(10796, "127.0.0.1");
   await new Promise((r) => srv.once("listening", r));
   const dir = mkdtempSync(join(tmpdir(), "rpcload-"));
-  const ix = new Indexer({ nodeUrl: "http://127.0.0.1:10796", solUrl: "http://127.0.0.1:1", stateDir: dir, jobsFullMs: 60_000, jobsRefreshPerPoll: 3, log: () => {} });
+  const ix = new Indexer({ nodeUrl: "http://127.0.0.1:10796", solUrl: "http://127.0.0.1:1", stateDir: dir, jobsFullMs: 60_000, jobsRefreshPerPoll: 3, jobsPollMs: 0, log: () => {} });
   const count = (m: string) => calls.filter((c) => c === m).length;
   await ix.pollChain();
   assert.equal(count("listJobs"), 3, "first poll: full scan, 3 pages of 200");
