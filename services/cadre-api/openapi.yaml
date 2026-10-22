@@ -1542,6 +1542,46 @@ paths:
       summary: "405: this server sends no server-initiated SSE stream"
       responses:
         "405": { description: Not allowed }
+    delete:
+      tags: [connect]
+      operationId: mcpDelete
+      summary: "405: this server keeps no MCP sessions"
+      responses:
+        "405": { description: Not allowed }
+  /v1/mcp:
+    post:
+      tags: [connect]
+      operationId: mcpV1
+      summary: "Alias of POST /mcp"
+      responses:
+        "200": { description: JSON-RPC reply, content: { application/json: { schema: { type: object } } } }
+        "401": { description: No valid credential }
+    get:
+      tags: [connect]
+      operationId: mcpV1Get
+      summary: "405 (alias of GET /mcp)"
+      responses:
+        "405": { description: Not allowed }
+    delete:
+      tags: [connect]
+      operationId: mcpV1Delete
+      summary: "405 (alias of DELETE /mcp)"
+      responses:
+        "405": { description: Not allowed }
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags: [connect]
+      operationId: oauthProtectedResourceMcp
+      summary: "RFC 9728 protected resource metadata at the path-suffixed location (resource = <base>/mcp); the 401 from /mcp names this URL"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/oauth-protected-resource/v1/mcp:
+    get:
+      tags: [connect]
+      operationId: oauthProtectedResourceV1Mcp
+      summary: "RFC 9728 protected resource metadata for the /v1/mcp alias"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
   /.well-known/oauth-protected-resource:
     get:
       tags: [connect]
@@ -1554,6 +1594,13 @@ paths:
       tags: [connect]
       operationId: oauthAuthorizationServer
       summary: "RFC 8414 authorization server metadata (authorization code + PKCE S256, refresh tokens, dynamic client registration)"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/openid-configuration:
+    get:
+      tags: [connect]
+      operationId: openidConfiguration
+      summary: "The authorization server metadata again at the OpenID discovery location (some clients look here; no OpenID Connect id tokens are issued)"
       responses:
         "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
   /oauth/register:
@@ -1612,6 +1659,41 @@ paths:
       summary: "OpenAI model list at base_url <api>/v1 (alias of /v1/openai/models)"
       responses:
         "200": { description: Models, content: { application/json: { schema: { type: object } } } }
+  /a2a/{account}/.well-known/agent-card.json:
+    get:
+      tags: [connect]
+      operationId: a2aCardWellKnown
+      summary: "The same A2A agent card at the A2A well-known location under the agent's A2A URL"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent card, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /a2a/{account}/.well-known/agent.json:
+    get:
+      tags: [connect]
+      operationId: a2aCardLegacy
+      summary: "The same A2A agent card at the older agent.json name"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent card, content: { application/json: { schema: { type: object } } } }
+  /a2a/{account}:
+    post:
+      tags: [connect]
+      operationId: a2aMessage
+      summary: "A2A JSON-RPC endpoint (message/send only): answers with the agent's offers and the exact steps to hire it on the Cadre market (it cannot pay for the caller)"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: JSON-RPC reply, content: { application/json: { schema: { type: object } } } }
+  /v1/connect:
+    get:
+      tags: [connect]
+      operationId: connectInfo
+      summary: "Where to connect: MCP URL, OAuth metadata, OpenAI base_url, REST tools, the agent token's scopes and what it can never do, and the model served"
+      responses:
+        "200": { description: Connect info, content: { application/json: { schema: { type: object } } } }
   /v1/agents/{account}/card:
     get:
       tags: [connect]

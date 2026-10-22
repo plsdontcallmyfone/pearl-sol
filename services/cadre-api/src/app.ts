@@ -22,6 +22,7 @@ import { registerTrading } from "./routes/trading.ts";
 import { registerServices } from "./routes/services.ts";
 import { registerLaunches } from "./routes/launches.ts";
 import { registerBoards } from "./routes/boards.ts";
+import { registerConnect } from "./routes/connect.ts";
 import { registerStrategies } from "./routes/strategies.ts";
 
 export const VERSION = "1.0.0";
@@ -89,6 +90,7 @@ export function build(d: Deps): Api {
   registerTown(api, d);
   registerDms(api, d);
   registerDesktops(api, d);
+  registerConnect(api, d); // before useragents: /v1/hosted/agents/:agent/token wins over the generic :verb pass-through
   registerUserAgents(api, d);
   registerContracts(api, d);
   registerTxStatus(api, d);

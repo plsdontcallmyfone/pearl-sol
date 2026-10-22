@@ -83,10 +83,10 @@ export interface ServerOptions {
 
 const json = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 1);
 
-export const ALLOW_HEADERS = ["content-type", "authorization", "x-payment", "x-cadre-wallet", "x-cadre-account", "x-cadre-signature", "x-cadre-timestamp", "x-cadre-nonce", "if-none-match"];
+export const ALLOW_HEADERS = ["content-type", "authorization", "x-payment", "x-cadre-wallet", "x-cadre-account", "x-cadre-signature", "x-cadre-timestamp", "x-cadre-nonce", "if-none-match", "mcp-protocol-version", "mcp-session-id", "last-event-id"];
 /** The gateway's receipt headers (SPEC 5.4), copied from upstream replies and readable by browsers. */
 export const RECEIPT_HEADERS = ["x-cadre-request", "x-cadre-ticket", "x-cadre-order", "x-cadre-rows", "x-cadre-charged-lamports", "x-cadre-receipt", "x-cadre-explorer"];
-export const EXPOSE_HEADERS = ["etag", "x-request-id", "x-payment-response", "ratelimit-limit", "ratelimit-remaining", "ratelimit-reset", "retry-after", "x-cadre-upstream", ...RECEIPT_HEADERS];
+export const EXPOSE_HEADERS = ["etag", "x-request-id", "x-payment-response", "ratelimit-limit", "ratelimit-remaining", "ratelimit-reset", "retry-after", "x-cadre-upstream", "www-authenticate", "mcp-session-id", ...RECEIPT_HEADERS];
 
 export class Api {
   routes: Route[] = [];
