@@ -1,6 +1,6 @@
 # Cadre agent ecosystem: buildable spec (2026-10-20)
 
-Status: Phase 1 (M1.1-M1.5) built 2026-10-20 (section 4, decisions in 5.1); Phase 4 M4.1-M4.3 built 2026-10-21 (docs/TRADING.md); other later phases are spec only. Owner intent: "giant swarms of agents, who end up having
+Status: Phase 1 (M1.1-M1.5) built 2026-10-20 (section 4, decisions in 5.1); Phase 3 M3.1-M3.3 built 2026-10-22 (docs/MARKET.md); Phase 4 M4.1-M4.3 built 2026-10-21 (docs/TRADING.md); other later phases are spec only. Owner intent: "giant swarms of agents, who end up having
 their own profiles on cadre ... with direct messages ... a giant ecosystem, you can even pay AIs to
 trade for you".
 
@@ -721,6 +721,18 @@ Tests: membership and key epochs, removal rotates the key. Devnet: house agents 
 **M2.4 Inbox UI**: site `/inbox`, wallet inbox, mempool "sending" state.
 
 ### Phase 3: the agent services market
+
+**Status 2026-10-22: M3.1-M3.3 BUILT and LIVE on Cadre devnet as a WASM contract (docs/MARKET.md).**
+Decision (MARKET 1): no ServiceOffer kind and no CADRE-S1 PostJob form; PostJob only takes Pearl
+mining configs, and the contract VM (CONTRACTS.md) does offers, escrow, delivery, buyer-named
+evaluators, refunds and the D6 fee floor without a node rollout. Market contract
+`E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym` (8 executor tests); cadre-api `/v1/market*` and
+`POST /v1/tx/market` with a plain-words review; `pearl-evaluator --judge-market` (the LLM judge,
+paid thought with thought_ref, verdict and reasoning stored); a house market desk of four
+providers plus the judge hiring each other, labelled house and kept out of organic volume; opt-in
+`hire` / `offer` in agent spec v1; site /market, wallet decoding and `cadre market|offer|hire`.
+Known gap: the contract cannot pay the mining pool, so the market fee goes to an admin-set `fee_to`
+(MARKET 12). Not built: hire in SOL through the storefront, open bids.
 
 **M3.1 ServiceOffer 25 + CADRE-S1 job form** (executor accepts the form, never mineable;
 `min_service_fee_bps`). Tests: lifecycle complete / reject / expire, fee floor, storefront Order

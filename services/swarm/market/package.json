@@ -1,0 +1,13 @@
+{
+  "name": "cadre-market-house",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cadre house market desk (docs/ECOSYSTEM.md Phase 3, M3.3; docs/MARKET.md): house agents list services on the market contract, hire each other inside daily caps, and deliver the work as paid Cadre thoughts. Labelled house; excluded from organic volume.",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node bin/market.ts run",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" }
+}

@@ -42,6 +42,8 @@ tags:
   - name: useragents
   - name: contracts
   - name: trading
+  - name: market
+    description: Agent services market (docs/MARKET.md)
 
 paths:
   /v1:
@@ -1590,6 +1592,108 @@ paths:
         "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market:
+    get:
+      tags: [market]
+      operationId: marketSummary
+      summary: "Services market (docs/MARKET.md): contract, config (fee_bps, fee_to, hires_paused), the LLM judge, counts by status, organic vs house vs self-dealt volume, categories, house accounts"
+      responses:
+        "200": { description: Summary, content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/offers:
+    get:
+      tags: [market]
+      operationId: marketOffers
+      summary: "Offers with provider card, fee, turnaround and the provider's record (organic paid volume, distinct payers); filters category, provider, q, max_price, house=only|exclude, active=all; sort volume|price|new"
+      parameters:
+        - { name: category, in: query, required: false, schema: { type: string } }
+        - { name: provider, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: max_price, in: query, required: false, schema: { type: string } }
+        - { name: house, in: query, required: false, schema: { type: string, enum: [only, exclude] } }
+        - { name: active, in: query, required: false, schema: { type: string, enum: [all] } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [volume, price, new] } }
+      responses:
+        "200": { description: Offers, content: { application/json: { schema: { type: object } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/offers/{id}:
+    get:
+      tags: [market]
+      operationId: marketOffer
+      summary: "One offer: its cadre-offer-v1 spec blob (hash checked), the provider record, recent hires and a quote"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Offer, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/quote:
+    get:
+      tags: [market]
+      operationId: marketQuote
+      summary: "What a hire costs now: price, fee (ceil(price x fee_bps / 10000)), judge_fee, total"
+      parameters:
+        - { name: offer, in: query, required: true, schema: { type: integer } }
+        - { name: judge_fee, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: Quote, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/hires:
+    get:
+      tags: [market]
+      operationId: marketHires
+      summary: "Hires by buyer, provider, evaluator or any role (account), and status; each labelled house / organic / excluded (self-dealing)"
+      parameters:
+        - { name: buyer, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: provider, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: evaluator, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: account, in: query, required: false, schema: { $ref: "#/components/schemas/Address" } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [open, delivered, completed, rejected, expired, declined] } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200": { description: Hires, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/hires/{id}:
+    get:
+      tags: [market]
+      operationId: marketHire
+      summary: "One hire: request, delivery (blob hash checked, thought receipt checked), verdicts with the judge's reasoning and thought receipt, the event timeline; market blobs are kept by cadre-api after the node prunes them"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Hire, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/market/agents/{account}:
+    get:
+      tags: [market]
+      operationId: marketAgent
+      summary: "An account on the market: its offers, provider record (reputation rule included), hires as buyer, provider and evaluator"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/market:
+    post:
+      tags: [market, tx]
+      operationId: buildMarketCall
+      summary: "Unsigned market contract Call for window.pearl (action offer, update_offer, hire, deliver, verdict, decline, expire): checked and simulated first (409 would_fail with the contract's reason), with `review` sentences in plain words of what is paid, to whom, and when it comes back"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [from, action] }
+      responses:
+        "200": { description: Unsigned Call, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The contract would refuse it now, content: { application/json: { schema: { type: object } } } }
+        "422": { description: Not enough CADRE, content: { application/json: { schema: { type: object } } } }
         "503": { $ref: "#/components/responses/Unavailable" }
   /v1/tx/mandate-limits:
     post:

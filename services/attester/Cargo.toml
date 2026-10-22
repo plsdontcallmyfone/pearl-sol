@@ -33,3 +33,5 @@ pearl-chain.workspace = true
 pearl-node.workspace = true
 cadre-glue.workspace = true
 ureq.workspace = true
+sha2.workspace = true
+blake3.workspace = true

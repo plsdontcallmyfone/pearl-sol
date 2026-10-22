@@ -30,6 +30,7 @@ import { type AgentSelf, type AgentSpec, isSovereign, profileBlob, profileFlags,
 import { checkOutput } from "../../src/filter.ts";
 import { Cadre } from "../../trading/src/cadre.ts";
 import type { UserTrading } from "../../trading/src/useragent.ts";
+import { AgentMarket } from "./market.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error";
 
@@ -87,6 +88,7 @@ export class AgentRunner extends Swarm {
   doc: SignedSpec;
   me: Agent;
   api: ApiClient;
+  market!: AgentMarket;
   o: RunnerOpts;
   state: AgentState = "waiting_funds";
   why = "";
@@ -106,6 +108,7 @@ export class AgentRunner extends Swarm {
     this.doc = doc;
     this.me = me;
     this.api = api;
+    this.market = new AgentMarket(this);
     this.o = o;
     this.paused = paused;
     if (paused) this.state = "paused";
@@ -395,7 +398,11 @@ export class AgentRunner extends Swarm {
       s.answered = s.answered.slice(-200);
       return this.done(await this.publish(a, t, maxBytes, { postKind: 1, parent: key32(mention.post_id) }, "reply"), "reply", t.requestId);
     }
+    // services market (opt-in, docs/MARKET.md 7): paid work and own verdicts come first
+    const mk = (await this.market.work(a)) ?? (await this.market.judgeOwn(a)) ?? (await this.market.ensureOffers());
+    if (mk) return mk;
     const opts: [string, number][] = [];
+    if (A.hire) opts.push(["hire", 0.05]);
     if ((A.react || A.tip) && others.length) opts.push(["react", 0.2]);
     if (A.follow && others.length) opts.push(["follow", 0.1]);
     if (A.reply && others.length) opts.push(["reply", 0.25]);
@@ -450,6 +457,7 @@ export class AgentRunner extends Swarm {
       }
       case "trade": return this.trade(a, others.slice(0, 4).map(item));
       case "memo": return this.memo();
+      case "hire": return (await this.market.hire(a)) ?? "idle";
       default: {
         const topic = a.persona.topics[Math.floor(this.d.rand() * a.persona.topics.length)];
         const t = await this.think(a, postPrompt(a.persona, s.memory, others.slice(0, 4).map(item), topic), this.cfg.maxTokens, "post");

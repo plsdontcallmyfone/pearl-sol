@@ -21,13 +21,16 @@ export const SPEC_FORMAT = "cadre-agent-spec-v1";
 export const SPEC_FORMAT_V2 = "cadre-agent-spec-v2";
 export const SPEC_FORMATS = [SPEC_FORMAT, SPEC_FORMAT_V2] as const;
 export const ACTIONS = ["post", "reply", "react", "follow", "tip", "trade", "memo", "hire", "mine", "browse"] as const;
-export type Action = (typeof ACTIONS)[number];
+/** Added after v1 shipped; may be absent (= false) so specs signed earlier still verify. */
+export const OPTIONAL_ACTIONS = ["offer"] as const;
+export type Action = (typeof ACTIONS)[number] | (typeof OPTIONAL_ACTIONS)[number];
 export const DESKTOPS = ["social", "work"] as const;
 export const SKILLS = ["town", "pumpswap", "bridge", "x402", "memo", "market", "desktop", "trade"] as const;
 /** What each action needs before it can run (shown in the UI and in status). */
 export const ACTION_NEEDS: Record<Action, string | null> = {
   post: null, reply: null, react: null, follow: null, tip: null, trade: null, memo: null,
-  hire: "the agent services market (ECOSYSTEM Phase 3) is not built yet",
+  hire: null,
+  offer: null,
   mine: "mining runs on the operator's own machine: the self-hosted runner starts pearl-miner when it is installed",
   browse: "a desktop (house desktop controller); user agents get desktops only once the controller hosts them",
 };
@@ -68,13 +71,15 @@ export interface AgentSpec {
   topics: string[]; // what it posts about
   schedule: { cadence_min: number; quiet_utc: [number, number] | null };
   skills: string[];
-  actions: Record<Action, boolean>;
+  actions: Record<(typeof ACTIONS)[number], boolean> & { offer?: boolean };
   budget: {
     sol_lamports_per_day: string; // x402 top-ups, Solana fees, trades, memos
     cadre_units_per_day: string; // Cadre tx fees and tips (chain units, 9 dp)
     rows_per_day: number; // paid inference rows a UTC day
   };
-  limits: { tip_units: string; trade_lamports: string };
+  limits: { tip_units: string; trade_lamports: string; hire_units?: string };
+  /** Services the agent may list when actions.offer (operator-signed text, docs/MARKET.md 7). */
+  offers?: { title: string; category: string; price_units: string; turnaround_blocks: number; description: string; deliverable: string }[];
   desktops: ("social" | "work")[];
   hosting: "hosted" | "self";
   model: string | null;
@@ -180,7 +185,16 @@ export function validateSpec(s: any): string[] {
   const sc = s.schedule;
   if (!sc || !Number.isInteger(sc.cadence_min) || sc.cadence_min < 5 || sc.cadence_min > 1440) e.push("schedule.cadence_min is 5..1440 minutes");
   if (sc && sc.quiet_utc !== null && !(Array.isArray(sc.quiet_utc) && sc.quiet_utc.length === 2 && sc.quiet_utc.every((h: unknown) => Number.isInteger(h) && (h as number) >= 0 && (h as number) <= 23))) e.push("schedule.quiet_utc is null or [from, to] UTC hours 0..23");
-  if (!s.actions || typeof s.actions !== "object" || ACTIONS.some((a) => typeof s.actions[a] !== "boolean") || Object.keys(s.actions).some((k) => !(ACTIONS as readonly string[]).includes(k))) e.push(`actions has exactly the booleans ${ACTIONS.join(", ")}`);
+  const known = [...ACTIONS, ...OPTIONAL_ACTIONS] as readonly string[];
+  if (!s.actions || typeof s.actions !== "object" || ACTIONS.some((a) => typeof s.actions[a] !== "boolean") || OPTIONAL_ACTIONS.some((a) => s.actions[a] !== undefined && typeof s.actions[a] !== "boolean") || Object.keys(s.actions).some((k) => !known.includes(k))) e.push(`actions has the booleans ${ACTIONS.join(", ")} (and optionally ${OPTIONAL_ACTIONS.join(", ")})`);
+  if (s.limits && s.limits.hire_units !== undefined && !DEC.test(s.limits.hire_units)) e.push("limits.hire_units is a decimal string");
+  if (s.offers !== undefined) {
+    const ok = Array.isArray(s.offers) && s.offers.length <= 3 && s.offers.every((o: any) => o && typeof o.title === "string" && bytes(o.title) >= 1 && bytes(o.title) <= 96 && typeof o.category === "string" && bytes(o.category) <= 32
+      && DEC.test(o.price_units ?? "") && o.price_units !== "0" && Number.isInteger(o.turnaround_blocks) && o.turnaround_blocks >= 1 && o.turnaround_blocks <= 100800
+      && typeof o.description === "string" && o.description.length <= 600 && typeof o.deliverable === "string" && o.deliverable.length <= 300);
+    if (!ok) e.push("offers is a list of at most 3 {title 1..96 bytes, category <= 32 bytes, price_units > 0, turnaround_blocks 1..100800, description <= 600, deliverable <= 300}");
+  }
+  if (s.actions?.offer && !(Array.isArray(s.offers) && s.offers.length)) e.push("actions.offer needs at least one entry in offers");
   const b = s.budget;
   if (!b || !DEC.test(b.sol_lamports_per_day ?? "") || !DEC.test(b.cadre_units_per_day ?? "")) e.push("budget.sol_lamports_per_day and budget.cadre_units_per_day are decimal strings");
   if (!b || !Number.isInteger(b.rows_per_day) || b.rows_per_day < 0 || b.rows_per_day > 1_048_576) e.push("budget.rows_per_day is 0..1048576");
@@ -290,7 +304,7 @@ export function validateSelf(x: any): string[] {
   return e;
 }
 
-/** Profile flags for the spec: is_agent, plus trades when trading is allowed (hires waits for Phase 3). */
+/** Profile flags for the spec: is_agent, trades when trading is allowed, accepts_hires when it offers services. */
 export function profileFlags(s: AgentSpec): number {
-  return 1 | (s.actions.trade ? 8 : 0);
+  return 1 | (s.actions.offer ? 4 : 0) | (s.actions.trade ? 8 : 0);
 }
