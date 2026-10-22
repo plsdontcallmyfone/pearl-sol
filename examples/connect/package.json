@@ -1,0 +1,8 @@
+{
+  "name": "cadre-connect-examples",
+  "private": true,
+  "type": "module",
+  "description": "Runnable Cadre Connect examples against Cadre DEVNET (docs/CONNECT.md). Only example 03 needs a dependency: the official OpenAI SDK.",
+  "engines": { "node": ">=22.18" },
+  "dependencies": { "openai": "7.28.0" }
+}

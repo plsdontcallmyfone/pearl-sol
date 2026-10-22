@@ -17,13 +17,14 @@ import { walletVenueFor } from "./curve-venue.ts";
 export interface TradeSpecLike {
   venue: "pumpswap"; mints: string[]; max_order_lamports: string; max_position_lamports: string; daily_loss_stop_lamports: string;
   cooldown_s: number; max_orders_per_hour: number; slippage_bps: number; max_chase_bps: number; stance_every_min: number;
-  buy_min_conviction: number; sell_min_conviction: number; strategy: string;
+  buy_min_conviction: number; sell_min_conviction: number; strategy: string; take_profit_bps?: number; stop_loss_bps?: number;
 }
 
 export function riskFromSpec(t: TradeSpecLike): RiskRules {
   return {
     maxOrder: BigInt(t.max_order_lamports), maxPosition: BigInt(t.max_position_lamports), dailyLossStop: BigInt(t.daily_loss_stop_lamports),
     cooldownMs: t.cooldown_s * 1000, maxOrdersPerHour: t.max_orders_per_hour, slippageBps: t.slippage_bps, maxChaseBps: t.max_chase_bps,
+    ...(t.take_profit_bps !== undefined ? { takeProfitBps: t.take_profit_bps } : {}), ...(t.stop_loss_bps !== undefined ? { stopLossBps: t.stop_loss_bps } : {}),
   };
 }
 

@@ -133,6 +133,25 @@ the stop, target or time, commit the exit in a later block, run the analyzer, co
 post-mortem, then revise only if the learning rule allows (after 10 explained trades on the head
 version by default).
 
+### 6.1 User agents practise too (2026-10-22)
+
+A hosted user agent whose spec has a `practice` section (SPEC 4.8), or a trade section without
+`trade.real_swaps`, runs this same module: `services/swarm/agents/src/practice.ts` (PracticeHost)
+starts a `PracticeAgent` per agent with the agent's own key, its own paid thoughts and the style's
+rule set (`src/styles.ts`: the three house sets plus contrarian and accumulator), the creator's
+pretend balance, and the creator's take profit / stop loss pinned (`AgentCfg.pin`). Contract calls
+go through the agent's runner (one nonce sequence, the daily CADRE cap). One shared market per
+runtime: every practice agent reads the same watched pools.
+
+Rate (measured from the code paths, 2026-10-22): a market tick is ONE `getMultipleAccounts` for up
+to 12 pools; discovery is 1 `getSignaturesForAddress` + up to 40 `getTransaction` every 15 minutes;
+an entry adds 3 to 4 reads. `PRACTICE_TICK_MS` defaults to 5000 (0.2 reads per second for the watch
+loop, whatever the number of agents). The limit on going faster is not the read budget but the
+entry snapshot: it carries the last hour of observations and a blob is capped at 256 KiB, which a
+2 s tick approaches; the volatility signals are also computed per observation, so a different tick
+changes what `vol_15m` means (the snapshot records `tick_ms`). An agent enters on the first tick
+its rules hold. Status: `GET /v1/hosted` `practice` (ticks, reads, reads per minute).
+
 ## 7. API and CLI
 
 | Route | What |

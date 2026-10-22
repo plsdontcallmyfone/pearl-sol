@@ -32,6 +32,10 @@ export interface RiskRules {
   slippageBps: number;
   /** Refuse to buy after a move up of more than this since the stance was set (no chasing). */
   maxChaseBps: number;
+  /** User agents (optional): sell the whole position once its mid value is this many bps above its average cost. */
+  takeProfitBps?: number;
+  /** User agents (optional): sell the whole position once its mid value is this many bps below its average cost. */
+  stopLossBps?: number;
 }
 
 export interface TraderOpts {
@@ -76,6 +80,8 @@ export interface LatencyRow {
 
 export class Trader {
   o: TraderOpts;
+  /** The exit rule behind the order in flight (take profit / stop loss), named in its receipt. */
+  exitWhy = "";
   strategy: Strategy = { stance: "hold", conviction: 1, setAt: 0, requestId: "", text: "" };
   lastThought: { ttftMs: number; totalMs: number } | null = null;
   refPrice = 0;
@@ -145,11 +151,13 @@ export class Trader {
   }
 
   /** The fast layer: deterministic, runs on every market event. Returns the order or null. */
-  decide(e: MarketEvent, book: Book): { side: 0 | 1; amountIn: bigint; minOut: bigint } | null {
+  decide(e: MarketEvent, book: Book): { side: 0 | 1; amountIn: bigint; minOut: bigint; exit?: string } | null {
     const s = this.strategy;
     const r = { base: e.base, quote: e.quote };
     const p = this.price(r);
     const held = book.base === 0n ? 0n : quoteOut(1, r, book.base);
+    const ex = this.exit(r, book, held);
+    if (ex) return ex;
     const size = (this.o.risk.maxOrder * BigInt(s.conviction)) / 5n;
     if (size <= 0n) return null;
     const mc = this.o.minConviction;
@@ -168,6 +176,17 @@ export class Trader {
       return { side: 1, amountIn: clip, minOut: withSlippage(quoteOut(1, r, clip), this.o.risk.slippageBps) };
     }
     return null;
+  }
+
+  /** Take profit / stop loss (user agents, optional): deterministic, ahead of the stance. Sells the
+   * whole position when its mid value crosses the bound against its average cost. */
+  exit(r: { base: bigint; quote: bigint }, book: Book, held: bigint): { side: 1; amountIn: bigint; minOut: bigint; exit: string } | null {
+    const { takeProfitBps: tp, stopLossBps: sl } = this.o.risk;
+    if ((tp === undefined && sl === undefined) || book.base <= 0n || !book.cost || book.cost <= 0n) return null;
+    const bps = ((held - book.cost) * 10_000n) / book.cost;
+    const why = tp !== undefined && bps >= BigInt(tp) ? `take profit at ${bps} bps` : sl !== undefined && bps <= -BigInt(sl) ? `stop loss at ${bps} bps` : "";
+    if (!why) return null;
+    return { side: 1, amountIn: book.base, minOut: withSlippage(quoteOut(1, r, book.base), this.o.risk.slippageBps), exit: why };
   }
 
   riskBlock(now: number, book: Book): string {
@@ -197,6 +216,8 @@ export class Trader {
     const order = this.decide(e, this.book);
     const decidedAt = performance.now();
     if (!order) return;
+    if (order.exit) this.o.log("exit", { agent: this.o.handle, venue: this.o.venue.name, why: order.exit });
+    this.exitWhy = order.exit ?? "";
     // house traders never cross each other on the same pool inside 2 minutes (no house wash trades)
     const key = `${this.o.venue.name}:${this.o.venue.describe().pool}`;
     const other = this.o.houseBook.get(key);
@@ -243,7 +264,7 @@ export class Trader {
     const b = (x: bigint) => (Number(x) / 10 ** this.o.venue.baseDecimals).toString();
     const tk = this.o.venue.baseSymbol;
     const what = f.side === 0 ? `${q(f.amountIn)} ${u} for ${b(f.out)} ${tk}` : `${b(f.amountIn)} ${tk} for ${q(f.out)} ${u}`;
-    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : "own wallet; "}${this.o.label ? `${this.o.label}; ` : ""}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
+    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : "own wallet; "}${this.o.label ? `${this.o.label}; ` : ""}${this.exitWhy ? `${this.exitWhy}; ` : ""}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
     // machine-written (no model text in it), so the model-output filter does not apply; signatures are base58 and would trip its key check
     if (Buffer.byteLength(body) > 1024) { this.o.log("receipt_refused", { agent: this.o.handle, reason: "over 1024 bytes" }); return; }
     const t0 = performance.now();
