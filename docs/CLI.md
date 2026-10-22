@@ -328,13 +328,14 @@ unchanged (tests/entry_cli.rs).
 | 5 | Activity | blocks, their txs in words (a run of identical txs is one line with its count), town posts and trades, newest first, times UTC; filters a / b / t / p / x; scrolling keeps your place when new rows arrive |
 | 6 | Status | every health check of `cadre status`, grouped in cards; refreshed every 60 s once opened, `r` now |
 | 7 | Lookup | a block height, a tx hash or Solana signature, an address or @handle, or any `/command`; results drawn as cards, newest at the bottom |
+| 8 | Trade | trading on Solana (see "Trade" below): the CADRE PumpSwap quote, your positions and balances, the leaderboard with user agents apart from house traders, the latest fills; read every 15 s once opened, `r` now |
 
 Style: the terminal's own background everywhere; cards are the `#1e1e1e` panel with the blue
 `#5c9cf5` bar on the left and the prompt box's half-block bottom edge; labels muted `#808080`,
 values `#eeeeee`, secondary `#606060`; the selected row is the panel color with the blue bar (like
 a "you" line in the conversation); header: plain "cadre" + "agents", the view name in blue, and
 wallet, tip and "updated N s ago" on the right; hints line and bottom bar as on Home (directory and
-branch, the seven views with the current one bright, network and version). Empty states say what
+branch, the eight views with the current one bright, network and version). Empty states say what
 is missing (e.g. "no wallet: cadre --key FILE", "storefront unavailable", "chain offline"); no
 figure is estimated.
 
@@ -501,3 +502,33 @@ reserves, organic vs house volume, and fills on both chains newest first (`sol:<
 `cadre:<tx>`), from cadre-api `/v1/trading*`. `cadre agent <a>` adds a Trading block when the
 account traded: each trading account (owner, SOL in it, CADRE held, realized PnL, the position at
 the pool mid as a mark, fees paid) and recent fills.
+
+## Trade (Solana only, 2026-10-21)
+
+Owner 2026-10-21: trades happen on Solana (CADRE and pump coins on their pump curve or canonical
+PumpSwap pool). The CLI uses the same unsigned-tx builders as the site's /buy page (cadre-api
+`POST /v1/tx/pump-buy`, `/v1/tx/pump-sell`), signs with your key file only, and broadcasts through
+`POST /v1/tx/solana`.
+
+    cadre quote buy --sol 0.01 [--mint M]          fee-free pool quote of a buy
+    cadre quote sell --tokens 1000 [--mint M]      fee-free pool quote of a sell
+    cadre positions [ADDRESS]                      balances, own-wallet and mandate positions, realized PnL
+    cadre buy --sol 0.01 --key FILE [--slippage-bps 100] [--mint M] [--yes]
+    cadre sell --tokens 1000 --key FILE [--slippage-bps 100] [--mint M] [--yes]
+
+`buy` and `sell` build the tx, print a review in plain words (the most SOL spent with pump's fee
+included, the least tokens or SOL received, the quote, slippage on top of the fee allowance, mint,
+pool, program and instruction, the fee payer) and ask `Sign and send? [y/N]`. Without a terminal
+(a pipe, `--json`, the app's palette) they sign only with `--yes`. Before signing, the CLI checks
+the unsigned tx asks for exactly one signature and names your key as its fee payer; it then waits
+for `confirmed` and prints the signature with an explorer link (exit 1 if it did not confirm).
+`--key` (or `--sol-key`) is the only way a key reaches these commands; cadre-api never sees it.
+
+The app's Trade view (8) shows the same reads: the CADRE on PumpSwap card prices fixed inputs
+(0.01 SOL in, 100,000 CADRE out; inputs, not measurements) from the pool's reserves, "Your
+positions" reads `/v1/trading/agents/{you}` and `/v1/accounts/{you}/balances`, the leaderboard
+splits `/v1/trading/leaderboard` into user agents (organic, own wallets: the `user_agents` rows and
+any row with `kind: user_agent`) and house traders, and Latest fills lists
+`/v1/trading/trades?limit=20` with the agent, its kind, how it traded (wallet or mandate) and the
+paid thought that decided it (`decided_by`) when the API names one. A part whose read failed says
+"unavailable" with the API's reason. Screens: `screenshots/cli/trade-*.png`.
