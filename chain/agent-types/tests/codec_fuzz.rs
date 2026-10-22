@@ -82,7 +82,7 @@ fn sample_block() -> Block {
     let txs = samples();
     let cb = Coinbase { height: 5, miner: [1; 32], fees: 7, subsidy: 8, job_id: [0; 32], mature_height: 35 };
     let header = Header { version: 1, height: 5, nonce: 3, ..Default::default() };
-    Block { header, proof: vec![0xab; 64], txs, coinbase: Some(cb), contracts: None }
+    Block { header, proof: vec![0xab; 64], txs, coinbase: Some(cb), contracts: None, uncles: Vec::new() }
 }
 
 /// Decode `b` as every wire type; each must return without panicking, and a tx or block

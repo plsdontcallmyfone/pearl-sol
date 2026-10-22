@@ -335,7 +335,7 @@ fn tips_still_drive_catch_up_and_bad_weak_blocks_get_the_peer_blocked() {
         hd.proof_hash = block::proof_hash(&proof);
         let coinbase = hex::decode(t["coinbase"].as_str().unwrap()).unwrap();
         let cb = agent_types::Coinbase::decode(&coinbase).unwrap();
-        let w = consensus_pow::WeakBlock { header: hd, proof, items: vec![cb.hash()], has_contracts: false };
+        let w = consensus_pow::WeakBlock { header: hd, proof, items: vec![cb.hash()], has_contracts: false, uncle_items: 0 };
         use commonware_p2p::Sender as _;
         let _ = tips.0.send(commonware_p2p::Recipients::One(net.keys[0].clone()), commonware_runtime::IoBuf::from(w.encode()), false);
         ctx.sleep(Duration::from_secs(2)).await;

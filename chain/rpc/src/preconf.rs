@@ -327,7 +327,7 @@ mod tests {
     fn weak(parent: u8, miner: u8, nonce: u64, txs: &[Hash]) -> WeakBlock {
         let mut items = txs.to_vec();
         items.push([0xcb; 32]);
-        WeakBlock { header: hdr(parent, miner, nonce), proof: vec![], items, has_contracts: false }
+        WeakBlock { header: hdr(parent, miner, nonce), proof: vec![], items, has_contracts: false, uncle_items: 0 }
     }
 
     #[test]

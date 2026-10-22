@@ -47,6 +47,8 @@ pub mod tag {
     pub const CHANNEL_INVITE: u8 = 33;
     pub const CHANNEL_INDEX: u8 = 34;
     pub const CHANNEL_COUNT: u8 = 35;
+    /// Uncle inclusion (docs/SPEED.md 3.3): uncle block hash -> including height u64.
+    pub const UNCLE: u8 = 50;
 }
 
 pub fn key(tag: u8, id: &[u8]) -> Key {
@@ -64,6 +66,20 @@ pub fn agent_key(a: &Pubkey) -> Key {
 }
 pub fn config_key() -> Key {
     key(tag::CONFIG, &[])
+}
+/// An uncle already credited on this branch: value = [`encode_uncle_value`] (tag-prefixed like
+/// every record, so supply scans never misread it).
+pub fn uncle_key(uncle_hash: &Hash) -> Key {
+    key(tag::UNCLE, uncle_hash)
+}
+/// `tag::UNCLE || including height u64 LE`.
+pub fn encode_uncle_value(height: u64) -> Vec<u8> {
+    let mut v = vec![tag::UNCLE];
+    v.extend_from_slice(&height.to_le_bytes());
+    v
+}
+pub fn decode_uncle_value(b: &[u8]) -> Option<u64> {
+    (b.len() == 9 && b[0] == tag::UNCLE).then(|| u64::from_le_bytes(b[1..9].try_into().unwrap()))
 }
 pub fn deposit_key(solana_nonce: u64) -> Key {
     key(tag::DEPOSIT, &solana_nonce.to_le_bytes())

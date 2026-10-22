@@ -124,6 +124,9 @@ bridge acts only on final events.
  "mempool_size": 0, "peers": 2, "finality_k": 30, "syncing": false,
  "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
+`speed_height` (docs/SPEED.md 3.1): the height of the block that runs the one-time 60 s -> 30 s
+migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 5400; test chain ids
+`0x7E570000 + h`), or null for chains without one.
 
 ### getParams `{}`
 All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
@@ -138,6 +141,10 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
   knobs `price_base_lamports`, `price_mlamports_per_gflop`, `price_overhead_lamports` (decimal
   strings, or null when unset: storefront-x402 then uses its own defaults). Keys 19-26 are
   settable from the chain's social upgrade height (devnet `DEVNET_SOCIAL_HEIGHT`).
+- Speed (docs/SPEED.md 3.2): `emission_ppb` (key 45; subsidy rate in parts per billion of the pool
+  per block, 0 = `emission_ppm` applies; 3500 on the devnet from the speed height, the same
+  emission per day at 30 s), settable from the speed height; `speed_height` (uncle rules apply from
+  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
   shape (default 4 x 8 since 2026-10-17, k and r from fallback_config; PROOF-FORMAT.md 7.4). A block
   is verified with the parameters of its parent state, so an AdminConfig change applies from
@@ -310,6 +317,14 @@ cap_remaining)` for job blocks), `reward = fees + subsidy` (credited to `miner` 
 `finality_k` blocks), `matured` = coinbase of the block K below that this block released.
 Recorded for every block this node connected, on any branch. `subsidy`, `reward`, `matured`
 are null (and `fees` is summed from the txs) for blocks stored before 2026-10-17.
+`uncles` (docs/SPEED.md 3.3): `[{"hash", "height", "miner", "job_id", "reward", "nephew",
+"mature_height", "proof_len", "record": "hex (137 B)", "path": "hex"}]`, the stale job blocks this
+block credits (at most 2, depth 1 or 2): `reward` (decimal string) matures to the uncle's `miner`,
+`nephew` to this block's miner, both at `mature_height`. Their records are tx_root leaves between
+the contracts record and the coinbase receipt (so the coinbase `leaf_index` is tx count + contracts
++ uncles); `path` proves a record like the coinbase. The raw `block` gains a trailing
+`0x02 || count u8 || (header [256] || proof_len u32 || proof || record [137])*` section only when the
+block has uncles.
 
 ### getHeader `{"hash"|"height"}`
 `{"hash", "header", "header_fields", "cumulative_work", "canonical", "confirmations", "final", "proof": "base64"}`.

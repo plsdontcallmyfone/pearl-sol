@@ -37,7 +37,7 @@ fn seal(t: &Template) -> Block {
     let mut h = t.header;
     let proof = MockVerifier::proof_for(&h);
     h.proof_hash = block::proof_hash(&proof);
-    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts }
+    Block { header: h, proof, txs: t.txs.clone(), coinbase: Some(t.summary.coinbase), contracts: t.summary.contracts, uncles: Vec::new() }
 }
 
 #[test]

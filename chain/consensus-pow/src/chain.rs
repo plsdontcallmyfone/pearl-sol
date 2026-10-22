@@ -35,6 +35,7 @@ use crate::difficulty::{next_bits, nbits_to_target, work, Retarget};
 use crate::verifier::PowVerifier;
 
 pub mod weak;
+mod uncles;
 
 pub type BlockArchive<E> = prunable::Archive<EightCap, E, B3, Vec<u8>>;
 
@@ -137,6 +138,8 @@ pub struct Template {
     pub summary: BlockSummary,
     pub fallback: pearl_job::pow::FallbackParams,
     pub config: Config,
+    /// Uncles the block credits, records filled in (docs/SPEED.md 3.3).
+    pub uncles: Vec<agent_types::speed::Uncle>,
 }
 
 const MTP_SPAN: usize = 11;
@@ -383,7 +386,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 let header = genesis_header(&genesis, snap.state_root, snap.withdraw_root);
                 let hash = header.hash();
                 chain.store.finalize(&snap).await.map_err(internal)?;
-                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None, contracts: None };
+                let block = Block { header, proof: Vec::new(), txs: Vec::new(), coinbase: None, contracts: None, uncles: Vec::new() };
                 chain.archive_put(&block).await?;
                 chain.genesis_hash = hash;
                 chain.install_root(block, snap, U256::zero()).await?;
@@ -1066,6 +1069,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         };
         let t_pow = std::time::Instant::now();
         self.check_pow(h, pj.as_ref(), &block.proof, &pcfg)?;
+        let uncle_inputs = self.check_block_uncles(block, &parent_snap).await?;
         let pow_us = t_pow.elapsed().as_micros() as u64;
         let t_exec = std::time::Instant::now();
         // Execute.
@@ -1076,7 +1080,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             job_id: if h.is_fallback() { None } else { Some(h.job_id) },
         };
         let view = View { store: &self.store, snap: &parent_snap };
-        let (ws, summary) = executor::execute_block(&view, env, &block.txs).await.map_err(|e| match e {
+        let (ws, summary) = executor::execute_block_with_uncles(&view, env, &block.txs, uncle_inputs).await.map_err(|e| match e {
             executor::ExecError::State(s) => internal(s),
             other => ChainError::Invalid(other.to_string()),
         })?;
@@ -1096,6 +1100,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         // has contract txs, and equal to the one execution produced.
         if block.contracts != summary.contracts {
             return invalid("contracts record mismatch");
+        }
+        if block.uncles.iter().map(|u| u.record).ne(summary.uncles.iter().copied()) {
+            return invalid("uncle record mismatch");
         }
         let config = self.read_config(&snap).await?;
         debug!(height = h.height, pow_us, exec_us = t_exec.elapsed().as_micros() as u64, txs = block.txs.len(), proof_len = block.proof.len(), "block timing");
@@ -1307,6 +1314,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             miner,
             job_id: job.as_ref().map(|j| j.job_id),
         };
+        let mut uncles = self.template_uncles(&parent).await?;
         let view = View { store: &self.store, snap: &tip.snapshot };
         let mut ex = BlockExecutor::begin(&view, env).await.map_err(|e| ChainError::Invalid(e.to_string()))?;
         let max = tip.config.max_block_txs as usize;
@@ -1319,7 +1327,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 txs.push(t.clone());
             }
         }
+        ex.set_uncles(uncles.iter().map(|u| executor::UncleInput { hash: u.header.hash(), height: u.header.height, miner: u.header.miner, job_id: u.header.job_id }).collect());
         let (ws, summary) = ex.finish(true).await.map_err(|e| ChainError::Invalid(e.to_string()))?;
+        for (u, r) in uncles.iter_mut().zip(&summary.uncles) {
+            u.record = *r;
+        }
         let snap = self.store.build(&tip.snapshot, &ws, height).await.map_err(internal)?;
         let header = Header {
             version: HEADER_VERSION,
@@ -1329,13 +1341,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             target_bits: self.required_bits(&parent),
             job_id: job.as_ref().map(|j| j.job_id).unwrap_or([0; 32]),
             miner,
-            tx_root: agent_types::block::tx_root_full(&txs, summary.contracts.as_ref(), Some(&summary.coinbase)),
+            tx_root: agent_types::block::tx_root_all(&txs, summary.contracts.as_ref(), &summary.uncles, Some(&summary.coinbase)),
             state_root: snap.state_root,
             withdraw_root: snap.withdraw_root,
             proof_hash: [0; 32],
             nonce: 0,
         };
-        Ok(Template { header, txs, job, summary, fallback: tip.config.fallback_params(), config: tip.config.clone() })
+        Ok(Template { header, txs, job, summary, fallback: tip.config.fallback_params(), config: tip.config.clone(), uncles })
     }
 
     /// Decode a sync payload (header + proof).

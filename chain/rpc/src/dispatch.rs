@@ -174,7 +174,7 @@ pub fn withdrawal_json<E: commonware_storage::Context + Spawner, V: PowVerifier>
 
 pub fn config_json(c: &Config) -> Value {
     let mut keymap = serde_json::Map::new();
-    for k in 0..=keys::LAST {
+    for k in keys::all() {
         keymap.insert(keys::name(k).into(), json!(k));
     }
     json!({
@@ -197,6 +197,7 @@ pub fn config_json(c: &Config) -> Value {
         "block_gas_limit": c.block_gas_limit.to_string(), "tx_gas_limit": c.tx_gas_limit.to_string(),
         "contract_base_fee": c.contract_base_fee.to_string(), "contract_byte_fee": c.contract_byte_fee.to_string(),
         "storage_byte_deposit": c.storage_byte_deposit.to_string(), "max_code_size": c.max_code_size, "max_call_depth": c.max_call_depth,
+        "emission_ppb": c.emission_ppb,
         "keys": keymap,
     })
 }
@@ -328,9 +329,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "mempool_size": self.mempool.len(), "peers": self.peers, "finality_k": tip.config.finality_k,
                     "syncing": self.syncing, "live_blocks": self.chain.live_count(),
                     "blocks_accepted": self.blocks_accepted, "txs_accepted": self.txs_accepted,
+                    "speed_height": crate::speed::speed_fields(self.chain.chain_id()).1,
                 }))
             }
-            "getParams" => Ok(config_json(&self.chain.tip().config)),
+            "getParams" => {
+                let mut v = config_json(&self.chain.tip().config);
+                let (sh, mh) = crate::speed::speed_fields(self.chain.chain_id());
+                v["speed_height"] = json!(sh);
+                v["speed_migration_height"] = json!(mh);
+                Ok(v)
+            }
             "getBlockTemplate" => {
                 let miner = p_key(p, &["miner", "payout"])?;
                 let choice = match p_str(p, &["job_id"]) {
@@ -359,10 +367,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                         .map_err(|e| RpcError::params(e.to_string()))?;
                     let header = srv(Header::decode(&hb))?;
                     let proof = p_bytes(p, "proof")?;
-                    let Some((txs, coinbase, contracts)) = self.template_txs(&header, p_str(p, &["template_id"])) else {
+                    let Some((txs, coinbase, contracts, uncles)) = self.template_body(&header, p_str(p, &["template_id"])) else {
                         return Ok(json!({"accepted": false, "reason": "no template with this parent and tx_root"}));
                     };
-                    Block { header, proof, txs, coinbase: Some(coinbase), contracts }
+                    Block { header, proof, txs, coinbase: Some(coinbase), contracts, uncles }
                 };
                 let r = self.add_block(block, now_ms, true).await;
                 tracing::debug!(block = %hex::encode(&r.hash[..6]), height = r.height, submitted_ms = now_ms, accepted = r.accepted, "submitted block");
@@ -568,6 +576,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 );
                 v["coinbase"] = coinbase_json(&b);
                 v["contracts"] = contracts_json(&b);
+                v["uncles"] = crate::speed::uncles_json(&b);
                 match srv(self.chain.block_rewards(&b.hash()).await)? {
                     Some(r) => {
                         v["fees"] = json!(r.fees.to_string());

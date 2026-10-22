@@ -9,6 +9,7 @@ mod dm;
 mod reject;
 mod contracts;
 mod social;
+pub mod speed;
 pub mod server;
 
 pub use core::{Core, Outbound, Subscriber};

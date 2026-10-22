@@ -6,9 +6,10 @@
 //!
 //! ```text
 //! weak msg = "CWB1" || header [256] || proof_len u32 || proof || item_count u32
-//!            || item hash [32] * item_count || flags u8 (bit 0: a contracts record item)
+//!            || item hash [32] * item_count || flags u8 (bit 0: a contracts record item;
+//!               bits 1-2: uncle record items, 0..=2, docs/SPEED.md 3.3)
 //! items    = tx_root leaf items in block order: tx hashes, contracts record hash (flag),
-//!            coinbase receipt hash (last)
+//!            uncle record hashes, coinbase receipt hash (last)
 //! ```
 
 use agent_types::codec::{R, W};
@@ -32,6 +33,8 @@ pub struct WeakBlock {
     /// tx_root leaf items (tx hashes, contracts record hash, coinbase receipt hash).
     pub items: Vec<Hash>,
     pub has_contracts: bool,
+    /// Uncle record items before the coinbase item (docs/SPEED.md 3.3).
+    pub uncle_items: u8,
 }
 
 /// Why a weak block was not taken.
@@ -65,7 +68,7 @@ pub fn weak_shift(target_block_time_ms: u64) -> u32 {
 impl WeakBlock {
     /// The tx hashes the weak block lists.
     pub fn tx_hashes(&self) -> &[Hash] {
-        let extra = 1 + self.has_contracts as usize;
+        let extra = 1 + self.has_contracts as usize + self.uncle_items as usize;
         &self.items[..self.items.len().saturating_sub(extra)]
     }
 
@@ -75,8 +78,8 @@ impl WeakBlock {
 
     /// The weak block of a mined `header` + `proof` on `t` (the node's own template).
     pub fn from_template(t: &Template, header: Header, proof: Vec<u8>) -> Self {
-        let items = agent_types::block::leaf_hashes_full(&t.txs, t.summary.contracts.as_ref(), Some(&t.summary.coinbase));
-        Self { header, proof, items, has_contracts: t.summary.contracts.is_some() }
+        let items = agent_types::block::leaf_hashes_all(&t.txs, t.summary.contracts.as_ref(), &t.summary.uncles, Some(&t.summary.coinbase));
+        Self { header, proof, items, has_contracts: t.summary.contracts.is_some(), uncle_items: t.summary.uncles.len() as u8 }
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -86,7 +89,7 @@ impl WeakBlock {
         for i in &self.items {
             w.bytes(i);
         }
-        w.u8(self.has_contracts as u8);
+        w.u8(self.has_contracts as u8 | (self.uncle_items << 1));
         w.into_inner()
     }
 
@@ -112,16 +115,17 @@ impl WeakBlock {
         for _ in 0..n {
             items.push(r.take(32)?.try_into().unwrap());
         }
-        let has_contracts = match r.u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(DecodeError::Invalid("weak flags")),
-        };
-        if has_contracts && n < 2 {
+        let flags = r.u8()?;
+        let has_contracts = flags & 1 == 1;
+        let uncle_items = (flags >> 1) & 3;
+        if flags >> 3 != 0 || uncle_items as usize > agent_types::speed::MAX_UNCLES {
+            return Err(DecodeError::Invalid("weak flags"));
+        }
+        if n < 1 + has_contracts as usize + uncle_items as usize {
             return Err(DecodeError::Invalid("weak item count"));
         }
         r.finish()?;
-        Ok(Self { header, proof, items, has_contracts })
+        Ok(Self { header, proof, items, has_contracts, uncle_items })
     }
 }
 

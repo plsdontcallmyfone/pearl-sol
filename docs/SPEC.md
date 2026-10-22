@@ -119,6 +119,12 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   Coinbase and reserve subsidies mature after K. The bridge only acts on events at
   least K deep.
 
+Speed (2026-10-21, docs/SPEED.md 3): the header is unchanged. On the devnet, block
+`DEVNET_SPEED_HEIGHT` (5400) runs a one-time config migration: target 60 s -> 30 s from its child,
+K 30 -> 60 (finality stays 30 min; finality pauses until the tip is 60 above the old floor), and
+`emission_ppb` 3500 (3.4). Fork choice stays the heaviest chain by its own headers' work; uncles do
+not count. The Solana light client follows the target time and K by height (`set_speed`, 5.3).
+
 ### 3.4 Rewards
 - Per block: `fees + subsidy`. Subsidy only for job blocks:
   `subsidy = min(pool_balance x emission_ppm / 1e6, job.cap_remaining)`,
@@ -126,6 +132,13 @@ version u32 | height u64 | prev_hash [32] | timestamp_ms u64 | target_bits u32
   who posts a job and mines it gets back at most `alpha x P` and loses
   `(1 - alpha) x P`. Default emission_ppm per block: 7 (about 1% a day at 60 s).
 - A job is mined until its cap or its `max_blocks` is used up or it expires.
+- Speed (2026-10-21, docs/SPEED.md 3.2-3.3): config key 45 `emission_ppb`, when set, replaces
+  `emission_ppm`: `subsidy = min(pool x emission_ppb / 1e9, cap_remaining)` (3500 ppb at 30 s =
+  7 ppm at 60 s per day). Uncles: a block may credit up to 2 stale job blocks of depth 1 or 2 whose
+  parent is on its branch; each gets `min(pool x rate, cap) x 1/2` (depth 1) or `x 1/4` (depth 2),
+  the including miner 1/32 of that, both from the pool and the job's cap, maturing at height + K,
+  recorded as tx_root leaves of version 0x03 (137 bytes) before the coinbase receipt. Uncles do
+  not count toward `max_blocks`.
 - The pool is funded from outside only by reserve `fund_mining` (permissionless and rate
   limited since 2026-10-19, 5.1 "Reserve exit"): pool tokens leave only as subsidy on paid
   jobs (at most alpha x P each), reserve tokens leave only into the pool.

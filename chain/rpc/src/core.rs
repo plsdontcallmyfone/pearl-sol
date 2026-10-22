@@ -641,15 +641,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     /// Txs and coinbase receipt for a mined header: from the named template or any
     /// template with the same parent and tx_root.
     pub fn template_txs(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>)> {
+        self.template_body(header, template_id).map(|(t, c, k, _)| (t, c, k))
+    }
+
+    /// [`Core::template_txs`] plus the template's uncles (docs/SPEED.md 3.3).
+    pub fn template_body(&self, header: &agent_types::Header, template_id: Option<&str>) -> Option<(Vec<Tx>, agent_types::Coinbase, Option<agent_types::contracts::ContractsRecord>, Vec<agent_types::speed::Uncle>)> {
         let m = |t: &Template| t.header.prev_hash == header.prev_hash && t.header.tx_root == header.tx_root;
         if let Some(id) = template_id {
             if let Some((_, t)) = self.templates.iter().find(|(i, _)| i == id) {
                 if m(t) {
-                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts));
+                    return Some((t.txs.clone(), t.summary.coinbase, t.summary.contracts, t.uncles.clone()));
                 }
             }
         }
-        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts))
+        self.templates.iter().rev().find(|(_, t)| m(t)).map(|(_, t)| (t.txs.clone(), t.summary.coinbase, t.summary.contracts, t.uncles.clone()))
     }
 
     pub fn notify(&mut self, topic: &str, data: Value) {

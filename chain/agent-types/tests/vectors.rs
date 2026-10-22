@@ -311,7 +311,7 @@ fn build() -> Vec<(&'static str, Value)> {
         proof_hash: agent_types::block::proof_hash(&proof),
         nonce: 77,
     };
-    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec(), coinbase: Some(coinbase), contracts: None };
+    let block = Block { header, proof: proof.clone(), txs: tx_objs[..2].to_vec(), coinbase: Some(coinbase), contracts: None, uncles: Vec::new() };
     assert_eq!(block.check_commitments(), Ok(()));
     assert_eq!(Block::decode(&block.encode()).unwrap(), block);
     let header_v = json!({
