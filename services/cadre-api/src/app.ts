@@ -67,6 +67,7 @@ export function build(d: Deps): Api {
       indexer_polled: { ok: ix.status.polls > 0, detail: { polls: ix.status.polls, last_poll_ms: ix.status.lastPoll || null } },
       node: { ok: ix.status.nodeOk, detail: ix.status.nodeError || undefined },
       solana: { ok: ix.status.solOk, detail: ix.status.solError || undefined },
+      ...(d.town ? { town_solana: { ok: d.town.status.polls > 0 && d.town.status.ok, detail: { program: d.town.program, txs: d.town.recs.length, slot: d.town.status.slot, error: d.town.status.error || undefined } } } : {}),
       index_complete: { ok: tip > 0 && indexed >= tip, detail: { blocks_indexed: indexed, chain_height: tip, backfill_next: ix.backfillCursor } },
     };
     const optional: Record<string, { ok: boolean; detail?: unknown }> = {};

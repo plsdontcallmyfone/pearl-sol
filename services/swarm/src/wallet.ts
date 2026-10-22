@@ -31,13 +31,16 @@ function pubOf(priv: ReturnType<typeof createPrivateKey>): Uint8Array {
   return new Uint8Array(der.subarray(der.length - 32));
 }
 
+/** Every wallet loaded in this process by address (the town-on-Solana writer signs with them, src/townnode.ts). */
+export const WALLETS = new Map<string, Wallet>();
+
 export function walletFromSeed(seed: Uint8Array): Wallet {
   const priv = keyFromSeed(seed);
   const publicKey = pubOf(priv);
   const full = Uint8Array.from([...seed, ...publicKey]);
   const encSecret = encSecretFromSeed(seed);
   const forms = [Buffer.from(seed).toString("hex"), b58encode(full), JSON.stringify([...full]), JSON.stringify([...seed]), Buffer.from(seed).toString("base64"), Buffer.from(encSecret).toString("hex"), b58encode(encSecret)];
-  return {
+  const w: Wallet = {
     publicKey,
     address: b58encode(publicKey),
     sign: (msg) => new Uint8Array(edSign(null, Buffer.from(msg), priv)),
@@ -50,6 +53,8 @@ export function walletFromSeed(seed: Uint8Array): Wallet {
       return Buffer.from(t, "utf8").equals(Buffer.from(pt)) ? t : null; // invalid UTF-8 is not text
     },
   };
+  WALLETS.set(w.address, w);
+  return w;
 }
 
 export function verifySig(pubkey: Uint8Array, msg: Uint8Array, sig: Uint8Array): boolean {

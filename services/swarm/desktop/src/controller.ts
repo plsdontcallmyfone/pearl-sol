@@ -31,6 +31,7 @@ import { usdPerSecond } from "./config.ts";
 import { Desk, type DeskHealth, type DesktopHost, type Role } from "./desk.ts";
 import { Ledger } from "./spend.ts";
 import { browseTask, chainTask, type Task, workTask } from "./tasks.ts";
+import { isTownSolana, type TownNode } from "../../src/townnode.ts";
 import { type Chat, runTask, systemPrompt } from "./vision.ts";
 
 export class DeskFailed extends Error {}
@@ -387,7 +388,7 @@ export class Controller {
       b = { kind: "React", items: [{ ...b.items[0]!, reaction: REACTION.tip, tip: this.o.tipUnits }] };
       da.tipsToday.n++;
     }
-    const t = chainTask(this.cfg.siteUrl, b, this.o.tipCadre);
+    const t = chainTask(this.cfg.siteUrl, b, this.o.tipCadre, isTownSolana(this.swarm.d.node) ? "SOL" : "CADRE");
     if (!t) throw new DeskFailed(`no desktop task for ${b.kind}`);
     if (da.solo && da.mode === "work") this.push(da, { t: iso(), desk: "social", kind: "mode", text: `Work mode paused for a ${t.kind} (the agent's only signing desktop)` });
     // wait for the social desktop to be free (a browse task may be running)
@@ -395,16 +396,36 @@ export class Controller {
     while (da.signing) await sleep(500);
     da.signing = true;
     try {
-      const before = BigInt((await this.swarm.d.node.call("getAccount", { account: da.wallet.address }))?.nonce ?? 0);
+      const node = this.swarm.d.node;
+      const sol = isTownSolana(node) ? (node as TownNode) : null;
+      const startedAt = Date.now();
+      const before = sol ? 0n : BigInt((await node.call("getAccount", { account: da.wallet.address }))?.nonce ?? 0);
       const r = await this.task(da, "social", t);
       if (!r) throw new DeskFailed("social desktop not available (budget, cap or not running)");
-      const h = await this.findTx(da.wallet.address, before, 150_000);
+      // the town on Solana: the site signs a Solana tx in the wallet; find it by the agent's signatures
+      const h = sol ? await this.findSolTx(sol, da.wallet.address, startedAt, 150_000) : await this.findTx(da.wallet.address, before, 150_000);
       if (!h) throw new DeskFailed(`no ${t.kind} tx from the desktop (${r.summary || "no summary"})`);
       this.push(da, { t: iso(), desk: "social", kind: "tx", text: `${t.kind} signed in the Cadre Wallet`, tx: h, ok: true });
       return h;
     } finally {
       da.signing = false;
     }
+  }
+
+  /** The agent's first successful town tx on Solana since `since` (ms), or null after `waitMs`. */
+  async findSolTx(node: TownNode, address: string, since: number, waitMs: number): Promise<string | null> {
+    const end = now() + waitMs;
+    while (now() < end) {
+      const l = await node.sol<any[]>("getSignaturesForAddress", [address, { limit: 10, commitment: "confirmed" }]).catch(() => []);
+      const hit = l.filter((x) => !x.err && (x.blockTime ?? 0) * 1000 >= since - 5000).pop();
+      if (hit) {
+        const tx = await node.sol<any>("getTransaction", [hit.signature, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 }]).catch(() => null);
+        const keys: string[] = tx?.transaction?.message?.accountKeys ?? [];
+        if (keys.includes(node.program)) return hit.signature;
+      }
+      await sleep(5000);
+    }
+    return null;
   }
 
   /** The agent's tx with nonce `nonce`: from the mempool while pending, else from its tx list. */

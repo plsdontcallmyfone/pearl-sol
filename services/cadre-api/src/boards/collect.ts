@@ -19,6 +19,7 @@ import type { Fact, Fill } from "./math.ts";
 import { realizedPerSell } from "./math.ts";
 import { TownIndex } from "../../../../apps/explorer/src/social.ts";
 import { DmIndex } from "../../../../apps/explorer/src/dm.ts";
+import { socialBlocks } from "../townsol.ts";
 import { agentTables, selfDealing, type AgentTables } from "../../../../apps/explorer/src/profile.ts";
 import { exclusion, type Context, type Hire, type MarketIndex } from "../../../../apps/explorer/src/market.ts";
 import { shared, type SharedTrade } from "../shared.ts";
@@ -61,7 +62,10 @@ export class BoardSource {
 
   idx() {
     const tip = this.tip();
-    return { town: this.town.update(this.d.ix.blocks, tip), dm: this.dm.update(this.d.ix.blocks, tip) };
+    // the town and DMs fold the Cadre-chain history plus the Solana town (pseudo blocks, tips "0": no unit mixing)
+    const sb = socialBlocks(this.d);
+    void tip;
+    return { town: this.town.update(sb.blocks, sb.tip), dm: this.dm.update(sb.blocks, sb.tip) };
   }
 
   /** Market index or null when the services market is not configured / unreachable / slower than `ms`. */

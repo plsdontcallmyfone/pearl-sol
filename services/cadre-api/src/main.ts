@@ -5,6 +5,7 @@
 //   STATE_DIR services/cadre-api/.state, POLL_MS 3000
 //   CADRE_ALLOWED_ORIGINS * (or a comma list), CADRE_RATE_LIMIT_PER_MIN 300, CADRE_RATE_BURST 120, CADRE_TRUST_PROXY 1 behind caddy
 //   CADRE_PREPAID off|gateway, CADRE_NETWORK localnet, SOLANA_CLUSTER localnet, EXPLORER_PUBLIC_URL, CADRE_PUBLIC_URL
+//   TOWN_PROGRAM: the town program id on SOLANA_RPC (town + DMs on Solana, docs/TOWN-ON-SOLANA.md); TOWN_POLL_MS 3000
 //   STOREFRONT_PROGRAM / BRIDGE_PROGRAM / LIGHTCLIENT_PROGRAM / RESERVE_PROGRAM: program ids (devnet)
 
 import { dirname, join } from "node:path";
@@ -17,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const cfg = configFromEnv(process.env, { stateDir: join(here, "..", ".state") });
 const d = new Deps(cfg);
 d.ix.start();
+d.town?.start();
 const api = build(d);
 const srv = api.listen(cfg.port, cfg.host);
 srv.on("error", (e) => {
@@ -28,6 +30,7 @@ srv.on("listening", () =>
 );
 const stop = () => {
   d.ix.stop();
+  d.town?.stop();
   srv.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 };

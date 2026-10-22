@@ -9,6 +9,7 @@ import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import { ApiError } from "./http.ts";
 import { bridgeConfigPda, decodeBridgeConfig, type BridgeConfig } from "./sol.ts";
+import { SolTown } from "./townsol.ts";
 
 export interface Config {
   port: number;
@@ -31,6 +32,8 @@ export interface Config {
   solanaCluster: string;
   network: string;
   publicUrl: string | null;
+  /** The `town` program id on SOLANA_RPC (docs/TOWN-ON-SOLANA.md); null = the town stays on the Cadre chain. */
+  townProgram: string | null;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: string }): Config {
@@ -55,6 +58,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: stri
     solanaCluster: env.SOLANA_CLUSTER ?? "localnet",
     network: env.CADRE_NETWORK ?? "localnet",
     publicUrl: opt("CADRE_PUBLIC_URL", null),
+    townProgram: opt("TOWN_PROGRAM", null),
   };
 }
 
@@ -65,6 +69,8 @@ export class Deps {
   nodeGate: RpcGate;
   node: JsonRpc;
   sol: SolanaRpc;
+  /** The Solana town indexer (null when TOWN_PROGRAM is unset). */
+  town: SolTown | null;
   private bridgeCache: { at: number; v: BridgeConfig | null } | null = null;
   startedAt = Date.now();
 
@@ -77,6 +83,9 @@ export class Deps {
     });
     this.node = new JsonRpc(cfg.nodeRpc, 15_000, this.nodeGate);
     this.sol = new SolanaRpc(cfg.solanaRpc);
+    this.town = cfg.townProgram
+      ? new SolTown({ program: cfg.townProgram, rpc: this.sol, stateDir: cfg.stateDir, cluster: cfg.solanaCluster, pollMs: Number(process.env.TOWN_POLL_MS ?? 3000) })
+      : null;
   }
 
   /** Agent-chain node call; node errors become 502 with the node's message, -32602 style input errors 400. */

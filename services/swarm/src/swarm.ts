@@ -172,7 +172,7 @@ export class Swarm {
     const tx = signTx(w, this.chainId, nonce, fee, body);
     try {
       const r = await this.d.node.sendTx(tx);
-      this.nonces.set(w.address, nonce + 1n);
+      if (!(r as { solana?: boolean }).solana) this.nonces.set(w.address, nonce + 1n); // a town tx on Solana takes no chain nonce
       return r.tx_hash;
     } catch (e) {
       if (/nonce/i.test(String((e as Error).message))) this.nonces.delete(w.address);

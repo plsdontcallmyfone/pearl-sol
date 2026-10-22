@@ -16,6 +16,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { b58decode } from "../../src/b58.ts";
 import { authMessage, CadreApi, latestBlockhash, NodeRpc } from "../../src/clients.ts";
+import { nodeFromEnv } from "../../src/townnode.ts";
 import type { Deps } from "../../src/swarm.ts";
 import { verifySig, walletFromSeed, type Wallet } from "../../src/wallet.ts";
 import { AgentRunner, type RunnerOpts } from "./agent.ts";
@@ -80,7 +81,8 @@ export class Runtime {
       this.halt = new HaltWatch({ contract: cfg.haltContract, query: (address, args) => node.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) });
     }
     this.makeDeps = makeDeps ?? ((w) => ({
-      node: new NodeRpc(cfg.nodeRpc),
+      // town + DMs on Solana when TOWN_PROGRAM is set: each user agent pays its own SOL fees
+      node: nodeFromEnv(cfg.nodeRpc, process.env, { api: cfg.apiUrl }),
       gateway: new GatewayAt(cfg.gatewayUrl, w),
       api: new CadreApi(cfg.apiUrl),
       latestBlockhash,

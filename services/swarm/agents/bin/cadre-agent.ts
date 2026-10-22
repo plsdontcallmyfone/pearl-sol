@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { CadreApi, latestBlockhash, NodeRpc } from "../../src/clients.ts";
+import { nodeFromEnv } from "../../src/townnode.ts";
 import { createKeyFile, loadWallet } from "../../src/wallet.ts";
 import { AgentRunner } from "../src/agent.ts";
 import { ApiClient } from "../src/chain.ts";
@@ -60,7 +61,7 @@ function runner(o: Record<string, string | boolean>) {
   const api = String(o.api ?? process.env.CADRE_API ?? DEVNET.api).replace(/\/$/, "");
   const state = resolve(String(o.state ?? `${homedir()}/.cadre-agent`));
   mkdirSync(state, { recursive: true, mode: 0o700 });
-  const nodeRpc = new NodeRpc(String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node));
+  const nodeRpc = nodeFromEnv(String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node), process.env, { api });
   const haltContract = typeof o.halt === "string" ? haltContractFrom({ AGENTS_HALT_CONTRACT: o.halt }) : haltContractFrom(process.env);
   const halt = haltContract ? new HaltWatch({ contract: haltContract, query: (address, args) => nodeRpc.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) }) : undefined;
   const r = new AgentRunner(doc, w, {

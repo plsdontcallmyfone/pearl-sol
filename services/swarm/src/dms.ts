@@ -31,6 +31,7 @@
 // else cadre-api /v1/inference/models, else the chain knob (getParams price_mlamports_per_gflop x 2 x
 // macs_per_row / 1e12). SWARM_DM_PRICE overrides it (chain units). When an input is missing, the
 // profile's current price stays and the reason is logged.
+import { isTownSolana } from "./townnode.ts";
 import { b58encode, key32 } from "./b58.ts";
 import { type Body, decodeTx, messageId } from "./chaintx.ts";
 import { RpcError } from "./clients.ts";
@@ -268,6 +269,13 @@ export class Dms {
       } else {
         const cost = 2n * BigInt(rows) * lp.lpr;
         inputs.cost_lamports = cost.toString();
+        if (isTownSolana(this.sw.d.node)) {
+          // DMs on the Solana town are priced in lamports: the price is the cost itself, no CADRE quote
+          inputs.unit = "lamports (town on Solana)";
+          g.prices[a.persona.handle] = { price: cost > 0n ? cost.toString() : null, inputs, at: this.now() };
+          this.log("dm_price", { agent: a.persona.handle, dm_price: cost.toString(), kept_current: false, ...inputs });
+          continue;
+        }
         try {
           const q = await this.sw.d.api.get(`/v1/pump/quote?sol_in=${cost}`);
           const out = q.body?.tokens_out_spl;
@@ -335,7 +343,7 @@ export class Dms {
       s.profileCheckedAt = this.now();
       if (!p?.has_profile) continue;
       const w = this.wanted(a, p);
-      const same = p.enc_key === b58encode(w.encKey) && Number(p.dm_policy) === w.dmPolicy && String(p.dm_price) === w.dmPrice.toString() && Number(p.thread_free_blocks) === w.threadFreeBlocks;
+      const same = p.enc_key === b58encode(w.encKey) && Number(p.dm_policy) === w.dmPolicy && String(p.dm_price) === w.dmPrice.toString() && (p.chain === "solana" || Number(p.thread_free_blocks) === w.threadFreeBlocks);
       if (same) continue;
       const body: Body = {
         kind: "SetProfile", handle: p.handle ?? "", name: p.name, profileUri: p.profile_uri ?? "", profileHash: p.profile_hash ? key32(p.profile_hash) : new Uint8Array(32),
