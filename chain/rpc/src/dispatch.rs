@@ -333,7 +333,16 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "blocks_accepted": self.blocks_accepted, "txs_accepted": self.txs_accepted,
                 }))
             }
-            "getParams" => Ok(config_json(&self.chain.tip().config)),
+            "getParams" => {
+                let mut v = config_json(&self.chain.tip().config);
+                // blob data-lifecycle parameters (own record, SPEC 4.5 "Segment data retention")
+                let bp = srv(self.blob_params().await)?;
+                let act = state::blobparams::blob_params_upgrade_height(self.chain.chain_id());
+                v["segment_replay_blocks"] = json!(bp.segment_replay_blocks);
+                v["blob_params_activation_height"] = json!(act);
+                v["keys"]["segment_replay_blocks"] = json!(state::blobparams::keys::SEGMENT_REPLAY_BLOCKS);
+                Ok(v)
+            }
             "getBlockTemplate" => {
                 let miner = p_key(p, &["miner", "payout"])?;
                 let choice = match p_str(p, &["job_id"]) {
@@ -687,11 +696,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 }
             }
             "getBlobStats" => {
-                let Some(b) = self.blobs.as_ref() else { return Err(RpcError::server("this node has no blob store")) };
-                let c = b.config();
-                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(), "fetch_in_flight": self.blob_fetch.in_flight(),
-                          "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
-                          "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune}))
+                if self.blobs.is_none() {
+                    return Err(RpcError::server("this node has no blob store"));
+                }
+                srv(self.blob_stats().await)
             }
             "getAccountTxs" => {
                 let a = p_key(p, &["account", "address"])?;

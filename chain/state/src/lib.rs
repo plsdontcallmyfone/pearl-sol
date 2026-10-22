@@ -1,5 +1,6 @@
 //! Agent-chain state: schema, parameters and QMDB storage.
 
+pub mod blobparams;
 pub mod config;
 pub mod contracts;
 pub mod dm;

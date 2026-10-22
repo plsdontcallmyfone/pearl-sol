@@ -21,6 +21,7 @@
 use std::collections::BTreeMap;
 
 mod balance;
+mod blobparams;
 mod contracts;
 mod dm;
 mod reject;
@@ -730,6 +731,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 out.withdrawals.push(w);
             }
             TxBody::AdminConfig { key, value } if state::dm::is_dm_key(*key) => self.admin_dm_config(&tx.from, *key, value).await?,
+            TxBody::AdminConfig { key, value } if state::blobparams::is_blob_key(*key) => self.admin_blob_config(&tx.from, *key, value).await?,
             TxBody::AdminConfig { key, value } => {
                 if tx.from != self.cfg.admin {
                     return bad("not the admin");
