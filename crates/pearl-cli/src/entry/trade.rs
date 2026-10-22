@@ -279,7 +279,7 @@ fn lines_card(c: &mut Buffer, pen: &Pen, r: Rect, title: &str, right: &str, line
     }
 }
 
-fn table_card(c: &mut Buffer, pen: &Pen, r: Rect, title: &str, right: &str, head: &[&str], rows: &[Vec<String>], colors: &[u32], empty: &str) {
+pub(crate) fn table_card(c: &mut Buffer, pen: &Pen, r: Rect, title: &str, right: &str, head: &[&str], rows: &[Vec<String>], colors: &[u32], empty: &str) {
     let inner = card(c, pen, r);
     draw::title(c, pen, inner, title);
     put_right(c, inner.right(), inner.y, right, pen.card(MUTED), inner.x + str_w(title) + 2);

@@ -1289,7 +1289,36 @@ CLAUDE.md "Who is working on what".
    - Open: the segment files are half the GPU cost (an in-memory hand-off to the gateway, C kept as its
      hash); the 8B batched (not measured); a GPU worker next to the gateway (MAINNET 11 item 10).
 
-36. BLOB DATA LIFECYCLE: SEGMENT A RETENTION, QUOTAS WITH BACKPRESSURE, BACKLOG DRAIN (2026-10-22, "blob
+36. ECOSYSTEM PHASE 5: LEADERBOARDS, DISCOVERY, TRADER BOARD, LISTINGS PREP, BOT FEED (owner "proceed"
+   2026-10-22; "ecosystem Phase 5" row; ECOSYSTEM section 4 Phase 5, docs/API.md "Boards", docs/LISTINGS.md,
+   docs/CLI.md "Boards (view 10)", cadre-docs guides/boards):
+   - cadre-api (services/cadre-api/src/boards/ + routes/boards.ts; src/shared.ts lets the boards reuse the
+     trading scan and the market index of the same process): nine live boards from chain data only
+     (trading_pnl, market_earnings, acceptance_rate, paid_dms, hardest_thinkers, most_tipped, most_followed,
+     miners, evaluators) with windows 24h/7d/all and sides organic/house/all; self-dealing excluded by the
+     explorer and market rules; house money in house_value; minimum samples; every row links its txs.
+     /v1/leaderboards replaced the Phase 1 stub list (town.ts). Discovery /v1/discover/{agents,trending,new};
+     trader board /v1/traderboard(/{metric}); event feed /v1/events, /v1/events.rss, /v1/stream/events.
+   - services/feed-bot: Telegram / X poster of the feed, DRY RUN unless FEED_LIVE=1 + FEED_TARGETS + the
+     target's credentials; deploy/systemd/cadre-feed-bot.service ships dry. Nothing was posted anywhere.
+   - tools/defillama: mandate Settled fees (fees, supply side, holders revenue), breakdown methodology; live
+     all-time check on devnet PASS against the storefront Config counters, cadre-api /v1/buyback and the
+     Mandate accounts (TEST-REPORT "Ecosystem Phase 5"). docs/LISTINGS.md: token info, supply endpoints,
+     DexScreener (lists pump.fun / PumpSwap on mainnet by itself; nothing on devnet), CoinGecko, DefiLlama
+     PR steps, mainnet switch checklist.
+   - CLI: `cadre top [board]` and the Boards view (view 10, key 0); cadre-web /leaderboards (+ /[board]),
+     /discover, /board.
+   - Live check: a branch cadre-api on the TEST BOX 127.0.0.1:10790 (~/boards/run-api.sh, pid ~/boards/api.pid,
+     reads the public Cadre devnet node and the devnet Solana RPC from ~/boards/solana-rpc-url, 0600) and a
+     receipt proxy 127.0.0.1:10791 (~/boards/gwproxy.mjs, pid ~/boards/gwproxy.pid) mapping /v1/requests/* to
+     the devnet API's gateway pass-through. Stop both by PID after box 0 serves the routes.
+   - DEPLOY (box 0, handed to the orchestrator; agents may not restart services): see the row and the
+     final report of this row: sync box 0 to origin/main, restart cadre-api only, health checks, rollback to
+     the recorded previous commit; then the site from main with CADRE_WEB; optional cadre-feed-bot unit (dry).
+   - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
+     indexer's first poll are not recorded (counters link the Config account instead).
+
+37. BLOB DATA LIFECYCLE: SEGMENT A RETENTION, QUOTAS WITH BACKPRESSURE, BACKLOG DRAIN (2026-10-22, "blob
    lifecycle" row; SPEC 4.5 "Segment data retention", SPEC 5.4 "Node blob backpressure", RPC getBlobStats):
    - Incident: node 0's blob store hit its 8 GB quota; every settle failed ("putBlob: blob store full"), request
      scratch piled up (109 GB, then 67 GB). The orchestrator raised node 0 to 30 GB and the gateway retention

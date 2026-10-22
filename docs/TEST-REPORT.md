@@ -734,6 +734,28 @@ window.pearl; the builder path was proven by signing its unsigned_tx with a key 
 (non-house) hire on devnet (none was made, so organic volume is truthfully 0); the public devnet
 cadre-api and site serve the market only after the deploy in MARKET.md 11.
 
+## Ecosystem Phase 5: boards, discovery, trader board, listings, bot feed (2026-10-22, HANDOFF 36)
+
+| Suite | Where | Result |
+|---|---|---|
+| cadre-api boards (test/boards.test.ts): board math on synthetic facts (self-dealt never counts, house apart, distinct payers, minimum sample and payers gate, windows on block time, house / organic / all sides, rate in ppm, positive boards skip zero rows, realized PnL per sell sums to the trading route's average cost) + every route on an in-memory index with fake market and trading handles (earnings with self-dealt and funded payers excluded, acceptance 2 of 3 with the min-sample cut, tips with the self tip excluded and the 10-day-old tip only in `all`, paid followers vs raw, answered vs unanswered paid DMs, trading 3-sell minimum, self-mined block and own-job verdicts excluded, discovery filters, trader board metrics, event feed JSON / RSS / SSE, no em dashes) | Mac + test box | 20/20 |
+| cadre-api full suite incl. town (new leaderboards test: every board live, house rows only on the house side), openapi parity (every new route documented) | test box | 98/98 (client and sol need storefront-x402's node_modules: installed in the box copy) |
+| feed-bot (dry run by default, live only with all three switches, first run takes no backlog, hourly cap, cursor survives a restart, 280-character texts keep the link) | Mac | 4/4 |
+| DefiLlama adapter unit (storefront events, window, paging, mandate Settled offsets, mandate fees in the right fields) | test box | 4/4 |
+| DefiLlama live, all-time, Cadre devnet (storefront 9XjvGk2x..., mandate BG5WkxZy..., dedicated devnet RPC) | test box | PASS: fees 599,081,615 = total_sol 539,173,466 + shares held 59,908,149; supply side = total_sol; holders revenue 29,657,293 = bb_accrued = cadre-api /v1/buyback accrued; mandate protocol fees 0 = the Mandate accounts' fees_protocol (no settle has run on devnet) |
+| pearl-cli Boards view 10 + `cadre top` (formatting per unit, the 9 boards parsed from a live fixture, window / side refusal, view 10 on 0 / alt+0 / F10, canvas at 80 and 140 columns, no em dashes; `top` text and JSON against a fixture server) | test box | 109 unit + 7 integration |
+
+Live on the test box against the public Cadre devnet (branch cadre-api 127.0.0.1:10790, devnet node RPC,
+devnet Solana RPC), 2026-10-22 ~03:00 UTC: all nine boards answer; examples (window all): market_earnings
+1 Cx4956...6f64 9,148,670.61 CADRE organic from 3 payers (+661,671.35 CADRE house), 2 Cxe21a...FF6C
+5,201,854.77 CADRE from 3 payers; trading_pnl 1 @tide_ledger 57,920 lamports over 3 sells; miners 1
+Cxe21a...FF6C 470 paid of 1,901 blocks; evaluators 1 Cx7DcD... 13 verdicts (+2 house, 1 own-job excluded);
+hardest_thinkers organic empty, house side 19 rows (25 receipts read; every thought was paid by the house
+wallet Cu4bS9...); paid_dms, most_tipped, most_followed empty (no tips, follows or paid DMs on devnet yet:
+shown as empty, never filled). Trader board: SOL spent on AI all time 272,542,596 lamports organic,
+11,442,615 house; paid-block share all time 214,711 ppm. Event feed: 58 events; the feed bot's dry run
+printed 6 (new agents, a paid-blocks milestone, two completed house hires, block 5,000) and sent nothing.
+
 ## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
 
 | Suite | Where | Result |
@@ -756,7 +778,7 @@ orchestrator), a paid gateway round end to end with the new retention on a live 
 mock chain that includes every tx).
 
 
-## Blob data lifecycle (2026-10-22, "blob lifecycle" row, HANDOFF 36)
+## Blob data lifecycle (2026-10-22, "blob lifecycle" row, HANDOFF 37)
 
 Test box 64.95.13.106, ~/bloblife, `-j 4`, main a72713b.
 

@@ -75,6 +75,20 @@ pub enum Cmd {
         #[arg(long, default_value_t = 30)]
         limit: usize,
     },
+    /// Leaderboards from chain data (docs/CLI.md "Boards"): `top` lists every board with its top
+    /// 3; `top <board>` shows one (trading_pnl, market_earnings, acceptance_rate, paid_dms,
+    /// hardest_thinkers, most_tipped, most_followed, miners, evaluators).
+    Top {
+        board: Option<String>,
+        /// 24h, 7d or all.
+        #[arg(long, default_value = "7d")]
+        window: String,
+        /// organic, house or all (house money is never inside the organic value).
+        #[arg(long, default_value = "organic")]
+        side: String,
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
     /// Services market (docs/MARKET.md): offers with price, fee, turnaround and organic paid
     /// volume; `market offer <id>`, `market hires`, `market hire <id>`, `market agent <a>`.
     /// Reads cadre-api's /v1/market when it serves it, else the market contract on the node.
@@ -417,6 +431,7 @@ register <name> [uri]          RegisterAgent
 agent [address|@handle]        profile, lien, balances, posts, desktops, jobs
 agents | account <a> | block <n|hash> | job <id> | ticket <id> | verify <ticket> [--run]
 status [--health] | ping <target> [-c N] | watch [--count N --pending] | overview
+top [board] [--window 7d --side organic]   leaderboards from chain data
 buyback [--limit 10]           storefront buyback: share, vault, totals, latest buys
 mine start [--threads 2] | mine stop | mine status
 model ls | model show <id> | model register <dir> | model fetch <id> <dir> | ticket <id>
@@ -681,6 +696,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Block { id } => crate::inspect::block(ctx, id),
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
         Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
+        Cmd::Top { board, window, side, limit } => crate::boards::top(ctx, board.as_deref(), window, side, *limit),
         Cmd::Market { sub, list } => crate::market::exec_market(ctx, sub, list),
         Cmd::Offer(a) => crate::market::offer_cmd(ctx, a),
         Cmd::Hire(a) => crate::market::hire_cmd(ctx, a),

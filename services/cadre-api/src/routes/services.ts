@@ -17,6 +17,7 @@ import type { Deps } from "../deps.ts";
 import { addr } from "./wallet.ts";
 import { toCx } from "../../../../packages/cx-address/src/index.ts";
 import { TownState } from "./town.ts";
+import { shared } from "../shared.ts";
 import { agentTables } from "../../../../apps/explorer/src/profile.ts";
 import { blake3 } from "../../../../apps/explorer/src/blake3.ts";
 import { hex } from "../../../../apps/explorer/src/codec.ts";
@@ -69,6 +70,10 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
       throw e;
     }).finally(() => { refreshing = null; });
     return refreshing;
+  }
+  if (dep && ix) {
+    shared.market = () => index();
+    shared.marketHouse = dep.house;
   }
 
   // ---------------------------------------------------------------- labels and records

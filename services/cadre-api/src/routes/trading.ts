@@ -21,6 +21,7 @@ import { eventTopic } from "../../../../apps/explorer/src/contracts.ts";
 import { verifyAgent } from "./useragents.ts";
 import { decodeSocialTx } from "../../../../apps/explorer/src/social.ts";
 import { isSovereign } from "../../../swarm/agents/src/spec.ts";
+import { shared } from "../shared.ts";
 import { ata, canonicalPool, compileLegacy, computeUnitLimit, createAtaIdempotent, type Ix, SYSTEM, TOKEN, TOKEN_2022, unsignedTx, AMM, ATA_PROGRAM } from "../sol.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -496,6 +497,10 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     const { ix } = need();
     const [s, c, u] = await Promise.all([ix.solTrades().catch(() => []), ix.cadreState().then((x) => x.trades).catch(() => []), ix.userTrades().catch(() => [])]);
     return { solana: [...s, ...u].sort((a, b) => b.at - a.at), cadre: c };
+  }
+  if (ix && cfg) {
+    shared.trades = allTrades;
+    shared.tradingHouse = cfg.house;
   }
 
   api.get("/v1/trading", async () => {

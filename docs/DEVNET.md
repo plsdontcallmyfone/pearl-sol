@@ -684,7 +684,7 @@ box (`~/trading/run-trader.sh`; stop: `touch ~/trading/STOP; kill $(cat ~/tradin
 the box 0 unit `deploy/systemd/cadre-trading.service` is ready for the orchestrator (TRADING.md 10).
 
 
-## Blob lifecycle rollout (2026-10-22, HANDOFF item 36, SPEC 4.5 "Segment data retention")
+## Blob lifecycle rollout (2026-10-22, HANDOFF item 37, SPEC 4.5 "Segment data retention")
 
 Staged by the blob lifecycle row in `/home/lode/stage-bloblife/` (built on the test box from main a72713b):
 agent-node `556739d39569ca62763eb6e36a395f232060fd920b85e8697f2573f9a0dc23a5` on boxes 0-2; cadre-gateway

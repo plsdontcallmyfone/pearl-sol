@@ -19,6 +19,7 @@ import { registerUserAgents } from "./routes/useragents.ts";
 import { registerContracts } from "./routes/contracts.ts";
 import { registerTrading } from "./routes/trading.ts";
 import { registerServices } from "./routes/services.ts";
+import { registerBoards } from "./routes/boards.ts";
 
 export const VERSION = "1.0.0";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -89,5 +90,6 @@ export function build(d: Deps): Api {
   registerContracts(api, d);
   registerTrading(api, d);
   registerServices(api, d);
+  registerBoards(api, d);
   return api;
 }
