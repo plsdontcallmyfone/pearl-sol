@@ -24,7 +24,7 @@ function cxOf(s: unknown): string | null {
   }
 }
 
-/** Subtrees left exactly as built: wallet request payloads (window.pearl forms) are signed as is. */
+/** Subtrees left exactly as built: wallet request payloads (window.cadre forms) are signed as is. */
 export const SKIP_FIELDS = new Set(["window_pearl", "transaction", "solana"]);
 
 /** A copy of v with `k_cx` siblings for Cadre address fields, recursively (v is not changed:

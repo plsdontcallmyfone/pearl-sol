@@ -7,7 +7,7 @@
 //   const api = new CadreApi({ baseUrl: "https://cadre-api.64-95-13-106.sslip.io" });
 //   const s = await api.summary();
 //
-// The client never touches keys. Signing happens in the user's wallet: window.pearl for
+// The client never touches keys. Signing happens in the user's wallet: window.cadre for
 // the agent chain, any Wallet Standard / wallet-adapter wallet for Solana (see
 // signAndSendSolana / bridgeOut below and docs/API.md).
 
@@ -359,9 +359,9 @@ export async function signSolanaTx(wallet: StandardSolanaWallet, tx: UnsignedSol
   return { signedTx: bytesToB64(r.signedTransaction as Uint8Array) };
 }
 
-/** window.pearl (Cadre Wallet, agent chain). See docs/API.md "Wallet connect". */
-export interface PearlProvider {
-  isPearlWallet: true;
+/** window.cadre (Cadre Wallet, agent chain). See docs/API.md "Wallet connect". */
+export interface CadreProvider {
+  isCadreWallet: true;
   address: string | null;
   connect(o?: { onlyIfTrusted?: boolean }): Promise<{ address: string }>;
   disconnect(): Promise<void>;
@@ -372,16 +372,16 @@ export interface PearlProvider {
   on(event: "accountChanged" | "disconnect", f: (d: any) => void): () => void;
 }
 
-export function pearlProvider(): PearlProvider | null {
+export function cadreProvider(): CadreProvider | null {
   const w = (globalThis as any).window ?? globalThis;
-  return w.pearl?.isPearlWallet ? (w.pearl as PearlProvider) : null;
+  return w.cadre?.isCadreWallet ? (w.cadre as CadreProvider) : null;
 }
 
 /** Bridge out: the API checks balance + fee and returns the BridgeLock; the Cadre Wallet signs and sends it. */
-export async function bridgeOut(api: CadreApi, pearl: PearlProvider, amount: Amount, solanaRecipient?: Address) {
-  const from = pearl.address ?? (await pearl.connect()).address;
+export async function bridgeOut(api: CadreApi, wallet: CadreProvider, amount: Amount, solanaRecipient?: Address) {
+  const from = wallet.address ?? (await wallet.connect()).address;
   const q = await api.buildBridgeLock({ from, amount, solana_recipient: solanaRecipient });
-  return pearl.signAndSendTransaction({ transaction: q.window_pearl.params.transaction });
+  return wallet.signAndSendTransaction({ transaction: q.window_pearl.params.transaction });
 }
 
 /** Bridge in: unsigned deposit tx from the API, signed and sent by the Solana wallet. */

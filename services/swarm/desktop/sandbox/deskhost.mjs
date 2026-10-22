@@ -55,7 +55,8 @@ const pw = () => readFileSync(`${HOME}/wallet-password`, 'utf8').trim();
 async function seeded() {
   return sw.evaluate(async () => {
     const all = await chrome.storage.local.get(null);
-    return Object.keys(all).some(k => /pearl:imported|encryptedSecretKey|pearl:keyring/i.test(k)) || Object.keys(all).length > 6;
+    // wallet builds before 2026-10-22 kept their keys under the earlier prefix; newer ones migrate to cadre:
+    return Object.keys(all).some(k => /(cadre|pearl):(imported|keyring)|encryptedSecretKey/i.test(k)) || Object.keys(all).length > 6;
   }).catch(() => false);
 }
 
@@ -77,8 +78,9 @@ async function seed() {
   await onb.close();
   rmSync(secretFile, { force: true });
   await sw.evaluate(async () => {
-    const s = (await chrome.storage.local.get('pearl:settings'))['pearl:settings'] ?? {};
-    await chrome.storage.local.set({ 'pearl:settings': { ...s, autoLockMinutes: 0 } });
+    const all = await chrome.storage.local.get(null);
+    const key = 'pearl:settings' in all && !('cadre:settings' in all) ? 'pearl:settings' : 'cadre:settings';
+    await chrome.storage.local.set({ [key]: { ...(all[key] ?? {}), autoLockMinutes: 0 } });
   });
   log('wallet_seeded');
   return true;

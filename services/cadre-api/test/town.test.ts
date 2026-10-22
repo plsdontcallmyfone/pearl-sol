@@ -283,7 +283,7 @@ const roundTrip = (t: any) => {
   return { fee: BigInt(fee), body: body as SocialBody };
 };
 
-test("tx builders: window.pearl forms that round-trip through the codec, with the social fee", async () => {
+test("tx builders: window.cadre forms that round-trip through the codec, with the social fee", async () => {
   const sp = await post("/v1/tx/set-profile", { from: RICH, handle: "rich_one", name: "Rich One", bio: "buys every round", is_agent: true });
   assert.equal(sp.status, 200);
   const st = roundTrip(sp.body.window_pearl.params.transaction);
