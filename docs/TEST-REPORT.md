@@ -889,3 +889,43 @@ final above.
 
 Explorer note: `decodeLcConfig` shows the light client's base `finalityK` (30); after 6000 the schedule at offset 318
 holds 60 (display only).
+
+## Job query perf, pool eviction, fair segment order (2026-10-22, "job query perf" row, HANDOFF 40)
+
+Built and run on the test box ~/jobperf (-j 4), main 64eeaaa.
+
+| Suite | Result |
+|---|---|
+| chain workspace `cargo test --release --workspace` | 241 pass, 0 fail, 2 ignored (was 228 + new tests) |
+| new: state/tests/read_cache.rs | 3 pass (random block trees with forks, deletes and finalization: every key at every live snapshot equals a model of its branch, cache on, tiny budget, off) |
+| new: rpc/tests/jobindex.rs | 5 pass (listJobs by cursor and offset vs a full state scan after posting, auto mining, expiry, a reorg to a branch with other jobs and back; kind filter; eviction after 3 tips, same-fee replacement of a failing tx, strikes cleared on success) |
+| new: consensus-pow/tests/fair_order.rs | 3 pass |
+| mempool unit | 6 pass (+1) |
+| crates pearl-miner | all pass incl. new orphan_sweep_pages_by_cursor_and_asks_for_plain_jobs_only |
+| header-relay lib | 1 pass (new JobCache test); catchup 2 FAIL on the box: its token/target/deploy/lightclient.so is the 10-19 build (652,840 B) and the tests need the tree's own; no header-relay code they use changed |
+| relayer (Mac, litesvm bad_alloc on the box as before) | 34/34 (+1: one getJob per order per tip) |
+
+Live, read-only:
+- Fresh follower with the new agent-node (blobs off, test box ports 11770/11771) synced the devnet from genesis to
+  5869, finalized 5839 2a9df3e5cee17239... equal to node 1; a follower with the previous build (11772/11773) beside it.
+- A/B at height 5869 (`listJobs` = the old pearl-miner sweep, 48 offset pages over 9,524 open jobs):
+
+| | old build | new build |
+|---|---:|---:|
+| sweep, offset pages (s of node time) | 20.645 | 1.281 |
+| sweep as the new miner sends it (`kind=job`, cursor) | n/a | 0.001 (1 call) |
+| getBlockTemplate auto (s, 5 calls) | 0.123-0.158 | 0.013-0.023 |
+| getJob avg (ms) | 0.944 | 0.996 |
+| getChainInfo avg (ms) | 0.787 | 0.716 |
+
+  New node after the run: job index 9,546 jobs, 9,537 records (nearly every job is an open segment), built once
+  with 19,095 state reads; state cache 18,531 hits / 36,333 misses / 18,744 bypass, 6.6 MB.
+- Box 0 before (no restart; `scripts/devnet-rpc-load.sh`): 15:56-16:01 UTC node CPU 18.97%, getChainInfo p50 3.3 ms
+  p90 260 ms max 445 ms; 16:44-16:49 UTC 41.09%, p50 1.8 ms p90 410 ms max 932 ms, listJobs 62.4/min (pearl-miner
+  47.2), getJob 904/min (explorer 330, cadre-settle 223, cadre-api 200, relayer 112). AFTER: pending the rollout
+  (DEVNET "Job query perf rollout").
+- Segment order on the live state at 5869 (23 tickets with mineable segments in the newest 4096 jobs), 118 simulated
+  blocks with progress updated per block: old order 4 tickets served, new order 13.
+- Throughput (node 1, heights 5491-5850, 6.08 h): 59.2 blocks/h (360 segment blocks, 0 plain, 0 fallback), 373.6
+  PostSegments/h.
+

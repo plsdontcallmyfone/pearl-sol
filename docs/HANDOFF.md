@@ -1479,6 +1479,55 @@ CLAUDE.md "Who is working on what".
      set_speed(6000, 30000, 60) before its tip reaches 6000. Exact commands, checks and rollback: DEVNET.md "Speed
      rollout". If it cannot finish by about 5980, move the height first (never straddle it).
 
+40. JOB QUERY PERF, POOL EVICTION, FAIR SEGMENT ORDER, DOCS DRIFT (2026-10-22, "job query perf" row; owner
+   "start working on whatever is left"). Main 64eeaaa (+ docs). All node changes are NODE-LOCAL (no consensus
+   change, no activation height): old and new nodes mix, rollback is a binary swap before or after height 6000.
+   - Box 0 node CPU, cause (measured read-only on box 0, 2026-10-22): the hot path in the 15:45 UTC perf profile was
+     state reads (Store::get, pread, futex hand-offs). RPC by client over 60 s (tcpdump on lo + ss, about 15:55 UTC):
+     getJob 400/min explorer, 280/min cadre-settle, 144/min relayer, 100/min cadre-api, 44/min attester; listJobs
+     16-47/min from cadre-miner's orphan sweep (`--deliver`, every 60 s it paged `listJobs status=open` 200 at a time
+     over about 9,500 open jobs = 48 pages, and every call read 2 records per job for the newest 10,000 jobs: about
+     960,000 state reads a minute). A/B on two fresh followers of the live devnet on the test box (same state, height
+     5869): that sweep took 20.6 s of node time per pass on the old build, 1.28 s on the new one with the same
+     offset paging, and 0.001 s with the new `kind=job` cursor query the miner now sends (one call, 0 jobs:
+     every open job is a segment); an auto getBlockTemplate 123-158 ms old, 13-23 ms new. Box 0 node CPU at the time
+     (pidstat): 18.97% over 15:56-16:01 UTC and 41.09% over 16:44-16:49 UTC (scripts/devnet-rpc-load.sh), 48.5%
+     average since its 15:29 restart; getChainInfo p50 3.3 / 1.8 ms, p90 260 / 410 ms, max 445 / 932 ms in those
+     two windows; listJobs 62.4/min (47.2 from pearl-miner), getJob 904/min. See TEST-REPORT "Job query perf" for the full tables.
+   - Fix: (1) chain/state read cache: committed values by key (64 MiB, two generations), a read of a key no
+     uncommitted block on the snapshot's branch wrote is answered from it, finalize drops exactly the keys the newly
+     committed blocks wrote; snapshots record their written keys. (2) chain/rpc job index (jobindex.rs): ids and
+     status of every job, records of live jobs and tickets, updated per tip from the keys connected and disconnected
+     blocks wrote (Chain::take_touched), so any reorg is handled by re-reading those keys. listJobs answers from it
+     (`kind` filter, `after`/`before` cursors, `next_cursor`; offset mode unchanged) and auto templates take their
+     candidates from it. getNodeStats: RPC calls and time per method, cache, index, eviction counters. (3) pearl-miner
+     sweep: `listJobs {status: open, kind: job}` by cursor (offset fallback on an older node). (4) header-relay settle
+     and the relayer read a pending order's job once per chain tip instead of every poll.
+   - Mempool eviction: after every tip the node executes its pool against the tip like a template; a tx failing at 3
+     consecutive tips is dropped (getTxStatus `dropped` + reason), a failure caused only by an earlier failing tx of the
+     same sender does not count, and while a tx fails at the tip a tx at its nonce replaces it at any fee. The
+     gateway's own nonce handling (item 39) keeps working; it no longer depends on it.
+   - Fair segment order (SPEC 4.5 "Segment order"): auto choice = least-served ticket (blocks mined / allocated) first,
+     then oldest; was largest cap_remaining first, which made big rounds always win (ticket ecb7a659, 48 rows, 11 of 144
+     after 7 h). On the live state at 5869 the old order spent a simulated hour of 118 blocks on 4 tickets, the new one
+     on 13. Measured gap (heights 5491-5850, 6.08 h): 373.6 segments posted an hour against 59.2 blocks an hour (all
+     segment blocks); about 118 an hour after the 30 s switch, so about 3x too little capacity at that traffic. No skip
+     or refund rule is needed for segments that are never mined (they carry W = P = 0; pay and refund go by rows used;
+     their cap stays in the pool); what is lost is miner subsidy and the per-segment GEMM check.
+   - Tests (test box ~/jobperf, -j 4): chain workspace 241 pass, 0 fail, 2 ignored (new: state read_cache 3, rpc
+     jobindex 5 = index vs full scan across mining, expiry and two reorgs + kind filter + eviction 3, consensus
+     fair_order 3, mempool 1); the new agent-node synced the live devnet from genesis (5,869 blocks, cache on) to
+     finalized 5839 2a9df3e5... equal to node 1; crates pearl-miner incl. the cursor sweep test pass; header-relay lib
+     1 new pass (catchup 2 fail on the box's stale token/target/deploy/lightclient.so, 652,840 B from 10-19; the tests
+     need the tree's own build; untouched by this row); relayer 34/34 on the Mac (litesvm bad_alloc on the box, known).
+   - STAGED (not running) in /home/lode/stage-jobperf/: agent-node 6a194b23... (boxes 0-2), pearl-miner 9daaf871...
+     and header-relay 562cfce6... (box 0). Rollout ONLY after the height 6000 switch is verified, commands in
+     DEVNET.md "Job query perf rollout"; then `scripts/devnet-rpc-load.sh 300` on box 0 for the after numbers.
+   - Docs drift (cadre-docs c181a66 + this row's follow-up): devnet page (cadre-api, gateway, Solana side, mint,
+     upgrade heights), model-registry replay, status, index, tokenomics, limits, jobs, agents, buy-a-job, market (fee
+     reaches the pool), x402, data availability, parameters 19-48, run-a-node speed warning; RPC listJobs/getNodeStats/
+     sendTx eviction and the segment order.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
