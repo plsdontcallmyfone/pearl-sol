@@ -70,11 +70,13 @@ export function registerBoards(api: Api, d: Deps) {
   // ---------------------------------------------------------------- receipts (background)
 
   let warming = false;
+  const warmState = { runs: 0, last_ms: 0, last_error: null as string | null, cached: 0 };
   async function warm() {
     if (warming || !d.cfg.gatewayUrl) return;
     warming = true;
+    warmState.runs++;
     try {
-      const s = await src.snapshot();
+      const s = await src.snapshot({ trades: false, ms: 5_000 });
       const todo = [...new Set(thoughtRefs(s).map((r) => r.ref))].filter((r) => !rc.has(r)).slice(0, 400);
       for (let i = 0; i < todo.length; i += 8) {
         await Promise.all(todo.slice(i, i + 8).map(async (ref) => {
@@ -85,10 +87,13 @@ export function registerBoards(api: Api, d: Deps) {
       }
       // misses are retried on the next warm (TownState keeps them 60 s)
       for (const [k, v] of rc) if (v === null) rc.delete(k);
-    } catch {
-      /* best effort */
+      warmState.last_error = null;
+    } catch (e) {
+      warmState.last_error = (e as Error).message.slice(0, 200);
     } finally {
       warming = false;
+      warmState.last_ms = Date.now();
+      warmState.cached = rc.size;
     }
   }
   let lastWarm = 0;
@@ -100,6 +105,7 @@ export function registerBoards(api: Api, d: Deps) {
 
   const ctx = (): BoardCtx => ({
     receipt: (ref) => rc.get(ref) ?? null,
+    receiptsStatus: () => ({ ...warmState, gateway: !!d.cfg.gatewayUrl }),
     link,
     card: (a) => cardOf(a),
     now: Date.now(),

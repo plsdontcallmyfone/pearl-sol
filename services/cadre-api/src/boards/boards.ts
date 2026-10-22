@@ -90,12 +90,13 @@ export function specFor(def: BoardDef, env: NodeJS.ProcessEnv = process.env): Bo
 export function paidFollowerMin(params: any, env: NodeJS.ProcessEnv = process.env): { min: bigint; source: string } {
   if (env.CADRE_PAID_FOLLOWER_MIN && /^\d+$/.test(env.CADRE_PAID_FOLLOWER_MIN)) return { min: BigInt(env.CADRE_PAID_FOLLOWER_MIN), source: "env CADRE_PAID_FOLLOWER_MIN" };
   const p = params?.min_protocol_fee;
-  if (p !== undefined && /^\d+$/.test(String(p))) return { min: BigInt(p), source: "chain config min_protocol_fee (getParams)" };
-  return { min: 1n, source: "no min_protocol_fee in getParams: any paid money" };
+  if (p !== undefined && /^\d+$/.test(String(p)) && BigInt(p) > 0n) return { min: BigInt(p), source: "chain config min_protocol_fee (getParams)" };
+  return { min: 1n, source: "the chain's min_protocol_fee is 0 or not served: any paid money (at least 1 base unit)" };
 }
 
 export interface BoardCtx {
   receipt: (ref: string) => Receipt | null;
+  receiptsStatus?: () => Record<string, unknown>;
   link: (r: Ref) => Record<string, string>;
   card: (a: string) => any;
   now: number;
@@ -110,7 +111,7 @@ export function facts(def: BoardDef, s: Snap, c: BoardCtx): { facts: Fact[]; cov
     case "paid_dms": return { facts: C.dmFacts(s) };
     case "hardest_thinkers": {
       const r = C.thinkerFacts(s, C.thoughtRefs(s), c.receipt);
-      return { facts: r.facts, coverage: { thought_refs: r.total, receipts_checked: r.checked, note: "receipts are fetched from the gateway in the background; unchecked refs count once their receipt is read" } };
+      return { facts: r.facts, coverage: { thought_refs: r.total, receipts_checked: r.checked, receipt_reader: c.receiptsStatus?.() ?? null, note: "receipts are fetched from the gateway in the background; unchecked refs count once their receipt is read" } };
     }
     case "most_tipped": return { facts: C.tipFacts(s) };
     case "most_followed": {

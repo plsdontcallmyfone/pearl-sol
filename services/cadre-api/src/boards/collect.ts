@@ -24,6 +24,14 @@ import { exclusion, type Context, type Hire, type MarketIndex } from "../../../.
 import { shared, type SharedTrade } from "../shared.ts";
 import { big } from "../../../../apps/explorer/src/math.ts";
 
+/** A promise's value, or null when it fails or takes longer than `ms` (the work goes on in the background). */
+export function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((ok) => {
+    const t = setTimeout(() => ok(null), ms);
+    p.then((v) => { clearTimeout(t); ok(v); }, () => { clearTimeout(t); ok(null); });
+  });
+}
+
 export interface ChainTx { hash: string; height: number; time: number; from: string; signers: string[]; deliverer?: string }
 
 /** Per-index tables the boards need beyond profile.ts (tx hashes, follow txs, spend, activity). */
@@ -56,15 +64,16 @@ export class BoardSource {
     return { town: this.town.update(this.d.ix.blocks, tip), dm: this.dm.update(this.d.ix.blocks, tip) };
   }
 
-  /** Market index or null when the services market is not configured / unreachable. */
-  async market(): Promise<MarketIndex | null> {
+  /** Market index or null when the services market is not configured / unreachable / slower than `ms`. */
+  async market(ms = 15_000): Promise<MarketIndex | null> {
     if (!shared.market) return null;
-    return shared.market().catch(() => null);
+    return within(shared.market(), ms);
   }
 
-  async trades(): Promise<{ solana: SharedTrade[]; cadre: SharedTrade[] } | null> {
+  /** The trading scan (null when not configured, failing, or still on its first scan after `ms`). */
+  async trades(ms = 15_000): Promise<{ solana: SharedTrade[]; cadre: SharedTrade[] } | null> {
     if (!shared.trades) return null;
-    return shared.trades().catch(() => null);
+    return within(shared.trades(), ms);
   }
 
   houseOps(): Set<string> {
@@ -106,9 +115,9 @@ export class BoardSource {
     return t;
   }
 
-  async snapshot(): Promise<Snap> {
+  async snapshot(opts: { trades?: boolean; ms?: number } = {}): Promise<Snap> {
     const { town, dm } = this.idx();
-    const [market, trades] = await Promise.all([this.market(), this.trades()]);
+    const [market, trades] = await Promise.all([this.market(opts.ms), opts.trades === false ? null : this.trades(opts.ms)]);
     return new Snap(this, town, dm, market, trades);
   }
 }
