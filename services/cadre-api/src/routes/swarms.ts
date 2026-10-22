@@ -5,10 +5,10 @@
 //                                        members, roles, proposals, spend today, hires between members,
 //                                        their deliveries (outputs), trading members' strategy records
 //   GET  /v1/swarms/by-agent/:agent      every swarm an agent has been in
-//   POST /v1/swarms/definition           the definition hash and the creator message (arithmetic only)
-//   POST /v1/hosted/swarms               pass-through to the hosted runtime (creator-signed), plus one
-//                                        unsigned Solana tx paying every member its SOL and the creator's
-//                                        unsigned create call (register: creator)
+//   POST /v1/hosted/swarms/plan          pass-through to the hosted runtime {creator, goal, size,
+//                                        total_sol_lamports, overrides?}, plus ONE unsigned Solana tx
+//                                        sending every member its SOL
+//   POST /v1/hosted/swarms               pass-through {plan_id, creator_sig}: the creator's one signature
 //   GET  /v1/hosted/swarms(/styles)      pass-through
 //   POST /v1/tx/swarm                    unsigned swarms contract calls (fund, leave, propose, ...)
 // Every figure is a contract read (queryContract), a market contract read (the services market
@@ -25,8 +25,7 @@ import { hex } from "../../../../apps/explorer/src/codec.ts";
 import { TX_HDR, TX_SIG, contractFeeFloor, contractSigningBytes, encodeCallBody, framedMessage, isUnknownMethod } from "../../../../apps/explorer/src/contracts.ts";
 import { compileLegacy, systemTransfer, unsignedTx, type Ix } from "../sol.ts";
 import {
-  acceptMessage, callArgs, checkDefinition, creatorMessage, decodeCounts, decodeIds, decodeMembers, decodeProposal, decodeSwarm, decodeU64, definitionHash,
-  goalBlob, KINDS, loadSwarmsConfig, MAX_BATCH, queryArgs, type SwarmKind, type SwarmRec, type SwarmsConfig,
+  callArgs, decodeCounts, decodeIds, decodeMembers, decodeProposal, decodeSwarm, decodeU64, goalBlob, KINDS, loadSwarmsConfig, queryArgs, type SwarmKind, type SwarmRec, type SwarmsConfig,
 } from "../../../swarm/agents/src/swarmabi.ts";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -77,7 +76,7 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
   const goalCache = new Map<string, { text: string | null; kind: SwarmKind | null; hash_ok: boolean | null }>();
   async function goalOf(rec: SwarmRec, h: any | null) {
     if (h?.goal && h.goal_hash === rec.goal_hash) {
-      const g = goalBlob(h.goal, h.kind, h.name);
+      const g = goalBlob(h.goal, h.kind, h.name, h.proof?.specs);
       return { hash: rec.goal_hash, uri: rec.goal_uri, text: h.goal, kind: h.kind as SwarmKind, hash_ok: g.hash === rec.goal_hash, source: "hosted runtime, checked against goal_hash" };
     }
     let c = goalCache.get(rec.goal_hash);
@@ -178,7 +177,7 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
       if (!id) {
         const h = hs?.get(raw);
         if (!h) throw notFound("no swarm with this definition on the contract or the hosted runtime");
-        return { id: null, definition: raw, contract: c.contract, name: h.name, kind: h.kind, goal: { hash: h.goal_hash, uri: h.goal_uri, text: h.goal, hash_ok: goalBlob(h.goal, h.kind, h.name).hash === h.goal_hash }, creator: h.creator, creator_role: "attribution", lead: h.lead, registration: h.registration, members: h.members.map((m: any) => ({ agent: m.agent, handle: m.handle, role: m.role, is_lead: m.agent === h.lead, active: false, practice_style: m.style, hosted: m.hosted })), note: "not on the swarms contract yet: membership counts only once the contract holds every member's acceptance" };
+        return { id: null, definition: raw, contract: c.contract, name: h.name, kind: h.kind, goal: { hash: h.goal_hash, uri: h.goal_uri, text: h.goal, hash_ok: goalBlob(h.goal, h.kind, h.name, h.proof?.specs).hash === h.goal_hash }, creator: h.creator, creator_role: "attribution", lead: h.lead, registration: h.registration, kickoff: h.kickoff ?? null, members: h.members.map((m: any) => ({ agent: m.agent, handle: m.handle, role: m.role, is_lead: m.agent === h.lead, active: false, practice_style: m.style, hosted: m.hosted })), note: "not on the swarms contract yet: membership counts only once the contract holds every member's acceptance" };
       }
     } else {
       id = Number(raw);
@@ -246,6 +245,7 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
     return {
       ...base, contract: c.contract,
       registration: h?.registration ?? null,
+      kickoff: h?.kickoff ?? null,
       members: slots.map((x) => {
         const hm = hostedOf.get(x.agent);
         const cd = card(x.agent);
@@ -265,29 +265,6 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
       sources: { swarm: "swarms contract", members: "swarms contract (members query)", hires: "market contract (services market index)", spend: "hosted runtime", goal: base.goal.source },
     };
   }, { cache: 5 });
-
-  // ---------------------------------------------------------------- definition
-
-  api.post("/v1/swarms/definition", async (cx) => {
-    const c = need();
-    const b = await cx.json();
-    const creator = addr(b.creator, "creator");
-    const members: any[] = Array.isArray(b.members) ? b.members : [];
-    const agents = members.map((m) => addr(m?.agent, "members[].agent"));
-    const lead = addr(b.lead, "lead");
-    const kind = b.kind ?? "general";
-    const problems = checkDefinition({ name: b.name, goal: b.goal, kind, roles: members.map((m) => m?.role), leadIndex: agents.indexOf(lead), agents });
-    if (agents.includes(creator)) problems.push("the creator is attribution, not a member");
-    if (problems.length) throw badRequest(problems.join("; "));
-    const salt = b.salt === undefined ? 0n : DEC.test(String(b.salt)) ? BigInt(b.salt) : (() => { throw badRequest("salt is a u64 decimal string"); })();
-    const goal = goalBlob(b.goal, kind, b.name);
-    const def = definitionHash({ contract: c.contract, creator, name: b.name, goalHash: goal.hash, goalUri: goal.uri, lead, members: members.map((m, i) => ({ agent: agents[i], role: m.role })), salt });
-    return {
-      contract: c.contract, definition: def, salt: salt.toString(), creator_message: creatorMessage(c.contract, def), accept_message_hex: acceptMessage(c.contract, def).toString("hex"),
-      goal_blob: goal.json, goal_hash: goal.hash, goal_uri: goal.uri,
-      note: "register: runtime needs creator_sig = the creator's signMessage over creator_message; members accept with their own keys (the hosted runtime signs for the agents it hosts)",
-    };
-  });
 
   // ---------------------------------------------------------------- unsigned calls
 
@@ -368,60 +345,45 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
   api.get("/v1/hosted/swarms", async (cx) => reply({ body: (await forward(cx)).body, cache: "no-store" }), { cache: "no-store" });
   api.get("/v1/hosted/swarms/styles", async (cx) => reply({ body: (await forward(cx)).body, cache: "no-store" }), { cache: "no-store" });
 
-  api.post("/v1/hosted/swarms", async (cx) => {
+  // the plan: the runtime's reply plus ONE unsigned Solana tx that sends every member its SOL
+  api.post("/v1/hosted/swarms/plan", async (cx) => {
     const raw = await cx.raw();
-    const r = await forward(cx, raw);
-    hostedCache.at = 0;
-    const out = r.body;
-    const c = loadSwarmsConfig(env);
-    const creator: string = out?.swarm?.creator;
-    // one Solana tx: every member its SOL (the creator signs once)
+    const out = (await forward(cx, raw)).body;
+    const creator: string = (() => { try { return JSON.parse(raw.toString("utf8")).creator; } catch { return ""; } })();
     let solana: any = null;
     let solanaError: string | null = null;
-    const pays = (out?.members ?? []).filter((m: any) => DEC.test(m.sol_lamports ?? "") && BigInt(m.sol_lamports) > 0n);
-    if (pays.length) {
-      try {
-        const total = pays.reduce((a: bigint, m: any) => a + BigInt(m.sol_lamports), 0n);
-        const bal = await d.solana<any>("getBalance", [creator, { commitment: "confirmed" }]);
-        if (BigInt(bal?.value ?? 0) < total + 5000n) throw new Error(`${creator} holds ${bal?.value ?? 0} lamports; the members' SOL needs ${total} plus the 5000-lamport fee`);
-        const ixs: Ix[] = pays.map((m: any) => systemTransfer(creator, m.agent, BigInt(m.sol_lamports)));
-        const bh = (await d.solana<any>("getLatestBlockhash", [{ commitment: "confirmed" }])).value;
-        const msg = compileLegacy(ixs, creator, bh.blockhash);
-        const tx = unsignedTx(msg);
-        if (tx.length > 1232) throw new Error(`the members' SOL transfers do not fit one Solana tx (${tx.length} bytes)`);
-        solana = {
-          transaction: Buffer.from(tx).toString("base64"), encoding: "base64", version: "legacy", fee_payer: creator, signers: msg.accountKeys.slice(0, msg.numRequiredSignatures),
-          recent_blockhash: bh.blockhash, last_valid_block_height: bh.lastValidBlockHeight, tx_bytes: tx.length,
-          summary: { from: creator, transfers: pays.map((m: any) => ({ to: m.agent, lamports: m.sol_lamports })), total_lamports: total.toString() },
-          sign_with: "Wallet Standard solana:signAndSendTransaction (or sign, then POST /v1/tx/solana)",
-        };
-      } catch (e) { solanaError = (e as Error).message.slice(0, 300); }
-    }
-    // the creator's one Cadre tx: create (registers the swarm and pays each member its CADRE)
-    let registerTx: any = null;
-    let registerError: string | null = null;
-    if (out?.create_call && c) {
-      try { registerTx = { ...(await buildCall(creator, c, BigInt(out.create_call.value), Uint8Array.from(Buffer.from(out.create_call.args, "hex")))), plain: `Register the swarm "${out.swarm.name}" with ${out.members.length} members (each already signed its own acceptance) and pay them ${out.create_call.value} chain units in all, straight to their accounts. You get no control over them.` }; } catch (e) { registerError = (e as Error).message.slice(0, 300); }
-    }
-    const signatures = [
-      ...(solana ? [{ what: "Solana: one tx sending every member its SOL", how: "solana:signAndSendTransaction on funding.solana.transaction" }] : []),
-      ...(registerTx ? [{ what: "Cadre: one create call registering the swarm and paying every member its CADRE", how: "signMessage over register_tx.framed_message, then POST /v1/tx/chain" }] : []),
-      { what: "Creator link (attribution) per member, once each agent has published its profile", how: "POST /v1/tx/operator-link per member (Cadre), as for a single agent; the swarm itself needs no link" },
-    ];
+    try {
+      const pays = (out?.members ?? []).filter((m: any) => DEC.test(m.sol_lamports ?? "") && BigInt(m.sol_lamports) > 0n);
+      const total = pays.reduce((a: bigint, m: any) => a + BigInt(m.sol_lamports), 0n);
+      const bal = await d.solana<any>("getBalance", [creator, { commitment: "confirmed" }]);
+      if (BigInt(bal?.value ?? 0) < total + 5000n) throw new Error(`${creator} holds ${bal?.value ?? 0} lamports; the members' SOL needs ${total} plus the 5000-lamport fee`);
+      const ixs: Ix[] = pays.map((m: any) => systemTransfer(creator, m.agent, BigInt(m.sol_lamports)));
+      const bh = (await d.solana<any>("getLatestBlockhash", [{ commitment: "confirmed" }])).value;
+      const msg = compileLegacy(ixs, creator, bh.blockhash);
+      const tx = unsignedTx(msg);
+      if (tx.length > 1232) throw new Error(`the members' SOL transfers do not fit one Solana tx (${tx.length} bytes, the limit is 1232)`);
+      solana = {
+        transaction: Buffer.from(tx).toString("base64"), encoding: "base64", version: "legacy", fee_payer: creator, signers: msg.accountKeys.slice(0, msg.numRequiredSignatures),
+        recent_blockhash: bh.blockhash, last_valid_block_height: bh.lastValidBlockHeight, tx_bytes: tx.length,
+        summary: { from: creator, transfers: pays.map((m: any) => ({ to: m.agent, lamports: m.sol_lamports })), total_lamports: total.toString() },
+        sign_with: "Wallet Standard solana:signAndSendTransaction (or sign, then POST /v1/tx/solana)",
+      };
+    } catch (e) { solanaError = (e as Error).message.slice(0, 300); }
     return reply({
-      status: 201,
       body: {
-        ...out,
-        register_tx: registerTx, register_error: registerError,
-        funding: {
-          solana, solana_error: solanaError,
-          cadre: out?.create_call ? (registerTx ? "inside register_tx (value = the sum, paid to each member by the contract in the same call)" : "register_tx could not be built; fund after registration with POST /v1/tx/swarm {action: fund}") : "register: runtime; fund members with POST /v1/tx/swarm {action: fund} after registration, or the normal transfer",
-          links: "each agent waits for its creator link (attribution, no control) before it acts, exactly as a single agent",
-        },
-        signatures,
-        limits: { max_members: MAX_BATCH },
+        ...out, solana, solana_error: solanaError,
+        signatures: [
+          { what: "the swarm: one signMessage over creator_message (it commits the definition and every member spec)", then: "POST /v1/hosted/swarms {plan_id, creator_sig}" },
+          { what: "Solana: one tx sending every member its SOL to its own wallet", then: "solana:signAndSendTransaction on solana.transaction" },
+        ],
       },
       cache: "no-store",
     });
+  }, { cost: 10 });
+
+  api.post("/v1/hosted/swarms", async (cx) => {
+    const r = await forward(cx, await cx.raw());
+    hostedCache.at = 0;
+    return reply({ status: r.status, body: r.body, cache: "no-store" });
   }, { cost: 20 });
 }

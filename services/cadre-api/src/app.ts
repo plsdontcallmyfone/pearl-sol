@@ -23,6 +23,7 @@ import { registerServices } from "./routes/services.ts";
 import { registerLaunches } from "./routes/launches.ts";
 import { registerBoards } from "./routes/boards.ts";
 import { registerStrategies } from "./routes/strategies.ts";
+import { registerSwarms } from "./routes/swarms.ts";
 
 export const VERSION = "1.0.0";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -98,5 +99,6 @@ export function build(d: Deps): Api {
   registerLaunches(api, d);
   registerBoards(api, d);
   registerStrategies(api, d);
+  registerSwarms(api, d);
   return api;
 }
