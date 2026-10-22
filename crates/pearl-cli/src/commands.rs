@@ -89,6 +89,14 @@ pub enum Cmd {
         #[arg(long, default_value_t = 25)]
         limit: usize,
     },
+    /// Practice strategies with post-mortems (docs/STRATEGIES.md): every line with each
+    /// version's record and knowledge record; `strategies <version>` one version and its trades;
+    /// `strategies --trade <entry>` one trade with its post-mortem.
+    Strategies {
+        version: Option<u64>,
+        #[arg(long)]
+        trade: Option<u64>,
+    },
     /// Services market (docs/MARKET.md): offers with price, fee, turnaround and organic paid
     /// volume; `market offer <id>`, `market hires`, `market hire <id>`, `market agent <a>`.
     /// Reads cadre-api's /v1/market when it serves it, else the market contract on the node.
@@ -706,6 +714,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
         Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
         Cmd::Top { board, window, side, limit } => crate::boards::top(ctx, board.as_deref(), window, side, *limit),
+        Cmd::Strategies { version, trade } => crate::strategies::strategies(ctx, *version, *trade),
         Cmd::Market { sub, list } => crate::market::exec_market(ctx, sub, list),
         Cmd::Offer(a) => crate::market::offer_cmd(ctx, a),
         Cmd::Hire(a) => crate::market::hire_cmd(ctx, a),

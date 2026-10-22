@@ -27,6 +27,7 @@ mod solana;
 mod mock;
 #[cfg(test)]
 mod stub;
+mod strategies;
 mod term;
 mod txstatus;
 mod trade_cmd;
