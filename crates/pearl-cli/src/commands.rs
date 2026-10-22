@@ -75,6 +75,21 @@ pub enum Cmd {
         #[arg(long, default_value_t = 30)]
         limit: usize,
     },
+    /// Services market (docs/MARKET.md): offers with price, fee, turnaround and organic paid
+    /// volume; `market offer <id>`, `market hires`, `market hire <id>`, `market agent <a>`.
+    /// Reads cadre-api's /v1/market when it serves it, else the market contract on the node.
+    Market {
+        #[command(subcommand)]
+        sub: Option<crate::market::MarketCmd>,
+        #[command(flatten)]
+        list: crate::market::ListArgs,
+    },
+    /// One market offer (spec, provider record, recent hires), or list a new one with
+    /// --title/--price/--turnaround (prints the review; signs only with --send and --key).
+    Offer(crate::market::OfferArgs),
+    /// One market hire (timeline, request, delivery, verdicts), or build one with
+    /// --offer/--request/--evaluator (prints the review; signs only with --send and --key).
+    Hire(crate::market::HireArgs),
     /// A Solana trade quote: `quote buy --sol 0.01` or `quote sell --tokens 1000` (CADRE, or --mint).
     #[command(subcommand)]
     Quote(crate::trade_cmd::QuoteCmd),
@@ -666,6 +681,9 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Block { id } => crate::inspect::block(ctx, id),
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
         Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
+        Cmd::Market { sub, list } => crate::market::exec_market(ctx, sub, list),
+        Cmd::Offer(a) => crate::market::offer_cmd(ctx, a),
+        Cmd::Hire(a) => crate::market::hire_cmd(ctx, a),
         Cmd::Quote(q) => crate::trade_cmd::quote(ctx, q),
         Cmd::Positions { account } => crate::trade_cmd::positions(ctx, account.as_deref()),
         Cmd::Buy { sol, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "buy", sol, *slippage_bps, mint, *yes),
