@@ -683,3 +683,70 @@ deploy/trading-house.json. Keys: keys/devnet/trading/ (gitignored). House trader
 box (`~/trading/run-trader.sh`; stop: `touch ~/trading/STOP; kill $(cat ~/trading/trader.pid)`);
 the box 0 unit `deploy/systemd/cadre-trading.service` is ready for the orchestrator (TRADING.md 10).
 
+
+## Blob lifecycle rollout (2026-10-22, HANDOFF item 36, SPEC 4.5 "Segment data retention")
+
+Staged by the blob lifecycle row in `/home/lode/stage-bloblife/` (built on the test box from main a72713b):
+agent-node `556739d39569ca62763eb6e36a395f232060fd920b85e8697f2573f9a0dc23a5` on boxes 0-2; cadre-gateway
+`3827146388bad35547bc4236414bdb29acc753e603d78def77478e48afd668e0` and pearl-attester
+`33c5b8977fae20ab36e4ae8e90a1ff9dfc1d7d0142413b78a6f5614b764032e0` on box 0. Running before: agent-node
+5dcab264... (agent-node.dms), cadre-gateway 74098a4e..., pearl-attester fd5fc6d6.... The node build also carries the
+Cx RPC fields (071e962, RPC only). Not a consensus change while nobody sets AdminConfig key 48 (do not set it before
+all three nodes run this build and the tip is at 5800 or later), so old and new nodes mix and rollback is a swap.
+
+Order: box 1, box 2, box 0, one at a time, as root on the box (`ssh -i ~/.ssh/lode_devnetN root@<ip>`).
+
+Boxes 1 and 2 (mining-only: 16 GB quota, keep_replay false):
+
+    rpc() { curl -s -XPOST 127.0.0.1:10630 -H content-type:application/json -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":{}}"; }
+    rpc getChainInfo; rpc getBlobStats                       # baseline: height, finalized_hash, total_bytes
+    sha256sum /home/lode/stage-bloblife/agent-node           # 556739d3...
+    cp -p /etc/lode/node.json /etc/lode/node.json.pre-bloblife
+    python3 -c 'import json; p="/etc/lode/node.json"; d=json.load(open(p)); d.setdefault("blobs",{}).update({"max_total_bytes":16000000000,"keep_replay":False}); open(p,"w").write(json.dumps(d,indent=1))'
+    python3 -c 'import json; print(json.load(open("/etc/lode/node.json"))["blobs"])'
+    cp -p /opt/lode/bin/agent-node /opt/lode/bin/agent-node.pre-bloblife
+    install -m 755 /home/lode/stage-bloblife/agent-node /opt/lode/bin/agent-node.new && mv -f /opt/lode/bin/agent-node.new /opt/lode/bin/agent-node
+    systemctl restart cadre-node
+    until rpc getChainInfo | grep -q '"height"'; do sleep 2; done
+
+Checks before the next box: `rpc getChainInfo` height and finalized_hash equal to the other two boxes within a block or
+two, `rpc getPeers` count >= 2, `rpc getBlobStats` shows `retention.keep_replay` false, `max_total_bytes`
+16000000000 and `classes`; `journalctl -u cadre-node -n 50` without errors; `systemctl is-active cadre-miner
+cadre-header-relay`. After about 15 minutes (two prune passes): `classes.segment_a.bytes` falls toward the mining
+tail (about 4.8 GB at 2026-10-22 traffic) and `fetching` stays well under 1024.
+
+Box 0 (replay node: 40 GB quota, keep_replay default true), node first, then gateway, then attester:
+
+    rpc getChainInfo; rpc getBlobStats; curl -s 127.0.0.1:10664/v1/stats
+    sha256sum /home/lode/stage-bloblife/*
+    cp -p /etc/lode/node.json /etc/lode/node.json.pre-bloblife    # the 30 GB file (an older backup: node.json.pre-blob30)
+    python3 -c 'import json; p="/etc/lode/node.json"; d=json.load(open(p)); d["blobs"]["max_total_bytes"]=40000000000; open(p,"w").write(json.dumps(d,indent=1))'
+    cp -p /opt/lode/bin/agent-node /opt/lode/bin/agent-node.pre-bloblife
+    install -m 755 /home/lode/stage-bloblife/agent-node /opt/lode/bin/agent-node.new && mv -f /opt/lode/bin/agent-node.new /opt/lode/bin/agent-node
+    systemctl restart cadre-node
+    until rpc getChainInfo | grep -q '"height"'; do sleep 2; done
+    # same checks as boxes 1-2, with retention.keep_replay true and max_total_bytes 40000000000
+    cp -p /opt/lode/bin/cadre-gateway /opt/lode/bin/cadre-gateway.pre-bloblife
+    install -m 755 /home/lode/stage-bloblife/cadre-gateway /opt/lode/bin/cadre-gateway.new && mv -f /opt/lode/bin/cadre-gateway.new /opt/lode/bin/cadre-gateway
+    systemctl restart cadre-gateway
+    until curl -sf 127.0.0.1:10664/health >/dev/null; do sleep 2; done
+    curl -s 127.0.0.1:10664/v1/stats     # request_data has node_blob_headroom_bytes (after the first paid request) and refused_node_storage
+    cp -p /opt/lode/bin/pearl-attester /opt/lode/bin/pearl-attester.pre-bloblife
+    install -m 755 /home/lode/stage-bloblife/pearl-attester /opt/lode/bin/pearl-attester.new && mv -f /opt/lode/bin/pearl-attester.new /opt/lode/bin/pearl-attester
+    systemctl restart cadre-attester
+    systemctl is-active cadre-node cadre-gateway cadre-attester cadre-settle cadre-miner; journalctl -u cadre-attester -n 30
+
+A restart of cadre-gateway interrupts a settle pass; the gateway resumes a half-posted round (it skips segments
+already on chain) and a request in flight fails with its rows released. Watch 30 minutes: box 0 `df -h /` (over 20 GB
+free), `getBlobStats` `total_bytes` and `classes`, the gateway's `request_data.bytes_waiting`, house thoughts in the town.
+
+Rollback (per box, the same order reversed if needed):
+
+    cp -p /opt/lode/bin/agent-node.pre-bloblife /opt/lode/bin/agent-node.new && mv -f /opt/lode/bin/agent-node.new /opt/lode/bin/agent-node
+    cp -p /etc/lode/node.json.pre-bloblife /etc/lode/node.json && systemctl restart cadre-node
+    # box 0 also: the same swap for cadre-gateway / pearl-attester (.pre-bloblife), restart each
+
+After the drain (gateway `request_data.bytes_waiting` under 16 GiB), revert the stopgap:
+`cp -p /root/inference.env.pre-drain /etc/lode/inference.env && systemctl restart cadre-gateway`.
+deploy/devnet.env now carries the new quotas (BOX0_BLOBS 40 GB, BOX1/2_BLOBS 16 GB + keep_replay false), so a later
+`devnet-deploy.sh` node.json write keeps them.

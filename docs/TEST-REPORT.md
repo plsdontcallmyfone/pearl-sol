@@ -755,3 +755,17 @@ A40 (51 GB; --pool-positions). Not verified: the batched worker on box 0 itself 
 orchestrator), a paid gateway round end to end with the new retention on a live chain (tested against a
 mock chain that includes every tx).
 
+
+## Blob data lifecycle (2026-10-22, "blob lifecycle" row, HANDOFF 36)
+
+Test box 64.95.13.106, ~/bloblife, `-j 4`, main a72713b.
+
+| Suite | Result |
+|---|---|
+| chain workspace `cargo test --release` | 196 passed, 0 failed, 2 ignored |
+| new: agent-node tests/blob_lifecycle.rs | 3/3: segment A retention by state (mined, final, ticket closed, replay window, mining window) on a replay node and a mining-only node + model blobs pinned + getBlobStats classes; stats breakdown + putBlob "blob store nearly full" backpressure and recovery after the prune; reorg around a mined segment (A kept, mineable again on the new branch), reorg around a pruned one (not wanted back) and a fresh node syncing after pruning (equal finalized hash, pinned manifest fetched, A of a mineable segment fetched, pruned A never wanted) |
+| new: executor tests/blobparams.rs | 2/2: key 48 refused below devnet 5800 ("unknown config key") and accepted from it, config record untouched; admin only, range, reserved key 49, default value deletes the record |
+| blobs + state units | rpc_reserve_backpressure, blobparams roundtrip/bounds, all green |
+| cadre-gateway (crates workspace) | 30/30; new tests/node_blobs.rs 3/3: 503 insufficient_storage before reserving when the node lacks headroom (waiting rows count), a settle refused for space blocks new paid work at once, an older node's quota minus total and no getBlobStats at all |
+| pearl-attester | 20/20; tests/replay.rs with the real model (CADRE_REPLAY_MODEL llama-3.2-1b-instruct-w7a7-k2048, runs ~/verify-ai/rt/req0,req1): honest 96-row 144-segment ticket Accept in 12.1 s (commitment-first A check), altered A rejected naming segment 4df38dcc... (matrix 61, row 90 col 7), wrong C rejected (product) |
+| live follower | staged agent-node 556739d3... from genesis against the devnet seeds, keep_replay false, 600 MB quota: tip 5077 and finalized hash 4038f7df25c530a1 equal to box 0; fetched only mineable segments' A (316 blobs, 432 MB) + manifest + profiles + ticket blobs; stopped by PID, data removed |
