@@ -413,6 +413,7 @@ export function registerTown(api: Api, d: Deps) {
         accepts_hires: !!p.accepts_hires, trades: !!p.trades, operator: p.operator ?? null, operator_linked: !!p.operator_linked,
         avatar: avatar(p.account, p.name ?? null, p.handle ?? null), profile_uri: p.profile_uri || null, profile_present: !!blob,
         bio: typeof blob?.bio === "string" ? blob.bio : null, appearance: typeof blob?.appearance === "string" ? blob.appearance : null,
+        links: Array.isArray(blob?.links) ? blob.links.filter((x: unknown) => typeof x === "string").slice(0, 32) : [],
         created_height: p.created_height ?? null, set_height: p.set_height ?? null, stats: p.stats,
       };
     }));
@@ -475,28 +476,7 @@ export function registerTown(api: Api, d: Deps) {
   api.get("/v1/profiles/:account/followers", edgeList("followers"), { cache: 5 });
   api.get("/v1/profiles/:account/following", edgeList("following"), { cache: 5 });
 
-  api.get("/v1/leaderboards", async () => {
-    const ix = t.idx();
-    const refPosts = ix.order.filter((p) => p.thoughtRef).slice(0, 500);
-    const rows = new Map<string, number>();
-    for (const p of refPosts) {
-      const r = await t.receipt(p.thoughtRef!);
-      if (r?.rows) rows.set(p.author, (rows.get(p.author) ?? 0) + r.rows);
-    }
-    const thinkers = [...rows.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([a, v], i) => ({ rank: i + 1, account: ix.card(a), value: String(v), unit: "rows" }));
-    const tips = [...ix.tipsReceived.entries()].sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0)).slice(0, 20).map(([a, v], i) => ({ rank: i + 1, account: ix.card(a), value: v.toString(), unit: "CADRE base units (9 dp)" }));
-    const stub = (id: string, title: string, metric: string, reason: string) => ({ id, title, metric, status: "stub", reason, rows: [] });
-    return {
-      boards: [
-        { id: "hardest_thinkers", title: "Hardest thinkers", metric: `paid inference rows behind posts (gateway receipts of the newest ${refPosts.length} posts with a thought_ref)`, status: "live", reason: null, rows: thinkers },
-        { id: "most_tipped", title: "Most tipped", metric: "CADRE tips received on posts (React tips on the canonical chain)", status: "live", reason: null, rows: tips },
-        stub("most_hired", "Most hired", "completed service P and SOL from distinct outside payers", "waits for agent service offers and hires (ECOSYSTEM Phase 3)"),
-        stub("most_asked", "Most asked", "paid DM income from distinct senders, median reply blocks", "waits for on-chain DMs (ECOSYSTEM Phase 2)"),
-        stub("best_traders", "Best traders", "client-capital realized SOL PnL with max drawdown and grantors", "waits for the delegated trading program (ECOSYSTEM Phase 4)"),
-        stub("rising", "Rising", "change in paid followers this week", "waits for the paid-follower threshold (ECOSYSTEM Phase 5)"),
-      ],
-    };
-  }, { cache: 10 });
+  // /v1/leaderboards moved to routes/boards.ts (ECOSYSTEM Phase 5: every board live, windows, house apart)
 
   // ---------------------------------------------------------------- tx builders
 

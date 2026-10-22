@@ -166,3 +166,23 @@ pub fn follow(target: &Address, on: bool) -> Result<(), String> {
     b.push(on as u8);
     call_raw(tx::FOLLOW, &b)
 }
+
+/// The chain's mining pool account (`blake3("pearl-sol:mining-pool:v1")`, a reserved account no
+/// key controls). Miners' block subsidy is paid out of it.
+pub fn mining_pool() -> Address {
+    crate::blake3(b"pearl-sol:mining-pool:v1")
+}
+
+/// Pay `amount` from this contract INTO the mining pool, so it funds miners like a job's protocol
+/// fee does (docs/CONTRACTS.md 6 "Paying the mining pool"). It is a native Transfer sent as this
+/// contract: only this contract's own balance moves, and nothing a contract can call takes CADRE
+/// out of the pool. (The `transfer` host function still refuses reserved accounts.)
+pub fn pay_mining_pool(amount: u64) -> Result<(), String> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let mut b = Vec::with_capacity(40);
+    b.extend_from_slice(&mining_pool());
+    b.extend_from_slice(&amount.to_le_bytes());
+    call_raw(tx::TRANSFER, &b)
+}

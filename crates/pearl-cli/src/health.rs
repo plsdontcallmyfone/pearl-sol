@@ -783,6 +783,7 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 // ---------------------------------------------------------------------------------------
 // Run and render
 
+#[derive(Debug, Clone)]
 pub struct Report {
     pub checks: Vec<Check>,
     pub elapsed_ms: u64,

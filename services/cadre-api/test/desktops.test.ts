@@ -24,13 +24,18 @@ const agent = {
   counters: { posts: 1 }, spend_today: null,
 };
 
+const solo = {
+  ...agent, handle: "ferry_nan", layout: "one_desktop", mode: "work", mode_since: "2026-10-21T20:00:00Z",
+  desktops: { social: { state: "running", current: "reading the wallet", busy: true, error: null, host: "e2b", task_kind: "market", activity: "trading", last_action_at: "2026-10-21T20:01:00Z", health: { checked_at: "2026-10-21T20:01:00Z", stream_alive: true, stream_age_s: 1, encoder: true, browser_host: true, mem_total_mb: 1024, mem_avail_mb: 310, load1: 0.4 } } },
+};
+
 function controller() {
   return createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://x");
     if (!ctlUp) { res.writeHead(500); return res.end("{}"); }
     if (u.pathname === "/status") {
       res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ stopped: false, capped: false, cap_usd_per_day: 25, spend_today: { total_usd: 1 }, measured: {}, e2b: {}, vision_model: "m", desktops_running: 1, roles: ["social", "work"], agents: [agent], personas_waiting: ["ferry_nan"] }));
+      return res.end(JSON.stringify({ stopped: false, capped: false, cap_usd_per_day: 25, spend_today: { total_usd: 1 }, measured: {}, e2b: {}, vision_model: "m", desktops_running: 2, desktops_total: 3, roles: ["social", "work"], layout: { two_desktops: 1, one_desktop: 1, mode_slot_s: 1800 }, health: { desktops: 3, running: 2, streams_alive: 2, unhealthy: [{ agent: "cartographer", role: "work", host: "e2b", state: "paused", issues: ["desktop paused"] }] }, agents: [agent, solo], personas_waiting: ["ferry_nan"] }));
     }
     if (u.pathname === "/agents/cartographer") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -85,8 +90,19 @@ test("GET /v1/desktops lists agents with a view-only stream path per running des
   assert.equal(r.status, 200);
   assert.equal(r.headers.get("cache-control"), "no-store");
   const d = await r.json();
-  assert.equal(d.agents.length, 1);
+  assert.equal(d.agents.length, 2);
   const a = d.agents[0];
+  // Phase A: a one-desktop agent gets exactly one stream, its health and mode pass through
+  const s = d.agents[1];
+  assert.deepEqual(Object.keys(s.streams), ["social"]);
+  assert.match(s.streams.social.path, /^\/v1\/desktops\/ferry_nan\/social\/hls\/live\.m3u8\?t=/);
+  assert.equal(s.layout, "one_desktop");
+  assert.equal(s.mode, "work");
+  assert.equal(s.desktops.social.health.stream_alive, true);
+  assert.equal(s.desktops.social.activity, "trading");
+  assert.deepEqual(d.layout, { two_desktops: 1, one_desktop: 1, mode_slot_s: 1800 });
+  assert.equal(d.health.unhealthy.length, 1);
+  assert.equal(d.desktops_total, 3);
   assert.match(a.streams.social.path, /^\/v1\/desktops\/cartographer\/social\/hls\/live\.m3u8\?t=\d{10}\.[A-Za-z0-9_-]{43}$/);
   assert.equal(a.streams.work, null, "no stream for a paused desktop");
   assert.deepEqual(d.personas_waiting, ["ferry_nan"]);

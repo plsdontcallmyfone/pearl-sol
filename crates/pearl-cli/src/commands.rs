@@ -22,7 +22,7 @@ use crate::term::{status_tone, Block, Panel, Table, Tone, View};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Cmd {
-    /// Open the full-screen dashboard.
+    /// Open the Cadre app on its Dashboard view (the same app as `cadre` alone).
     #[command(alias = "tui")]
     Dashboard,
     /// Health of everything (chain nodes, Solana programs, light client, relays, services,
@@ -34,7 +34,6 @@ pub enum Cmd {
         health: bool,
     },
     /// Everything the dashboard reads, as one object (what `status` printed before 2026-10-21).
-    #[command(alias = "wallet")]
     Overview,
     /// One component with its latency: `ping api`, `ping node0`, `ping https://...`.
     Ping {
@@ -60,6 +59,83 @@ pub enum Cmd {
     Agents {
         #[arg(long, default_value_t = 100)]
         limit: usize,
+    },
+    /// Agent trades on both chains (Solana mandate fills on PumpSwap, Cadre AMM swaps), newest
+    /// first, with venue reserves and organic vs house volume (docs/TRADING.md).
+    Trades {
+        /// Only this agent's fills.
+        #[arg(long)]
+        agent: Option<String>,
+        /// pumpswap or cadre-amm.
+        #[arg(long)]
+        venue: Option<String>,
+        /// Leave out house traders.
+        #[arg(long)]
+        organic: bool,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
+    /// Leaderboards from chain data (docs/CLI.md "Boards"): `top` lists every board with its top
+    /// 3; `top <board>` shows one (trading_pnl, market_earnings, acceptance_rate, paid_dms,
+    /// hardest_thinkers, most_tipped, most_followed, miners, evaluators).
+    Top {
+        board: Option<String>,
+        /// 24h, 7d or all.
+        #[arg(long, default_value = "7d")]
+        window: String,
+        /// organic, house or all (house money is never inside the organic value).
+        #[arg(long, default_value = "organic")]
+        side: String,
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    /// Services market (docs/MARKET.md): offers with price, fee, turnaround and organic paid
+    /// volume; `market offer <id>`, `market hires`, `market hire <id>`, `market agent <a>`.
+    /// Reads cadre-api's /v1/market when it serves it, else the market contract on the node.
+    Market {
+        #[command(subcommand)]
+        sub: Option<crate::market::MarketCmd>,
+        #[command(flatten)]
+        list: crate::market::ListArgs,
+    },
+    /// One market offer (spec, provider record, recent hires), or list a new one with
+    /// --title/--price/--turnaround (prints the review; signs only with --send and --key).
+    Offer(crate::market::OfferArgs),
+    /// One market hire (timeline, request, delivery, verdicts), or build one with
+    /// --offer/--request/--evaluator (prints the review; signs only with --send and --key).
+    Hire(crate::market::HireArgs),
+    /// A Solana trade quote: `quote buy --sol 0.01` or `quote sell --tokens 1000` (CADRE, or --mint).
+    #[command(subcommand)]
+    Quote(crate::trade_cmd::QuoteCmd),
+    /// Balances and trading positions (own wallet, mandates) of an account (default: your key).
+    Positions {
+        #[arg(value_name = "ADDRESS")]
+        account: Option<String>,
+    },
+    /// Buy CADRE (or a pump coin by --mint) with SOL on Solana, signed with --key after a review and y/N.
+    Buy {
+        /// SOL to spend, e.g. 0.01 (pump's fee included).
+        #[arg(long)]
+        sol: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        /// Sign without the y/N prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Sell CADRE (or a pump coin by --mint) for SOL on Solana, signed with --key after a review and y/N.
+    Sell {
+        /// Tokens to sell, e.g. 1000.5 (6 decimals).
+        #[arg(long)]
+        tokens: String,
+        #[arg(long, default_value_t = 100)]
+        slippage_bps: u16,
+        #[arg(long)]
+        mint: Option<String>,
+        #[arg(long)]
+        yes: bool,
     },
     /// Live tail of new blocks and their txs (posts in words); Ctrl-C stops.
     Watch {
@@ -87,6 +163,10 @@ pub enum Cmd {
     Balance,
     /// The connected addresses.
     Address,
+    /// The wallet `cadre` uses without --key/--address: `wallet use --key FILE` (signs) or
+    /// `wallet use --address ADDR` (watch only), `wallet show`, `wallet forget`.
+    #[command(subcommand)]
+    Wallet(WalletCmd),
     /// Transfer CADRE on the agent chain: `send <to> <amount>`.
     Send {
         to: String,
@@ -247,6 +327,23 @@ pub enum BridgeCmd {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum WalletCmd {
+    /// Save the wallet to use from now on (~/.cadre/cli.json: the key file's path or the address, never the key).
+    Use {
+        /// Key file (Solana JSON array, base58 or hex), e.g. the Cadre Wallet's Export private key saved to a file.
+        #[arg(long)]
+        key: Option<std::path::PathBuf>,
+        /// Watch this address read-only (Cx or base58).
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// The saved wallet.
+    Show,
+    /// Remove the saved wallet.
+    Forget,
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum LienCmd {
     /// SetRoute: send `bps` of this account's income to a Solana recipient.
     Set {
@@ -304,6 +401,7 @@ pub fn parse_line(line: &str) -> Result<Cmd> {
 }
 
 
+#[derive(Debug, Clone)]
 pub struct Out {
     pub json: Value,
     /// One-line form (the dashboard's shell strip).
@@ -342,6 +440,7 @@ register <name> [uri]          RegisterAgent
 agent [address|@handle]        profile, lien, balances, posts, desktops, jobs
 agents | account <a> | block <n|hash> | job <id> | ticket <id> | verify <ticket> [--run]
 status [--health] | ping <target> [-c N] | watch [--count N --pending] | overview
+top [board] [--window 7d --side organic]   leaderboards from chain data
 buyback [--limit 10]           storefront buyback: share, vault, totals, latest buys
 mine start [--threads 2] | mine stop | mine status
 model ls | model show <id> | model register <dir> | model fetch <id> <dir> | ticket <id>
@@ -510,19 +609,25 @@ fn sent_text(what: &str, s: &Sent) -> String {
 
 /// The tx rows every write box starts with.
 fn tx_panel(chip: &str, s: &Sent) -> Panel {
-    Panel::new(chip).kv("Hash", &s.tx_hash).kv("From", &s.from)
+    Panel::new(chip).kv("Hash", &s.tx_hash).kv("From", fmt::cx_str(&s.from))
 }
 
 fn tx_tail(p: Panel, s: &Sent) -> Panel {
     p.kv("Fee", tok_exact(s.fee)).kv("Nonce", s.nonce.to_string()).kv("Block", s.height.map(|h| h.to_string()).unwrap_or("-".into())).state("State", s.state())
 }
 
+/// A Solana-side key (Solana recipients): base58 or hex, never Cx.
 fn key32(s: &str) -> Result<[u8; 32]> {
     pearl_job::spec::parse_key32(s).with_context(|| format!("{s:?} is not a 32-byte address (base58 or hex)"))
 }
 
+/// A Cadre-chain address: Cx (checksummed or lowercase), legacy base58 or hex (SPEC 2.1).
+fn chain_key(s: &str) -> Result<[u8; 32]> {
+    fmt::parse_chain_addr(s)
+}
+
 fn me(ctx: &Ctx) -> Result<String> {
-    ctx.me.as_ref().map(b58).ok_or_else(|| anyhow!("no account: pass --key FILE or --address ADDR"))
+    ctx.me.as_ref().map(b58).ok_or_else(|| anyhow!("no account: run `cadre wallet use --address ADDR` (watch) or `cadre wallet use --key FILE` (sign) once"))
 }
 
 fn opt_tokens(s: &Option<String>) -> Result<Option<u64>> {
@@ -545,6 +650,34 @@ fn state_cell(s: &str) -> (String, Tone) {
     (s.to_string(), status_tone(s))
 }
 
+fn wallet(w: &WalletCmd) -> Result<Out> {
+    use crate::wallet_cfg as wc;
+    match w {
+        WalletCmd::Use { key, address } => {
+            let s = wc::checked(key.clone(), address.clone())?;
+            let p = wc::save(&s)?;
+            let what = match (&s.key, &s.address) {
+                (Some(k), _) => format!("key file {} (signs)", k.display()),
+                (_, Some(a)) => format!("address {a} (watch only)"),
+                _ => unreachable!(),
+            };
+            Ok(Out::new(json!({"saved": p.display().to_string(), "key": s.key.map(|k| k.display().to_string()), "address": s.address}), format!("cadre now uses the {what}; saved in {}", p.display())))
+        }
+        WalletCmd::Show => Ok(match wc::load() {
+            Some(s) => Out::new(json!({"key": s.key.as_ref().map(|k| k.display().to_string()), "address": s.address}), match (&s.key, &s.address) {
+                (Some(k), _) => format!("key file {} (signs)", k.display()),
+                (_, Some(a)) => format!("address {a} (watch only)"),
+                _ => String::new(),
+            }),
+            None => Out::new(json!({"key": null, "address": null}), "no saved wallet: cadre wallet use --key FILE (or --address ADDRESS)"),
+        }),
+        WalletCmd::Forget => {
+            let gone = wc::forget()?;
+            Ok(Out::new(json!({"forgot": gone}), if gone { "saved wallet removed" } else { "no saved wallet" }))
+        }
+    }
+}
+
 pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
     match cmd {
         Cmd::Dashboard => bail!("already in the dashboard"),
@@ -556,6 +689,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             let p = Panel::new("Address").kv("Agent chain", s(&j, "address")).kv("Solana", s(&j, "solana_address")).kv("Key", if ctx.has_key() { "loaded (never printed)" } else { "none (watching)" });
             Ok(Out::new(j, t).view(View::panel(p)))
         }
+        Cmd::Wallet(w) => wallet(w),
         Cmd::Status { health } => {
             let r = crate::health::run_all(ctx);
             let net = format!("{:?}", ctx.opts.network).to_lowercase();
@@ -570,6 +704,15 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Account { address } => crate::inspect::account(ctx, address),
         Cmd::Block { id } => crate::inspect::block(ctx, id),
         Cmd::Agents { limit } => crate::inspect::agents(ctx, *limit),
+        Cmd::Trades { agent, venue, organic, limit } => crate::trades::trades(ctx, agent.as_deref(), venue.as_deref(), *organic, *limit),
+        Cmd::Top { board, window, side, limit } => crate::boards::top(ctx, board.as_deref(), window, side, *limit),
+        Cmd::Market { sub, list } => crate::market::exec_market(ctx, sub, list),
+        Cmd::Offer(a) => crate::market::offer_cmd(ctx, a),
+        Cmd::Hire(a) => crate::market::hire_cmd(ctx, a),
+        Cmd::Quote(q) => crate::trade_cmd::quote(ctx, q),
+        Cmd::Positions { account } => crate::trade_cmd::positions(ctx, account.as_deref()),
+        Cmd::Buy { sol, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "buy", sol, *slippage_bps, mint, *yes),
+        Cmd::Sell { tokens, slippage_bps, mint, yes } => crate::trade_cmd::trade(ctx, "sell", tokens, *slippage_bps, mint, *yes),
         Cmd::Watch { count, from, pending } => crate::inspect::watch(ctx, *count, *from, *pending),
         Cmd::Verify { ticket, run, models } => crate::inspect::verify(ctx, ticket, *run, models),
         Cmd::Job(JobCmd::Id(words)) => {
@@ -595,7 +738,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         }
         Cmd::Balance => balance(ctx),
         Cmd::Send { to, amount, fee } => {
-            let to_k = key32(to)?;
+            let to_k = chain_key(to)?;
             ensure!(!agent_types::is_reserved(&to_k), "{to} is a reserved address (escrow or pool): nobody can spend from it");
             let amt = parse_amount(amount, CHAIN_DP)?;
             ensure!(amt > 0, "amount must be positive");
@@ -603,8 +746,8 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
             let mut j = sent_json(&s);
             j["to"] = json!(b58(&to_k));
             j["amount"] = json!(amt.to_string());
-            let p = tx_tail(tx_panel("Transfer", &s).kv("To", b58(&to_k)).kv("Amount", tok(amt)), &s);
-            Ok(Out::new(j, sent_text(&format!("send {} to {}", tok(amt), short(&b58(&to_k))), &s)).view(View::panel(p)))
+            let p = tx_tail(tx_panel("Transfer", &s).kv("To", fmt::cx(&to_k)).kv("Amount", tok(amt)), &s);
+            Ok(Out::new(j, sent_text(&format!("send {} to {}", tok(amt), fmt::cxs(&to_k)), &s)).view(View::panel(p)))
         }
         Cmd::Jobs { status, limit } => {
             let mut p = json!({"limit": 1});
@@ -646,7 +789,7 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
                 }
             }
             let mine = ctx.me.as_ref().map(b58);
-            let who = |m: &str| if Some(m.to_string()) == mine { "you".to_string() } else { short(m) };
+            let who = |m: &str| if Some(m.to_string()) == mine { "you".to_string() } else { fmt::short_addr(m) };
             let job = |b: &Value| if s(b, "job_id").chars().all(|c| c == '0') { "fallback".to_string() } else { short(s(b, "job_id")) };
             let t = out
                 .iter()
@@ -727,8 +870,9 @@ pub fn exec(ctx: &Ctx, cmd: &Cmd, shell: bool) -> Result<Out> {
         Cmd::Tx { hash, watch: true, timeout } => crate::txstatus::follow(ctx, hash, std::time::Duration::from_secs(*timeout), std::time::Duration::from_millis(500)),
         Cmd::Snapshot { out, width, height, tab } => {
             let sn = snapshot::gather(ctx);
-            let tab = crate::ui::Tab::parse(tab)?;
-            let (html, text) = crate::html::render_snapshot(&sn, *width, *height, tab)?;
+            let tab = crate::entry::dash::Tab::parse(tab)?;
+            let net = format!("{:?}", ctx.opts.network).to_lowercase();
+            let (html, text) = crate::html::render_snapshot(&sn, &net, *width, *height, tab)?;
             std::fs::write(out, html).with_context(|| format!("write {}", out.display()))?;
             let txt = out.with_extension("txt");
             std::fs::write(&txt, text)?;
@@ -805,7 +949,7 @@ pub fn overview(sn: &Snapshot, full: bool) -> Panel {
     let mut p = Panel::new(&format!("{} overview", brand::NAME)).section("Wallet");
     match &sn.me {
         Some(me) => {
-            p = p.kv("Address", me.as_str()).kv("Balance", sn.balance().map(tok).unwrap_or("-".into()));
+            p = p.kv("Address", fmt::cx_str(&me)).kv("Balance", sn.balance().map(tok).unwrap_or("-".into()));
             p = p.kv("Pending", format!("+{} (not yet K deep)", tok(sn.pending_rewards())));
         }
         None => p = p.kt("Address", "not connected (pass --key FILE)", Tone::Dim),
@@ -905,9 +1049,9 @@ fn balance(ctx: &Ctx) -> Result<Out> {
     }
     let mut j = json!({"address": a, "balance": acc["balance"], "nonce": acc["nonce"], "pending_rewards": pending.to_string(),
                        "height": tip, "finality_k": k});
-    let mut t = format!("{}  {}  (+{} pending, not yet K deep)", short(&a), tok(u(&acc, "balance")), tok(pending));
+    let mut t = format!("{}  {}  (+{} pending, not yet K deep)", fmt::short_addr(&a), tok(u(&acc, "balance")), tok(pending));
     let mut p = Panel::new("Balance")
-        .kv("Address", a.as_str())
+        .kv("Address", fmt::cx_str(&a))
         .kv("Balance", tok(u(&acc, "balance")))
         .kv("Pending", format!("+{} (blocks not yet {k} deep)", tok(pending)))
         .kv("Height", tip.to_string());
@@ -922,9 +1066,8 @@ fn balance(ctx: &Ctx) -> Result<Out> {
             Ok((sol, spl))
         })();
         p = p.section("Solana");
-        if b58(sm) != a {
-            p = p.kv("Address", b58(sm));
-        }
+        // the Solana side of the account: always base58 (a Solana address)
+        p = p.kv("Address", b58(sm));
         match r {
             Ok((sol, spl)) => {
                 j["solana"] = json!({"address": b58(sm), "sol_lamports": sol.to_string(), "spl": spl.map(|x| x.to_string())});
@@ -1069,7 +1212,7 @@ pub fn route_text(r: &Value) -> String {
 
 /// Payout lien box (getRoute).
 pub fn lien_panel(account: &str, r: &Value) -> Panel {
-    let p = Panel::new("Payout lien").kv("Account", account);
+    let p = Panel::new("Payout lien").kv("Account", fmt::cx_str(account));
     if r.is_null() {
         return p.state("State", "none");
     }
@@ -1096,7 +1239,8 @@ pub fn lien_panel(account: &str, r: &Value) -> Panel {
 
 /// Agent box (getAgent, plus the lien line when `with_route`).
 pub fn agent_panel(account: &str, a: &Value, route: &Value, with_route: bool) -> Panel {
-    let mut p = Panel::new("Agent").kv("Account", account);
+    // the same key on both chains (SPEC 2.1): Cadre shows Cx, Solana keeps base58
+    let mut p = Panel::new("Agent").kv("Cadre address", fmt::cx_str(account)).kv("Solana address", account);
     if a.is_object() {
         p = p
             .state("State", "registered")
@@ -1148,9 +1292,9 @@ fn job_post(ctx: &Ctx, p: &JobCmd) -> Result<Out> {
 
     let evaluators = if evaluator.is_empty() {
         let a = params["attesters"].as_array().and_then(|a| a.first()).and_then(|x| x.as_str()).ok_or_else(|| anyhow!("chain has no attesters; pass --evaluator"))?;
-        vec![key32(a)?]
+        vec![chain_key(a)?]
     } else {
-        evaluator.iter().map(|e| key32(e)).collect::<Result<_>>()?
+        evaluator.iter().map(|e| chain_key(e)).collect::<Result<_>>()?
     };
     let deadline_height = u(&info, "height") + deadline;
     let mut job = PostJob {
@@ -1224,13 +1368,13 @@ fn follow_job(ctx: &Ctx, job_id: &str, posted: u64) -> Result<()> {
             let b = ctx.call("getBlock", json!({"height": scanned}))?;
             if b["header_fields"]["job_id"].as_str() == Some(job_id) {
                 mined += 1;
-                st.event(&format!("Mined in block {scanned} by {} (subsidy {})", short(b["header_fields"]["miner"].as_str().unwrap_or("")), tok(u(&b, "subsidy"))));
+                st.event(&format!("Mined in block {scanned} by {} (subsidy {})", fmt::short_addr(b["header_fields"]["miner"].as_str().unwrap_or("")), tok(u(&b, "subsidy"))));
             }
         }
         let status = s(&j, "status");
         if !delivered && (status == "delivered" || status == "completed") {
             delivered = true;
-            st.event(&format!("Delivered by {}, result {}", short(s(&j, "deliverer")), short_n(s(&j, "result_hash"), 6)));
+            st.event(&format!("Delivered by {}, result {}", fmt::short_addr(s(&j, "deliverer")), short_n(s(&j, "result_hash"), 6)));
         }
         let stage = match status {
             "completed" => 3,
@@ -1300,7 +1444,7 @@ fn bridge(ctx: &Ctx, b: &BridgeCmd) -> Result<Out> {
                 .kv("Signature", sig.as_str())
                 .kv("Deposit", format!("#{nonce}"))
                 .kv("Amount", format!("{} {TICKER} (SPL) on Solana, {} on the chain", fmt::spl(amt as u128), tok(amt * agent_types::SPL_SCALE)))
-                .kv("Recipient", b58(&to))
+                .kv("Recipient", fmt::cx(&to))
                 .kv("Solana slot", slot.to_string());
             p = match &unlocked {
                 Some(d) => p.kv("Unlocked", format!("block {}", u(d, "height"))).state("State", final_word(d)),
@@ -1629,11 +1773,11 @@ fn lien(ctx: &Ctx, l: &LienCmd) -> Result<Out> {
         }
         LienCmd::Clear { release_key_file, account } => {
             let account = match account {
-                Some(a) => key32(a)?,
+                Some(a) => chain_key(a)?,
                 None => ctx.me.ok_or_else(|| anyhow!("no account"))?,
             };
             let r = ctx.call("getRoute", json!({"account": b58(&account)}))?;
-            ensure!(!r.is_null(), "{} has no lien", short(&b58(&account)));
+            ensure!(!r.is_null(), "{} has no lien", fmt::cxs(&account));
             let route_nonce = u(&r, "route_nonce");
             let chain_id = u(&ctx.call("getChainInfo", json!({}))?, "chain_id") as u32;
             let rk = pearl_node::read_key_file(release_key_file)?;
@@ -1641,7 +1785,7 @@ fn lien(ctx: &Ctx, l: &LienCmd) -> Result<Out> {
             ctx.ui.done(&format!("Release key signed the clear of route nonce {route_nonce}"));
             let s = send_body(ctx, "ClearRoute", TxBody::ClearRoute { account, route_nonce, sig }, None, None, true)?;
             let view = lien_after(ctx, "ClearRoute", &s, &b58(&account))?;
-            Ok(Out::new(sent_json(&s), sent_text(&format!("lien clear for {}", short(&b58(&account))), &s)).view(view))
+            Ok(Out::new(sent_json(&s), sent_text(&format!("lien clear for {}", fmt::cxs(&account)), &s)).view(view))
         }
     }
 }
@@ -1689,14 +1833,14 @@ pub fn miner_line(v: &Value) -> MinerLine {
     };
     let err = |v: &Value| s(v, "error").to_string();
     match s(v, "event") {
-        "start" => MinerLine::Good(format!("Miner started, {} threads, payout {}", u(v, "threads"), short(s(v, "miner")))),
+        "start" => MinerLine::Good(format!("Miner started, {} threads, payout {}", u(v, "threads"), fmt::short_addr(s(v, "miner")))),
         "block_accepted" => MinerLine::Good(format!("Block {} found ({}), {}", u(v, "height"), job(v), short_n(s(v, "block_hash"), 6))),
         "pool_block" if v["accepted"] == true => MinerLine::Good(format!("Pool block {} found, {}", u(v, "height"), short_n(s(v, "hash"), 6))),
         "pool_block" => MinerLine::Bad(format!("Pool block {} rejected: {}", u(v, "height"), s(v, "reason"))),
         "block_rejected" => MinerLine::Bad(format!("Block {} rejected ({}): {}", u(v, "height"), job(v), s(v, "reason"))),
         "job_loaded" => MinerLine::Good(format!("Loaded {} ({} x {})", job(v), u(v, "m"), u(v, "n"))),
         "result_submitted" => MinerLine::Good(format!("Delivered {} (result {})", job(v), short_n(s(v, "result_hash"), 6))),
-        "complete_sent" => MinerLine::Good(format!("Completion sent for {} by attester {}", job(v), short(s(v, "attester")))),
+        "complete_sent" => MinerLine::Good(format!("Completion sent for {} by attester {}", job(v), fmt::short_addr(s(v, "attester")))),
         "completed" => MinerLine::Good(format!("{} completed", job(v))),
         "stats" => MinerLine::Status(format!("Mining at height {}, {:.0} nonces/s", u(v, "height"), v["nonces_per_s"].as_f64().unwrap_or(0.0))),
         "mine_error" | "step_failed" | "template_failed" | "deliver_failed" | "submit_result_failed" | "complete_failed" | "result_blob_failed" => {
@@ -1775,7 +1919,7 @@ fn mine_foreground(ctx: &Ctx, mut cmd: std::process::Command, bin: &std::path::P
     cmd.stdout(std::process::Stdio::piped()).stdin(std::process::Stdio::null());
     let mut child = cmd.spawn().with_context(|| format!("run {}", bin.display()))?;
     let pid = child.id();
-    ctx.ui.hint(&format!("pearl-miner pid {pid}, {threads} threads, payout {}. Ctrl-C stops it.", ctx.me.as_ref().map(b58).map(|a| short(&a)).unwrap_or_default()));
+    ctx.ui.hint(&format!("pearl-miner pid {pid}, {threads} threads, payout {}. Ctrl-C stops it.", ctx.me.as_ref().map(fmt::cxs).unwrap_or_default()));
     let st = ctx.ui.step("Mining");
     let (mut found, mut rejected) = (0u64, 0u64);
     let out = child.stdout.take().ok_or_else(|| anyhow!("no miner stdout"))?;
@@ -1889,7 +2033,11 @@ mod tests {
         assert!(s.contains("ACTIVE") && s.contains("25% of income") && s.contains("whole supply") && s.contains("Release key    none"), "{s}");
         assert!(crate::term::render_panel(&lien_panel("me", &Value::Null), &Style::plain()).contains("NONE"));
         let a = crate::term::render_panel(&agent_panel("me", &Value::Null, &Value::Null, true), &Style::plain());
-        assert!(a.contains("NOT REGISTERED") && a.contains("Payout lien    none"), "{a}");
+        assert!(a.contains("NOT REGISTERED") && a.lines().any(|l| l.contains("Payout lien") && l.contains("none")), "{a}");
+        // the same key on both chains, labelled (SPEC 2.1)
+        let b = crate::term::render_panel(&agent_panel("C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7", &Value::Null, &Value::Null, false), &Style::plain());
+        assert!(b.contains("Cadre address") && b.contains("Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06"), "{b}");
+        assert!(b.contains("Solana address") && b.contains("C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7"), "{b}");
     }
 
     #[test]

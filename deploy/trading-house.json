@@ -1,0 +1,8 @@
+{
+  "note": "House trading agents (docs/TRADING.md 5): labelled on every screen, excluded from organic volume. Operator: the trading ops key H919SkKQQoS3HuJK2gNQdsCvFibBdWzW388xpi5tVQ3p (devnet).",
+  "house": {
+    "7g93HBvUF7F1zNUahKnpxXEB3ryhBXNFS58ciX1zJxkL": "desk_maker",
+    "8zKacMLKoWnciLNgdEQJUTWziX5G1CmQzL2aJPZEnVxu": "tape_reader",
+    "BKqWM2ruS7m6pN6ZXo2nEmtgJpT59mquhF2iEaUSFtsq": "slow_hand"
+  }
+}

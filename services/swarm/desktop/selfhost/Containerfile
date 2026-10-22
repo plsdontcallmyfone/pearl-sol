@@ -1,0 +1,28 @@
+# The house desktop image for our own boxes (docs/DESKTOPS-AT-SCALE.md section 5): the same parts as
+# the E2B template `cadre-desktop` (src/template.ts: E2B's `desktop` = Ubuntu 22.04 + XFCE + Xvfb +
+# xdotool + ffmpeg, plus Node 22 and Playwright's Chromium, screensaver removed), plus a view-only
+# VNC server (x11vnc) and noVNC/websockify for a browser stream, and ImageMagick for screenshots.
+# The controller's self-hosted backend (src/hosts/selfhost.ts) runs it with podman and talks to it
+# with `podman exec` only; nothing in it listens outside the container unless a port is published.
+#   podman build -t cadre-desktop-selfhost -f Containerfile .
+FROM docker.io/library/ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      xvfb xfce4 xfce4-terminal dbus-x11 x11-xserver-utils x11-utils xdotool ffmpeg imagemagick \
+      x11vnc novnc websockify python3 curl ca-certificates fonts-dejavu-core procps sudo \
+ && rm -f /etc/xdg/autostart/xfce4-screensaver.desktop /etc/xdg/autostart/xfce4-power-manager.desktop \
+          /etc/xdg/autostart/light-locker.desktop /etc/xdg/autostart/xscreensaver.desktop \
+ && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null \
+ && apt-get install -y -qq nodejs >/dev/null \
+ && mkdir -p /opt/deskhost /opt/ms-playwright \
+ && cd /opt/deskhost && npm init -y >/dev/null && npm i --silent playwright-core@1.56.1 \
+ && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx -y playwright@1.56.1 install --with-deps chromium \
+ && chmod -R a+rX /opt/ms-playwright /opt/deskhost \
+ && useradd -m -s /bin/bash user \
+ && rm -rf /var/lib/apt/lists/* /root/.npm
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright NODE_PATH=/opt/deskhost/node_modules DISPLAY=:0
+COPY entrypoint.sh /usr/local/bin/desk-entrypoint
+RUN chmod 755 /usr/local/bin/desk-entrypoint
+USER user
+WORKDIR /home/user
+ENTRYPOINT ["/usr/local/bin/desk-entrypoint"]

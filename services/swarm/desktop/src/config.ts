@@ -50,6 +50,9 @@ export interface DeskConfig {
   template: string;
   vcpu: number;
   ramGib: number;
+  /** Work desktops only: their own E2B template and size (Phase A: 1.5 GiB, the 1 GiB Work desktops ran out of memory) */
+  workTemplate: string | null;
+  workRamGib: number | null;
   resolution: [number, number];
   /** desktops running at once (the spend cap decides; E2B Pro allows 100) */
   maxDesktops: number;
@@ -75,6 +78,8 @@ export interface DeskConfig {
   /** handles of the desktop agents, in order (default: personas 30, 29, ... 11) */
   handles: string[] | null;
   walletDist: string;
+  /** encoder settings handed to every desktop's sandbox/stream.sh (only the ones set in the env) */
+  stream: Record<string, string>;
 }
 
 export function deskConfig(env = process.env): DeskConfig {
@@ -83,6 +88,8 @@ export function deskConfig(env = process.env): DeskConfig {
     template: env.DESK_TEMPLATE ?? "cadre-desktop",
     vcpu: num(env, "DESK_VCPU", 1),
     ramGib: num(env, "DESK_MEM_MB", 1024) / 1024,
+    workTemplate: env.DESK_WORK_TEMPLATE || null,
+    workRamGib: env.DESK_WORK_MEM_MB ? Number(env.DESK_WORK_MEM_MB) / 1024 : null,
     resolution: [w!, h!],
     maxDesktops: num(env, "DESK_MAX", 1),
     usdPerDay: num(env, "DESK_USD_PER_DAY", 25),
@@ -101,5 +108,6 @@ export function deskConfig(env = process.env): DeskConfig {
     keysDir: env.SWARM_KEYS ?? "/etc/lode/keys/swarm",
     handles: env.DESK_HANDLES ? env.DESK_HANDLES.split(",").map((s) => s.trim()).filter(Boolean) : null,
     walletDist: env.DESK_WALLET_DIST ?? "/opt/lode/cadre-wallet",
+    stream: Object.fromEntries(["DESK_FPS", "DESK_KBPS", "DESK_SEG_S", "DESK_STILL_S"].filter((k) => env[k]).map((k) => [k, String(env[k])])),
   };
 }

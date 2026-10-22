@@ -1,11 +1,12 @@
 // HTML for the contract pages (models in contract-route.ts). Same primitives and shell as
 // views.ts; Geist only, no monospace. Missing data shows "Unavailable" with the reason.
 
+import { shortCx, toCx } from "../../../packages/cx-address/src/index.ts";
 import { BRAND } from "./brand.ts";
 import { fmtInt } from "./math.ts";
 import type { Summary } from "./models.ts";
 import type { Read } from "./contract-route.ts";
-import { T, badge, card, esc, id, kv, page, tok } from "./views.ts";
+import { T, addr, badge, card, esc, id, kv, page, tok } from "./views.ts";
 import { txStatusCell } from "./txstatus-view.ts";
 
 const STYLE = `<style>
@@ -53,7 +54,7 @@ const dataCell = (d: string) => (d ? `${id(d, { head: 10, tail: 6 })} <span clas
 
 /** Contract row for lists. */
 function contractRow(c: any) {
-  return `<a class="tr" href="/contract/${esc(c.address)}"><span>${c.label ? `<strong>${esc(c.label)}</strong> ` : ""}<span class="faint">${esc(c.address.slice(0, 6))}…${esc(c.address.slice(-4))}</span></span><span class="faint">code ${esc(c.code_hash.slice(0, 8))}…</span><span>${c.upgradable ? badge("warn", "upgradable") : badge("ok", "immutable")}</span><span class="num">#${fmtInt(c.created_height)}</span><span class="num">${fmtInt(c.calls)}</span><span class="num">${fmtInt(c.events)}</span><span class="num">${grp(c.storage_bytes)} B</span></a>`;
+  return `<a class="tr" href="/contract/${esc(c.address)}"><span>${c.label ? `<strong>${esc(c.label)}</strong> ` : ""}<span class="faint" title="${esc(toCx(c.address))}">${esc(shortCx(c.address))}</span></span><span class="faint">code ${esc(c.code_hash.slice(0, 8))}…</span><span>${c.upgradable ? badge("warn", "upgradable") : badge("ok", "immutable")}</span><span class="num">#${fmtInt(c.created_height)}</span><span class="num">${fmtInt(c.calls)}</span><span class="num">${fmtInt(c.events)}</span><span class="num">${grp(c.storage_bytes)} B</span></a>`;
 }
 
 function pager(base: string, key: string, offset: number, limit: number, total: number, extra = "") {
@@ -104,7 +105,7 @@ export function contractPage(sm: Summary, m: any) {
   const r: Read = m.contract;
   if (!r.ok) {
     return page("Contract", `${STYLE}<nav class="crumbs"><a href="/">Overview</a><span>/</span><a href="/contracts">Contracts</a></nav>
-<div class="intro"><h1>Contract</h1><p>${id(m.address, { full: true })}</p></div><div class="cards">${card("Contract", unavailable(r.reason), { cls: "wide" })}</div>`, { active: "contracts", summary: sm });
+<div class="intro"><h1>Contract</h1><p>${addr(m.address, { full: true })}</p></div><div class="cards">${card("Contract", unavailable(r.reason), { cls: "wide" })}</div>`, { active: "contracts", summary: sm });
   }
   const c = r.v;
   const name = c.label ? esc(c.label) : "Unlabelled contract";
@@ -115,11 +116,11 @@ export function contractPage(sm: Summary, m: any) {
   ${stat("Events", grp(c.events), "emitted over its life")}
 </section>`;
   const rec = kv([
-    ["Address", id(c.address, { head: 10, tail: 8 })],
+    ["Address", addr(c.address, { head: 10, tail: 8 })],
     ["Label", c.label ? esc(c.label) : `<span class="faint">none</span>`],
     ["Code", `${id(c.code_hash, { href: `/code/${c.code_hash}`, head: 10, tail: 8 })}${c.code_size !== undefined ? ` <span class="faint num">${grp(c.code_size)} B</span>` : ""}`],
-    ["Admin", c.admin ? `${id(c.admin, { head: 8, tail: 6 })} ${badge("warn", "upgradable")}` : `${badge("ok", "immutable")} <span class="faint">no admin: it can never be migrated</span>`],
-    ["Creator", id(c.creator, { head: 8, tail: 6 })],
+    ["Admin", c.admin ? `${addr(c.admin, { head: 8, tail: 6 })} ${badge("warn", "upgradable")}` : `${badge("ok", "immutable")} <span class="faint">no admin: it can never be migrated</span>`],
+    ["Creator", addr(c.creator, { head: 8, tail: 6 })],
     ["Created", blk(c.created_height)],
     ["Migrated", c.migrated_height ? blk(c.migrated_height) : `<span class="faint">never</span>`],
     ["Entries", Array.isArray(c.entries) && c.entries.length ? esc(c.entries.join(", ")) : `<span class="faint">not reported by the node</span>`],
@@ -138,9 +139,9 @@ export function contractPage(sm: Summary, m: any) {
       : `<p class="note">${m.topic ? `No ${m.topic_name ? esc(m.topic_name) : "matching"} events among the ones scanned.` : "This contract has emitted no events yet."}</p>`;
   const evPager = ev.ok ? pager(base, "offset", m.offset, m.limit, ev.v.total, tq) : "";
   return page(
-    `Contract ${c.label || c.address.slice(0, 8)}`,
+    `Contract ${c.label || shortCx(c.address)}`,
     `${STYLE}<nav class="crumbs"><a href="/">Overview</a><span>/</span><a href="/contracts">Contracts</a><span>/</span><span>${name}</span></nav>
-<div class="intro"><h1>${name}</h1><p>${id(c.address, { full: true })}</p><p>A WASM contract on the agent chain. Everything here is the node's contract record at the tip; events are read from the node's per-contract event index.</p></div>
+<div class="intro"><h1>${name}</h1><p>${addr(c.address, { full: true })}</p><p>A WASM contract on the agent chain. Everything here is the node's contract record at the tip; events are read from the node's per-contract event index.</p></div>
 ${stats}
 <div class="cards">
   ${card("Record", rec, { cls: "wide", aside: `<a class="more-s" href="/api/contract/${esc(c.address)}">JSON</a>` })}
@@ -170,7 +171,7 @@ export function codePage(sm: Summary, m: any) {
 <div class="cards">
   ${card("Code", kv([
     ["Code hash", id(c.code_hash, { head: 10, tail: 8 })],
-    ["Deployer", id(c.deployer, { head: 8, tail: 6 })],
+    ["Deployer", addr(c.deployer, { head: 8, tail: 6 })],
     ["Deployed", blk(c.height)],
     ["Size", `${grp(c.size)} bytes`],
     ["Deposit", amt(c.deposit)],
@@ -187,7 +188,7 @@ export function receiptBody(rc: any, height?: number | null) {
     ["Status", `${statusBadge(rc.status)}${rc.final === true ? ` ${badge("ok", "final")}` : rc.final === false ? ` ${badge("neutral", "not final")}` : ""}`],
     ["Gas used", `${grp(rc.gas_used)} of ${grp(rc.gas_limit)}`],
     ["Fee charged", `${amt(rc.fee_charged, 9)} <span class="faint">(unused gas refunded)</span>`],
-    ...(rc.contract ? ([["Contract", id(rc.contract, { href: `/contract/${rc.contract}`, head: 8, tail: 6 })]] as [string, string][]) : []),
+    ...(rc.contract ? ([["Contract", addr(rc.contract, { href: `/contract/${rc.contract}`, head: 8, tail: 6 })]] as [string, string][]) : []),
     ...(rc.code_hash && !/^0+$/.test(rc.code_hash) ? ([["Code", id(rc.code_hash, { href: `/code/${rc.code_hash}`, head: 8, tail: 6 })]] as [string, string][]) : []),
     ...(rc.method ? ([["Method", esc(rc.method)]] as [string, string][]) : []),
     ["Return data", rc.return ? dataCell(rc.return) : `<span class="faint">empty</span>`],
@@ -199,7 +200,7 @@ export function receiptBody(rc: any, height?: number | null) {
   const evs = rc.events ?? [];
   const evTable = evs.length
     ? `<div class="table t-cev"><div class="tr th"><span>#</span><span>Contract</span><span>Event</span><span>Data</span></div>${evs
-        .map((e: any) => `<div class="tr"><span class="num">${fmtInt(e.index)}</span><span>${id(e.contract, { href: `/contract/${e.contract}`, head: 6, tail: 4 })}</span><span>${topicCell(e)}</span><span>${dataCell(e.data)}</span></div>`)
+        .map((e: any) => `<div class="tr"><span class="num">${fmtInt(e.index)}</span><span>${addr(e.contract, { href: `/contract/${e.contract}`, head: 6, tail: 4 })}</span><span>${topicCell(e)}</span><span>${dataCell(e.data)}</span></div>`)
         .join("")}</div>`
     : "";
   return kv(rows) + evTable;
@@ -216,7 +217,7 @@ export function txPage(sm: Summary, m: any) {
   const head = kv([
     ["Kind", `<span class="ix">${esc(t.kind)}</span>`],
     ["Status", m.tx_status ? txStatusCell(m.tx_status) : pending ? badge("neutral", "pending in the mempool") : `${badge("ok", "included")} ${blk(t.height)}${t.confirmations !== undefined ? ` <span class="faint">${fmtInt(t.confirmations)} confirmations</span>` : ""}`],
-    ["From", id(t.from, { href: `/agent/${t.from}`, head: 8, tail: 6 })],
+    ["From", addr(t.from, { href: `/agent/${t.from}`, head: 8, tail: 6 })],
     ["Nonce", grp(t.nonce)],
     ["Fee paid (bid)", amt(t.fee, 9)],
     ...(t.block_hash ? ([["Block hash", id(t.block_hash, { href: `/block/${t.height}`, head: 8, tail: 6 })]] as [string, string][]) : []),
@@ -226,11 +227,11 @@ export function txPage(sm: Summary, m: any) {
   if (c) {
     const b = c.body;
     const rows: [string, string][] = [];
-    if (b.contract) rows.push(["Contract", id(b.contract, { href: `/contract/${b.contract}`, head: 8, tail: 6 })]);
+    if (b.contract) rows.push(["Contract", addr(b.contract, { href: `/contract/${b.contract}`, head: 8, tail: 6 })]);
     if (b.code_hash) rows.push(["Code", id(b.code_hash, { href: `/code/${b.code_hash}`, head: 8, tail: 6 })]);
     if (b.code_size !== undefined) rows.push(["Code size", `${grp(b.code_size)} bytes`]);
     if (b.label !== undefined) rows.push(["Label", b.label ? esc(b.label) : `<span class="faint">none</span>`]);
-    if ("admin" in b) rows.push([c.kind === "SetContractAdmin" ? "New admin" : "Admin", b.admin ? id(b.admin, { head: 8, tail: 6 }) : `${badge("ok", "immutable")} <span class="faint">no admin</span>`]);
+    if ("admin" in b) rows.push([c.kind === "SetContractAdmin" ? "New admin" : "Admin", b.admin ? addr(b.admin, { head: 8, tail: 6 }) : `${badge("ok", "immutable")} <span class="faint">no admin</span>`]);
     if (b.value !== undefined) rows.push(["Value sent", amt(b.value, 9)]);
     if (b.gas_limit !== undefined) rows.push(["Gas limit", grp(b.gas_limit)]);
     if (b.method) rows.push(["Method", esc(b.method)]);

@@ -170,7 +170,7 @@ gives the measured split.
 ### 3.1 Activation
 
 `speed_upgrade_height(chain_id)`: the Cadre public devnet (chain id 1,128,350,802) at
-`DEVNET_SPEED_HEIGHT = S`; every other chain 0 (uncle rules from genesis; their target time, K
+`DEVNET_SPEED_HEIGHT = S` (S = 6000, about 18:40 UTC 2026-10-22 at 60 s blocks); every other chain 0 (uncle rules from genesis; their target time, K
 and emission stay whatever their genesis config says, so existing local chains replay
 unchanged because they carry no uncles and no `emission_ppb`).
 

@@ -92,7 +92,7 @@ fn chain_tx(ctx: &Ctx, hash: &str) -> Result<Out> {
     let tx = decode::chain_tx_b64(s(&v, "tx"));
     let mut w = decode::chain_words(tx.as_ref(), s(&v, "kind"), s(&v, "from"), &params(ctx));
     if let Some(h) = ctx.call("getProfile", json!({"account": s(&v, "from")})).ok().and_then(|p| p["handle"].as_str().map(String::from)) {
-        w.headline = w.headline.replacen(&short(s(&v, "from")), &format!("@{h}"), 1);
+        w.headline = w.headline.replacen(&crate::fmt::short_addr(s(&v, "from")), &format!("@{h}"), 1);
     }
     let info = ctx.call("getChainInfo", json!({})).unwrap_or(Value::Null);
     let ts = crate::txstatus::normalize(&v, &info);
@@ -200,8 +200,9 @@ pub fn resolve_account(ctx: &Ctx, a: &str) -> Result<(String, Value)> {
         ensure!(!p.is_null(), "no profile with handle @{h}");
         return Ok((s(&p, "account").to_string(), p));
     }
-    if let Ok(k) = pearl_job::spec::parse_key32(t) {
-        let acct = b58(&k);
+    if t.starts_with(agent_types::cx::CX_PREFIX) || pearl_job::spec::parse_key32(t).is_ok() {
+        // Cx (a wrong checksum is an error here, not a handle lookup), base58 or hex
+        let acct = b58(&crate::fmt::parse_chain_addr(t)?);
         let p = ctx.call("getProfile", json!({"account": acct})).unwrap_or(Value::Null);
         return Ok((acct, p));
     }
@@ -250,20 +251,20 @@ pub fn account(ctx: &Ctx, a: &str) -> Result<Out> {
     let txs = ctx.call("getAccountTxs", json!({"account": acct, "limit": 10})).map(|v| v["txs"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
     let solb = solana_balances(ctx, &acct);
     let pr = params(ctx);
-    let mut p = Panel::new("Account").kv("Address", acct.as_str()).section("Cadre chain").kv("Balance", cadre(units(&ac["balance"]))).kv("Nonce", u(&ac, "nonce").to_string());
+    let mut p = Panel::new("Account").kv("Address", crate::fmt::cx_str(&acct)).section("Cadre chain").kv("Balance", cadre(units(&ac["balance"]))).kv("Nonce", u(&ac, "nonce").to_string());
     p = p.kv("Payout lien", crate::commands::route_text(&ac["route"]));
     p = p.kv("Agent", if agent.is_null() { "not registered".to_string() } else { format!("{} ({})", s(&agent, "name"), s(&agent, "uri")) });
     if profile.is_object() && profile["has_profile"] == true {
         p = p.section("Profile").kv("Handle", format!("@{}", s(&profile, "handle"))).kv("Name", s(&profile, "name"));
         p = p.kv("Kind", profile_kind(&profile));
     }
-    p = p.section("Solana").kv("Balances", sol_line(&solb));
+    p = p.section("Solana").kv("Address", acct.as_str()).kv("Balances", sol_line(&solb));
     let mut v = View::panel(p);
     v.0.push(Block::Table(Table { chip: Some("Recent txs".into()), head: ["HEIGHT", "KIND", "WHAT", "TX"].map(String::from).to_vec(), right: vec![true, false, false, false], rows: tx_rows(ctx, &txs, &pr), empty: "no transactions".into() }));
     if let Some(l) = explorer_link(ctx, &format!("/agent/{acct}")) {
         v = v.hint(format!("explorer {l}"));
     }
-    let t = format!("{} balance {} nonce {}", short(&acct), cadre(units(&ac["balance"])), u(&ac, "nonce"));
+    let t = format!("{} balance {} nonce {}", crate::fmt::short_addr(&acct), cadre(units(&ac["balance"])), u(&ac, "nonce"));
     Ok(Out::new(json!({"account": acct, "chain": ac, "agent": agent, "profile": profile, "solana": solb, "txs": txs}), t).view(v))
 }
 
@@ -303,7 +304,7 @@ pub fn block(ctx: &Ctx, id: &str) -> Result<Out> {
     let pr = params(ctx);
     let mut p = Panel::new(&format!("Block {}", u(hf, "height")))
         .kv("Hash", s(&b, "hash"))
-        .kv("Miner", s(hf, "miner"))
+        .kv("Miner", crate::fmt::cx_str(s(hf, "miner")))
         .kv("Work", if fallback { "fallback block (no paid job; earns its tx fees only)".to_string() } else { format!("paid job {job}") })
         .kv("Reward", format!("{} (fees {}, subsidy {})", cadre(units(&b["reward"])), cadre(units(&b["fees"])), cadre(units(&b["subsidy"]))))
         .kv("Time", age(now_ms().saturating_sub(u(hf, "timestamp_ms"))))
@@ -361,14 +362,15 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
     let api = ctx.eps.get("api").map(String::from);
     let handle = s(&prof, "handle").to_string();
     // everything off-chain, in parallel, best effort
-    let (record, solb, posts, desk, hosted, ua) = std::thread::scope(|sc| {
+    let (record, solb, posts, desk, hosted, ua, trading) = std::thread::scope(|sc| {
         let r = sc.spawn(|| crate::agent::fetch_profile(&base, &a));
         let sb = sc.spawn(|| solana_balances(ctx, &a));
         let ps = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/profiles/{a}/posts?limit=5"))));
         let dk = sc.spawn(|| api.as_ref().filter(|_| !handle.is_empty()).map(|x| get(&format!("{x}/desktops/{handle}"))));
         let ho = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/hosted/agents/{a}"))));
         let us = sc.spawn(|| api.as_ref().map(|x| get(&format!("{x}/useragents/{a}"))));
-        (r.join().unwrap(), sb.join().unwrap(), ps.join().unwrap(), dk.join().unwrap(), ho.join().unwrap(), us.join().unwrap())
+        let tr = sc.spawn(|| api.as_ref().and_then(|x| crate::trades::agent_blocks(x, &a)));
+        (r.join().unwrap(), sb.join().unwrap(), ps.join().unwrap(), dk.join().unwrap(), ho.join().unwrap(), us.join().unwrap(), tr.join().unwrap())
     });
     let (profile, perr) = match record {
         Ok(p) => (p, None),
@@ -380,7 +382,7 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
     if prof.is_object() && prof["has_profile"] == true {
         sp = sp.kv("Handle", format!("@{}", s(&prof, "handle"))).kv("Name", s(&prof, "name")).kv("Kind", profile_kind(&prof));
         let op = s(&prof, "operator");
-        sp = sp.kv("Operator", if op.is_empty() { "none".to_string() } else { format!("{op} ({})", if prof["operator_linked"] == true { "linked both ways" } else { "named by the agent only, no OperatorLink" }) });
+        sp = sp.kv("Operator", if op.is_empty() { "none".to_string() } else { format!("{} ({})", crate::fmt::cx_str(op), if prof["operator_linked"] == true { "linked both ways" } else { "named by the agent only, no OperatorLink" }) });
         let st = &prof["stats"];
         sp = sp.kv("Town", format!("{} posts, {} replies, {} followers, {} following", u(st, "posts"), u(st, "replies"), u(st, "followers"), u(st, "following")));
     } else {
@@ -420,6 +422,11 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
             .collect();
         view.0.push(Block::Table(Table { chip: Some("Recent posts".into()), head: ["HEIGHT", "KIND", "BODY", "THOUGHT RECEIPT"].map(String::from).to_vec(), right: vec![true, false, false, false], rows, empty: "no posts".into() }));
     }
+    // trading (docs/TRADING.md): positions, realized PnL, recent fills
+    let trading_json = trading.as_ref().map(|t| t.1.clone());
+    if let Some((blocks, _)) = trading {
+        view.0.extend(blocks);
+    }
     // the explorer record (jobs, money behind work)
     if profile.is_object() {
         let (blocks, _) = crate::agent::profile_view(&profile);
@@ -427,11 +434,11 @@ pub fn agent(ctx: &Ctx, who: Option<&str>, explorer: &Option<String>) -> Result<
     } else if let Some(e) = &perr {
         view = view.hint(format!("record unavailable: {e} (set --explorer or PEARL_EXPLORER)"));
     }
-    let t = format!("{}{}: {}", short(&a), if handle.is_empty() { String::new() } else { format!(" @{handle}") }, if agent.is_null() { "not registered".into() } else { format!("{} since height {}", s(&agent, "name"), u(&agent, "registered_height")) });
+    let t = format!("{}{}: {}", crate::fmt::short_addr(&a), if handle.is_empty() { String::new() } else { format!(" @{handle}") }, if agent.is_null() { "not registered".into() } else { format!("{} since height {}", s(&agent, "name"), u(&agent, "registered_height")) });
     Ok(Out::new(
         json!({"account": a, "agent": agent, "route": route, "explorer": base, "profile": profile, "profile_error": perr,
                "town": prof, "balances": {"chain": ac["balance"], "solana": solb}, "posts": post_list,
-               "desktops": desk.filter(|d| d.ok()).map(|d| d.json), "hosted": hosted.filter(|h| h.ok()).map(|h| h.json), "user_agent": ua.filter(|h| h.ok()).map(|h| h.json)}),
+               "desktops": desk.filter(|d| d.ok()).map(|d| d.json), "hosted": hosted.filter(|h| h.ok()).map(|h| h.json), "user_agent": ua.filter(|h| h.ok()).map(|h| h.json), "trading": trading_json}),
         t,
     )
     .view(view))
@@ -518,7 +525,7 @@ pub fn agents(ctx: &Ctx, limit: usize) -> Result<Out> {
                 "error" => Tone::Bad,
                 _ => Tone::Warn,
             };
-            vec![cell(format!("@{}", s(x, "handle"))), cell(s(x, "kind")), dim(short(s(x, "account"))), cell(lp), cell(if run.is_empty() { "-".into() } else { run }), (hs.to_uppercase(), tone)]
+            vec![cell(format!("@{}", s(x, "handle"))), cell(s(x, "kind")), dim(crate::fmt::short_addr(s(x, "account"))), cell(lp), cell(if run.is_empty() { "-".into() } else { run }), (hs.to_uppercase(), tone)]
         })
         .collect();
     let house = out.iter().filter(|x| x["kind"] == "house").count();
@@ -646,7 +653,7 @@ pub fn watch(ctx: &Ctx, count: Option<u64>, from: Option<u64>, pending: bool) ->
         if let Some(h) = handles.get(a) {
             return h.clone();
         }
-        let h = ctx.call("getProfile", json!({"account": a})).ok().and_then(|p| p["handle"].as_str().map(|h| format!("@{h}"))).unwrap_or_else(|| short(a));
+        let h = ctx.call("getProfile", json!({"account": a})).ok().and_then(|p| p["handle"].as_str().map(|h| format!("@{h}"))).unwrap_or_else(|| crate::fmt::short_addr(a));
         handles.insert(a.to_string(), h.clone());
         h
     };
@@ -678,7 +685,7 @@ pub fn watch(ctx: &Ctx, count: Option<u64>, from: Option<u64>, pending: bool) ->
                     "{} {}  {:<12} {:<18} {:>3} txs  reward {}",
                     st.paint(Tone::Good, "■"),
                     st.bold(&format!("block {next}")),
-                    short(s(hf, "miner")),
+                    crate::fmt::short_addr(s(hf, "miner")),
                     if fallback { "fallback".to_string() } else { format!("job {}", short(job)) },
                     list.len(),
                     cadre(units(&b["reward"]))
@@ -691,7 +698,7 @@ pub fn watch(ctx: &Ctx, count: Option<u64>, from: Option<u64>, pending: bool) ->
                 let from = s(x, "from").to_string();
                 if !from.is_empty() && matches!(w.kind.as_str(), "Post" | "React" | "Follow" | "SetProfile" | "OperatorLink") {
                     let h = handle(&from);
-                    w.headline = w.headline.replacen(&short(&from), &h, 1);
+                    w.headline = w.headline.replacen(&crate::fmt::short_addr(&from), &h, 1);
                 }
                 let mut lock = out.lock();
                 if json_mode {

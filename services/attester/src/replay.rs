@@ -42,6 +42,8 @@ pub struct ReplayReport {
     pub segments: usize,
     pub secs: f64,
     pub gemm_secs: f64,
+    /// Segments checked by commitment alone (rebuilt A commits to hash_a): no blob fetched.
+    pub a_blobs_skipped: usize,
 }
 
 type Loaded = (Arc<Model>, Arc<Tokenizer>);
@@ -96,6 +98,8 @@ struct Sink<'a> {
     fraud: Option<(String, usize, Option<Mismatch>, String, String)>,
     segments: usize,
     gemm_secs: f64,
+    /// Segments whose rebuilt A matched hash_a, so their activation blob was never fetched.
+    a_skipped: usize,
 }
 
 #[derive(Debug)]
@@ -112,11 +116,27 @@ impl GemmSink for Sink<'_> {
         let sid = standing::segment_id(&self.ticket, index as u16, self.round);
         let seg: JobInfo = self.node.get_job(&sid)?.ok_or_else(|| anyhow!("segment {} (round {}, matrix {index}) not found", hex::encode(sid), self.round))?;
         ensure!(seg.m as usize == m && seg.config.common_dim as usize == k && seg.n as usize == n, "segment {} is {}x{}x{}, the model's matrix {index} needs {m}x{k}x{n}", hex::encode(sid), seg.m, seg.config.common_dim, seg.n);
-        let posted = pearl_node::load_segment_a(self.node, &seg)?;
         let key = seg.to_job().job_key();
         let bt = self.model.bt(index).ok_or_else(|| anyhow!("model has no matrix {index}"))?;
         // our weights are the registered ones (the segment's hash_b)
         ensure!(standing::commit_bt(&key, bt) == seg.hash_b, "local weights of matrix {index} do not match the registered hash_b");
+        // Commitment first (2026-10-22, SPEC 4.5 "Segment data retention"): when the A we rebuilt
+        // commits to the segment's hash_a it IS the posted A (the commitment binds), so the
+        // activation blob is fetched only to locate a mismatch for the fraud proof. An honest
+        // ticket's replay then reads no A blobs at all.
+        if a.len() == m * k && pearl_job::commit_a(&key, a) == seg.hash_a {
+            let t = Instant::now();
+            let c = gemm_bt(a, m, k, bt, n);
+            self.gemm_secs += t.elapsed().as_secs_f64();
+            if Some(result_hash(&key, &c)) != seg.result_hash {
+                self.fraud = Some(("product".into(), index, None, hex::encode(sid), seg.data_uri.clone()));
+                return Err(Stop.into());
+            }
+            self.segments += 1;
+            self.a_skipped += 1;
+            return Ok(c);
+        }
+        let posted = pearl_node::load_segment_a(self.node, &seg)?;
         // the blob is the segment's committed A (hash_a), so a proof built on it binds to the chain
         ensure!(pearl_job::commit_a(&key, &posted) == seg.hash_a, "segment {}: activation blob does not match hash_a", hex::encode(sid));
         if let Some(d) = first_diff(index, &posted, a, k) {
@@ -140,7 +160,7 @@ impl GemmSink for Sink<'_> {
 pub fn replay_ticket(node: &dyn NodeApi, store: &ModelStore, ticket: &JobInfo, model_hex: &str, r: &Value) -> Result<ReplayReport> {
     let t0 = Instant::now();
     let (model, tok) = load(node, store, model_hex)?;
-    let mut rep = ReplayReport { rounds: 0, requests: 0, rows: 0, segments: 0, secs: 0.0, gemm_secs: 0.0 };
+    let mut rep = ReplayReport { rounds: 0, requests: 0, rows: 0, segments: 0, secs: 0.0, gemm_secs: 0.0, a_blobs_skipped: 0 };
     let fraud = |kind: &str, round: u16, matrix: Option<u16>, seg: Option<String>, a_uri: Option<String>, req: RequestClaim, mx: Option<Mismatch>, reason: String| {
         anyhow::Error::new(TicketFraud(FraudProof {
             format: FORMAT.into(),
@@ -174,10 +194,11 @@ pub fn replay_ticket(node: &dyn NodeApi, store: &ModelStore, ticket: &JobInfo, m
         }
         ensure!(!reqs.is_empty(), "round {round} has no requests");
         let rows: Vec<Vec<u32>> = reqs.iter().map(|c| c.rows()).collect();
-        let mut sink = Sink { node, model: &model, ticket: ticket.job_id, round, fraud: None, segments: 0, gemm_secs: 0.0 };
+        let mut sink = Sink { node, model: &model, ticket: ticket.job_id, round, fraud: None, segments: 0, gemm_secs: 0.0, a_skipped: 0 };
         let res = forward_round(&model, &rows, m, &mut sink);
         rep.gemm_secs += sink.gemm_secs;
         rep.segments += sink.segments;
+        rep.a_blobs_skipped += sink.a_skipped;
         if let Some((kind, matrix, mx, sid, a_uri)) = sink.fraud.take() {
             // name the request that owns the first differing row
             let row = mx.as_ref().map(|d| d.row).unwrap_or(0);

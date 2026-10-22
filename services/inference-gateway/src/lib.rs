@@ -20,6 +20,7 @@ pub mod transport;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -347,6 +348,20 @@ pub struct Config {
     /// The public URL of this gateway's `/v1` root when a proxy mounts it elsewhere (cadre-api
     /// serves it at `<api>/v1/openai`). Status links are then `<public_api_root>/requests/<id>`.
     pub public_api_root: Option<String>,
+    /// Inference requests at the worker at once (in its batch or its queue); one more answers
+    /// 503 with Retry-After before any rows are reserved or any x402 payment is taken. Keep it at
+    /// or below the worker's max_batch + max_queue (SPEC 5.4 "Worker concurrency"). 0 = no cap.
+    pub max_inference: usize,
+    /// Request scratch data (each served request's A/C files, `work_dir/requests/<id>`, about
+    /// 2.7 MB per row on Llama-3.2-1B) is deleted once its round is posted: A is then on the node
+    /// as blobs, C is committed in the segment. `max_request_data_bytes` caps what may wait for a
+    /// round: a paid request that would pass it, or leave the disk under `min_free_disk_bytes`,
+    /// answers 503 `insufficient_storage` before any rows are reserved or paid; above half the
+    /// cap the oldest waiting rounds are posted early (SPEC 5.4 "Request data retention").
+    pub max_request_data_bytes: u64,
+    pub min_free_disk_bytes: u64,
+    /// Keep request scratch data after its round is posted (debugging only).
+    pub keep_request_data: bool,
 }
 
 impl Default for Config {
@@ -371,6 +386,10 @@ impl Default for Config {
             explorer_url: "http://127.0.0.1:10670".into(),
             public_url: "http://127.0.0.1:10664".into(),
             public_api_root: None,
+            max_inference: 32,
+            max_request_data_bytes: 16 << 30,
+            min_free_disk_bytes: 8 << 30,
+            keep_request_data: false,
         }
     }
 }
@@ -397,6 +416,62 @@ pub struct Gateway {
     pub recent: Mutex<VecDeque<(f64, Option<f64>, u32)>>,
     /// When `discover` last ran for a wallet on an unauthenticated read (security pass V-8).
     discovered: Mutex<std::collections::HashMap<[u8; 32], Instant>>,
+    /// Inference requests now at the worker (Config::max_inference).
+    pub inferring: Arc<AtomicUsize>,
+    /// Inference requests refused with 503 since start (gateway cap or worker queue full).
+    pub refused_busy: AtomicUsize,
+    /// Requests being generated now: id -> estimated scratch bytes (not in the ledger yet).
+    in_flight: Mutex<BTreeMap<String, u64>>,
+    /// Requests refused for disk space since start.
+    pub refused_storage: AtomicUsize,
+    /// Request dirs deleted since start.
+    pub data_deleted: AtomicUsize,
+    /// The node's blob headroom (bytes RPC puts may still add) and when it was read; None =
+    /// unknown (an older node without the field, or the read failed).
+    node_blob: Mutex<Option<(Option<u64>, Instant)>>,
+    /// Paid requests refused because the node's blob store is nearly full, since start.
+    pub refused_node_storage: AtomicUsize,
+}
+
+/// How long a getBlobStats read of the node's blob headroom is reused.
+pub const NODE_BLOB_TTL: Duration = Duration::from_secs(10);
+
+/// Is `msg` a node refusing a putBlob for space ("blob store full" or "blob store nearly full")?
+pub fn is_blob_store_full(msg: &str) -> bool {
+    msg.contains("blob store full") || msg.contains("blob store nearly full")
+}
+
+/// Free bytes on the filesystem holding `p` (None when unknown).
+pub fn disk_free_bytes(p: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+            return None;
+        }
+        Some(st.f_bavail as u64 * st.f_frsize as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        None
+    }
+}
+
+/// One admitted inference request; dropping it frees the slot (also from the stream thread).
+struct InferSlot(Arc<AtomicUsize>);
+impl Drop for InferSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn busy(msg: impl std::fmt::Display) -> HttpResponse {
+    let mut r = err(503, "overloaded", msg);
+    r.headers.push(("retry-after".into(), "2".into()));
+    r
 }
 
 /// Unauthenticated balance reads rescan the chain for a wallet at most this often.
@@ -470,6 +545,13 @@ impl Gateway {
             price: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
             discovered: Mutex::new(std::collections::HashMap::new()),
+            inferring: Arc::new(AtomicUsize::new(0)),
+            refused_busy: AtomicUsize::new(0),
+            in_flight: Mutex::new(BTreeMap::new()),
+            refused_storage: AtomicUsize::new(0),
+            data_deleted: AtomicUsize::new(0),
+            node_blob: Mutex::new(None),
+            refused_node_storage: AtomicUsize::new(0),
         }
     }
 
@@ -689,6 +771,11 @@ impl Gateway {
     }
 
     pub fn stats_json(&self) -> Value {
+        // before any lock below: request_data_bytes takes the ledger lock itself
+        let nb = self.node_blob.lock().unwrap().and_then(|(h, _)| h);
+        let data = json!({"bytes_waiting": self.request_data_bytes(), "max_bytes": self.cfg.max_request_data_bytes, "disk_free_bytes": disk_free_bytes(&self.cfg.work_dir),
+            "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst),
+            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst)});
         let r = self.recent.lock().unwrap();
         let n = r.len();
         let mean = |f: &dyn Fn(&(f64, Option<f64>, u32)) -> Option<f64>| {
@@ -700,6 +787,8 @@ impl Gateway {
             "requests_total": l.requests.len(), "recent": n,
             "ttft_s_mean": mean(&|x| Some(x.0)), "decode_tokens_per_s_mean": mean(&|x| x.1),
             "tickets": l.tickets.len(), "rounds_posted": l.tickets.values().map(|t| t.rounds.len()).sum::<usize>(),
+            "inference": {"at_worker": self.inferring.load(Ordering::SeqCst), "max": self.cfg.max_inference, "refused_busy": self.refused_busy.load(Ordering::SeqCst)},
+            "request_data": data,
             "note": "measured on this gateway's worker; nothing estimated",
         })
     }
@@ -867,11 +956,43 @@ impl Gateway {
         Ok(InferReq { chat, ids, max_new, stop, stream: b["stream"] == json!(true), tools })
     }
 
+    /// Take an inference slot (None when `max_inference` are at the worker already).
+    fn admit_inference(&self) -> Option<InferSlot> {
+        let n = self.inferring.fetch_add(1, Ordering::SeqCst);
+        if self.cfg.max_inference > 0 && n >= self.cfg.max_inference {
+            self.inferring.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(InferSlot(self.inferring.clone()))
+    }
+
     /// `/v1/chat/completions` and `/v1/completions`.
     fn infer(self: &Arc<Self>, chat: bool, auth: &Auth, headers: &[(String, String)], body: &[u8]) -> Result<HttpResponse> {
         let t_req = Instant::now();
         let b: Value = serde_json::from_slice(body).context("body is not JSON")?;
         let r = self.parse_infer(chat, &b)?;
+        // backpressure first: a request over the cap reserves nothing and pays nothing
+        let slot = match self.admit_inference() {
+            Some(s) => s,
+            None => {
+                self.refused_busy.fetch_add(1, Ordering::SeqCst);
+                return Ok(busy(format!("{} inference requests at the worker (max {}); retry shortly", self.inferring.load(Ordering::SeqCst), self.cfg.max_inference)));
+            }
+        };
+        let need_bytes = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1) * self.bytes_per_row();
+        if let Some(why) = self.storage_refusal(need_bytes) {
+            self.refused_storage.fetch_add(1, Ordering::SeqCst);
+            let mut x = err(503, "insufficient_storage", why);
+            x.headers.push(("retry-after".into(), "30".into()));
+            return Ok(x);
+        }
+        let need_rows = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1);
+        if let Some(why) = self.node_storage_refusal(need_rows) {
+            self.refused_node_storage.fetch_add(1, Ordering::SeqCst);
+            let mut x = err(503, "insufficient_storage", why);
+            x.headers.push(("retry-after".into(), "60".into()));
+            return Ok(x);
+        }
         let need = (r.ids.len() as u64 + r.max_new as u64).saturating_sub(1);
         let p = self.model.period() as u64;
         // a request is posted whole in one round, whose A blobs must fit one blob each
@@ -933,6 +1054,7 @@ impl Gateway {
         };
         let request_id = rand_id("req_");
         let dir = self.cfg.work_dir.join("requests").join(&request_id);
+        self.in_flight.lock().unwrap().insert(request_id.clone(), need_bytes);
         let model_name = self.model.name.clone();
         let created = now_ms() / 1000;
         let wallet = auth.wallet().map(|w| b58(&w)).unwrap_or_else(|| self.ledger.lock().unwrap().tickets[&ticket].wallet.clone());
@@ -943,10 +1065,17 @@ impl Gateway {
             let gen = self.worker.generate(&r.ids, r.max_new, &dir, &opts, &mut |_t| {
                 first.get_or_insert(t_req.elapsed().as_secs_f64());
             });
+            drop(slot);
             let gen = match gen {
                 Ok(g) => g,
                 Err(e) => {
                     self.with_ledger(|l| l.tickets.get_mut(&ticket).map(|t| t.reserved = t.reserved.saturating_sub(need)));
+                    self.in_flight.lock().unwrap().remove(&request_id);
+                    self.remove_request_data(&dir);
+                    if format!("{e:#}").contains(transport::WORKER_BUSY) {
+                        self.refused_busy.fetch_add(1, Ordering::SeqCst);
+                        return Ok(busy(format!("{e:#}")));
+                    }
                     return Err(e);
                 }
             };
@@ -963,6 +1092,7 @@ impl Gateway {
         let id_chunk = if r.chat { format!("chatcmpl-{request_id}") } else { format!("cmpl-{request_id}") };
         let rid = request_id.clone();
         std::thread::spawn(move || {
+            let _slot = slot;
             let request_id = rid;
             let sse = |v: Value| format!("data: {v}\n\n").into_bytes();
             let chunk = |delta: Value, finish: Value| {
@@ -991,6 +1121,8 @@ impl Gateway {
                 }
                 Err(e) => {
                     me.with_ledger(|l| l.tickets.get_mut(&ticket).map(|t| t.reserved = t.reserved.saturating_sub(need)));
+                    me.in_flight.lock().unwrap().remove(&request_id);
+                    me.remove_request_data(&dir);
                     let _ = tx.send(sse(json!({"error": {"message": format!("{e:#}"), "type": "server_error"}})));
                 }
             }
@@ -1032,6 +1164,7 @@ impl Gateway {
             let rj = self.receipt_json(l, &s);
             (s, rj)
         });
+        self.in_flight.lock().unwrap().remove(id);
         {
             let mut q = self.recent.lock().unwrap();
             q.push_back((ttft, decode, completion));
@@ -1124,9 +1257,137 @@ impl Gateway {
         let ids: Vec<String> = self.ledger.lock().unwrap().tickets.iter().filter(|(_, t)| t.state == "open" || t.state == "closing" || t.state == "delivered").map(|(k, _)| k.clone()).collect();
         for id in ids {
             if let Err(e) = self.settle_ticket(&id) {
-                (self.log)(json!({"event": "settle_error", "ticket": id, "error": format!("{e:#}")}));
+                let msg = format!("{e:#}");
+                if is_blob_store_full(&msg) {
+                    // the node refused the round's A blobs: refuse new paid work at once instead of
+                    // waiting for the next getBlobStats read (backpressure, SPEC 5.4)
+                    *self.node_blob.lock().unwrap() = Some((Some(0), Instant::now()));
+                }
+                (self.log)(json!({"event": "settle_error", "ticket": id, "error": msg}));
             }
         }
+        self.sweep_request_data();
+    }
+
+    // ------------------------------------------------------------ request data retention
+
+    /// Scratch bytes one row of this model needs: A (k bytes) and C (4 n bytes) per matrix.
+    pub fn bytes_per_row(&self) -> u64 {
+        self.model.matrices.iter().map(|(k, n)| *k as u64 + 4 * *n as u64).sum()
+    }
+
+    /// Scratch bytes waiting for a round (served, round not posted, ticket still open) plus
+    /// the estimate of every request being generated.
+    pub fn request_data_bytes(&self) -> u64 {
+        let bpr = self.bytes_per_row();
+        let waiting: u64 = {
+            let l = self.ledger.lock().unwrap();
+            l.tickets.values().filter(|t| t.state == "open" || t.state == "closing")
+                .flat_map(|t| t.pending.iter()).filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64 * bpr).sum()
+        };
+        waiting + self.in_flight.lock().unwrap().values().sum::<u64>()
+    }
+
+    /// Why a new request of `need` scratch bytes must wait (None: it may run).
+    pub fn storage_refusal(&self, need: u64) -> Option<String> {
+        let held = self.request_data_bytes();
+        if self.cfg.max_request_data_bytes > 0 && held + need > self.cfg.max_request_data_bytes {
+            return Some(format!("request data waiting for settlement is {} MB (+{} MB for this request) above the gateway's cap of {} MB; rounds are being posted, retry shortly",
+                held >> 20, need >> 20, self.cfg.max_request_data_bytes >> 20));
+        }
+        if let Some(free) = disk_free_bytes(&self.cfg.work_dir) {
+            let unwritten: u64 = self.in_flight.lock().unwrap().values().sum();
+            if free.saturating_sub(unwritten + need) < self.cfg.min_free_disk_bytes {
+                return Some(format!("the gateway's disk has {} MB free, under its reserve of {} MB once this request ({} MB) and those running are written; retry later",
+                    free >> 20, self.cfg.min_free_disk_bytes >> 20, need >> 20));
+            }
+        }
+        None
+    }
+
+    /// A bytes per row (one k-byte row per registered matrix): what a posted round adds to the
+    /// node's blob store at most (matrices sharing an input share one blob, so less in practice).
+    pub fn a_bytes_per_row(&self) -> u64 {
+        self.model.matrices.iter().map(|(k, _)| *k as u64).sum()
+    }
+
+    /// Bytes the node's blob store accepts from RPC puts before it refuses them (getBlobStats
+    /// `rpc_headroom_bytes`; an older node without it: `max_total_bytes - total_bytes`). Read at
+    /// most every [`NODE_BLOB_TTL`]; None when unknown.
+    pub fn node_blob_headroom(&self) -> Option<u64> {
+        if let Some((h, at)) = *self.node_blob.lock().unwrap() {
+            if at.elapsed() < NODE_BLOB_TTL {
+                return h;
+            }
+        }
+        let h = self.node.call("getBlobStats", json!({})).ok().and_then(|v| {
+            v["rpc_headroom_bytes"].as_u64().or_else(|| Some(v["max_total_bytes"].as_u64()?.saturating_sub(v["total_bytes"].as_u64()?)))
+        });
+        *self.node_blob.lock().unwrap() = Some((h, Instant::now()));
+        h
+    }
+
+    /// Node blob backpressure (SPEC 5.4 "Request data retention"): a paid request whose A rows,
+    /// with every row already waiting for a round, would not fit in the node's blob headroom
+    /// waits (503 insufficient_storage) instead of piling up scratch that cannot be posted.
+    pub fn node_storage_refusal(&self, need_rows: u64) -> Option<String> {
+        let head = self.node_blob_headroom()?;
+        let bpr = self.bytes_per_row().max(1);
+        let waiting_rows = self.request_data_bytes() / bpr;
+        let need = (waiting_rows + need_rows) * self.a_bytes_per_row();
+        if need > head {
+            return Some(format!(
+                "the chain node's blob store is nearly full: {} MB of room for activation blobs, {} MB needed by the rounds waiting and this request; retry after the node prunes",
+                head >> 20, need >> 20
+            ));
+        }
+        None
+    }
+
+    /// Over half the data cap: post rounds early (oldest pending first) instead of waiting for
+    /// a ticket's round period (3 h for large balances).
+    fn data_pressure(&self) -> bool {
+        self.cfg.max_request_data_bytes > 0 && self.request_data_bytes() * 2 >= self.cfg.max_request_data_bytes
+    }
+
+    fn remove_request_data(&self, dir: &Path) {
+        if self.cfg.keep_request_data {
+            return;
+        }
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => {
+                self.data_deleted.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => (self.log)(json!({"event": "request_data_delete_error", "dir": dir.display().to_string(), "error": e.to_string()})),
+        }
+    }
+
+    /// Delete every request dir no round will read again: posted, its ticket no longer open
+    /// (completed, failed), or unknown to the ledger and not being generated (a crash between
+    /// generation and booking; 10 minutes of grace).
+    pub fn sweep_request_data(&self) -> usize {
+        let root = self.cfg.work_dir.join("requests");
+        let Ok(rd) = std::fs::read_dir(&root) else { return 0 };
+        let mut gone = 0;
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let keep = {
+                let l = self.ledger.lock().unwrap();
+                match l.requests.get(&name) {
+                    Some(r) => r.round.is_none() && l.tickets.get(&r.ticket_id).is_some_and(|t| t.state == "open" || t.state == "closing"),
+                    None => {
+                        self.in_flight.lock().unwrap().contains_key(&name)
+                            || e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(true, |age| age < Duration::from_secs(600))
+                    }
+                }
+            };
+            if !keep && !self.cfg.keep_request_data {
+                self.remove_request_data(&e.path());
+                gone += 1;
+            }
+        }
+        gone
     }
 
     pub fn settle_ticket(&self, id: &str) -> Result<()> {
@@ -1167,6 +1428,7 @@ impl Gateway {
                 || t.state == "closing"
                 || self.oldest_pending_age(&t) >= self.round_period(t.rows, t.round_secs)
                 || pending_rows >= self.round_rows_cap() as u64
+                || self.data_pressure()
                 || self.ledger.lock().unwrap().free_in_budget(&t, p, cap) < self.cfg.min_free_rows);
         if due {
             // a round the chain has started but this ledger has not recorded (an earlier attempt
@@ -1235,6 +1497,10 @@ impl Gateway {
             }
         });
         (self.log)(json!({"event": "round_posted", "ticket": id, "round": round, "m": m, "requests": ids.len(), "segments": segs.len(), "txs": txs}));
+        // the round is on the chain and in the ledger: A is on the node, C is committed
+        for r in &reqs {
+            self.remove_request_data(&r.dir);
+        }
         Ok(())
     }
 

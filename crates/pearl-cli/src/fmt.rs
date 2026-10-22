@@ -99,20 +99,6 @@ pub fn short_n(s: &str, n: usize) -> String {
     format!("{}...{}", c[..n].iter().collect::<String>(), c[c.len() - n..].iter().collect::<String>())
 }
 
-/// Dotted leader: `label ......value`, exactly `width` columns when it fits. The
-/// value is kept whole; the label is cut first.
-pub fn leader(label: &str, value: &str, width: usize) -> String {
-    let vl = value.chars().count();
-    let ll = label.chars().count();
-    if vl + 2 >= width {
-        return value.chars().take(width).collect();
-    }
-    let room = width - vl;
-    let label: String = if ll + 2 > room { label.chars().take(room.saturating_sub(2)).collect() } else { label.to_string() };
-    let dots = room - label.chars().count() - 1;
-    format!("{label} {}{value}", ".".repeat(dots))
-}
-
 /// Split a shell line into words; single or double quotes group words.
 pub fn split_words(line: &str) -> Result<Vec<String>> {
     let mut out = vec![];
@@ -144,6 +130,96 @@ pub fn split_words(line: &str) -> Result<Vec<String>> {
         out.push(cur);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------
+// Cadre-chain addresses (docs/SPEC.md 2.1): shown as Cx, typed as Cx or legacy base58.
+// Solana addresses (Solana recipients, SPL, program ids, Solscan links) stay base58.
+
+/// A Cadre-chain address typed by a person: checksummed or all-lowercase Cx, legacy base58,
+/// or 64 hex. A Cx string with the wrong casing fails with the checksum error.
+pub fn parse_chain_addr(s: &str) -> Result<[u8; 32]> {
+    let t = s.trim();
+    if t.starts_with(agent_types::cx::CX_PREFIX) {
+        return agent_types::cx::parse_address(t).map_err(|e| anyhow::anyhow!("{t:?}: {e}"));
+    }
+    let h = t.trim_start_matches("0x");
+    if h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(hex::decode(h)?.try_into().unwrap());
+    }
+    agent_types::cx::parse_address(t).map_err(|e| anyhow::anyhow!("{t:?} is not a Cadre address (Cx..., or legacy base58): {e}"))
+}
+
+/// Full checksummed Cx of a key.
+pub fn cx(k: &[u8; 32]) -> String {
+    agent_types::cx::to_cx(k)
+}
+
+/// Short Cx of a key: `Cxa380...7d06`.
+pub fn cxs(k: &[u8; 32]) -> String {
+    agent_types::cx::short_cx(k)
+}
+
+/// Full Cx of an address string (base58 from the RPC, or Cx); anything else unchanged.
+pub fn cx_str(s: &str) -> String {
+    agent_types::cx::display_cx(s).unwrap_or_else(|_| s.to_string())
+}
+
+/// Short Cx of an address string; anything that is not an address goes through `short`.
+pub fn short_addr(s: &str) -> String {
+    match agent_types::cx::parse_address(s) {
+        Ok(k) => cxs(&k),
+        Err(_) => short(s),
+    }
+}
+
+/// Field names that hold a Cadre-chain address in the CLI's JSON (same list as the node's
+/// chain/rpc/src/cxjson.rs); objects under `solana` and Solana tx views are skipped.
+const ADDRESS_FIELDS: &[&str] = &[
+    "account", "address", "admin", "admins", "agent", "a", "b", "attesters", "author", "contract", "creator",
+    "deliverer", "deployer", "escrow", "evaluators", "follower", "from", "house_operators", "member", "miner",
+    "operator", "peer", "pool", "poster", "recipient", "registrant", "release_key", "signers", "target", "to",
+];
+
+fn cx_value(v: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    let one = |s: &str| -> Option<String> {
+        let k: [u8; 32] = bs58::decode(s).into_vec().ok()?.try_into().ok()?;
+        Some(cx(&k))
+    };
+    match v {
+        Value::String(s) => one(s).map(Value::String),
+        Value::Array(a) if !a.is_empty() && a.iter().all(|x| x.is_string()) => {
+            a.iter().map(|x| one(x.as_str()?).map(Value::String)).collect::<Option<Vec<_>>>().map(Value::Array)
+        }
+        _ => None,
+    }
+}
+
+/// `--json`: add `k_cx` next to every base58 Cadre address field `k` (base58 kept for the
+/// transition, docs/CLI.md "Addresses").
+pub fn add_cx_fields(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            if m.get("chain").and_then(|c| c.as_str()) == Some("solana") {
+                return;
+            }
+            for (k, x) in m.iter_mut() {
+                if k != "solana" {
+                    add_cx_fields(x);
+                }
+            }
+            let adds: Vec<(String, Value)> = m
+                .iter()
+                .filter(|(k, _)| ADDRESS_FIELDS.contains(&k.as_str()) && !m.contains_key(&format!("{k}_cx")))
+                .filter_map(|(k, x)| cx_value(x).map(|c| (format!("{k}_cx"), c)))
+                .collect();
+            m.extend(adds);
+        }
+        Value::Array(a) => a.iter_mut().for_each(add_cx_fields),
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -185,11 +261,36 @@ mod tests {
     fn layout() {
         assert_eq!(short("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"), "7xKX...gAsU");
         assert_eq!(short("abc"), "abc");
-        let l = leader("supply locked", "23.4%", 24);
-        assert_eq!(l, "supply locked .....23.4%");
-        assert_eq!(l.chars().count(), 24);
-        assert_eq!(leader("a very long label indeed", "OK", 10), "a very .OK");
-        assert_eq!(leader("x", "12345678901", 8), "12345678");
+    }
+
+    #[test]
+    fn cx_addresses() {
+        let b58 = "C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7";
+        let full = "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06";
+        let k = parse_chain_addr(b58).unwrap();
+        assert_eq!(parse_chain_addr(full).unwrap(), k);
+        assert_eq!(parse_chain_addr(&full.to_ascii_lowercase().replacen("cx", "Cx", 1)).unwrap(), k);
+        assert_eq!(parse_chain_addr("a38030920a564589bdfe976bdb50f37cdeaecbbb34b3934e65b3f1a717bb7d06").unwrap(), k);
+        let bad = full.replacen("bDFe", "bdFe", 1);
+        assert!(format!("{:#}", parse_chain_addr(&bad).unwrap_err()).contains("checksum failed"));
+        assert!(parse_chain_addr("nope").is_err());
+        assert_eq!(cx(&k), full);
+        assert_eq!(cxs(&k), "Cxa380...7d06");
+        assert_eq!(short_addr(b58), "Cxa380...7d06");
+        assert_eq!(short_addr(full), "Cxa380...7d06");
+        assert_eq!(short_addr("ab".repeat(32).as_str()), "abab...abab");
+        assert_eq!(cx_str(b58), full);
+        let mut j = serde_json::json!({"account": b58, "solana": {"address": b58}, "vault": b58, "txs": [{"from": b58}], "evaluators": [b58]});
+        add_cx_fields(&mut j);
+        assert_eq!(j["account"], b58);
+        assert_eq!(j["account_cx"], full);
+        assert!(j["solana"].get("address_cx").is_none());
+        assert!(j.get("vault_cx").is_none());
+        assert_eq!(j["txs"][0]["from_cx"], full);
+        assert_eq!(j["evaluators_cx"][0], full);
+        let mut s = serde_json::json!({"chain": "solana", "signer": b58, "account": b58});
+        add_cx_fields(&mut s);
+        assert!(s.get("account_cx").is_none());
     }
 
     #[test]

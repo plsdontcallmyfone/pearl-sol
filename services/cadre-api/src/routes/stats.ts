@@ -231,7 +231,7 @@ export function registerStats(api: Api, d: Deps) {
     const ev = c.query.get("evaluator") ?? (c.query.get("role") === "evaluator" ? c.query.get("account") : null);
     if (c.query.get("role") === "evaluator" && !ev) throw badRequest("role=evaluator needs account=<address>");
     if (ev !== null) {
-      if (!isAddress(ev)) throw badRequest("evaluator must be a base58 ed25519 address");
+      if (!isAddress(ev)) throw badRequest("evaluator must be an address (Cx, or the legacy base58 key)");
       const est = c.query.get("status") || "all";
       if (!(EVALUATOR_STATUSES as readonly string[]).includes(est)) throw badRequest(`with evaluator, status is one of ${EVALUATOR_STATUSES.join(", ")}`);
       const m = evaluatorJobsModel(d.ix, ev, est as EvaluatorStatus);

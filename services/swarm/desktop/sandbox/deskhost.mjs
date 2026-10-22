@@ -9,12 +9,17 @@
 //   - if the wallet ever shows its unlock screen, types the password (read from a 0600 file).
 // It writes ~/.cadre/state.json every 5 s (open tabs, wallet address, locked or not) for the
 // controller's action log, and never listens on a port.
+// Live activity console: while ~/.cadre/console exists (the controller sets it on Work desktops and on
+// one-desktop agents in Work mode) and ~/.cadre/busy does not (no vision task running), it keeps the
+// agent's activity console (<site>/live/<handle>/console) in front, so the stream shows the agent's
+// runtime as it acts; when a vision task starts it puts the last working tab back in front first.
 //
-//   node /home/user/.cadre/deskhost.mjs <social|work> <siteUrl> <explorerUrl>
+//   node /home/user/.cadre/deskhost.mjs <social|work> <siteUrl> <explorerUrl> [handle]
 import { chromium } from 'playwright-core';
 import { existsSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 
-const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`] = process.argv.slice(2);
+const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`, handle = ''] = process.argv.slice(2);
+const consoleUrl = handle ? `${site}/live/${handle}/console` : null;
 const HOME = '/home/user/.cadre';
 const DIST = `${HOME}/wallet`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -85,8 +90,10 @@ for (const p of ctx.pages()) if (p.url().startsWith(`chrome-extension://${extId}
 if (existsSync(`${HOME}/agent-secret`)) await seed().catch(e => log('seed_error', { error: String(e.message).slice(0, 200) }));
 else if (!(await seeded())) log('no_wallet', { why: 'no key file and no seeded profile' });
 
+// Work: the wallet and one working tab (tasks open their pages in the focused tab), plus the activity
+// console; a third tab (the market) pushed 1 GiB desktops into the OOM killer on 2026-10-21
 const startTabs = mode === 'work'
-  ? [walletUrl, explorer, `${site}/buy`]
+  ? [walletUrl, explorer]
   : [`${site}/town`];
 if (ctx.pages().filter(p => !p.url().startsWith('about:')).length === 0) {
   const blank = ctx.pages()[0];
@@ -113,15 +120,56 @@ async function unlockIfLocked() {
 
 const address = existsSync(`${HOME}/agent-address`) ? readFileSync(`${HOME}/agent-address`, 'utf8').trim() : null;
 ctx.on('page', p => p.on('load', () => unlockIfLocked().catch(() => {})));
-for (;;) {
-  await unlockIfLocked().catch(() => {});
-  // keep the wallet's own tab count small on a 1 GiB desktop: at most 4 tabs
-  const pages = ctx.pages();
-  if (pages.length > 4) for (const p of pages.slice(0, pages.length - 4)) if (!p.url().startsWith(`chrome-extension://`)) await p.close().catch(() => {});
-  const tabs = [];
-  for (const p of ctx.pages()) tabs.push({ url: p.url().slice(0, 300), title: (await p.title().catch(() => '')).slice(0, 120) });
-  const st = { t: Date.now(), mode, ext: extId, address, tabs };
-  writeFileSync(`${HOME}/state.json.tmp`, JSON.stringify(st));
-  renameSync(`${HOME}/state.json.tmp`, `${HOME}/state.json`);
-  await sleep(5000);
+const isConsole = p => !!consoleUrl && p.url().startsWith(consoleUrl);
+let front = null; // the console page while it is in front
+let lastWork = null; // the tab the vision model worked in last
+let wasBusy = false;
+// ~/.cadre/front says what is in front: "console" or "work". The controller waits for "work" before a
+// vision task types anything (2026-10-21: a task typed its URL while this host was switching tabs, so
+// half a URL went into the console tab or a Google search).
+let frontFile = '';
+function writeFront(v) { if (v !== frontFile) { writeFileSync(`${HOME}/front`, v); frontFile = v; } }
+async function consoleAway() {
+  const back = lastWork && !lastWork.isClosed() && !isConsole(lastWork) ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
+  if (back) await back.bringToFront().catch(() => {});
+  else { const p = await ctx.newPage(); await p.goto(mode === 'work' ? explorer : `${site}/town`).catch(() => {}); }
+  front = null;
+}
+async function consoleTick() {
+  if (!consoleUrl) { writeFront('work'); return; }
+  const want = existsSync(`${HOME}/console`);
+  const busy = existsSync(`${HOME}/busy`);
+  // a vision task is starting, or the console is no longer wanted (Social mode): its working tab goes back in front
+  if (front && (busy || !want)) await consoleAway();
+  wasBusy = busy;
+  if (!want || busy) { writeFront('work'); return; }
+  if (front && !front.isClosed() && isConsole(front)) return;
+  lastWork = ctx.pages().filter(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')).pop() ?? lastWork;
+  let c = ctx.pages().find(isConsole);
+  if (!c) { c = await ctx.newPage(); await c.goto(consoleUrl).catch(() => {}); }
+  await c.bringToFront().catch(() => {});
+  front = c;
+  writeFront('console');
+}
+for (let n = 0; ; n++) {
+  await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));
+  if (n % 5 === 0) {
+    await unlockIfLocked().catch(() => {});
+    // keep the tab count small on a 1 GiB desktop: at most 3 tabs plus the console; close the oldest
+    // non-wallet tabs, never the focused one the vision model works in
+    const pages = ctx.pages().filter(p => !isConsole(p));
+    let extra = pages.length - 3;
+    for (const p of pages) {
+      if (extra <= 0) break;
+      if (p.url().startsWith(`chrome-extension://`) || p === lastWork) continue;
+      await p.close().catch(() => {});
+      extra--;
+    }
+    const tabs = [];
+    for (const p of ctx.pages()) tabs.push({ url: p.url().slice(0, 300), title: (await p.title().catch(() => '')).slice(0, 120) });
+    const st = { t: Date.now(), mode, ext: extId, address, tabs, console: !!front };
+    writeFileSync(`${HOME}/state.json.tmp`, JSON.stringify(st));
+    renameSync(`${HOME}/state.json.tmp`, `${HOME}/state.json`);
+  }
+  await sleep(1000);
 }

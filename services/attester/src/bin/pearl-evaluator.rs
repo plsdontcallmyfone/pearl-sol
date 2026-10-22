@@ -6,6 +6,11 @@
 //! delivery, and sends CompleteJob (accept) or RejectResult (provable failure) once its
 //! signatures meet the job's threshold. HTTP (127.0.0.1 by default):
 //!   GET /health, GET /verdicts, GET /signatures/<job_id hex>, POST /result
+//!
+//! LLM-judge mode (docs/EVALUATORS.md "LLM judge", docs/MARKET.md 5): judges delivered hires
+//! on the services market contract that name this key, with a paid Cadre thought:
+//!   pearl-evaluator --keypair judge.json --rpc <node> --judge-market <contract> \
+//!       --gateway https://api.<host>/v1/openai --solana-rpc <url> --port 0
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -52,10 +57,63 @@ struct Args {
     /// One pass, print the verdicts as JSON, exit.
     #[arg(long)]
     once: bool,
+    /// LLM-judge mode: the services market contract to judge hires on (base58).
+    #[arg(long)]
+    judge_market: Option<String>,
+    /// Inference gateway (or cadre-api's /v1/openai pass-through) for the judge's paid thoughts.
+    #[arg(long, default_value = "https://api.64-95-12-116.sslip.io/v1/openai")]
+    gateway: String,
+    /// Model id for the judge (default: the gateway's default model).
+    #[arg(long)]
+    judge_model: Option<String>,
+    #[arg(long, default_value_t = 120)]
+    judge_max_tokens: u32,
+    /// Solana RPC for the judge's x402 top-ups of its own prepaid balance.
+    #[arg(long, default_value = "https://api.devnet.solana.com")]
+    solana_rpc: String,
+    #[arg(long, default_value_t = 2048)]
+    topup_rows: u64,
+    #[arg(long, default_value_t = 400)]
+    min_rows: u64,
+    /// Daily cap on the judge's own top-up spend (lamports).
+    #[arg(long, default_value_t = 150_000_000)]
+    max_topup_lamports_per_day: u64,
+}
+
+fn run_judge(a: &Args, market: &str) -> Result<()> {
+    use pearl_attester::judge::{Judge, JudgeConfig};
+    let cfg = JudgeConfig {
+        market: market.to_string(), gateway: a.gateway.clone(), model: a.judge_model.clone(), max_tokens: a.judge_max_tokens,
+        solana_rpc: a.solana_rpc.clone(), topup_rows: a.topup_rows, min_rows: a.min_rows,
+        max_topup_lamports_per_day: a.max_topup_lamports_per_day, submit: !a.no_submit,
+    };
+    let mut j = Judge::new(pearl_node::read_key_file(&a.keypair)?, &a.rpc, cfg)?;
+    eprintln!("pearl-evaluator judge {} on market {market} (node {}, pid {})", j.address(), a.rpc, std::process::id());
+    loop {
+        match j.round() {
+            Ok(v) => {
+                if a.once {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    return Ok(());
+                }
+                for s in v {
+                    eprintln!("{} hire {} thought {}: {}{}", if s.accept { "ACCEPT" } else { "REJECT" }, s.hire, s.thought_ref, s.reason, s.tx_hash.map(|h| format!(" (tx {h})")).unwrap_or_default());
+                }
+            }
+            Err(e) => eprintln!("judge round: {e:#}"),
+        }
+        if a.once {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(a.interval.max(1)));
+    }
 }
 
 fn main() -> Result<()> {
     let a = Args::parse();
+    if let Some(m) = a.judge_market.clone() {
+        return run_judge(&a, &m);
+    }
     let att = Attester {
         key: pearl_node::read_key_file(&a.keypair)?,
         source: JobSource::Node(Box::new(pearl_node::HttpNode::new(&a.rpc))),

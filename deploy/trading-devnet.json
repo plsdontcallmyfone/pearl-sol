@@ -1,0 +1,14 @@
+{
+  "chain_id": 1128350802,
+  "rpc": "https://rpc.64-95-12-116.sslip.io",
+  "ops": "H919SkKQQoS3HuJK2gNQdsCvFibBdWzW388xpi5tVQ3p",
+  "cadre_amm_code": "471b452b5f25c5b58782cac45a135bf3f3c995c11af502f60de22b3c8d9d549e",
+  "cadre_mandate_code": "c39d2b151a415ce399017115aed45c98b40d0561383af313ab04e26757f05f15",
+  "agent_token": "GqHzh8yz4jNkHJhdgEV8ooJ8WVfzCxTVGh4cTFK7GWdw",
+  "agent_token_launcher": "7g93HBvUF7F1zNUahKnpxXEB3ryhBXNFS58ciX1zJxkL",
+  "amm_pool": "65QGmPmEyGBVFic2A5sDvnKWW9Kw4yWCHLA9sWRe4ZFn",
+  "mandate_contract": "JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7",
+  "cadre_mandate_id": 0,
+  "cadre_mandate_user": "H919SkKQQoS3HuJK2gNQdsCvFibBdWzW388xpi5tVQ3p",
+  "cadre_mandate_agent": "8zKacMLKoWnciLNgdEQJUTWziX5G1CmQzL2aJPZEnVxu"
+}

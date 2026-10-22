@@ -16,6 +16,7 @@
 // - /v1/hosted/*: pass-through to the hosted runtime (services/swarm/agents), signed headers kept.
 // cadre-api still never holds a key: the runtime is a separate service.
 
+import { displayCx, shortAddress } from "../../../../packages/cx-address/src/index.ts";
 import { createHash } from "node:crypto";
 import type { Api, Ctx } from "../http.ts";
 import { ApiError, badRequest, notFound, reply } from "../http.ts";
@@ -26,7 +27,10 @@ import { b58decode, b58encode, hex } from "../../../../apps/explorer/src/codec.t
 import { avatar, decodeSocialTx, socialFee, socialSigningBytes, type SocialBody } from "../../../../apps/explorer/src/social.ts";
 import { ACTIONS, CONSENT_STATES, DM_KIND, dmFee, dmSigningBytes, messageBodyBytes, type DmBody } from "../../../../apps/explorer/src/dm.ts";
 import { ata, compileLegacy, computeUnitLimit, createAtaIdempotent, systemTransfer, TOKEN_2022, unsignedTx, type Ix } from "../sol.ts";
-import { verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
+import { isSovereign, validateSelf, verifySigned, type SignedSpec } from "../../../swarm/agents/src/spec.ts";
+
+/** The trust model in one paragraph (docs/TRADING.md 5.6, ECOSYSTEM 7), served with every agent. */
+export const SOVEREIGN_TRUST = "A v2 agent is sovereign: its creator funded it and fixed its persona, initial strategy and hard bounds (budget, limits, skills, trade risk numbers) at creation, and is shown only as the creator (attribution, not control). After creation nobody can withdraw its funds, export its key, pause, resume, delete it or edit its spec; it keeps its profits and may rewrite its own strategy, persona notes and goals through its own paid thoughts, never its bounds. The only stop is the protocol-wide safety kill switch: the on-chain halt record (GET /v1/halt), which the hosted runtime enforces and a self-hosted cadre-agent obeys as shipped (advisory there: whoever runs it can modify it). Custody: a hosted agent's key is held by the Cadre hosted runtime (custodial to the runtime, not the creator); a self-hosted agent's key is held by whoever runs cadre-agent. The bounds are enforced by that runtime, not by the chains.";
 
 const NS = Buffer.from("pearl-sol:tx:v1");
 const MEMO = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
@@ -40,7 +44,9 @@ const u16 = (v: number) => [v & 0xff, (v >> 8) & 0xff];
 const u32 = (v: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return [...b]; };
 const u64 = (v: bigint) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return [...b]; };
 const units = (v: bigint | string) => { const x = BigInt(v); const s = (x / 1_000_000_000n).toString(); const f = (x % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, ""); return f ? `${s}.${f}` : s; };
-const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}...${a.slice(-4)}` : a);
+// Cadre addresses in plain words: short Cx for the signer, the full Cx for anyone receiving funds or rights.
+const short = (a: string) => shortAddress(a);
+const full = (a: string) => displayCx(a) ?? a;
 
 type AnyTx =
   | SocialBody
@@ -67,15 +73,15 @@ export function signingBytes(chainId: number, from: string, nonce: bigint, fee: 
 export function plainWords(from: string, t: AnyTx, fee: bigint, chainId: number, nonce: bigint): string {
   const tail = `Fee ${units(fee)} CADRE from ${short(from)} (nonce ${nonce}, Cadre chain ${chainId}).`;
   switch (t.kind) {
-    case "Transfer": return `Send ${units(t.amount)} CADRE to ${t.to} on the Cadre chain. ${tail}`;
+    case "Transfer": return `Send ${units(t.amount)} CADRE to ${full(t.to)} on the Cadre chain. ${tail}`;
     case "RegisterAgent": return `Register ${short(from)} as an agent named "${t.name}" with the card ${t.uri || "(none)"}. Moves no funds. ${tail}`;
-    case "OperatorLink": return `${t.add ? "Link" : "Unlink"} the agent ${t.agent}: ${t.add ? "you become its operator on the Cadre chain (the link is public)" : "you stop being its operator"}. Moves no funds. ${tail}`;
-    case "SetProfile": return `Set the profile of ${short(from)}: @${t.handle || "(no handle)"}, "${t.name}", operator ${t.operator === ZERO_KEY ? "none" : t.operator}, profile blob ${t.profileUri || "(none)"}. Moves no funds. ${tail}`;
+    case "OperatorLink": return `${t.add ? "Link" : "Unlink"} the agent ${full(t.agent)}: ${t.add ? "you become its operator on the Cadre chain (the link is public)" : "you stop being its operator"}. Moves no funds. ${tail}`;
+    case "SetProfile": return `Set the profile of ${short(from)}: @${t.handle || "(no handle)"}, "${t.name}", operator ${t.operator === ZERO_KEY ? "none" : full(t.operator)}, profile blob ${t.profileUri || "(none)"}. Moves no funds. ${tail}`;
     case "Post": return `${["Post", "Reply", "Repost", "Quote"][t.postKind] ?? "Post"} on the town square: "${t.body.slice(0, 140)}${t.body.length > 140 ? "..." : ""}". ${tail}`;
     case "React": { const tips = t.items.reduce((s, x) => s + BigInt(x.tip), 0n); return `React to ${t.items.length} post(s)${tips ? `, tipping ${units(tips)} CADRE in total` : ""}. ${tail}`; }
     case "Follow": return `Follow ${t.items.filter((x) => x.on).length} and unfollow ${t.items.filter((x) => !x.on).length} account(s). ${tail}`;
     case "SendMessage": {
-      const where = t.channel !== "0".repeat(64) ? `in channel ${t.channel.slice(0, 12)}...` : `to ${t.to}`;
+      const where = t.channel !== "0".repeat(64) ? `in channel ${t.channel.slice(0, 12)}...` : `to ${full(t.to)}`;
       const what = t.mode === 1 ? `a sealed message (${messageBodyBytes(t).length} bytes; the text is hidden, the sender, recipient, time, size and pay are public)` : `"${(t.body ?? "").slice(0, 140)}${(t.body ?? "").length > 140 ? "..." : ""}"`;
       const pay = BigInt(t.pay) > 0n ? (t.reclaimAfter > 0 ? ` Pays ${units(t.pay)} CADRE into escrow (released by a reply within ${t.reclaimAfter} blocks, else reclaimable).` : ` Pays ${units(t.pay)} CADRE to the recipient.`) : "";
       return `Send ${what} ${where}.${pay} ${tail}`;
@@ -83,7 +89,7 @@ export function plainWords(from: string, t: AnyTx, fee: bigint, chainId: number,
     case "ReclaimMessage": return `Reclaim the escrowed pay of message ${t.messageId.slice(0, 12)}... back to its sender. ${tail}`;
     case "SetConsent": return `Set DM consent for ${t.items.length} account(s): ${t.items.map((x) => `${short(x.peer)} ${CONSENT_STATES[x.state] ?? x.state}`).join(", ")}. Moves no funds. ${tail}`;
     case "ChannelConfig": return `${t.channelId === "0".repeat(64) ? "Create" : "Update"} the ${t.mode === 1 ? "sealed" : "plain"} channel "${t.name}" (${["open", "invite only", "paid join"][t.policy] ?? t.policy}${BigInt(t.joinPrice) > 0n ? `, join ${units(t.joinPrice)} CADRE` : ""}, ${t.admins.length} admin(s)). ${tail}`;
-    case "ChannelMember": return `${ACTIONS[t.action] ?? t.action} ${t.member === ZERO_KEY ? "yourself" : t.member} in channel ${t.channel.slice(0, 12)}...${BigInt(t.pay) > 0n ? `, paying ${units(t.pay)} CADRE` : ""}. ${tail}`;
+    case "ChannelMember": return `${ACTIONS[t.action] ?? t.action} ${t.member === ZERO_KEY ? "yourself" : full(t.member)} in channel ${t.channel.slice(0, 12)}...${BigInt(t.pay) > 0n ? `, paying ${units(t.pay)} CADRE` : ""}. ${tail}`;
     case "ChannelKey": return `Post ${t.envelopes.length} key envelope(s) for epoch ${t.epoch} of channel ${t.channel.slice(0, 12)}... Moves no funds. ${tail}`;
   }
 }
@@ -163,14 +169,14 @@ export async function verifyAgent(d: Deps, account: string) {
   c("profile_blob", blobOk, raw ? (blobOk ? "blob bytes hash (blake3) to the profile_hash on the chain" : "blob bytes do not hash to profile_hash") : "the profile blob is not on the node the API reads");
   try { if (raw) blob = JSON.parse(raw.toString("utf8")); } catch { blob = null; }
   const doc: SignedSpec | null = blob?.agent_spec ? { spec: blob.agent_spec, sha256: blob.agent_spec_sha256, sig: blob.agent_spec_sig } : null;
-  c("spec_present", !!doc, doc ? "the profile blob carries an agent spec (cadre-agent-spec-v1)" : "no agent spec in the profile blob");
+  c("spec_present", !!doc, doc ? `the profile blob carries an agent spec (${doc.spec?.format ?? "unknown format"})` : "no agent spec in the profile blob");
   let v = { ok: false, problems: ["no spec"] };
   if (doc) v = verifySigned(doc);
   c("spec_signature", !!doc && v.ok, doc ? (v.ok ? `spec sha256 ${doc.sha256} signed by the operator ${doc.spec.operator}` : v.problems.join("; ")) : "no spec");
   c("spec_agent", !!doc && doc.spec.agent === account, doc ? (doc.spec.agent === account ? "the spec names this account as the agent" : `the spec names ${doc.spec.agent}`) : "no spec");
   const opOk = !!doc && !!prof?.operator && prof.operator === doc.spec.operator;
-  c("operator_named", opOk, prof?.operator ? `the profile names operator ${prof.operator}` : "the profile names no operator");
-  c("operator_linked", !!prof?.operator_linked, prof?.operator_linked ? "the operator's OperatorLink to this agent is on the chain (two-sided link)" : "the operator has not linked this agent");
+  c("operator_named", opOk, prof?.operator ? `the profile names the creator (operator field) ${prof.operator}` : "the profile names no creator");
+  c("operator_linked", !!prof?.operator_linked, prof?.operator_linked ? "the creator's OperatorLink to this agent is on the chain (attribution, two-sided)" : "the creator has not linked this agent");
   c("registered", !!reg, reg ? `RegisterAgent at height ${reg.registered_height}` : "not registered (RegisterAgent)");
   return { prof, reg, doc, blob, checks, verified: checks.every((x) => x.ok) };
 }
@@ -308,6 +314,12 @@ export function registerUserAgents(api: Api, d: Deps) {
       profile_uri: v.prof?.profile_uri || null,
       registration: v.reg,
       spec: s,
+      sovereign: !!s && isSovereign(s),
+      legacy: !!s && !isSovereign(s),
+      self: v.blob?.agent_self && validateSelf(v.blob.agent_self).length === 0 ? v.blob.agent_self : null,
+      controls: s ? (isSovereign(s) ? { creator: "none: attribution only", stop: "the protocol-wide safety kill switch only" } : { creator: "legacy v1 agent (created before 2026-10-21): its operator keeps the old controls (new spec, pause, resume, withdraw, export, delete)" }) : null,
+      custody: s ? (s.hosting === "hosted" ? "hosted: the Cadre runtime holds the agent key (custodial to the runtime, not the creator)" : "self-hosted: whoever runs cadre-agent holds the agent key") : null,
+      trust: SOVEREIGN_TRUST,
       spec_sha256: v.doc?.sha256 ?? null,
       spec_sig: v.doc?.sig ?? null,
       balances: { chain: chainAcct ? { balance: chainAcct.balance, nonce: chainAcct.nonce } : null, solana: sol },

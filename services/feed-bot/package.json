@@ -1,0 +1,14 @@
+{
+  "name": "@pearl-sol/feed-bot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cadre feed bot (decision D9): reads cadre-api /v1/events and posts notable events to a Telegram channel or an X account ONLY when switched on (FEED_LIVE=1 + FEED_TARGETS + credentials); dry run by default. No dependencies.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "once": "node src/main.ts --once",
+    "status": "node src/main.ts --status",
+    "test": "node --test test/*.test.ts"
+  }
+}

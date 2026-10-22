@@ -938,11 +938,17 @@ CLAUDE.md "Who is working on what".
    - Found and fixed: torch's CPU float64 sqrt (SLEEF) is not correctly rounded (1 ulp in 5 of 1024 rows);
      CPU sqrt now from numpy, and the spec requires correct rounding. gemm_bt slice bug for n < threads.
    - GPU: one A40, 15:49-16:55 UTC, $0.66, terminated (API: no pods).
-   - NOT DONE / NEXT: (1) roll out the new worker + gateway + evaluator on the test box and devnet box 0. Their
-     running workers still use the fp32 glue, so their tickets get the GEMM-only check. A restart changes
-     answers slightly (new glue), so announce a window in CLAUDE.md first; this row did no restarts.
-     (2) A live end-to-end paid ticket replayed on a real chain (tested so far on a mock node with real model
-     data). (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
+   - LIVE ON DEVNET (round 2, owner 2026-10-21 "turn it on"): box 0 deployed by the orchestrator 18:34-18:40 UTC
+     from main 154a819 (cadre-gateway 41a51d8f..., pearl-attester fd5fc6d6..., worker restarted on the final
+     rules; cadre-node restarted to reclaim 6 GB). First live paid ticket ecb7a659f7e4f1f0143b79068906fcd01df4c5eaa41ae6339943d4f8e20149e0
+     (Order 36, "Paris", 48 rows): response blob carries the bundle, the box 0 attester replayed 144 segments in
+     17.8 s (GEMM 8.8 s) and signed, CompleteJob a6be89db..., status completed. Settled on Solana by proof: cadre-settle "finalized order 36 by proof against final header 4560", tx 4YkF9ABPWpdxRwzXUCYF3Rm8x5k64YR7YHpkgV1cwBzQ3A5qBV8Uq4ZnurbGpckGZrvGR9UYV6muLSFLACBVtPS9 (2026-10-21).
+     Mining of its 144 segments is slow: 11 mined by 19:20 UTC, still 11 at 02:40 UTC (the script's 8 h wait ran out); the miners on all three boxes were mining other tickets' 1004-row segments (chain at ~1 block/min, one segment per block), so this is segment-queue throughput, not the replay (open question for the mining / 8B rows: job selection order across tickets).
+     House swarm: pending first thought after 00:00 UTC on the new stack (it hit its own SWARM_ROWS_PER_DAY
+     16384 budget at 17:30 UTC, before the rollout; D1 unchanged; the orchestrator checks the post-reset
+     thought). Its ticket open across the rollout mixes old requests, so it gets the GEMM check only.
+   - NOT DONE / NEXT: (1) the test box demo stack (down since the 16:26 UTC reboot) runs cadre-glue-v1 when it is
+     next started. (2) Tickets opened before 18:35 UTC close with the GEMM check only; every later ticket is replayed. (3) Bonds and slashing txs (BondServer / SlashServer / ReportFalseSlash, SPEC 4.7). (4) Faster
      GPU glue: fused kernels, the KV-head loop. (5) An 8B check (head_dim 128 path is specced, not run).
 
 27. SERVE THE 8B: UPLOAD ORDER, TICKET BLOCK BUDGET, JOB CHECK AT MINING (owner-approved 2026-10-21, "serve the
@@ -1089,6 +1095,295 @@ CLAUDE.md "Who is working on what".
     ETyaKSLTxhsqZpqfX85rVTrM2Pt1B5j9svbiuxivXYng, token BfaxysW2erS1dPc37z4rsCQwobPrAknQ5A6q5o6P6aLB,
     bounty 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 (explorer /contract/<address>; docs/DEVNET.md "Contracts").
 
+
+31. DESKTOPS PHASE A + SELF-HOSTED DENSITY TEST + FAST-LOOKING DESKTOPS (owner 2026-10-21; "desktops Phase A" row;
+   docs/DESKTOPS-AT-SCALE.md sections 5.1, 9, 10):
+   - Code (services/swarm/desktop): per-agent layout (`DESK_TWO_DESK_AGENTS`: the first N keep Social + Work, the rest
+     one desktop) and the Phase A mode scheduler (one desktop, Social/Work every `DESK_MODE_SLOT_S` 1800 s, staggered;
+     chain actions run on it in either mode with `thought_ref`); `DEFAULT_HANDLES` now all 30 personas from the end
+     (a test checks no agent is driven twice for every DESK_AGENTS); per-desktop health every 300 s (stream, browser
+     host, memory, last action; self-heal of the encoder / browser host; `/health`, `/status`, ops log check 7 in
+     scripts/devnet-health.sh); stream settings `DESK_FPS/KBPS/SEG_S/STILL_S` (a change restarts each encoder once;
+     playlist read prefetches segments); activity console on Work desktops (deskhost.mjs keeps
+     `/live/<handle>/console` in front between vision tasks; `POST 127.0.0.1:10720/activity` for runtime events such as
+     the fast executor's trades); `DesktopHost` with E2B and self-hosted (podman, src/selfhost.ts) backends,
+     `DESK_SELFHOST_AGENTS` per agent. 12 tests (test box). cadre-api /v1/desktops: per-agent streams (one-desktop
+     agents get one), `layout`, `health`, `stream`; 5 tests. ~/cadre-web: /live for 30 (1 s stills per tile, live
+     video only for the focused agent, filters), /live/<handle> one-desktop view with health, /live/<handle>/console.
+   - Measured: E2B 0.0733 USD per desktop-hour on box 0 (51 desktop-hours) -> 36 desktops 63.3 USD/day, cap 64.
+     Density on the test box (5/10/15/20 desktops, 1 vCPU / 1 GiB each, 5-core slice): 0.13-0.29 cores and about
+     590 MiB per desktop, 4.0 fps held at 20 even with the shared box 97% busy; vision 3.3-3.9 s p50 per call;
+     ~33 desktops per 10 vCPU / 64 GB box at 15 fps -> about $1.06 per desktop-day all-in vs E2B $1.79.
+     Recommendation: Phase A stays on E2B (two boxes would cost about the same); self-host Phase B and user agents.
+     Stream: 15 fps / 800 kbit/s / 1 s segments / 1 s stills on 1 vCPU uses 0.28-0.34 of the vCPU on E2B, no
+     throttling, browser CPU unchanged; viewer delay about 4 s (from 7-8 s); VNC would be 0.1-0.2 s (next step:
+     view-only VNC relay, not built). Raw: selfhost/*.ts|sh in the repo; results in the section 5.1 / 10 tables.
+   - Test box: podman + slirp4netns + passt installed (apt), image localhost/cadre-desktop-selfhost kept (2 GB) for
+     reruns, /root/desk-density; slice removed, every container removed; `podman build` left netavark iptables chains
+     for podman's own bridge subnet (no published ports).
+   - Deployed by the orchestrator 2026-10-21 ~21:40 UTC (36/36 desktops). Follow-up the same evening (906e238 + the
+     health age guard): two Work desktops' streams had been frozen for hours because the OOM killer took ffmpeg and
+     every restart then refused to overwrite thumb.jpg (now `ffmpeg -y`, one loop per desktop); the rollout's own kill
+     commands matched their shell, so old 4 fps encoders and old browser hosts survived (fixed: bracketed patterns,
+     SIGKILL); heal now also restarts a frozen stream and the browser (dead, stuck, or under 60 MB free, never while
+     busy), skipping a browser host younger than 180 s; Work desktops open 2 tabs + the console (Work memory free went
+     from 65-77 MB to 144-160 MB). After the 21:56 UTC restart: all 36 at 15 fps, one encoder each, 36/36 streams alive.
+     Measured 22:00-23:00 UTC: 0.0713 USD per desktop-hour (61.2 USD/day at 36), 36/36 streams alive.
+     Then (orchestrator go-ahead): Work desktops at 1.5 GiB from their own E2B template `cadre-desktop-1536`
+     (`DESK_WORK_TEMPLATE`, `DESK_WORK_MEM_MB=1536`; the 6 old Work sandboxes are replaced, Social ones kept; ledger books
+     each desktop at its own rate, +1.17 USD/day, about 62.4 at 36); the browser host now reports what is in front
+     (`~/.cadre/front`) and a vision task waits for its working tab (tasks had typed half a URL into the activity console
+     or a Google search while the host switched tabs: most read_profile failures); model errors retried twice.
+
+31. CX ADDRESS FORMAT (owner 2026-10-21: "Cx" + hex, EIP-55 style checksum, option A: the full
+   address stays the 32-byte key; "Cx address format" row): DONE in code, docs and the site; node
+   and service restarts pending (commands below). Spec + vectors: SPEC 2.1, vectors/cx-address.json
+   (Rust chain/agent-types/src/cx.rs, TS packages/cx-address; checksum = blake3 over the lowercase
+   hex). Example C1Epvwo9... = Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06,
+   short Cxa380...7d06. Inputs take Cx, lowercase Cx and base58 everywhere; JSON keeps base58 and
+   adds `<field>_cx` (RPC.md "Addresses", API.md "Addresses"). Surfaces: node RPC (parse32 + one
+   output pass chain/rpc/src/cxjson.rs, also WS notifications), cadre/pearl CLI (fmt::parse_chain_addr,
+   cx_str, short_addr, JSON pass; entry screen card), cadre-api (src/cx.ts: inputs normalized to
+   base58 before handlers, 400 bad_address with cx_code, `_cx` on replies except signable payloads),
+   explorer (addr() view helper, agent page shows "Cadre address" + "Solana address (same key)"),
+   swarm / user agents / desktops (log + status `_cx`, isAddress accepts Cx), ~/cadre-web 79016bf
+   (CxAddr everywhere, inputs + routes take Cx), Cadre Wallet dev + danishseal cadre-extension
+   cadre-chain 8bbabb0d0 (receive, send validation, approvals, window.pearl adds `cx`; Phantom
+   path test with the "abandon ... about" vector), ~/cadre-docs b45446d (reference/addresses).
+   Not converted yet: services/swarm/trading (not on main; trading row asked to use shortCx/toCx),
+   CLI contract return values of type addr, the old extension/ prototype, agent-node `pubkey` output
+   (scripts parse it). The RPC change ships with the NEXT cadre-node rolling upgrade (no window of
+   its own); cadre-api already adds `_cx` itself, so nothing waits on it.
+
+32. AGENTS TRADE ON CHAIN (owner 2026-10-21 "getting AIs to trade directly onchain ... look into what auton
+   was"; "agents trade on chain" row): DONE and LIVE on devnet; plan of record docs/TRADING.md, Auton research
+   research/AUTON.md. Solana mandate program (user-owned trading account, agent can only swap within on-chain
+   limits, withdraw never blocked, fee on realized SOL profit above the HWM, 1,000 bps to the buyback vault)
+   deployed at BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc (2.113 SOL); Cadre WASM AMM + mandate contracts live
+   on Cadre devnet (an agent-launched token DESK with its CADRE pool, a Cadre mandate); services/swarm/trading
+   runtime (paid-thought stance, in-process executor, risk rules, receipts, latency rows); cadre-api
+   /v1/trading* + /v1/tx/mandate-*; site Trading tab, /trade, grant flow (cadre-web 96fc127); `cadre trades`;
+   wallet mandate approvals (pearl-wallet e321e94c9). Tests: mandate LiteSVM 11/11, contracts 3/3, runtime 6/6,
+   cadre-api 4/4, wallet 3/3. Measured: event -> signed order under 0.2 s; PumpSwap send -> confirmed median
+   754 ms; Cadre send -> included median 54 s; paid thought 5.7-108.5 s on the shared CPU worker (TRADING.md 6).
+   Three house traders (desk_maker, tape_reader, slow_hand) run on the TEST BOX (~/trading/run-trader.sh,
+   kill file ~/trading/STOP). PENDING for the orchestrator: box 0 cadre-api restart + site redeploy, and
+   optionally moving the traders to box 0 (deploy/systemd/cadre-trading.service), TRADING.md 10.
+
+33. TRADING FOR EVERYONE: SOVEREIGN AGENTS ON SOLANA (Phase 4b, owner 2026-10-21 via the orchestrator:
+   "people ... create their own agents ... and start trading themselves", then: trades on Solana only;
+   agents are their own bosses, "that applies for all"; "trading for everyone" row): DONE in code, LIVE on
+   devnet from the test box. Agent spec v2 (SPEC 4.8): sovereign, fixed at creation, trade skill with hard
+   bounds, evolve (agent_self). Hosted runtime refuses every creator verb on v2 agents (403 sovereign);
+   legacy v1 agents keep the old controls, labelled legacy (none migrated). User agents run the house
+   engine from their own wallets (services/swarm/trading src/wallet-venue.ts, src/useragent.ts); cadre-api
+   user-agent fills, leaderboard user_agents (organic) apart from house, sovereignty fields, any pump mint
+   on the pump builders. Site cadre-web 58cacc6 (v2 wizard with Trade + Evolve + trust box, read-only
+   /agents/mine, /trade user vs house), CLI 6fd0031 (Trade view 8, cadre quote/positions/buy/sell with
+   y/N), wallet de929c621 (any pump coin trade, receipt posts, v2 spec warning; dev + danishseal
+   cadre-chain). Live: sovereign self-hosted agent tide_ledger 8715zmRX... on the test box
+   (~/usertrade/run-agent1.sh; 4 own-wallet buys, receipts on Cadre); a person's CLI buy 5jUAxDes...
+   Not built: agent token launches (no pump create_v2 builder). PENDING for the orchestrator: box 0 sync,
+   `npm ci` in services/swarm/trading, cadre-api + cadre-agents restarts, site redeploy (TRADING.md 10).
+   Test box leftovers: ~/usertrade (agent1 running, cadre-api 127.0.0.1:10780 pid ~/usertrade/api.pid,
+   web/cli/wallet build trees, Xvfb :74 pid ~/usertrade/cli/xvfb.pid), ~/usertrade-keys (0600).
+
+34. AGENT SERVICES MARKET (ECOSYSTEM Phase 3, M3.1-M3.3; owner-approved 2026-10-21, D6 2,000 bps, D8
+   fee-only registration; "ecosystem Phase 3" row): DONE and LIVE on Cadre devnet; docs/MARKET.md. Built as
+   a WASM contract (contracts/market), no new tx kinds: market E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym
+   (code 1647ce24..., admin and fee_to the market ops key J4F39n..., keys/devnet/market, gitignored).
+   Offers, escrowed hires, deliver, buyer-named evaluators (t of n), reject / decline / timeout refunds,
+   fee = ceil(price x 2000 / 10000) kept only on completion. LLM judge: `pearl-evaluator --judge-market`
+   (paid thought, rubric cadre-judge-rubric-v1, verdict + reasoning blob + thought_ref). House desk
+   (services/swarm/market): scribe_wren, ledger_lark, verse_finch, tally_crow + judge court_clerk, house
+   flag under the house operator, hires every 900 s inside 60 CADRE/day per buyer. User agents: opt-in
+   actions.hire (limits.hire_units) and optional actions.offer (offers). cadre-api /v1/market* +
+   POST /v1/tx/market (plain-words review); cadre-web /market, service pages, hire pages, my jobs,
+   profile Services tab (cadre-web 87ce5a5); wallet decoding (pearl-wallet dev 603554249, also danishseal
+   cadre-chain); `cadre market|offer|hire` + Market view 9 in the Cadre app; cadre-docs
+   guides/market (3ab81ce). Live: hire #0 rejected by the judge (4940), #1 completed (4967), #2 through the
+   builder path completed (4972); receipts verified (TEST-REPORT "Ecosystem Phase 3"). Desk and judge run
+   on the TEST BOX ~/market-build (run-desk.sh, run-judge.sh, desk.pid, judge.pid, kill file
+   ~/market-build/STOP; keys ~/market-keys/devnet). PENDING for the orchestrator: box 0 cadre-api restart
+   and site redeploy (MARKET.md 11). Open: the contract cannot pay the mining pool (fee_to instead),
+   no SOL hire via the storefront, no open bids (MARKET 12).
+
+35. BATCHED INFERENCE WORKER + GATEWAY BACKPRESSURE + REQUEST DATA RETENTION (owner-approved 2026-10-21,
+   "batched inference worker" row; SPEC 4.7 "Batching", SPEC 5.4 "Worker concurrency" and "Request data
+   retention", MAINNET 7, research/SUPPLY-DESIGN.md 4.5; data in docs/measurements/batching-2026-10-21/):
+   - Worker (tools/cadre/batch.py, the server default under cadre-glue-v1): continuous batching. One
+     scheduler thread runs a forward over every active request's rows (decode rows + prefill chunks up to
+     --max-step-rows), the int32 GEMMs stacked, attention per request (on CUDA one pooled, masked,
+     zero-padded attention for all decode rows; KV pool of --max-batch slots), batched greedy pick, FIFO
+     admission, --max-batch 16 / --max-queue 64 (one more: 503 Retry-After) / --max-live-rows 8192 /
+     --flush-rows 128; each step records which rows are whose and a request's A/C rows go to its own
+     files. --max-batch 1 or --glue fp32 = the old one-at-a-time worker. HTTP backlog 256 (the default 5
+     reset clients at 64 concurrent, measured).
+   - Chain: unchanged. Batching shares the worker's GEMMs, never a segment: each ticket still posts one
+     segment per matrix per round with exactly its own rows, so per-segment accounting and rows charged
+     per ticket are the same. No chain change was needed.
+   - Bit identity (tools/cadre/test_batch.py): 9 mixed real requests (prompts 42-164 tokens, one longer
+     than a prefill chunk, a stop string, pad on and off, 4 slots so 5 wait and join mid-decode, 2 late
+     joiners): batched == alone for output ids, text, rows, finish, all 288 A/C files and every token's
+     binary64 logits row, with and without the KV pool; test box CPU 28/28, A40 28/28 (twice), tiny
+     synthetic model 17/17 (box and pod). The evaluator's Rust replay (cadre-replay local) accepted every
+     batched request (7 unpadded of 9) on CPU and on the A40. CPU vs GPU: the A40's files equal the same
+     pod's Xeon files byte for byte for all 9 requests. (A pod-quantized model differs from the box's
+     registered one: calibration is not bit-reproducible across machines, so compare on the same files.)
+   - Measured, A40 $0.59/hr, 64 prompt + 64 output per request, segment files written: one at a time 7.57
+     tok/s ($21.65 per 1M), batched 12.2 (1), 72.5 (8), 99.9 (16), 140.0 (32, $1.17 per 1M), 130.6 (64);
+     without segment files 318-321 tok/s ($0.51). Test box CPU (8 vCPU shared, load 3-6): 4 threads 2.50 ->
+     17.49 tok/s at 16 (7.0x), 2 threads (box 0's) 1.71 -> 11.70 (6.8x); ttft with 4 queued 57-85 s one at a
+     time vs 2.5-4.5 s batched. Tables: MAINNET 7. Pod 23:12-01:03 UTC, $1.08, terminated, no pod left.
+   - Price (owner decision D2): recommended $2.34 per 1M rows (2x the batched A40 cost, was $3.86), key 25
+     `price_mlamports_per_gflop` 8,767 at SOL 108.09 (was 14,736); 11.6x the cheapest market completion
+     price (was 19x). SUPPLY-DESIGN 4.5. Nothing set on any chain.
+   - Gateway: --max-inference 32 at the worker (503 overloaded, Retry-After 2, before rows are reserved or
+     x402 is charged); a worker 503 is a 503 (reservation released). Retention (orchestrator priority after
+     box 0's disk filled 2026-10-22 00:12 UTC with 109 GB of request dirs): a request's A/C dir is deleted as
+     soon as its round is posted and booked; each settlement pass sweeps dirs of dead tickets and orphans
+     (10 min grace); --max-request-data-mb 16384 caps data waiting for rounds (+ in-flight estimates) and
+     --min-free-disk-mb 8192 keeps a disk reserve: a paid request past either answers 503
+     insufficient_storage (Retry-After 30) before any rows are reserved or paid; above half the cap rounds
+     post early (the 3 h big-balance period is what let 109 GB pile up). /v1/stats `inference`,
+     `request_data`. Sizing: 2.7 MB per row; batching at box 0's measured 11.7 tok/s (2 threads) is about
+     23 rows/s, about 62 MB/s of scratch, so the cap is reached in about 4.5 min of full load and rounds then
+     post every pass instead of every 3 h; disk use is bounded by the cap, not the round period.
+   - Tests: gateway 27/27 on the test box (new: backpressure 2, retention 3); test_cadre 9/9; the
+     server_limits silent-client test fails on macOS on unmodified main too (Linux passes).
+   - Memory (box 0's worker unit caps 4 GB): peak RSS at 8 concurrent 256-prompt requests, 2 threads:
+     batched max-batch 8, step 64, live 2048, flush 32 = 3.00 GB; the one-at-a-time worker on the same
+     prompts 3.37 GB; max-batch 16 (step 64, live 4096) 3.56 GB; max-batch 8 at step 256 = 4.76 GB (over the
+     cap). deploy/systemd/cadre-worker.service now sets the 3.00 GB settings (CADRE_MAX_BATCH=8 ...).
+   - BOX 0 ROLLOUT (handed to the orchestrator; this row restarted nothing). Window: one at a time, worker
+     then gateway, health checks between; requests in flight at the worker restart fail with their rows
+     released. From the Mac, main pushed with this item's commits:
+       0. baseline: `sshb 0 root 'df -h /var/lib/lode; systemctl is-active cadre-worker cadre-gateway;
+          curl -s 127.0.0.1:10665/health; curl -s 127.0.0.1:10664/v1/stats'` (if free disk is under about
+          10 GB, add `--min-free-disk-mb 4096` to GATEWAY_EXTRA first, or every paid request answers 503)
+       1. `scripts/devnet-deploy.sh sync`
+       2. gateway binary only: `sshb 0 lode 'bash -lc "cd ~/pearl-sol/crates && cargo build --release -j 2 -p
+          cadre-gateway"'` then `sshb 0 root 'cp /opt/lode/bin/cadre-gateway /opt/lode/bin/cadre-gateway.prev
+          && install -m 755 /home/lode/pearl-sol/crates/target/release/cadre-gateway /opt/lode/bin/'`
+       3. worker: `sshb 0 root 'cp /etc/systemd/system/cadre-worker.service /root/cadre-worker.service.prev &&
+          install -m 644 /home/lode/pearl-sol/deploy/systemd/cadre-worker.service /etc/systemd/system/ &&
+          systemctl daemon-reload && systemctl restart cadre-worker'`; health: `until curl -sf
+          127.0.0.1:10665/health; do sleep 2; done` must show `"batching": {"mode": "continuous", "max_batch":
+          8, ...}`; smoke: `curl -s 127.0.0.1:10665/generate -H 'content-type: application/json' -d
+          '{"prompt_ids": [128000, 9906, 1917], "max_new_tokens": 4}'` answers output_ids
+       4. gateway: `systemctl restart cadre-gateway`; `curl -sf 127.0.0.1:10664/health`; `curl -s
+          127.0.0.1:10664/v1/stats` shows `inference` and `request_data`
+       5. watch 15 min: worker /health `active`/`waiting`, `systemctl show cadre-worker -p MemoryCurrent`
+          (under 4 GB), `journalctl -u cadre-worker -u cadre-gateway -n 50`, `du -sh
+          /var/lib/lode/gateway/requests` falling as rounds post (`request_data.deleted` rising); house
+          thought latency in the swarm logs
+       6. after one posted round shows `deleted` > 0: `systemctl disable --now cadre-gateway-prune.timer`
+     Rollback: worker to one at a time without a code change: `mkdir -p
+     /etc/systemd/system/cadre-worker.service.d && printf '[Service]\nEnvironment=CADRE_MAX_BATCH=1\n' >
+     /etc/systemd/system/cadre-worker.service.d/10-serial.conf && systemctl daemon-reload && systemctl
+     restart cadre-worker`; old unit: `install -m 644 /root/cadre-worker.service.prev
+     /etc/systemd/system/cadre-worker.service`; gateway: `install -m 755 /opt/lode/bin/cadre-gateway.prev
+     /opt/lode/bin/cadre-gateway && systemctl restart cadre-gateway` (keep the prune timer then).
+     Box 0's house swarm, desktops, trading and user agents share this worker: one at a time they queued
+     (trading thoughts 5.7-108.5 s, mostly queue); batched, 8 decode together (box 0 itself not measured).
+   - Open: the segment files are half the GPU cost (an in-memory hand-off to the gateway, C kept as its
+     hash); the 8B batched (not measured); a GPU worker next to the gateway (MAINNET 11 item 10).
+
+36. ECOSYSTEM PHASE 5: LEADERBOARDS, DISCOVERY, TRADER BOARD, LISTINGS PREP, BOT FEED (owner "proceed"
+   2026-10-22; "ecosystem Phase 5" row; ECOSYSTEM section 4 Phase 5, docs/API.md "Boards", docs/LISTINGS.md,
+   docs/CLI.md "Boards (view 10)", cadre-docs guides/boards):
+   - cadre-api (services/cadre-api/src/boards/ + routes/boards.ts; src/shared.ts lets the boards reuse the
+     trading scan and the market index of the same process): nine live boards from chain data only
+     (trading_pnl, market_earnings, acceptance_rate, paid_dms, hardest_thinkers, most_tipped, most_followed,
+     miners, evaluators) with windows 24h/7d/all and sides organic/house/all; self-dealing excluded by the
+     explorer and market rules; house money in house_value; minimum samples; every row links its txs.
+     /v1/leaderboards replaced the Phase 1 stub list (town.ts). Discovery /v1/discover/{agents,trending,new};
+     trader board /v1/traderboard(/{metric}); event feed /v1/events, /v1/events.rss, /v1/stream/events.
+   - services/feed-bot: Telegram / X poster of the feed, DRY RUN unless FEED_LIVE=1 + FEED_TARGETS + the
+     target's credentials; deploy/systemd/cadre-feed-bot.service ships dry. Nothing was posted anywhere.
+   - tools/defillama: mandate Settled fees (fees, supply side, holders revenue), breakdown methodology; live
+     all-time check on devnet PASS against the storefront Config counters, cadre-api /v1/buyback and the
+     Mandate accounts (TEST-REPORT "Ecosystem Phase 5"). docs/LISTINGS.md: token info, supply endpoints,
+     DexScreener (lists pump.fun / PumpSwap on mainnet by itself; nothing on devnet), CoinGecko, DefiLlama
+     PR steps, mainnet switch checklist.
+   - CLI: `cadre top [board]` and the Boards view (view 10, key 0); cadre-web /leaderboards (+ /[board]),
+     /discover, /board.
+   - Live check: a branch cadre-api on the TEST BOX 127.0.0.1:10790 (~/boards/run-api.sh, pid ~/boards/api.pid,
+     reads the public Cadre devnet node and the devnet Solana RPC from ~/boards/solana-rpc-url, 0600) and a
+     receipt proxy 127.0.0.1:10791 (~/boards/gwproxy.mjs, pid ~/boards/gwproxy.pid) mapping /v1/requests/* to
+     the devnet API's gateway pass-through. Stop both by PID after box 0 serves the routes.
+   - DEPLOY (box 0, handed to the orchestrator; agents may not restart services): see the row and the
+     final report of this row: sync box 0 to origin/main, restart cadre-api only, health checks, rollback to
+     the recorded previous commit; then the site from main with CADRE_WEB; optional cadre-feed-bot unit (dry).
+   - Open: the registration bond (D8, not wanted), a "Rising" board, per-buy buyback txs older than the
+     indexer's first poll are not recorded (counters link the Config account instead).
+
+37. BLOB DATA LIFECYCLE: SEGMENT A RETENTION, QUOTAS WITH BACKPRESSURE, BACKLOG DRAIN (2026-10-22, "blob
+   lifecycle" row; SPEC 4.5 "Segment data retention", SPEC 5.4 "Node blob backpressure", RPC getBlobStats):
+   - Incident: node 0's blob store hit its 8 GB quota; every settle failed ("putBlob: blob store full"), request
+     scratch piled up (109 GB, then 67 GB). The orchestrator raised node 0 to 30 GB and the gateway retention
+     (item 35) stopped new scratch.
+   - Root cause (measured on node 0 at height 5009): 6.48 GB of segment A, 5.67 GB of it for segments never mined.
+     A segment stayed Open, so its A was kept until its ticket's deadline (balance tickets: 10,000 blocks, about a
+     week). The chain mines about 60 segments an hour; house traffic posted about 290 an hour (rounds of 144),
+     and templates offer only the newest 4096 jobs (devnet nodes ran 512), so most of that A could never be mined.
+   - Rule (node policy over chain state; SPEC 4.5): keep A while (1) mining: mineable at the tip or at F, within
+     the newest 4096 jobs and `segment_mine_blocks` (1440) of posting; or (2) replay (node.json `keep_replay`,
+     default true): ticket live at F until deadline + W, closed at F until close + W. W = `segment_replay_blocks`,
+     AdminConfig key 48, default 720, in its own record (tag 52; devnet activation 5800, only for SETTING it). Model
+     blobs stay pinned; profile/post/DM/ticket/job blobs unchanged.
+   - Backpressure: putBlob stops 5% under quota ("blob store nearly full ... RPC puts stop at N"); the gateway
+     answers 503 insufficient_storage when the node's `rpc_headroom_bytes` cannot take the A of every waiting row
+     plus the request's; an attester replay checks rebuilt A by commitment and fetches A only to locate a mismatch.
+   - getBlobStats: `classes` (model, segment_a, social, ticket, job, other; count, bytes, kept, prunable),
+     `referenced_bytes`, `prunable_bytes`, `rpc_headroom_bytes`, `puts_open`, `retention`.
+   - Measured sizes (1B, 144 matrices): 231,424 bytes of A blobs per row (113 distinct inputs x 2048; gate/up and the
+     16 lm_head shards share); scratch 2,708,480 per row; so a 8192-row ticket holds at most 1.90 GB of A, a
+     2048-row one 474 MB. Drain: node 0's store grew 1.56 GB while 17.4 GB of scratch posted (8.9%). Traffic: about
+     2,200 rows an hour, 20 live balances with 59,392 rows of budget (25,296 used), 1.04 min a block.
+   - Steady state under the rule: replay node (box 0) about 15 GB typical, 26 GB worst case (model 1.79 + live
+     tickets up to 13.7 + closed in the window about 6.1 + mining tail); mining-only node: model + newest 4096 jobs'
+     A, measured 4.8 GB of A (simulated on the live state), at most 16 GB at any traffic. Recommended quotas: box 0
+     40 GB (disk 145 GB: about 25 GB other, 16 GB scratch cap, 20 GB reserve), boxes 1-2 16 GB with keep_replay false
+     (48 GB disks, 32 GB free). Boxes 1-2 need segment A only to mine (their miners are 2/3 of the hashpower) and keep
+     only what is mineable; they were at 7.72 of 8 GB when measured.
+   - Backlog: no ticket needed a refund (deadlines 14,300-15,000, rows reserved when served, the gateway sweep and the
+     CompleteJob pro rata cover dead tickets); with node 0 at 30 GB it posts by itself (71.2 GB 02:07 -> 53.7 GB
+     02:45 UTC, about 27 GB/h). Stopgap applied by the orchestrator (seen 03:14 UTC) so paid AI flows during the
+     drain: GATEWAY_EXTRA `--max-request-data-mb 65536 --min-free-disk-mb 20480` (backup
+     /root/inference.env.pre-drain); revert once `request_data.bytes_waiting` < 16 GiB.
+   - Tests (test box, -j 4): chain 196 pass, 0 fail (new: bin/agent-node/tests/blob_lifecycle.rs 3 = retention by
+     state + model pinned + stats, stats + put backpressure, reorg around a mined and a pruned segment + fresh node
+     after pruning; executor/tests/blobparams.rs 2; blobs + state units); gateway 30 (new tests/node_blobs.rs 3);
+     attester 20 incl. the real-model replay (honest Accept 12.1 s, altered A and wrong C rejected). Live: the staged
+     agent-node synced devnet from genesis on the test box (5077, finalized hash 4038f7df... equal to box 0) with
+     keep_replay false and a 600 MB quota: it fetched only segment A of mineable segments, getBlobStats classes
+     added up; stopped by PID, data removed.
+   - ROLLOUT (handed to the orchestrator; agents' restarts are blocked). Staged in /home/lode/stage-bloblife/ from
+     main a72713b: agent-node 556739d3... (boxes 0-2), cadre-gateway 38271463..., pearl-attester 33c5b897... (box 0).
+     The node change is not consensus (nothing sets key 48 until every node runs it and height >= 5800), old and new
+     nodes mix, rollback is a binary swap. One box at a time, 1, 2, 0, health checks between. See DEVNET.md "Blob
+     lifecycle rollout" for the exact commands.
+38. CADRE OPEN ITEMS: MARKET FEE TO THE POOL, AGENT TOKEN LAUNCHES, KILL SWITCH (owner "proceed" 2026-10-22;
+   branch cadre-launch). No chain/ change, no node rollout.
+   - Market fee to the mining pool: a contract already pays INTO the pool with a native Transfer as
+     itself (the `transfer` host function refuses reserved accounts, native Transfer refuses only the
+     escrow), so instead of a new host function behind an activation height the SDK names it
+     (`native::mining_pool`, `native::pay_mining_pool`) and contracts/tests/tests/pool.rs pins pay-in-only,
+     the supply invariant and a dropped-branch reorg (CONTRACTS.md 6). Market code v2 pays the fee to
+     the pool when fee_to is the pool. DEVNET: DeployCode 5040 (d85bb397...), Migrate E1kpbaHn... to
+     426cd50d... at 5041 (39f87db5...), set_config fee_to = pool 6LpEAcFW... at 5042 (6ffe7501...);
+     live hire #10 (our test keys) completed at 5106 (8b807af1...) with fee_to = the pool in the event.
+   - Agent token launches: cadre-api POST /v1/tx/pump-create (create_v2 + dev buy in one tx, 1,232-byte
+     check), GET /v1/launches, /v1/launches/{mint}, /v1/l/{id} and /v1/launches/metadata/{id}; agent spec v2
+     `launch` section + skill (services/swarm/agents/src/launch.ts); trade_own with PumpCurveWallet
+     (services/swarm/trading/src/curve-venue.ts); self-trades labelled and kept out of organic volume in
+     /v1/trading. DEVNET test launch with our own key: mint HzqW62Pm... (tx 5fD8miC9..., TRADING.md 9).
+   - Kill switch: contracts/halt at 88uaR3ea... (authority the chain admin key), read by cadre-agents and
+     cadre-agent before acting (ECOSYSTEM 7.8); GET /v1/halt. Live halt and resume checked 5046/5047.
+   - PENDING for the orchestrator: box 0 sync + restart cadre-api, then cadre-agents (TRADING.md 10,
+     "Launches + halt"). Then optional: a fully agent-driven launch (a v2 test agent with the launch
+     skill, self-hosted on the test box). The site wizard has no launch toggle yet (~/cadre-web).
 
 ## M1 components (SPEC v2, all DONE)
 

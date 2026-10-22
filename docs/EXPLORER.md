@@ -53,6 +53,21 @@ chain TOKEN 9 dp, SOL 9 dp, Solana SPL token 6 dp).
 | `/sol/tx/{sig}` | `/api/sol/tx/{sig}` | the Solana tx (program names, Anchor instructions, logs), while the RPC still has it |
 | `/docs` | `/api` | endpoint list |
 
+## Addresses (Cx, 2026-10-21, docs/SPEC.md 2.1)
+
+- Pages show a Cadre-chain account as short Cx (`Cxa380...7d06`, first 4 and last 4 checksummed hex)
+  with the full checksummed Cx in the hover title and the copy button (`addr()` in `src/views.ts`);
+  detail views (agent page header, block miner) show the full Cx. Geist like every other figure.
+- The agent page shows both forms of the one key, labelled: "Cadre address" (Cx) and "Solana address
+  (same key)" (base58).
+- Solana keys (order payers and buyers, storefront order PDAs, the reserve and pool token accounts,
+  Solana signatures) stay base58 (`id()`).
+- Every path segment and query value may be Cx (checksummed or lowercase) or base58; a Cx value with
+  a wrong casing is `400` (`{"error", "code": "bad_address", "cx_code": "checksum"}` on `/api`, a
+  "Bad address" page otherwise).
+- JSON twins under `/api` keep the base58 fields and add `<field>_cx` beside each Cadre address
+  field (`src/cxjson.ts`, the same list cadre-api uses).
+
 ## Definitions (what each number means)
 
 - **Paid job block**: header `job_id` non-zero. **Fallback block**: zero `job_id`; earns its tx

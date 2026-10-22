@@ -49,8 +49,11 @@ fn opt_hash(k: &[u8; 32]) -> Value {
     if *k == [0; 32] { Value::Null } else { json!(hex::encode(k)) }
 }
 
-/// A 32-byte value from hex (64 chars) or base58.
+/// A 32-byte value from a Cx address (SPEC 2.1), hex (64 chars) or base58.
 pub fn parse32(s: &str) -> Result<[u8; 32], RpcError> {
+    if s.trim().starts_with(agent_types::cx::CX_PREFIX) {
+        return agent_types::cx::parse_address(s).map_err(|e| RpcError::params(format!("{s:?}: {e}")));
+    }
     let t = s.trim().trim_start_matches("0x");
     if t.len() == 64 && t.bytes().all(|c| c.is_ascii_hexdigit()) {
         return hex::decode(t).map(|v| v.try_into().unwrap()).map_err(|e| RpcError::params(e.to_string()));
@@ -337,6 +340,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 let (sh, mh) = crate::speed::speed_fields(self.chain.chain_id());
                 v["speed_height"] = json!(sh);
                 v["speed_migration_height"] = json!(mh);
+                // blob data-lifecycle parameters (own record, SPEC 4.5 "Segment data retention")
+                let bp = srv(self.blob_params().await)?;
+                let act = state::blobparams::blob_params_upgrade_height(self.chain.chain_id());
+                v["segment_replay_blocks"] = json!(bp.segment_replay_blocks);
+                v["blob_params_activation_height"] = json!(act);
+                v["keys"]["segment_replay_blocks"] = json!(state::blobparams::keys::SEGMENT_REPLAY_BLOCKS);
                 Ok(v)
             }
             "getBlockTemplate" => {
@@ -700,11 +709,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 }
             }
             "getBlobStats" => {
-                let Some(b) = self.blobs.as_ref() else { return Err(RpcError::server("this node has no blob store")) };
-                let c = b.config();
-                Ok(json!({"count": b.len(), "total_bytes": b.total_bytes(), "fetching": self.blob_wanted.len(), "fetch_in_flight": self.blob_fetch.in_flight(),
-                          "max_blob_bytes": c.max_blob_bytes, "max_total_bytes": c.max_total_bytes, "grace_blocks": c.grace_blocks,
-                          "put_rate_bytes_per_s": c.put_rate_bytes_per_s, "last_prune_height": self.last_blob_prune}))
+                if self.blobs.is_none() {
+                    return Err(RpcError::server("this node has no blob store"));
+                }
+                srv(self.blob_stats().await)
             }
             "getAccountTxs" => {
                 let a = p_key(p, &["account", "address"])?;

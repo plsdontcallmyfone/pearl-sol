@@ -81,6 +81,21 @@ struct Args {
     /// Requests handled at once; more answer 503 (security pass V-7).
     #[arg(long, default_value_t = 64)]
     max_in_flight: usize,
+    /// Inference requests at the worker at once (its batch plus its queue); more answer 503 with
+    /// Retry-After before any rows are reserved or paid. Keep it <= the worker's
+    /// --max-batch + --max-queue. 0 = no cap.
+    #[arg(long, default_value_t = 32)]
+    max_inference: usize,
+    /// Cap on request scratch data waiting for its round (MiB); a request past it answers 503
+    /// insufficient_storage, and over half of it rounds are posted early. 0 = no cap.
+    #[arg(long, default_value_t = 16 * 1024)]
+    max_request_data_mb: u64,
+    /// Free disk the gateway keeps (MiB): a request that would go below it answers 503.
+    #[arg(long, default_value_t = 8 * 1024)]
+    min_free_disk_mb: u64,
+    /// Keep request scratch data after its round is posted (debugging only).
+    #[arg(long)]
+    keep_request_data: bool,
     /// Socket read timeout per connection, seconds (headers, body, idle keep-alive).
     #[arg(long, default_value_t = 30)]
     read_timeout_secs: u64,
@@ -112,6 +127,10 @@ fn main() -> Result<()> {
         explorer_url: a.explorer_url.clone(),
         public_url: a.public_url.clone().unwrap_or(format!("http://{}:{}", a.host, a.port)),
         public_api_root: a.public_api_root.clone(),
+        max_inference: a.max_inference,
+        max_request_data_bytes: a.max_request_data_mb << 20,
+        min_free_disk_bytes: a.min_free_disk_mb << 20,
+        keep_request_data: a.keep_request_data,
         ..Config::default()
     };
     std::fs::create_dir_all(&cfg.work_dir)?;
@@ -130,7 +149,7 @@ fn main() -> Result<()> {
     let srv = server::bind(&addr, &limits).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;
     println!("{}", json!({"msg": "cadre-gateway started", "url": format!("http://{addr}"), "server": pearl_node::b58(&gw.server()),
         "model_id": hex::encode(gw.model.model_id), "model": gw.model.name, "matrices": gw.model.matrices.len(), "pid": std::process::id(),
-        "max_in_flight": limits.max_in_flight, "read_timeout_secs": limits.read_timeout.as_secs()}));
+        "max_in_flight": limits.max_in_flight, "max_inference": gw.cfg.max_inference, "read_timeout_secs": limits.read_timeout.as_secs()}));
     let g2 = Arc::clone(&gw);
     std::thread::spawn(move || g2.run_rounds());
     let g3 = Arc::clone(&gw);

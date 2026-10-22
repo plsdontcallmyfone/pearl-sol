@@ -1,20 +1,24 @@
 //! `pearl` / `cadre` (the same program under the product name): one command in text mode
 //! (steps + an info box) or `--json`; with no command `pearl` prints the overview box and
-//! `cadre` runs `status` (health of everything); `dashboard` opens the full-screen
-//! dashboard. All run the same `commands::exec`. See docs/CLI.md. The two binaries
+//! `cadre` runs `status` (health of everything); on a terminal `cadre` alone and
+//! `dashboard` open the Cadre app (src/entry/). All run the same `commands::exec`.
+//! See docs/CLI.md. The two binaries
 //! (src/main.rs, src/bin/cadre.rs) call [`main`]; the name they run as picks the default.
 
 mod agent;
+mod boards;
 mod brand;
 mod commands;
 mod contract;
 mod ctx;
 mod decode;
 mod endpoints;
+pub mod entry;
 mod fmt;
 mod health;
 mod html;
 mod inspect;
+mod market;
 mod model;
 mod probe;
 mod snapshot;
@@ -25,7 +29,9 @@ mod mock;
 mod stub;
 mod term;
 mod txstatus;
-mod ui;
+mod trade_cmd;
+mod trades;
+mod wallet_cfg;
 
 use clap::Parser;
 
@@ -49,6 +55,19 @@ pub fn main() {
     let bin = if name.starts_with("cadre") { "cadre" } else { "pearl" };
     let m = Cli::command().name(bin).bin_name(bin).get_matches();
     let mut cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
+    // `cadre` alone on an interactive terminal: the entry screen (src/entry/); anywhere
+    // else (a pipe, --json, TERM=dumb) exactly as before
+    // `pearl dashboard` / `cadre dashboard`: the same app, opened on its Dashboard view
+    let dashboard = matches!(cli.cmd, Some(commands::Cmd::Dashboard));
+    if entry::should_open_here(bin, cli.cmd.is_some(), cli.opts.json) || dashboard {
+        let start = if dashboard { entry::ViewId::Dashboard } else { entry::ViewId::Home };
+        let launch = entry::Launch { opts: cli.opts, forward: std::env::args_os().skip(1).collect(), commands: palette(), start };
+        let code = entry::run(launch).unwrap_or_else(|e| {
+            eprintln!("{}", term::Style::detect().step_line(false, &format!("error: {e:#}")));
+            1
+        });
+        std::process::exit(code);
+    }
     // `cadre` with no command: status (the health screen); `pearl`: the overview box
     if cli.cmd.is_none() && bin == "cadre" {
         cli.cmd = Some(commands::Cmd::Status { health: false });
@@ -70,6 +89,28 @@ pub fn main() {
     std::process::exit(code);
 }
 
+/// Every command for the entry screen's ctrl+p palette, from the clap definitions
+/// (subcommand groups listed as "group sub").
+pub fn palette() -> Vec<entry::PaletteCmd> {
+    use clap::CommandFactory;
+    let about = |c: &clap::Command| c.get_about().map(|a| a.to_string()).unwrap_or_default();
+    let needs = |c: &clap::Command| c.get_arguments().any(|a| a.is_positional() && a.is_required_set()) || c.is_subcommand_required_set();
+    let mut out = vec![];
+    for c in Cli::command().get_subcommands() {
+        if c.get_name() == "help" {
+            continue;
+        }
+        if c.has_subcommands() {
+            for s in c.get_subcommands().filter(|s| s.get_name() != "help") {
+                out.push(entry::PaletteCmd { name: format!("{} {}", c.get_name(), s.get_name()), about: about(s), needs_args: needs(s) });
+            }
+        } else {
+            out.push(entry::PaletteCmd { name: c.get_name().to_string(), about: about(c), needs_args: needs(c) });
+        }
+    }
+    out
+}
+
 /// The result, and whether a step already printed its error.
 fn run(cli: Cli, style: term::Style) -> (anyhow::Result<i32>, bool) {
     let json = cli.opts.json;
@@ -77,9 +118,6 @@ fn run(cli: Cli, style: term::Style) -> (anyhow::Result<i32>, bool) {
         Ok(c) => c,
         Err(e) => return (Err(e), false),
     };
-    if matches!(cli.cmd, Some(commands::Cmd::Dashboard)) {
-        return (ui::run(ctx).map(|_| 0), false);
-    }
     if !json {
         ctx.ui = term::Ui::plain(style);
     }
@@ -91,6 +129,7 @@ fn run(cli: Cli, style: term::Style) -> (anyhow::Result<i32>, bool) {
         };
         if json {
             let mut j = out.json;
+            fmt::add_cx_fields(&mut j);
             if let Some(o) = j.as_object_mut() {
                 // false exactly when the command exits non-zero (status / ping / verify)
                 o.insert("ok".into(), serde_json::json!(out.code == 0));
@@ -121,5 +160,17 @@ mod tests {
     fn clap_definitions_are_valid() {
         super::Cli::command().debug_assert();
         crate::commands::Line::command().debug_assert();
+    }
+
+    #[test]
+    fn palette_lists_every_command() {
+        let p = super::palette();
+        let names: Vec<&str> = p.iter().map(|c| c.name.as_str()).collect();
+        for want in ["status", "ping", "agents", "agent", "tx", "block", "watch", "verify", "account", "dashboard", "job show", "bridge out", "contract call", "quote buy", "positions", "buy", "sell"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        assert!(p.iter().find(|c| c.name == "tx").unwrap().needs_args);
+        assert!(!p.iter().find(|c| c.name == "status").unwrap().needs_args);
+        assert!(!names.contains(&"help"));
     }
 }

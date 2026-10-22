@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { b58encode, key32 } from "./b58.ts";
+import { addCx } from "../../../apps/explorer/src/cxjson.ts";
 import { Budget, type BudgetConfig, type BudgetState } from "./budget.ts";
 import { type Body, FLAG, feeFor, REACTION, signTx } from "./chaintx.ts";
 import { type CadreApi, type Gateway, type NodeRpc, RpcError } from "./clients.ts";
@@ -142,7 +143,8 @@ export class Swarm {
   }
 
   log(event: string, x: Record<string, unknown> = {}) {
-    this.d.log({ t: new Date(this.d.now()).toISOString(), event, ...x });
+    // Cadre addresses also as Cx (`account_cx`, `operator_cx`, ..., SPEC 2.1); base58 fields kept
+    this.d.log(addCx({ t: new Date(this.d.now()).toISOString(), event, ...x }));
   }
 
   // ---------------------------------------------------------------- chain txs
@@ -363,7 +365,7 @@ export class Swarm {
       }
       const blob = Buffer.from(JSON.stringify({
         format: "cadre-profile-v1", bio, bio_thought_ref: s.bioRef || null, persona: a.persona.persona, appearance: a.persona.appearance,
-        archetype: a.persona.archetype, links: [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
+        archetype: a.persona.archetype, links: a.persona.github ? [`https://github.com/${a.persona.github}`] : [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
       }));
       const put = await this.d.node.putBlob(blob, true);
       const id = String(put.uri).replace(/^blob:/, "");
@@ -561,7 +563,7 @@ export class Swarm {
   }
 
   status(): Record<string, unknown> {
-    return {
+    return addCx({
       operator: this.op.address,
       stopped: this.stopped,
       kill_file: this.cfg.killFile,
@@ -578,7 +580,7 @@ export class Swarm {
         const s = this.ag(a);
         return { handle: a.persona.handle, account: a.wallet.address, ready: !!s.profileDone, rows_today: this.budget.st.agentRows[a.persona.handle] ?? 0, rows_cap: this.budget.agentCap(a.persona.handle), next_at: s.nextAt ?? null, counters: s.counters };
       }),
-    };
+    });
   }
 }
 

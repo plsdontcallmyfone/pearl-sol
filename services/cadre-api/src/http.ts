@@ -9,6 +9,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
+import { addCx, normalizeBody, normalizeParams } from "./cx.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -232,6 +233,7 @@ export class Api {
       if (!m) return fail(new ApiError(404, "not_found", `no endpoint ${path}; see /v1`));
       if ("allowed" in m) return fail(new ApiError(405, "method_not_allowed", `${method} not allowed on ${path}`), { allow: [...new Set(m.allowed)].join(", ") });
       const { route, params } = m;
+      normalizeParams(params, url.searchParams);
 
       const rl = this.take(ip, route.cost);
       if (this.o.rateLimitPerMin > 0) {
@@ -279,11 +281,13 @@ export class Api {
         async json() {
           const b = await raw();
           if (b.length === 0) return {};
+          let v: unknown;
           try {
-            return JSON.parse(b.toString("utf8"));
+            v = JSON.parse(b.toString("utf8"));
           } catch {
             throw badRequest("body is not JSON");
           }
+          return normalizeBody(v);
         },
       };
 
@@ -320,7 +324,7 @@ export class Api {
       }
 
       const st = r.status ?? 200;
-      const body = r.text ? r.text.body : json(r.body ?? null);
+      const body = r.text ? r.text.body : json(addCx(r.body ?? null));
       const cachePolicy = r.cache ?? route.cache;
       const etag = `W/"${createHash("sha1").update(body).digest("base64url").slice(0, 27)}"`;
       const headers: Record<string, string> = {

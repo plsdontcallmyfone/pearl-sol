@@ -16,7 +16,7 @@ import { b58encode as b58 } from "../../src/b58.ts";
 import { GatewayAt } from "../src/gateway.ts";
 import { Runtime } from "../src/runtime.ts";
 import { open, seal, x25519FromSeed } from "../src/seal.ts";
-import { defaultSpec, profileBlob, specMessage, specSha256, type AgentSpec } from "../src/spec.ts";
+import { defaultSpec, defaultSpecV2, profileBlob, specMessage, specSha256, type AgentSpec } from "../src/spec.ts";
 import { PORTS, startFakes2, type Fakes2 } from "./fakes.ts";
 
 const seedOf = (s: string) => createHash("sha256").update(s).digest();
@@ -183,6 +183,25 @@ test("pause, resume and auth by the operator only", async () => {
   assert.equal((await call("POST", `/v1/hosted/agents/${ag.address}/resume`, {})).body.paused, false);
 });
 
+test("Cx addresses: agent and operator by Cx, replies add *_cx, bad casing 400 (SPEC 2.1)", async () => {
+  const { toCx } = await import("../../../../packages/cx-address/src/index.ts");
+  const cx = toCx(ag.address);
+  const a = await fetch(U(`/v1/hosted/agents/${ag.address}`)).then((x) => x.json());
+  const b = await fetch(U(`/v1/hosted/agents/${cx}`)).then((x) => x.json());
+  assert.deepEqual(b, a);
+  const l = await fetch(U(`/v1/hosted/agents?operator=${toCx(op.address)}`)).then((x) => x.json());
+  assert.equal(l.total, 1);
+  assert.ok(JSON.stringify(l).includes(cx), "list carries the agent's Cx");
+  const at = [...cx].findIndex((c, k) => k >= 2 && /[a-fA-F]/.test(c));
+  const bad = cx.slice(0, at) + (cx[at] === cx[at].toLowerCase() ? cx[at].toUpperCase() : cx[at].toLowerCase()) + cx.slice(at + 1);
+  const r = await fetch(U(`/v1/hosted/agents/${bad}`));
+  assert.equal(r.status, 400);
+  assert.equal((await r.json()).error.code, "bad_address");
+  // a signed POST on the Cx path: the signature covers the path as sent
+  assert.equal((await call("POST", `/v1/hosted/agents/${cx}/pause`, {})).body.state, "paused");
+  assert.equal((await call("POST", `/v1/hosted/agents/${cx}/resume`, {})).body.paused, false);
+});
+
 test("export returns the key sealed to the caller's ephemeral key", async () => {
   const eph = x25519FromSeed(randomBytes(32));
   assert.equal((await call("POST", `/v1/hosted/agents/${ag.address}/export`, { eph_pub: eph.pub.toString("base64") }, other)).status, 403);
@@ -204,6 +223,29 @@ test("withdraw sends SPL CADRE, SOL and chain CADRE to the operator with a recei
   for (const s of r.body.solana) assert.ok(receipt!.body.includes(`sol:${s}`));
   assert.equal(f.node.balances.get(ag.address), 0n, "chain CADRE drained to zero");
   assert.equal(r.body.status.state, "withdrawn");
+});
+
+test("a sovereign (v2) agent: its creator cannot pause, resume, withdraw, export, delete or edit it", async () => {
+  const seed2 = seedOf("rt-sovereign");
+  const ag2 = walletFromSeed(seed2);
+  const s2 = defaultSpecV2(ag2.address, op.address, { handle: "free_gull", name: "Free Gull", persona: "A gull who answers to nobody.", created_ms: 2, schedule: { cadence_min: 5, quiet_utc: null } });
+  const info = await fetch(U("/v1/hosted")).then((x) => x.json());
+  assert.match(info.trust, /cannot withdraw the agent's funds, export its key, pause, resume, delete it or edit its spec/);
+  const c = await call("POST", "/v1/hosted/agents", { sealed: seal(seed2, Buffer.from(info.seal_pub, "base64")), spec: sign(s2) });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  assert.equal(c.body.sovereign, true);
+  assert.equal(c.body.legacy, false);
+  assert.match(c.body.controls.stop, /kill switch/);
+  const eph = x25519FromSeed(randomBytes(32));
+  for (const verb of ["pause", "resume", "withdraw", "delete"]) {
+    const r = await call("POST", `/v1/hosted/agents/${ag2.address}/${verb}`, {});
+    assert.equal(r.status, 403, verb);
+    assert.equal(r.body.error.code, "sovereign", verb);
+  }
+  assert.equal((await call("POST", `/v1/hosted/agents/${ag2.address}/export`, { eph_pub: Buffer.from(eph.pub).toString("base64") })).body.error.code, "sovereign");
+  assert.equal((await call("POST", `/v1/hosted/agents/${ag2.address}/spec`, { spec: sign({ ...s2, persona: "obey me" }) })).body.error.code, "sovereign");
+  // the legacy v1 agent next to it keeps its old controls, labelled legacy
+  assert.equal(rt.status(ag.address).legacy, true);
 });
 
 test("a restarted runtime reloads the agent from the encrypted store", () => {

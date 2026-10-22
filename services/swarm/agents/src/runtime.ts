@@ -1,9 +1,12 @@
 // cadre-agents: the hosted runtime for user agents (docs/ECOSYSTEM.md 7). It runs every hosted
 // agent as an AgentRunner (agent.ts, a Swarm subclass: the house swarm's runtime with operator =
 // the user), keeps each agent key encrypted at rest (seal.ts KeyStore), and answers the operator's
-// signed requests: create (upload the sealed key + the signed spec), new spec, pause, resume,
-// withdraw everything to the operator, export the key, delete. Reads are public (they show what
-// the chain already shows, plus the runtime's own log). It never holds an operator's key.
+// signed requests: create (upload the sealed key + the signed spec). A v2 agent is sovereign
+// (spec.ts isSovereign, owner 2026-10-21): after creation its creator cannot send a new spec,
+// pause, resume, withdraw, export the key or delete it; those routes answer 403 `sovereign`. Only
+// the protocol-wide kill file stops it. Legacy v1 agents (created before 2026-10-21) keep the old
+// operator routes and are labelled `legacy` in status. Reads are public (they show what the chain
+// already shows, plus the runtime's own log). It never holds an operator's key.
 //
 // Operator auth: the headers of SPEC 5.4 (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature)
 // over "cadre-auth-v1\nMETHOD\nPATH\nTS\nhex(sha256(body))", signed by the operator's Solana
@@ -17,9 +20,11 @@ import type { Deps } from "../../src/swarm.ts";
 import { verifySig, walletFromSeed, type Wallet } from "../../src/wallet.ts";
 import { AgentRunner, type RunnerOpts } from "./agent.ts";
 import { ApiClient, isAddress } from "./chain.ts";
+import { addCx, cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
-import { type SignedSpec, verifySigned } from "./spec.ts";
+import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
+import { HaltWatch } from "./halt.ts";
 
 export const VERSION = "0.1.0";
 
@@ -39,6 +44,8 @@ export interface RuntimeConfig {
   minFreeRows: number;
   tickMs: number;
   killFile: string;
+  /** The protocol halt contract (contracts/halt) every hosted agent obeys; null = none configured. */
+  haltContract?: string | null;
 }
 
 interface Entry { operator: string; doc: SignedSpec; paused: boolean; created_ms: number; updated_ms: number }
@@ -49,7 +56,8 @@ export class HttpError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 
-export const TRUST = "Hosted keys are custodial: this runtime holds the agent key (encrypted at rest under a master key on the same host) and signs for the agent within the operator-signed spec's caps. The operator can export the key and withdraw every balance at any time. Phase 4 mandates will restrict trading keys on chain; until then the caps are enforced by this runtime, not by the chains.";
+export const TRUST = "Hosted agents are sovereign and their keys are custodial to this runtime (not to the creator): the runtime holds the agent key, encrypted at rest under a master key on the same host, and signs only what the agent itself decides inside the bounds its creator fixed at creation (budget, limits, skills, trade risk numbers). The creator cannot withdraw the agent's funds, export its key, pause, resume, delete it or edit its spec; profits stay with the agent. The only stops are the protocol-wide safety switches run by the Cadre operators: the on-chain halt record (contracts/halt, signed by the halt authority and read before every action) and this runtime's kill file; either halts every hosted agent at once. The bounds are enforced by this runtime, not by the chains, so trusting a hosted agent means trusting this runtime's operators. Legacy v1 agents (created before 2026-10-21) keep their creator's old controls and are labelled legacy.";
+export const SOVEREIGN = "this agent is sovereign (spec v2): its creator cannot change, pause, resume, withdraw from, export or delete it; only the protocol-wide kill switch stops it";
 
 export class Runtime {
   store: KeyStore;
@@ -59,6 +67,7 @@ export class Runtime {
   stopped = false;
   api: ApiClient;
   cfg: RuntimeConfig;
+  halt: HaltWatch | undefined;
   private makeDeps: (w: Wallet) => Deps;
 
   constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
@@ -66,6 +75,10 @@ export class Runtime {
     mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
     this.store = new KeyStore(`${cfg.stateDir}/keys`, cfg.masterKeyFile);
     this.api = new ApiClient(cfg.apiUrl);
+    if (cfg.haltContract) {
+      const node = new NodeRpc(cfg.nodeRpc);
+      this.halt = new HaltWatch({ contract: cfg.haltContract, query: (address, args) => node.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) });
+    }
     this.makeDeps = makeDeps ?? ((w) => ({
       node: new NodeRpc(cfg.nodeRpc),
       gateway: new GatewayAt(cfg.gatewayUrl, w),
@@ -94,7 +107,7 @@ export class Runtime {
   runnerOpts(agent: string): RunnerOpts {
     return {
       stateFile: `${this.cfg.stateDir}/agent-${agent}.json`, killFile: this.cfg.killFile, allowHosts: this.cfg.allowHosts, solRpc: this.cfg.solRpc,
-      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
+      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
     };
   }
 
@@ -143,6 +156,7 @@ export class Runtime {
   own(agent: string, operator: string): Entry {
     const e = this.entries.get(agent);
     if (!e) throw new HttpError(404, "not_found", "this agent is not hosted here");
+    if (isSovereign(e.doc.spec)) throw new HttpError(403, "sovereign", SOVEREIGN);
     if (e.operator !== operator) throw new HttpError(403, "not_operator", "only the agent's operator can do this");
     return e;
   }
@@ -202,7 +216,12 @@ export class Runtime {
     const r = this.runners.get(agent);
     const e = this.entries.get(agent);
     if (!r || !e) throw new HttpError(404, "not_found", "this agent is not hosted here");
-    return { ...r.statusJson(), hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION } };
+    const sov = isSovereign(e.doc.spec);
+    return {
+      ...r.statusJson(), sovereign: sov, legacy: !sov,
+      controls: sov ? { creator: "none (attribution only)", stop: "the protocol-wide kill switch only" } : { creator: "legacy v1: the operator may send a new spec, pause, resume, withdraw, export and delete" },
+      hosted: { created_ms: e.created_ms, updated_ms: e.updated_ms, runtime: "cadre-agents", version: VERSION, custody: "the runtime holds the key (custodial to the runtime, not the creator)" },
+    };
   }
 
   // ---------------------------------------------------------------- loop
@@ -213,6 +232,7 @@ export class Runtime {
     for (const [a, r] of this.runners) {
       if (this.stopped || existsSync(this.cfg.killFile)) return;
       if (r.paused || r.state === "withdrawn") continue;
+      // the protocol halt (halt.ts) is checked inside each agent's tick, before it acts
       this.ticking = a;
       try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
       this.ticking = null;
@@ -229,7 +249,7 @@ export class Runtime {
   // ---------------------------------------------------------------- auth + HTTP
 
   verifyAuth(method: string, path: string, h: IncomingMessage["headers"], body: string): string {
-    const w = String(h["x-cadre-wallet"] ?? "");
+    const w = cadreAddr(String(h["x-cadre-wallet"] ?? ""), "X-Cadre-Wallet") ?? "";
     const ts = Number(h["x-cadre-timestamp"] ?? NaN);
     const sig = String(h["x-cadre-signature"] ?? "");
     if (!isAddress(w) || !/^[0-9a-f]{128}$/i.test(sig) || !Number.isFinite(ts)) throw new HttpError(401, "unauthorized", "sign this request with the operator's wallet (X-Cadre-Wallet, X-Cadre-Timestamp, X-Cadre-Signature; SPEC 5.4)");
@@ -261,8 +281,8 @@ export class Runtime {
     if (method === "GET" && path === "/v1/hosted") return { status: 200, body: this.info() };
     if (path === "/v1/hosted/agents") {
       if (method === "GET") {
-        const op = u.searchParams.get("operator");
-        if (op && !isAddress(op)) throw new HttpError(400, "bad_request", "operator is a base58 address");
+        const op = cadreAddr(u.searchParams.get("operator"), "operator");
+        if (op && !isAddress(op)) throw new HttpError(400, "bad_request", "operator is an address (Cx, or the legacy base58 key)");
         const list = [...this.entries.entries()].filter(([, e]) => !op || e.operator === op).map(([a]) => this.status(a));
         return { status: 200, body: { total: list.length, agents: list } };
       }
@@ -272,9 +292,11 @@ export class Runtime {
         return { status: 201, body: this.create(op, b.sealed, b.spec) };
       }
     }
-    const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
+    // the agent may be named by its Cx address (SPEC 2.1); signatures still cover the path as sent
+    const m = /^\/v1\/hosted\/agents\/([1-9A-HJ-NP-Za-km-z]{32,44}|Cx[0-9a-fA-F]{64})(?:\/(spec|pause|resume|withdraw|export|delete))?$/.exec(path);
     if (m) {
-      const [, agent, verb] = m;
+      const [, named, verb] = m;
+      const agent = cadreAddr(named, "agent")!;
       if (!verb && method === "GET") return { status: 200, body: this.status(agent) };
       if (verb && method === "POST") {
         const op = this.verifyAuth(method, path, h, body);
@@ -310,12 +332,20 @@ export class Runtime {
           out = { status: he.status, body: { error: { code: he.code, message: he.message } } };
         }
         res.writeHead(out.status, { "content-type": "application/json", "cache-control": "no-store" });
-        res.end(JSON.stringify(out.body));
+        res.end(JSON.stringify(addCx(out.body)));
       });
     });
     s.listen(port, host);
     return s;
   }
+}
+
+/** A Cx address (or base58) as its base58 key; a bad Cx checksum is a 400. */
+function cadreAddr(v: string | null, name: string): string | null {
+  if (v === null) return null;
+  const r = cxInput(v);
+  if ("error" in r) throw new HttpError(400, "bad_address", `${name}: ${r.error}`);
+  return r.value;
 }
 
 export const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");

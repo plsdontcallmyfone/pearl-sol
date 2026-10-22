@@ -75,6 +75,8 @@ pub struct Snapshot {
     /// "not connected" | "reachable" | "unreachable: ..."
     pub credit: String,
     pub miner_pid: Option<u32>,
+    /// The Solana side was read in this pass (not carried over; `gather_next`).
+    pub sol_read: bool,
 }
 
 /// u64 from a JSON field (number or decimal string), 0 if absent.
@@ -223,11 +225,58 @@ pub fn gather(ctx: &Ctx) -> Snapshot {
         Ok(v) => sn.info = v,
         Err(e) => err(&mut sn, "agent chain", e),
     }
-    if sn.chain_ok() {
-        gather_chain(ctx, &mut sn, &mut err);
-    }
-    gather_solana(ctx, &mut sn);
+    // the chain reads and the Solana reads side by side; only "withdrawals released" waits
+    // for the chain's withdrawal list
+    let chain_ok = sn.chain_ok();
+    let reads = std::thread::scope(|sc| {
+        let sol = sc.spawn(|| solana_reads(ctx, chain_ok));
+        if chain_ok {
+            gather_chain(ctx, &mut sn, &mut err, None);
+        }
+        sol.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Solana reads panicked")))
+    });
+    apply_solana(ctx, &mut sn, reads);
+    sn.sol_read = true;
+    gather_services(ctx, &mut sn);
+    sn
+}
 
+/// The next read for a live view (the Cadre app's poller): like [`gather`], but blocks
+/// already read in `prev` are kept (their `final` flag recomputed from the new finalized
+/// height; the newest 3 are read again in case of a reorg), and the Solana side is
+/// carried over from `prev` unless `sol_due` or the withdrawal count changed (a new
+/// withdrawal needs its release state for the invariant).
+pub fn gather_next(ctx: &Ctx, prev: Option<&Snapshot>, sol_due: bool) -> Snapshot {
+    let Some(prev) = prev else { return gather(ctx) };
+    let mut sn = Snapshot {
+        taken_ms: now_ms(),
+        me: ctx.me.as_ref().map(b58),
+        sol_me: ctx.sol_me.as_ref().map(b58),
+        miner_pid: ctx.miner_pid(),
+        ..Default::default()
+    };
+    let mut err = |sn: &mut Snapshot, what: &str, e: anyhow::Error| sn.errors.push(format!("{what}: {e}"));
+    match ctx.call("getChainInfo", json!({})) {
+        Ok(v) => sn.info = v,
+        Err(e) => err(&mut sn, "agent chain", e),
+    }
+    if sn.chain_ok() {
+        gather_chain(ctx, &mut sn, &mut err, Some(prev));
+    }
+    if sol_due || prev.withdrawal_count != sn.withdrawal_count || !prev.sol_read && prev.sol.vault_spl.is_none() {
+        gather_solana(ctx, &mut sn);
+        sn.sol_read = true;
+    } else {
+        sn.sol = prev.sol.clone();
+        if let Some(e) = &sn.sol.error {
+            sn.errors.push(format!("solana: {e}"));
+        }
+    }
+    gather_services(ctx, &mut sn);
+    sn
+}
+
+fn gather_services(ctx: &Ctx, sn: &mut Snapshot) {
     // pool (optional service)
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(800)).build();
     let get = |path: &str| -> Option<Value> {
@@ -247,10 +296,9 @@ pub fn gather(ctx: &Ctx) -> Snapshot {
             Err(e) => format!("unreachable: {e}"),
         },
     };
-    sn
 }
 
-fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot, &str, anyhow::Error)) {
+fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot, &str, anyhow::Error), prev: Option<&Snapshot>) {
     for (m, slot) in [("getParams", 0), ("getEscrow", 1)] {
         match ctx.call(m, json!({})) {
             Ok(v) if slot == 0 => sn.params = v,
@@ -293,12 +341,39 @@ fn gather_chain(ctx: &Ctx, sn: &mut Snapshot, err: &mut impl FnMut(&mut Snapshot
         Err(e) => err(sn, "listJobs", e),
     }
     let tip = sn.height();
+    let fin = u(&sn.info, "finalized_height");
     let win = BLOCK_WINDOW.max(sn.finality_k() + 1).min(64);
-    for h in (tip.saturating_sub(win - 1)..=tip).rev() {
-        match ctx.call("getBlock", json!({"height": h})) {
-            Ok(v) if v.is_object() => sn.blocks.push(v),
-            Ok(_) => {}
-            Err(e) => {
+    let kept = |h: u64| -> Option<Value> {
+        if h + 3 > tip {
+            return None;
+        }
+        let b = prev?.blocks.iter().find(|b| u(&b["header_fields"], "height") == h)?;
+        let mut b = b.clone();
+        b["final"] = json!(h <= fin);
+        Some(b)
+    };
+    // blocks not kept from `prev` are read 16 at a time (one by one was most of a cold start:
+    // up to 64 round trips), then taken newest first, stopping at the first error as before
+    let heights: Vec<u64> = (tip.saturating_sub(win - 1)..=tip).rev().collect();
+    let need: Vec<u64> = heights.iter().copied().filter(|h| kept(*h).is_none()).collect();
+    let mut got: std::collections::HashMap<u64, anyhow::Result<Value>> = std::collections::HashMap::new();
+    for chunk in need.chunks(16) {
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = chunk.iter().map(|&h| (h, sc.spawn(move || ctx.call("getBlock", json!({"height": h}))))).collect();
+            for (h, j) in hs {
+                got.insert(h, j.join().unwrap_or_else(|_| Err(anyhow::anyhow!("getBlock {h} panicked"))));
+            }
+        });
+    }
+    for h in heights {
+        if let Some(b) = kept(h) {
+            sn.blocks.push(b);
+            continue;
+        }
+        match got.remove(&h) {
+            Some(Ok(v)) if v.is_object() => sn.blocks.push(v),
+            Some(Ok(_)) | None => {}
+            Some(Err(e)) => {
                 err(sn, "getBlock", e);
                 break;
             }
@@ -342,56 +417,99 @@ pub fn gather_bridge(ctx: &Ctx) -> Snapshot {
     sn
 }
 
-fn gather_solana(ctx: &Ctx, sn: &mut Snapshot) {
+/// Solana-side reads that do not need this round's chain reads (so they can run beside them).
+struct SolReads {
+    my_sol: Option<u64>,
+    store: Option<StorefrontConfig>,
+    cfg: BridgeConfig,
+    vault_spl: Option<u64>,
+    my_spl: Option<u64>,
+    /// in-flight deposits: (amount, count), when the chain answered
+    inflight: Option<(u64, u64)>,
+}
+
+fn solana_reads(ctx: &Ctx, chain_ok: bool) -> anyhow::Result<SolReads> {
+    // Independent reads run side by side (about 0.5 s per Solana round trip from far away;
+    // in a row they were most of a cold start). Same results as reading them in a row.
+    let rpc = &ctx.sol;
+    let sol_me = ctx.sol_me;
+    let (my_sol, store, bridge) = std::thread::scope(|sc| {
+        let a = sc.spawn(|| sol_me.as_ref().map(|me| rpc.balance(me)).transpose());
+        let b = sc.spawn(|| rpc.account(&solana::storefront_config_pda()));
+        let c = sc.spawn(|| rpc.account(&solana::bridge_config_pda()));
+        (a.join().unwrap(), b.join().unwrap(), c.join().unwrap())
+    });
+    let my_sol = my_sol?;
+    let store = store?.map(|d| StorefrontConfig::parse(&d)).transpose()?;
+    let Some(d) = bridge? else {
+        anyhow::bail!("bridge not initialised on this cluster");
+    };
+    let cfg = BridgeConfig::parse(&d)?;
+    let lo = cfg.deposit_nonce.saturating_sub(BRIDGE_WINDOW);
+    let range: Vec<u64> = (lo..cfg.deposit_nonce).collect();
+    let (vault, my_spl, deps, refunds) = std::thread::scope(|sc| {
+        let v = sc.spawn(|| rpc.token_balance(&cfg.vault));
+        let m = sc.spawn(|| sol_me.as_ref().map(|me| rpc.token_balance(&solana::ata(me, &cfg.mint, &cfg.token_program))).transpose());
+        let d = sc.spawn(|| if chain_ok { rpc.accounts(&range.iter().map(|n| solana::deposit_pda(*n)).collect::<Vec<_>>()).map(Some) } else { Ok(None) });
+        let f = sc.spawn(|| if chain_ok { rpc.accounts(&range.iter().map(|n| solana::processed_pda(CHAIN_TOKEN, *n)).collect::<Vec<_>>()).map(Some) } else { Ok(None) });
+        (v.join().unwrap(), m.join().unwrap(), d.join().unwrap(), f.join().unwrap())
+    });
+    // deposits in flight: in the window, not processed on the chain, not refunded
+    let mut inflight = None;
+    if let (Some(deps), Some(refunds)) = (deps?, refunds?) {
+        let cand: Vec<(u64, &Vec<u8>)> = range.iter().enumerate().filter(|(i, _)| refunds[*i].is_none()).filter_map(|(i, n)| deps[i].as_ref().map(|d| (*n, d))).collect();
+        let mut processed: Vec<anyhow::Result<Value>> = Vec::with_capacity(cand.len());
+        for chunk in cand.chunks(16) {
+            std::thread::scope(|sc| {
+                let js: Vec<_> = chunk.iter().map(|(n, _)| sc.spawn(move || ctx.call("getDeposit", json!({"solana_nonce": n})))).collect();
+                for j in js {
+                    processed.push(j.join().unwrap_or_else(|_| Err(anyhow::anyhow!("getDeposit panicked"))));
+                }
+            });
+        }
+        let (mut amt, mut cnt) = (0u64, 0u64);
+        for ((_, d), p) in cand.iter().zip(processed) {
+            if p?["processed"] != true {
+                amt += solana::deposit_amount(d)?;
+                cnt += 1;
+            }
+        }
+        inflight = Some((amt, cnt));
+    }
+    Ok(SolReads { my_sol, store, cfg, vault_spl: vault?, my_spl: my_spl?.map(|b| b.unwrap_or(0)), inflight })
+}
+
+/// Puts the Solana reads into `sn`, plus the one read that needs this round's chain data
+/// (are the chain's withdrawals released on Solana).
+fn apply_solana(ctx: &Ctx, sn: &mut Snapshot, reads: anyhow::Result<SolReads>) {
     let r = (|| -> anyhow::Result<()> {
-        let rpc = &ctx.sol;
-        if let Some(me) = &ctx.sol_me {
-            sn.sol.my_sol = Some(rpc.balance(me)?);
+        let rd = reads?;
+        sn.sol.my_sol = rd.my_sol;
+        if let Some(st) = rd.store {
+            sn.sol.store = Some(st);
         }
-        if let Some(d) = rpc.account(&solana::storefront_config_pda())? {
-            sn.sol.store = Some(StorefrontConfig::parse(&d)?);
-        }
-        let Some(d) = rpc.account(&solana::bridge_config_pda())? else {
-            anyhow::bail!("bridge not initialised on this cluster");
-        };
-        let cfg = BridgeConfig::parse(&d)?;
-        sn.sol.vault_spl = rpc.token_balance(&cfg.vault)?;
-        if let Some(me) = &ctx.sol_me {
-            sn.sol.my_spl = Some(rpc.token_balance(&solana::ata(me, &cfg.mint, &cfg.token_program))?.unwrap_or(0));
-        }
-        // withdrawals released?
+        sn.sol.vault_spl = rd.vault_spl;
+        sn.sol.my_spl = rd.my_spl;
         let nonces: Vec<u64> = sn.withdrawals.iter().map(|w| u(w, "nonce")).collect();
         let pdas: Vec<_> = nonces.iter().map(|n| solana::processed_pda(CHAIN_AGENT, *n)).collect();
-        let got = rpc.accounts(&pdas)?;
+        let got = ctx.sol.accounts(&pdas)?;
         sn.sol.released = nonces.into_iter().zip(got.iter().map(|a| a.is_some())).collect();
-        // deposits in flight: in the window, not processed on the chain, not refunded
-        if sn.chain_ok() {
-            let lo = cfg.deposit_nonce.saturating_sub(BRIDGE_WINDOW);
-            let range: Vec<u64> = (lo..cfg.deposit_nonce).collect();
-            let deps = rpc.accounts(&range.iter().map(|n| solana::deposit_pda(*n)).collect::<Vec<_>>())?;
-            let refunds = rpc.accounts(&range.iter().map(|n| solana::processed_pda(CHAIN_TOKEN, *n)).collect::<Vec<_>>())?;
-            let (mut amt, mut cnt) = (0u64, 0u64);
-            for (i, n) in range.iter().enumerate() {
-                if refunds[i].is_some() {
-                    continue;
-                }
-                let Some(d) = &deps[i] else { continue };
-                let p = ctx.call("getDeposit", json!({"solana_nonce": n}))?;
-                if p["processed"] != true {
-                    amt += solana::deposit_amount(d)?;
-                    cnt += 1;
-                }
-            }
+        if let Some((amt, cnt)) = rd.inflight {
             sn.sol.inflight_dep_spl = Some(amt);
             sn.sol.inflight_dep_count = cnt;
         }
-        sn.sol.bridge = Some(cfg);
+        sn.sol.bridge = Some(rd.cfg);
         Ok(())
     })();
     if let Err(e) = r {
         sn.sol.error = Some(e.to_string());
         sn.errors.push(format!("solana: {e}"));
     }
+}
+
+fn gather_solana(ctx: &Ctx, sn: &mut Snapshot) {
+    let reads = solana_reads(ctx, sn.chain_ok());
+    apply_solana(ctx, sn, reads);
 }
 
 #[cfg(test)]
@@ -467,6 +585,7 @@ pub mod sample {
             pool_miner: None,
             credit: "not connected".into(),
             miner_pid: None,
+            sol_read: true,
             errors: vec![],
         }
     }

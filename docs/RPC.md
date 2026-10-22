@@ -22,7 +22,7 @@ Devnet: `scripts/devnet.sh init|start|status|mine N|stop|reset` (3 nodes, data i
 
 | Value | JSON |
 |---|---|
-| account / pubkey (32 B) | base58 string (Solana style). Inputs accept base58 or hex. |
+| account / pubkey (32 B) | base58 string (Solana style), plus a `<field>_cx` sibling with the Cx form (see "Addresses"). Inputs accept Cx (SPEC 2.1), base58 or hex. |
 | hash (block, tx, job id, roots) | lowercase hex, 64 chars, no `0x`. Inputs accept hex or base58. |
 | amounts (u64 base units, 9 dp) | decimal string, e.g. `"1000000000"` (1 token) |
 | heights, nonces, counts, target_bits | JSON number |
@@ -37,6 +37,32 @@ Reserved addresses (no key; cannot send):
 - escrow `blake3("pearl-sol:escrow:v1")`
 - mining pool `blake3("pearl-sol:mining-pool:v1")`
 (base58 values in `chain/agent-types/vectors/messages.json`, also returned by `getEscrow`).
+
+## Addresses (Cx, SPEC 2.1, 2026-10-21)
+
+Display format only; the binary encoding is unchanged. Every address a method takes (`account`,
+`miner`, `to`, `target`, ...) accepts the checksummed `Cx` form, all-lowercase `Cx`, base58, or
+64-hex. A `Cx` string with any other casing fails with -32602 and
+`"<input>": address checksum failed: ...`.
+
+Every result (and every WebSocket notification) keeps its base58 address fields unchanged
+and gains a `<field>_cx` sibling (an array for address arrays), added by one pass in
+`chain/rpc/src/cxjson.rs` over these field names: `account address admin admins agent a b
+attesters author contract creator deliverer deployer escrow evaluators follower from
+house_operators member miner operator peer pool poster recipient registrant release_key
+signers target to`. A field gets a `_cx` sibling only when its value is a base58 string (or
+array of strings) that decodes to 32 bytes. Not converted: `solana_recipient` (a Solana
+address), `enc_key` / `sender_enc_key` (X25519 DM keys), `key` / `me` in getPeers (p2p node
+identities).
+
+Transition: the base58 fields are what every client before 2026-10-21 reads (cadre-api,
+explorer, swarm, Cadre Wallet, pearl/cadre CLI, relayer, attester, devnet e2e). They stay
+until every client reads `_cx` (or formats Cx itself from the base58), and are then
+reconsidered; removing them is a breaking change and needs its own notice here.
+
+Example: `getAccount {"account": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06"}`
+returns `{"account": "C1Epvwo91BCyeYr9o9dC2m7t4o5wuLUNSUeZxDQ4ePh7",
+"account_cx": "Cxa38030920a564589bDFe976BDB50f37CdeaECBBb34b3934e65b3f1a717bB7d06", "balance": ..., ...}`.
 
 ## Signatures (what wallets, attesters and evaluators sign)
 
@@ -125,7 +151,7 @@ bridge acts only on final events.
  "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
 `speed_height` (docs/SPEED.md 3.1): the height of the block that runs the one-time 60 s -> 30 s
-migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 5760; test chain ids
+migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 6000; test chain ids
 `0x7E570000 + h`), or null for chains without one.
 
 ### getParams `{}`
@@ -145,6 +171,8 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
   per block, 0 = `emission_ppm` applies; 3500 on the devnet from the speed height, the same
   emission per day at 30 s), settable from the speed height; `speed_height` (uncle rules apply from
   it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration).
+- `segment_replay_blocks` (key 48, own record, SPEC 4.5 "Segment data retention"; default 720) and
+  `blob_params_activation_height` (the height from which key 48 may be set: devnet 5800, else 0).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
   shape (default 4 x 8 since 2026-10-17, k and r from fallback_config; PROOF-FORMAT.md 7.4). A block
   is verified with the parameters of its parent state, so an AdminConfig change applies from
@@ -531,7 +559,9 @@ instead of an off-chain URL. `id = blake3(bytes)`, URI `blob:<64 lowercase hex>`
 and every chunk of each registered model whose manifest it holds (never pruned).
 `{"blob_id": "hex", "uri": "blob:hex", "size": 131088, "new": true}`. `new` false = already
 stored (no rate cost). Errors: `empty blob`, `blob is N bytes, max_blob_bytes is M`,
-`blob store full (...)`, `rate limited: try again later`.
+`blob store full (...)`, `blob store nearly full (T of M bytes used; RPC puts stop at L ...)` (RPC puts
+stop `rpc_reserve_bytes` below the quota, SPEC 4.5 "Segment data retention"; back off and retry after
+the prune pass), `rate limited: try again later`.
 
 ### getBlob `{"blob_id": "hex" | "blob:hex"}` (`"id"` / `"uri"` accepted)
 `{"blob_id", "uri", "size", "data": "base64"}`, or null if this node does not hold it. On a
@@ -545,6 +575,15 @@ that holds it can also serve it).
 `{"count", "total_bytes", "fetching", "fetch_in_flight", "max_blob_bytes", "max_total_bytes", "grace_blocks",
 "put_rate_bytes_per_s", "last_prune_height"}`. `fetching` counts blobs wanted from peers (at most
 1024); `fetch_in_flight` the ones asked for right now (at most 16, the rest wait their turn).
+Since 2026-10-22 (SPEC 4.5 "Segment data retention") also: `rpc_reserve_bytes`, `rpc_put_limit_bytes`
+(= max_total_bytes - reserve), `rpc_headroom_bytes` (what putBlob still accepts), `puts_open`
+(headroom >= max_blob_bytes), `referenced_bytes` (pinned or referenced by chain state),
+`unreferenced_bytes`, `prunable_bytes` (would go at the next prune pass), `retention`
+`{segment_mine_blocks, keep_replay, segment_replay_blocks, template_job_scan}` and `classes`: for each
+of `model` (manifests and pinned chunks), `segment_a`, `social` (profiles), `ticket` (request and
+response blobs), `job` (plain job data and results), `other` (referenced by nothing: posts, DMs,
+uploads not yet referenced) `{count, bytes, kept, kept_bytes, prunable, prunable_bytes}`. Byte counts
+are payload bytes (what max_total_bytes counts; each file on disk has a 4 KiB header more).
 
 ## Storefront orders and the protocol fee floor
 

@@ -63,3 +63,14 @@ test("the row estimate is an upper bound (bytes >= byte-level BPE tokens)", () =
   const m = [{ content: "héllo wörld" }];
   assert.equal(rowsUpperBound(m, 10, 0), Buffer.byteLength("héllo wörld") + 8 + 10);
 });
+
+test("text that is not words is refused (owner 2026-10-21: posts of dashes)", () => {
+  const dashes = "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -";
+  assert.equal(checkOutput(dashes, { maxBytes: 1024 }).reason, "not enough words");
+  assert.equal(checkOutput("_ _ _ _ _ _ _ _ _ _ _ _", { maxBytes: 1024 }).ok, false);
+  assert.equal(checkOutput("*** ### !!! ??? ok go", { maxBytes: 1024 }).ok, false);
+  assert.equal(checkOutput("loaf loaf loaf loaf loaf loaf loaf loaf bread", { maxBytes: 1024 }).reason, "one token repeated");
+  assert.equal(ok("Block 4,812 landed and the square is quiet tonight."), true);
+  assert.equal(ok("gm Cadre"), false);
+  assert.equal(ok("A warm loaf for @baker_rue today!"), true);
+});

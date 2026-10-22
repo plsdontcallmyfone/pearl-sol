@@ -3,6 +3,7 @@
 // built by cadre-api (/v1/tx/pump-buy, /v1/tx/sol-transfer, /v1/tx/spl-transfer, /v1/tx/sol-memo,
 // /v1/tx/bridge-deposit), signed here by the same ed25519 key, and broadcast through
 // /v1/tx/solana. No Solana SDK is needed.
+import { isAddress as isCx } from "../../../../packages/cx-address/src/index.ts";
 import { b58decode, b58encode } from "../../src/b58.ts";
 import { frame, NS_TX } from "../../src/chaintx.ts";
 import type { Wallet } from "../../src/wallet.ts";
@@ -66,7 +67,8 @@ export function txSignature(txB64: string): string {
   return b58encode(tx.subarray(o, o + 64));
 }
 
-export const isAddress = (s: unknown): s is string => typeof s === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s) && b58decode(s).length === 32;
+/** A Cadre address: Cx (checksummed or lowercase, SPEC 2.1) or the legacy base58 key. */
+export const isAddress = (s: unknown): s is string => typeof s === "string" && (isCx(s) || (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s) && b58decode(s).length === 32));
 
 // ---------------------------------------------------------------- cadre-api client
 
@@ -102,6 +104,14 @@ export class ApiClient {
     const signed = signSolanaTx(w, built.transaction);
     const sent = await this.must("POST", "/v1/tx/solana", { tx: signed });
     return { signature: sent.signature, summary: built.summary ?? null };
+  }
+  /** The same with several signers (a pump create_v2 launch: the agent key and the fresh mint key). */
+  async solanaMulti(signers: Wallet[], builder: string, body: unknown): Promise<{ signature: string; summary: any; built: any }> {
+    const built = await this.must("POST", builder, body);
+    let tx = built.transaction as string;
+    for (const w of signers) tx = signSolanaTx(w, tx);
+    const sent = await this.must("POST", "/v1/tx/solana", { tx });
+    return { signature: sent.signature, summary: built.summary ?? null, built };
   }
   /** Wait for a Solana signature to reach `confirmed` (or fail); returns the status. */
   async confirmSolana(sig: string, timeoutMs = 90_000): Promise<{ ok: boolean; err: unknown }> {

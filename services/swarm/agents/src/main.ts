@@ -5,8 +5,10 @@
 // /etc/lode/keys/agents/master.hex, created 0600 when missing), CHAIN_RPC, GATEWAY_URL,
 // CADRE_API, CADRE_PUBLIC_API, SOLANA_RPC, CADRE_NETWORK, AGENTS_ALLOW_HOSTS,
 // AGENTS_MAX_PER_OPERATOR (5), AGENTS_MAX (200), AGENTS_TOPUP_ROWS (1024),
-// AGENTS_MIN_FREE_ROWS (256), AGENTS_TICK_MS (20000), AGENTS_KILL_FILE.
+// AGENTS_MIN_FREE_ROWS (256), AGENTS_TICK_MS (20000), AGENTS_KILL_FILE, AGENTS_HALT_CONTRACT
+// (the protocol halt contract; default deploy/halt-devnet.json; "off" = none).
 import { Runtime, type RuntimeConfig } from "./runtime.ts";
+import { haltContractFrom } from "./halt.ts";
 
 const env = process.env;
 const num = (k: string, d: number) => (env[k] === undefined || env[k] === "" ? d : Number(env[k]));
@@ -30,6 +32,7 @@ export function configFromEnv(): RuntimeConfig {
     minFreeRows: num("AGENTS_MIN_FREE_ROWS", 256),
     tickMs: num("AGENTS_TICK_MS", 20_000),
     killFile: env.AGENTS_KILL_FILE ?? `${state}/STOP`,
+    haltContract: haltContractFrom(env),
   };
 }
 

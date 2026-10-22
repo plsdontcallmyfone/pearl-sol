@@ -661,3 +661,158 @@ result WARN
 - Not run: header-relay catchup tests (they need the lightclient .so built under token/, absent in the
   build tree); a QMDB storage-proof verifier on Solana does not exist yet.
 
+## Agents trade on chain (2026-10-21, docs/TRADING.md 8)
+
+| Suite | Where | Result |
+|---|---|---|
+| mandate program LiteSVM (token/tests/mandate, real pump.fun / PumpSwap bytecode, exploit set) | Mac, against the test box build (litesvm aborts on the box) | 11/11 |
+| trading contracts in the executor (contracts/tests) | test box | 3/3 |
+| trading runtime (services/swarm/trading) | test box | 6/6 |
+| cadre-api trading routes (test/trading.test.ts) + suite | Mac | 4/4; suite 56 pass, client/sol fail on the untouched tree too (missing dev dep in a fresh worktree) |
+| pearl-cli (with `cadre trades`) | test box | 75 + 4 pass |
+| pearl-wallet mandate-decode.spec | Mac | 3/3; pearl unit 209 (2 drift.spec failures predate this) |
+| cadre-web lint, typecheck, build, headless screens (desktop + phone, no horizontal scroll, no monospace) | Mac | clean |
+| live devnet | test box -> public endpoints | 22 fills on both chains by 3 house traders, receipts on Cadre, 4 unsigned mandate builders simulated |
+
+
+## Trading for everyone: sovereign agents on Solana (2026-10-21, Phase 4b, TRADING.md 5.6)
+
+| Suite | Where | Result |
+|---|---|---|
+| services/swarm/agents (spec v2 vector + bounds + agent_self; runtime incl. sovereign refusals of spec, pause, resume, withdraw, export, delete) | test box | 25/25 |
+| services/swarm/trading (incl. useragent.test.ts: spec to RiskRules, conviction gates, runner budget, kill file and halt, own-wallet fills, average cost) | test box | 11/11 |
+| services/swarm (house swarm, unchanged) | test box | 42/42 |
+| services/cadre-api (incl. usertrading.test.ts: walletFill, user-agent trades / agent view / leaderboard / organic volume, useragents sovereignty fields) | test box | 60 pass; client.test.ts and sol.test.ts fail the same way on the untouched tree (missing dev dependency) |
+| pearl-cli (Trade view, quote/positions/buy/sell) | test box | 92 unit + 5 entry_cli |
+| cadre-web lint, typecheck, unit, build; headless Chromium at 1440 and 390 px, mocks and live devnet via the branch cadre-api | test box | 62 unit; screens 60/60 mock, 60/60 live (screenshots/usertrade/) |
+| pearl-wallet trade-decode.spec (real devnet builder txs, receipts, v2 spec message) + unit suite | test box | 10/10; 304 pass, 6 skipped |
+| live devnet | test box -> public endpoints | sovereign agent tide_ledger: 4 own-wallet PumpSwap buys (first 66bxetLg...), 4 receipts on Cadre (heights 4869-4873), PnL and leaderboard from chain via the branch cadre-api; a person's `cadre buy --sol 0.002` (5jUAxDes...) |
+
+Not verified: a real wallet signature through the site wizard (the headless stand-in wallet only
+connects); the hosted path of a v2 agent on box 0 (cadre-agents there runs the old code until the
+deploy); the agent's stance loop stopped placing orders when the devnet gateway answered 502 (the
+engine halts while the agent is not running, as designed).
+
+
+## Ecosystem Phase 3: agent services market (2026-10-22, docs/MARKET.md 10)
+
+| Suite | Where | Result |
+|---|---|---|
+| market contract in the real executor (contracts/tests/tests/market.rs: accept payout, fee floor incl. rounding and admin edits, reject refund + judge pay, timeout open and delivered, decline, self-dealing and evaluator rules, 2-of-3 split, queries; supply invariant every block, escrow 0 after every close) | test box | 8/8 (trading contracts still 3/3); wasm rebuilt after merging main: same sha256 29958eff... as the deployed code |
+| pearl-evaluator LLM-judge mode (services/attester judge.rs) | test box | 5/5 unit; attester crate green |
+| cadre-api services routes (test/services.test.ts) + api parity, trading, contracts, town | Mac | 7/7; 38/38 with those suites; client.test.ts and sol.test.ts fail the same way on the untouched tree (missing @solana/web3.js on the Mac) |
+| user agents (services/swarm/agents incl. market.test.ts) | Mac | 28/28 after merging main (spec v2) |
+| house market desk (services/swarm/market/test) | Mac | 3/3 |
+| pearl-wallet market-decode.spec + pearl unit | Mac | 12/12; 231 pass, 6 skipped, 2 drift.spec IDL failures predate this; headless UI check 135/136 (the failure is the pump.fun buy wording from trade-decode, not the market) |
+| cadre-web typecheck, lint, unit, build; headless Chromium 1440x900 and 390x844, light and dark, against a cadre-api with the market routes on real devnet state | Mac | 72 unit; no horizontal overflow, no monospace, no em dashes, no page errors (screenshots/market/ in cadre-web) |
+| pearl-cli (market.rs, Market view 9 next to main's Trade view 8; node fallback against a mock node; write path on a private one-node chain) | test box | 103 unit + 5 integration after the merge |
+| cadre-docs build + link check | Mac | 53 pages x 2 viewports, 1905 links OK |
+
+Live on Cadre devnet (market contract E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym, DeployCode 4845
+ed9b6cdd..., Instantiate 4846 fd81934d...; four house offers at 4925-4928):
+
+| Hire | Path | Timeline | Result |
+|---|---|---|---|
+| #0 scribe_wren hires tally_crow "Five name ideas", 3 + 0.6 fee + 0.5 judge fee | house desk | Hired 4929 (bc567af4...), Delivered 4937 (52ed24e0..., thought req_abd90f1a..., 133 rows), Verdict + Rejected 4940 (8bf92a9c...) | the LLM judge rejected ("generic and vague descriptions"); price + fee refunded, judge paid 0.5 |
+| #1 ledger_lark hires scribe_wren "Plain-words explainer", 4 + 0.8 + 0.5 | house desk | Hired 4954 (28911d0d...), Delivered 4962 (78339aa3..., 251 rows), Verdict + Completed 4967 (852828a2...) | accepted by the judge; 4 CADRE to the provider, 0.8 to fee_to, 0.5 to the judge |
+| #2 market_ops hires verse_finch "Four-line verse", 2 + 0.4 | cadre-api POST /v1/tx/market (the site's builder), signed with the key file, buyer as evaluator | Hired 4968 (ced9e90e...), Delivered 4971 (992bd860...), manual Verdict + Completed 4972 (6108c071...) | completed; review text checked |
+
+Thought receipts checked against the devnet gateway (`/v1/openai/requests/{id}`): the judge's hire #0
+answer hashes to its receipt (text_sha256 6d4adc52..., 336 rows, 4,133,472 lamports, paid by the
+judge's own wallet F29KnY...), and tally_crow's delivery hashes to its receipt (ae0ab7bd..., 133
+rows, 1,636,166 lamports). Market volume after the run: organic 0, house 6 CADRE (correct: every
+buyer is house). Each desk and judge wallet topped up its own prepaid balance over x402: 2,048 rows
+for 25,193,988 lamports per top-up.
+
+Found and fixed during the live run: house-to-house hires were labelled self-dealt (the shared house
+operator) instead of house; desk blobs lived only on box 0's node (now mirrored to all three); the
+judge paid for a second thought on a hire whose verdict tx had not landed yet (now skipped for 30
+blocks); review text named the contract in base58 (now Cx).
+
+Not verified: a real Cadre Wallet signature through the site (headless runs used a stand-in
+window.pearl; the builder path was proven by signing its unsigned_tx with a key file); an organic
+(non-house) hire on devnet (none was made, so organic volume is truthfully 0); the public devnet
+cadre-api and site serve the market only after the deploy in MARKET.md 11.
+
+## Ecosystem Phase 5: boards, discovery, trader board, listings, bot feed (2026-10-22, HANDOFF 36)
+
+| Suite | Where | Result |
+|---|---|---|
+| cadre-api boards (test/boards.test.ts): board math on synthetic facts (self-dealt never counts, house apart, distinct payers, minimum sample and payers gate, windows on block time, house / organic / all sides, rate in ppm, positive boards skip zero rows, realized PnL per sell sums to the trading route's average cost) + every route on an in-memory index with fake market and trading handles (earnings with self-dealt and funded payers excluded, acceptance 2 of 3 with the min-sample cut, tips with the self tip excluded and the 10-day-old tip only in `all`, paid followers vs raw, answered vs unanswered paid DMs, trading 3-sell minimum, self-mined block and own-job verdicts excluded, discovery filters, trader board metrics, event feed JSON / RSS / SSE, no em dashes) | Mac + test box | 20/20 |
+| cadre-api full suite incl. town (new leaderboards test: every board live, house rows only on the house side), openapi parity (every new route documented) | test box | 103 tests: 94 pass, 0 fail, 9 skipped (client and sol need storefront-x402 node_modules: installed in the box copy) |
+| feed-bot (dry run by default, live only with all three switches, first run takes no backlog, hourly cap, cursor survives a restart, 280-character texts keep the link) | Mac | 4/4 |
+| DefiLlama adapter unit (storefront events, window, paging, mandate Settled offsets, mandate fees in the right fields) | test box | 4/4 |
+| DefiLlama live, all-time, Cadre devnet (storefront 9XjvGk2x..., mandate BG5WkxZy..., dedicated devnet RPC) | test box | PASS: fees 599,081,615 = total_sol 539,173,466 + shares held 59,908,149; supply side = total_sol; holders revenue 29,657,293 = bb_accrued = cadre-api /v1/buyback accrued; mandate protocol fees 0 = the Mandate accounts' fees_protocol (no settle has run on devnet) |
+| cadre-web /leaderboards (+ /[board]), /discover, /board: tsc, lint, unit, next build; e2e/boards.mjs headless Chromium on the test box at 1440 and 390 widths against the branch cadre-api on real devnet data (no horizontal overflow, no monospace, no em dashes, every board shows rows or its empty reason) | test box | 78 unit; 12/12 screens (screenshots/boards/); cadre-web b6b9fc7 |
+| cadre-docs guides/boards build + check | test box | 54 pages x 2 viewports, 1,952 links OK |
+| pearl-cli Boards view 10 + `cadre top` (formatting per unit, the 9 boards parsed from a live fixture, window / side refusal, view 10 on 0 / alt+0 / F10, canvas at 80 and 140 columns, no em dashes; `top` text and JSON against a fixture server) | test box | 109 unit + 7 integration |
+
+Live on the test box against the public Cadre devnet (branch cadre-api 127.0.0.1:10790, devnet node RPC,
+devnet Solana RPC), 2026-10-22 ~03:00 UTC: all nine boards answer; examples (window all): market_earnings
+1 Cx4956...6f64 9,148,670.61 CADRE organic from 3 payers (+661,671.35 CADRE house), 2 Cxe21a...FF6C
+5,201,854.77 CADRE from 3 payers; trading_pnl 1 @tide_ledger 57,920 lamports over 3 sells; miners 1
+Cxe21a...FF6C 470 paid of 1,901 blocks; evaluators 1 Cx7DcD... 13 verdicts (+2 house, 1 own-job excluded);
+hardest_thinkers organic empty, house side 19 rows (25 receipts read; every thought was paid by the house
+wallet Cu4bS9...); paid_dms, most_tipped, most_followed empty (no tips, follows or paid DMs on devnet yet:
+shown as empty, never filled). Trader board: SOL spent on AI all time 272,542,596 lamports organic,
+11,442,615 house; paid-block share all time 214,711 ppm. Event feed: 58 events; the feed bot's dry run
+printed 6 (new agents, a paid-blocks milestone, two completed house hires, block 5,000) and sent nothing.
+
+## Batched inference worker + gateway backpressure + request data retention (2026-10-21/22, HANDOFF 35)
+
+| Suite | Where | Result |
+|---|---|---|
+| tools/cadre/test_batch.py, tiny synthetic Llama (7 mixed requests, pool off and on) | test box; A40 pod CPU | 17/17 (console only; testbox-tiny.log is the earlier pre-pool run, 9/9); 17/17 (a40-tb-tiny.log) |
+| test_batch.py, Llama-3.2-1B-Instruct w7a7, 9 mixed requests, batched vs alone (ids, text, rows, 288 files, logits rows), pool off and on, + cadre-replay local of every unpadded batched request | test box CPU (4 threads) | 28/28 (testbox-real2.log; replay 7/7 honest, 7.4-18.8 s each) |
+| same | A40 (cuda) | 28/28 twice (a40-tb-gpu3.log, a40-tb-gpu4.log; replay 7/7 honest) |
+| CPU vs GPU, same pod, same model files: all A/C files of the 9 batched requests | A40 pod | 9/9 identical |
+| tools/cadre/test_cadre.py (unchanged serial path) | test box | 9/9 |
+| services/inference-gateway (new: backpressure 2, retention 3) | test box | 27/27 |
+| same | Mac | 26/27: server_limits a_silent_client_is_cut_off_by_the_read_timeout fails on macOS, also on unmodified main |
+| throughput, bench_batch.sh (MAINNET 7) | A40; test box 4 and 2 threads | a40-bench-gpu*.jsonl, testbox-bench-cpu-t4-v2.jsonl, testbox-bench-cpu-t2-v2.jsonl |
+| worker peak RSS for box 0 settings | test box, 2 threads | testbox-rss2.txt (3.00 GB at the unit's settings) |
+
+Found and fixed on the way: ThreadingHTTPServer's listen backlog of 5 reset clients at 64 concurrent
+(now 256); per-request capture clones and per-request attention made the GPU launch-bound at 45 tok/s
+(per-step capture + pooled decode attention: 140); a KV pool of 128 x 2048 positions does not fit an
+A40 (51 GB; --pool-positions). Not verified: the batched worker on box 0 itself (rollout handed to the
+orchestrator), a paid gateway round end to end with the new retention on a live chain (tested against a
+mock chain that includes every tx).
+
+
+## Blob data lifecycle (2026-10-22, "blob lifecycle" row, HANDOFF 37)
+
+Test box 64.95.13.106, ~/bloblife, `-j 4`, main a72713b.
+
+| Suite | Result |
+|---|---|
+| chain workspace `cargo test --release` | 196 passed, 0 failed, 2 ignored |
+| new: agent-node tests/blob_lifecycle.rs | 3/3: segment A retention by state (mined, final, ticket closed, replay window, mining window) on a replay node and a mining-only node + model blobs pinned + getBlobStats classes; stats breakdown + putBlob "blob store nearly full" backpressure and recovery after the prune; reorg around a mined segment (A kept, mineable again on the new branch), reorg around a pruned one (not wanted back) and a fresh node syncing after pruning (equal finalized hash, pinned manifest fetched, A of a mineable segment fetched, pruned A never wanted) |
+| new: executor tests/blobparams.rs | 2/2: key 48 refused below devnet 5800 ("unknown config key") and accepted from it, config record untouched; admin only, range, reserved key 49, default value deletes the record |
+| blobs + state units | rpc_reserve_backpressure, blobparams roundtrip/bounds, all green |
+| cadre-gateway (crates workspace) | 30/30; new tests/node_blobs.rs 3/3: 503 insufficient_storage before reserving when the node lacks headroom (waiting rows count), a settle refused for space blocks new paid work at once, an older node's quota minus total and no getBlobStats at all |
+| pearl-attester | 20/20; tests/replay.rs with the real model (CADRE_REPLAY_MODEL llama-3.2-1b-instruct-w7a7-k2048, runs ~/verify-ai/rt/req0,req1): honest 96-row 144-segment ticket Accept in 12.1 s (commitment-first A check), altered A rejected naming segment 4df38dcc... (matrix 61, row 90 col 7), wrong C rejected (product) |
+| live follower | staged agent-node 556739d3... from genesis against the devnet seeds, keep_replay false, 600 MB quota: tip 5077 and finalized hash 4038f7df25c530a1 equal to box 0; fetched only mineable segments' A (316 blobs, 432 MB) + manifest + profiles + ticket blobs; stopped by PID, data removed |
+## Cadre open items: fee to the pool, agent launches, halt record (2026-10-22, HANDOFF 38)
+
+All on the test box 64.95.13.106 (~/cadre-launch) unless noted.
+
+| Suite | Result |
+|---|---|
+| contracts/tests (`cargo test --release`): pool.rs 6 (new), halt.rs 3 (new), market.rs 8, trading.rs 3 | 20/20 pass |
+| services/cadre-api (`node --test`) incl. launches.test.ts 8 (new) | 91 tests: 82 pass, 0 fail, 9 skipped (services/crank node_modules and token/target/idl missing in this tree, as before) |
+| services/swarm/agents incl. launch.test.ts 6 (new: launch skill, halt watcher, spec launch rules) | 34/34 pass (also on the Mac) |
+| services/swarm/trading incl. migrate-vector.test.ts 1 (new), useragent.test.ts +2 (own-token self-trade, curve reserves) | 14/14 pass |
+
+Measured gas (executor tests, gas_price 10,000): pay_mining_pool probe call 328,019 (fee 6,131 base
+units); market verdict that completes and pays the fee to the pool 1,005,503 (fee 14,106) against
+922,182 (fee 13,272) for an account fee_to; market v2 deploy 30,897 bytes 1,235,880 gas (fee 323,629);
+halt deploy 8,101 bytes 324,040 gas; halt set 208,993 (fee 5,320).
+
+Live on devnet: market migrated and fee_to = pool (5040-5042), hire #10 completed with the fee to the
+pool (5106); halt contract deployed (5043-5045), set all (5046) and cleared (5047) with a self-hosted
+runner reporting `halted` then going on; Solana devnet test launch HzqW62Pm... (1,177 bytes, 178,850 CU)
+plus a curve buy and sell by the same key. The first builder attempt with a compute-budget instruction
+was 1,254 bytes and refused by the RPC (limit 1,232); the builder now drops that instruction and checks
+the size.
+
