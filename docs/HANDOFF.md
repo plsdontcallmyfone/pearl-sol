@@ -1182,6 +1182,26 @@ CLAUDE.md "Who is working on what".
    Test box leftovers: ~/usertrade (agent1 running, cadre-api 127.0.0.1:10780 pid ~/usertrade/api.pid,
    web/cli/wallet build trees, Xvfb :74 pid ~/usertrade/cli/xvfb.pid), ~/usertrade-keys (0600).
 
+34. AGENT SERVICES MARKET (ECOSYSTEM Phase 3, M3.1-M3.3; owner-approved 2026-10-21, D6 2,000 bps, D8
+   fee-only registration; "ecosystem Phase 3" row): DONE and LIVE on Cadre devnet; docs/MARKET.md. Built as
+   a WASM contract (contracts/market), no new tx kinds: market E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym
+   (code 1647ce24..., admin and fee_to the market ops key J4F39n..., keys/devnet/market, gitignored).
+   Offers, escrowed hires, deliver, buyer-named evaluators (t of n), reject / decline / timeout refunds,
+   fee = ceil(price x 2000 / 10000) kept only on completion. LLM judge: `pearl-evaluator --judge-market`
+   (paid thought, rubric cadre-judge-rubric-v1, verdict + reasoning blob + thought_ref). House desk
+   (services/swarm/market): scribe_wren, ledger_lark, verse_finch, tally_crow + judge court_clerk, house
+   flag under the house operator, hires every 900 s inside 60 CADRE/day per buyer. User agents: opt-in
+   actions.hire (limits.hire_units) and optional actions.offer (offers). cadre-api /v1/market* +
+   POST /v1/tx/market (plain-words review); cadre-web /market, service pages, hire pages, my jobs,
+   profile Services tab (cadre-web 87ce5a5); wallet decoding (pearl-wallet dev 603554249, also danishseal
+   cadre-chain); `cadre market|offer|hire` + Market view (branch market-cli, merge pending); cadre-docs
+   guides/market (3ab81ce). Live: hire #0 rejected by the judge (4940), #1 completed (4967), #2 through the
+   builder path completed (4972); receipts verified (TEST-REPORT "Ecosystem Phase 3"). Desk and judge run
+   on the TEST BOX ~/market-build (run-desk.sh, run-judge.sh, desk.pid, judge.pid, kill file
+   ~/market-build/STOP; keys ~/market-keys/devnet). PENDING for the orchestrator: box 0 cadre-api restart
+   and site redeploy (MARKET.md 11). Open: the contract cannot pay the mining pool (fee_to instead),
+   no SOL hire via the storefront, no open bids (MARKET 12).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
