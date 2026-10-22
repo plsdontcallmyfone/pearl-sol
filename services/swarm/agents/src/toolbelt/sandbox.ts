@@ -80,6 +80,20 @@ export function computerSystem(name: string, handle: string, w: number, h: numbe
  * desktops are created ahead and PAUSED (a paused E2B sandbox bills no compute; E2B storage is free),
  * so a task resumes one in about a second instead of a cold create; each is used by one task, killed
  * after, and the pool refills in the background. Size TOOLBELT_DESKTOP_POOL (default 2; 0 = cold). */
+export const BROWSER_CMD = (W: number, H: number, url: string) => `B=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1); [ -z "$B" ] && B=$(command -v chromium || command -v google-chrome || command -v firefox); DISPLAY=:0 nohup "$B" --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --window-size=${W},${H} --window-position=0,0 '${url.replace(/'/g, "")}' >/tmp/browser.log 2>&1 &`;
+const READY_CMD = "xdotool search --onlyvisible --class 'chrom|firefox' >/dev/null 2>&1 && echo up || true";
+
+/** Poll (no fixed delay) until a browser window is visible; ms waited. */
+export async function waitBrowser(sbx: any, maxMs: number): Promise<number> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    const p = await sbx.commands.run(READY_CMD, { timeoutMs: 5000 }).catch(() => null);
+    if (p?.stdout?.includes("up")) return Date.now() - t0;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return Date.now() - t0;
+}
+
 export class DesktopPool {
   ids: string[] = [];
   filling = 0;
@@ -87,45 +101,50 @@ export class DesktopPool {
   template: string;
   size: number;
   log: (e: Record<string, unknown>) => void;
+  private adopting: Promise<void> | null = null;
   constructor(apiKey: string, template: string, size: number, log: (e: Record<string, unknown>) => void = () => {}) { this.apiKey = apiKey; this.template = template; this.size = size; this.log = log; }
+  /** one clean desktop with the browser already open on about:blank, then paused (processes kept) */
   private async one() {
-    const { Sandbox } = await e2bDesktop();
-    this.filling++;
     try {
+      const { Sandbox } = await e2bDesktop();
       const t0 = Date.now();
       const s = await Sandbox.create(this.template, { apiKey: this.apiKey, timeoutMs: 600_000, resolution: [1280, 800], metadata: { cadre_toolbelt: "computer-pool" } });
+      await s.commands.run(BROWSER_CMD(1280, 800, "about:blank"), { timeoutMs: 15_000, background: true }).catch(() => {});
+      const waited = await waitBrowser(s, 30_000);
       await Sandbox.pause(s.sandboxId, { apiKey: this.apiKey });
       this.ids.push(s.sandboxId);
-      this.log({ event: "toolbelt_pool_ready", ms: Date.now() - t0, ready: this.ids.length });
+      this.log({ event: "toolbelt_pool_ready", ms: Date.now() - t0, browser_ms: waited, ready: this.ids.length });
     } catch (e) {
       this.log({ event: "toolbelt_pool_error", error: String((e as Error).message).slice(0, 200) });
     } finally { this.filling--; }
   }
-  adopted = false;
-  /** after a restart: take back this pool's paused desktops instead of making new ones */
-  async adopt() {
-    if (this.adopted) return;
-    this.adopted = true;
-    try {
-      const { Sandbox } = await e2bDesktop();
-      const p = Sandbox.list({ apiKey: this.apiKey, query: { metadata: { cadre_toolbelt: "computer-pool" }, state: ["paused"] } });
-      while (p.hasNext) for (const i of await p.nextItems()) if (!this.ids.includes(i.sandboxId)) this.ids.push(i.sandboxId);
-    } catch { /* list failed: fill fresh */ }
+  /** after a restart: take back this pool's paused desktops instead of making new ones (once) */
+  adopt(): Promise<void> {
+    this.adopting ??= (async () => {
+      try {
+        const { Sandbox } = await e2bDesktop();
+        const p = Sandbox.list({ apiKey: this.apiKey, query: { metadata: { cadre_toolbelt: "computer-pool" }, state: ["paused"] } });
+        while (p.hasNext) for (const i of await p.nextItems()) if (!this.ids.includes(i.sandboxId)) this.ids.push(i.sandboxId);
+      } catch { /* list failed: fill fresh */ }
+    })();
+    return this.adopting;
   }
-  fill() {
+  /** top the pool up to `size`; the in-flight count is taken synchronously, so concurrent calls never overfill */
+  async fill() {
     if (!this.size) return;
-    if (!this.adopted) { void this.adopt().then(() => this.fill()); return; }
-    for (let i = this.ids.length + this.filling; i < this.size; i++) void this.one();
+    await this.adopt();
+    while (this.ids.length + this.filling < this.size) { this.filling++; void this.one(); }
   }
   /** a resumed clean desktop, or null when the pool is empty (the caller creates one cold) */
   async take(): Promise<any | null> {
     const { Sandbox } = await e2bDesktop();
+    await this.adopt();
     while (this.ids.length) {
       const id = this.ids.shift()!;
-      this.fill();
+      void this.fill();
       try { return await Sandbox.connect(id, { apiKey: this.apiKey, timeoutMs: 600_000 }); } catch { /* gone: try the next */ }
     }
-    this.fill();
+    void this.fill();
     return null;
   }
 }
@@ -134,7 +153,7 @@ export class DesktopPool {
 export function e2bComputer(apiKey: string, openrouterKey: string, o: { template?: string; model?: string; chat?: Chat; pool?: number } = {}): ComputerHost & { pool: DesktopPool } {
   const template = o.template ?? process.env.TOOLBELT_DESKTOP_TEMPLATE ?? "cadre-desktop";
   const pool = new DesktopPool(apiKey, template, o.pool ?? Number(process.env.TOOLBELT_DESKTOP_POOL ?? 2));
-  pool.fill();
+  void pool.fill();
   const model = o.model ?? process.env.TOOLBELT_VISION_MODEL ?? "anthropic/claude-haiku-5.5";
   const chat = o.chat ?? openRouterChat(openrouterKey);
   return {
@@ -152,10 +171,21 @@ export function e2bComputer(apiKey: string, openrouterKey: string, o: { template
         const [n, kb] = info.stdout.trim().split(/\s+/).map(Number);
         if (n > 0) vcpu = n;
         if (kb > 0) ram = kb / 1024 / 1024;
-        // a plain browser window on the start URL (the template has Playwright's Chromium)
-        await sbx.commands.run(`B=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1); [ -z "$B" ] && B=$(command -v chromium || command -v google-chrome || command -v firefox); DISPLAY=:0 nohup "$B" --no-first-run --no-default-browser-check --disable-sync --window-size=${W},${H} --window-position=0,0 '${t.url.replace(/'/g, "")}' >/tmp/browser.log 2>&1 &`, { timeoutMs: 15_000, background: true }).catch(() => {});
-        // wait for the window instead of a fixed delay: poll for the browser process, at most 6 s
-        for (let i = 0; i < 30; i++) { const p = await sbx.commands.run("pgrep -f 'chrome|chromium|firefox' >/dev/null && xdotool search --onlyvisible --class 'chrom|firefox' >/dev/null && echo up || true", { timeoutMs: 5000 }).catch(() => null); if (p?.stdout?.includes("up")) break; await new Promise((r) => setTimeout(r, 200)); }
+        // cold: open the browser on the start URL; warm: the browser is already up, the task types the URL
+        if (!warm) await sbx.commands.run(BROWSER_CMD(W, H, t.url), { timeoutMs: 15_000, background: true }).catch(() => {});
+        await waitBrowser(sbx, warm ? 3000 : 20_000);
+        if (warm) {
+          // navigate the open browser like a person (address bar), then wait for the title to change: no fixed delay
+          await sbx.press(["ctrl", "l"]);
+          await sbx.write(t.url, { chunkSize: 200, delayInMs: 0 });
+          await sbx.press("enter");
+          for (let i = 0; i < 60; i++) {
+            const w = await sbx.commands.run("DISPLAY=:0 xdotool getactivewindow getwindowname 2>/dev/null || true", { timeoutMs: 5000 }).catch(() => null);
+            const name = String(w?.stdout ?? "").trim();
+            if (name && !/^(about:blank|new tab|untitled)/i.test(name) && !/^chromium$/i.test(name)) break;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+        }
         const readyMs = Date.now() - t0;
         const deadline = Date.now() + t.maxS * 1000;
         const r: TaskResult = await Promise.race([
