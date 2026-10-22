@@ -176,6 +176,8 @@ practice-1 `kKGVJ16D...` (tape_lark), practice-2 `4YYLfBfu...` (floor_wren), pra
 `7KrgHj1Q...` (still_heron).
 
 ```sh
+# 0. build the contract (23,455 bytes; the code hash the deploy prints is blake3 of this file)
+(cd ~/pearl-sol/contracts && cargo build --release --target wasm32-unknown-unknown -p cadre-strategies)
 cd ~/pearl-sol/services/swarm/strategies
 # 1. upload + instantiate (admin zero), writes deploy/strategies-devnet.json
 node bin/practice.ts deploy --key ~/pearl-sol/keys/devnet/strategies/deployer.json --start <current height + 5>
