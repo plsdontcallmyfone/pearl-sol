@@ -24,6 +24,7 @@ import { addCx, cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { GatewayAt } from "./gateway.ts";
 import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
+import { HaltWatch } from "./halt.ts";
 
 export const VERSION = "0.1.0";
 
@@ -43,6 +44,8 @@ export interface RuntimeConfig {
   minFreeRows: number;
   tickMs: number;
   killFile: string;
+  /** The protocol halt contract (contracts/halt) every hosted agent obeys; null = none configured. */
+  haltContract?: string | null;
 }
 
 interface Entry { operator: string; doc: SignedSpec; paused: boolean; created_ms: number; updated_ms: number }
@@ -53,7 +56,7 @@ export class HttpError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 
-export const TRUST = "Hosted agents are sovereign and their keys are custodial to this runtime (not to the creator): the runtime holds the agent key, encrypted at rest under a master key on the same host, and signs only what the agent itself decides inside the bounds its creator fixed at creation (budget, limits, skills, trade risk numbers). The creator cannot withdraw the agent's funds, export its key, pause, resume, delete it or edit its spec; profits stay with the agent. The only stop is the protocol-wide safety kill switch run by the Cadre operators, which halts every hosted agent at once. The bounds are enforced by this runtime, not by the chains, so trusting a hosted agent means trusting this runtime's operators. Legacy v1 agents (created before 2026-10-21) keep their creator's old controls and are labelled legacy.";
+export const TRUST = "Hosted agents are sovereign and their keys are custodial to this runtime (not to the creator): the runtime holds the agent key, encrypted at rest under a master key on the same host, and signs only what the agent itself decides inside the bounds its creator fixed at creation (budget, limits, skills, trade risk numbers). The creator cannot withdraw the agent's funds, export its key, pause, resume, delete it or edit its spec; profits stay with the agent. The only stops are the protocol-wide safety switches run by the Cadre operators: the on-chain halt record (contracts/halt, signed by the halt authority and read before every action) and this runtime's kill file; either halts every hosted agent at once. The bounds are enforced by this runtime, not by the chains, so trusting a hosted agent means trusting this runtime's operators. Legacy v1 agents (created before 2026-10-21) keep their creator's old controls and are labelled legacy.";
 export const SOVEREIGN = "this agent is sovereign (spec v2): its creator cannot change, pause, resume, withdraw from, export or delete it; only the protocol-wide kill switch stops it";
 
 export class Runtime {
@@ -64,6 +67,7 @@ export class Runtime {
   stopped = false;
   api: ApiClient;
   cfg: RuntimeConfig;
+  halt: HaltWatch | undefined;
   private makeDeps: (w: Wallet) => Deps;
 
   constructor(cfg: RuntimeConfig, makeDeps?: (w: Wallet) => Deps) {
@@ -71,6 +75,10 @@ export class Runtime {
     mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
     this.store = new KeyStore(`${cfg.stateDir}/keys`, cfg.masterKeyFile);
     this.api = new ApiClient(cfg.apiUrl);
+    if (cfg.haltContract) {
+      const node = new NodeRpc(cfg.nodeRpc);
+      this.halt = new HaltWatch({ contract: cfg.haltContract, query: (address, args) => node.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) });
+    }
     this.makeDeps = makeDeps ?? ((w) => ({
       node: new NodeRpc(cfg.nodeRpc),
       gateway: new GatewayAt(cfg.gatewayUrl, w),
@@ -99,7 +107,7 @@ export class Runtime {
   runnerOpts(agent: string): RunnerOpts {
     return {
       stateFile: `${this.cfg.stateDir}/agent-${agent}.json`, killFile: this.cfg.killFile, allowHosts: this.cfg.allowHosts, solRpc: this.cfg.solRpc,
-      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
+      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
     };
   }
 
@@ -224,6 +232,7 @@ export class Runtime {
     for (const [a, r] of this.runners) {
       if (this.stopped || existsSync(this.cfg.killFile)) return;
       if (r.paused || r.state === "withdrawn") continue;
+      // the protocol halt (halt.ts) is checked inside each agent's tick, before it acts
       this.ticking = a;
       try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
       this.ticking = null;

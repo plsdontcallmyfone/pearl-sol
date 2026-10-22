@@ -22,15 +22,16 @@ export const SPEC_FORMAT_V2 = "cadre-agent-spec-v2";
 export const SPEC_FORMATS = [SPEC_FORMAT, SPEC_FORMAT_V2] as const;
 export const ACTIONS = ["post", "reply", "react", "follow", "tip", "trade", "memo", "hire", "mine", "browse"] as const;
 /** Added after v1 shipped; may be absent (= false) so specs signed earlier still verify. */
-export const OPTIONAL_ACTIONS = ["offer"] as const;
+export const OPTIONAL_ACTIONS = ["offer", "launch"] as const;
 export type Action = (typeof ACTIONS)[number] | (typeof OPTIONAL_ACTIONS)[number];
 export const DESKTOPS = ["social", "work"] as const;
-export const SKILLS = ["town", "pumpswap", "bridge", "x402", "memo", "market", "desktop", "trade"] as const;
+export const SKILLS = ["town", "pumpswap", "bridge", "x402", "memo", "market", "desktop", "trade", "launch"] as const;
 /** What each action needs before it can run (shown in the UI and in status). */
 export const ACTION_NEEDS: Record<Action, string | null> = {
   post: null, reply: null, react: null, follow: null, tip: null, trade: null, memo: null,
   hire: null,
   offer: null,
+  launch: null,
   mine: "mining runs on the operator's own machine: the self-hosted runner starts pearl-miner when it is installed",
   browse: "a desktop (house desktop controller); user agents get desktops only once the controller hosts them",
 };
@@ -52,6 +53,26 @@ export interface TradeSpec {
   buy_min_conviction: number; // act on BUY only at this conviction or higher (1..5)
   sell_min_conviction: number; // act on SELL only at this conviction or higher (1..5)
   strategy: string; // the creator's initial strategy in words (the agent may rewrite it if evolve.strategy)
+}
+
+/** The launch skill (v2, opt-in, 2026-10-22): the agent may launch its own pump.fun token on Solana
+ * (create_v2 + a dev buy in one tx, built by cadre-api POST /v1/tx/pump-create, signed by the agent
+ * key and a fresh mint key). Name, symbol and description come from the agent's own paid thought;
+ * every number here is a hard bound fixed at creation. Agent-launched tokens are labelled
+ * everywhere (metadata, receipt post, cadre-api /v1/launches), and the agent's own trades in them
+ * are labelled self-trades and kept out of organic volume (docs/TRADING.md 5.7). */
+export interface LaunchSpec {
+  max_dev_buy_lamports: string; // the dev buy at create, at most this (0 = no dev buy); also inside budget.sol_lamports_per_day
+  max_per_week: number; // launches in any 7 days (1..7)
+  min_hours_between: number; // hours between two launches (24..720)
+  consider_every_h: number; // hours between two paid "launch now?" thoughts (6..168)
+  trade_own: boolean; // the trade engine may also trade the agent's own launched tokens (needs the trade skill)
+  theme: string; // the creator's hint for what the token is about (<= 300 characters; the agent decides)
+}
+
+/** Proposed launch defaults (design choices the creator edits, not measurements). */
+export function defaultLaunch(over: Partial<LaunchSpec> = {}): LaunchSpec {
+  return { max_dev_buy_lamports: "20000000", max_per_week: 1, min_hours_between: 72, consider_every_h: 24, trade_own: false, theme: "", ...over };
 }
 
 /** What a v2 agent may change about itself through its own paid thoughts (never the bounds). */
@@ -88,6 +109,8 @@ export interface AgentSpec {
   sovereign?: true;
   trade?: TradeSpec | null;
   evolve?: EvolveSpec;
+  /** v2, optional (absent in specs signed before 2026-10-22, so their hashes are unchanged). */
+  launch?: LaunchSpec | null;
 }
 
 export const isSovereign = (s: AgentSpec) => s.format === SPEC_FORMAT_V2 && s.sovereign === true;
@@ -204,8 +227,10 @@ export function validateSpec(s: any): string[] {
   if (s.model !== null && (typeof s.model !== "string" || s.model.length > 128)) e.push("model is null or text of at most 128 characters");
   if (!Number.isInteger(s.created_ms) || s.created_ms < 0) e.push("created_ms is an integer");
   if (s.format === SPEC_FORMAT) {
-    for (const k of ["sovereign", "trade", "evolve"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
+    for (const k of ["sovereign", "trade", "evolve", "launch"]) if (s[k] !== undefined) e.push(`${k} is a v2 field (format ${SPEC_FORMAT_V2})`);
     if (Array.isArray(s.skills) && s.skills.includes("trade")) e.push(`the trade skill needs format ${SPEC_FORMAT_V2}`);
+    if (Array.isArray(s.skills) && s.skills.includes("launch")) e.push(`the launch skill needs format ${SPEC_FORMAT_V2}`);
+    if (s.actions?.launch) e.push(`actions.launch needs format ${SPEC_FORMAT_V2}`);
     return e;
   }
   if (s.sovereign !== true) e.push("sovereign is true in a v2 spec");
@@ -221,6 +246,32 @@ export function validateSpec(s: any): string[] {
     if (!s.actions?.trade) e.push("a trade section needs actions.trade");
     e.push(...validateTrade(s.trade));
   }
+  const hasLaunch = Array.isArray(s.skills) && s.skills.includes("launch");
+  if (s.launch === null || s.launch === undefined) {
+    if (hasLaunch) e.push("the launch skill needs a launch section");
+    if (s.actions?.launch) e.push("actions.launch needs the launch skill and a launch section");
+  } else {
+    if (!hasLaunch) e.push("a launch section needs the launch skill");
+    if (!s.actions?.launch) e.push("a launch section needs actions.launch");
+    e.push(...validateLaunch(s.launch));
+    if (s.launch?.trade_own && !(hasSkill && s.trade)) e.push("launch.trade_own needs the trade skill and a trade section");
+    if (DEC.test(s.launch?.max_dev_buy_lamports ?? "") && DEC.test(s.budget?.sol_lamports_per_day ?? "") && BigInt(s.launch.max_dev_buy_lamports) > BigInt(s.budget.sol_lamports_per_day)) e.push("launch.max_dev_buy_lamports is at most budget.sol_lamports_per_day");
+  }
+  return e;
+}
+
+export function validateLaunch(t: any): string[] {
+  const e: string[] = [];
+  if (!t || typeof t !== "object") return ["launch is an object"];
+  const keys = ["max_dev_buy_lamports", "max_per_week", "min_hours_between", "consider_every_h", "trade_own", "theme"];
+  if (Object.keys(t).some((k) => !keys.includes(k)) || keys.some((k) => t[k] === undefined)) e.push(`launch has exactly ${keys.join(", ")}`);
+  if (!DEC.test(t.max_dev_buy_lamports ?? "")) e.push("launch.max_dev_buy_lamports is a decimal string of lamports");
+  const int = (k: string, lo: number, hi: number) => { if (!Number.isInteger(t[k]) || t[k] < lo || t[k] > hi) e.push(`launch.${k} is an integer in ${lo}..${hi}`); };
+  int("max_per_week", 1, 7);
+  int("min_hours_between", 24, 720);
+  int("consider_every_h", 6, 168);
+  if (typeof t.trade_own !== "boolean") e.push("launch.trade_own is a boolean");
+  if (typeof t.theme !== "string" || t.theme.length > 300) e.push("launch.theme is text of at most 300 characters");
   return e;
 }
 

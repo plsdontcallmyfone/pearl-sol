@@ -624,3 +624,90 @@ export function reserveFundMiningIx(authority: string, mint: string, bridgeProgr
 
 /** Clock sysvar unix_timestamp (i64 at 32). */
 export const clockUnixTs = (d: Uint8Array) => Number(Buffer.from(d).readBigInt64LE(32));
+
+// ------------------------------------------------------------ pump create_v2 (token launches, docs/API.md "Token launches")
+//
+// Account list and arg encoding as research/pump-litesvm/idl/pump.json (pump IDL dumped
+// 2026-10-16) and token/programs/reserve/src/lib.rs `launch` (the CPI that launched the devnet
+// CADRE mint on the real pump.fun devnet program). Non-mayhem, SOL-quoted, no cashback, no holder
+// reward: the mayhem accounts are passed but not executed for a non-mayhem coin (NOTES-pump).
+
+export const MAYHEM = "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e";
+export const IX_PUMP_CREATE_V2 = Uint8Array.from([214, 144, 76, 236, 95, 139, 49, 180]);
+const mayhemPda = (...s: Uint8Array[]) => findPda(s, MAYHEM)[0];
+export const pumpMintAuthority = () => pumpPda(utf8("mint-authority"));
+export const mayhemGlobalParams = () => mayhemPda(utf8("global-params"));
+export const mayhemSolVault = () => mayhemPda(utf8("sol-vault"));
+export const mayhemState = (mint: string) => mayhemPda(utf8("mayhem-state"), seedKey(mint));
+
+/** create_v2 instruction data: disc | name | symbol | uri (u32 len + utf8 each) | creator | is_mayhem_mode 0 | is_cashback_enabled 0 | creator_fee_bps u64 0 | is_holder_reward 0. */
+export function pumpCreateV2Data(name: string, symbol: string, uri: string, creator: string): Uint8Array {
+  const s = (x: string) => { const b = utf8(x); return cat(u32(b.length), b); };
+  return cat(IX_PUMP_CREATE_V2, s(name), s(symbol), s(uri), b58decode(creator), Uint8Array.of(0, 0), u64(0n), Uint8Array.of(0));
+}
+
+/** pump `create_v2` (16 accounts): `user` pays and signs, `mint` is a fresh keypair that signs, `creator` is the curve's creator. */
+export function pumpCreateV2Ix(user: string, mint: string, name: string, symbol: string, uri: string, creator: string): Ix {
+  const bc = bondingCurvePda(mint);
+  return {
+    programId: PUMP,
+    keys: [
+      meta(mint, true, true),
+      meta(pumpMintAuthority()),
+      meta(bc, true),
+      meta(ata(bc, mint, TOKEN_2022), true),
+      meta(pumpGlobalPda()),
+      meta(user, true, true),
+      meta(SYSTEM),
+      meta(TOKEN_2022),
+      meta(ATA_PROGRAM),
+      meta(MAYHEM, true),
+      meta(mayhemGlobalParams()),
+      meta(mayhemSolVault(), true),
+      meta(mayhemState(mint), true),
+      meta(ata(mayhemSolVault(), mint, TOKEN_2022), true),
+      meta(pumpEventAuthority()),
+      meta(PUMP),
+    ],
+    data: pumpCreateV2Data(name, symbol, uri, creator),
+  };
+}
+
+/** Decoded create_v2 args (the inverse of pumpCreateV2Data), or null when `d` is not a create_v2. */
+export function decodeCreateV2(d: Uint8Array): { name: string; symbol: string; uri: string; creator: string } | null {
+  const b = Buffer.from(d);
+  if (b.length < 8 || !b.subarray(0, 8).equals(Buffer.from(IX_PUMP_CREATE_V2))) return null;
+  let o = 8;
+  const str = () => { const n = b.readUInt32LE(o); o += 4; const v = b.subarray(o, o + n).toString("utf8"); o += n; return v; };
+  try {
+    const name = str(), symbol = str(), uri = str();
+    if (o + 32 > b.length) return null;
+    return { name, symbol, uri, creator: b58encode(b.subarray(o, o + 32)) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * pump Global fields a new SOL-quoted curve starts from (IDL `Global`: disc 8, initialized 1,
+ * authority 32, fee_recipient 32, then initial_virtual_token_reserves @73,
+ * initial_virtual_sol_reserves @81, initial_real_token_reserves @89, token_total_supply @97,
+ * fee_basis_points @105; create_v2_enabled @450, mayhem_mode_enabled @515). The same layout puts
+ * buyback_fee_recipients at 741 (pumpBuybackRecipients). Devnet's Global differs from mainnet's,
+ * so builders read it every time.
+ */
+export function decodePumpGlobalInitial(d: Uint8Array) {
+  if (d.length < 741 + 256) throw new Error("pump Global too short");
+  const b = Buffer.from(d);
+  return {
+    virtualToken: b.readBigUInt64LE(73),
+    virtualSol: b.readBigUInt64LE(81),
+    realToken: b.readBigUInt64LE(89),
+    tokenTotalSupply: b.readBigUInt64LE(97),
+    feeBasisPoints: b.readBigUInt64LE(105),
+    createV2Enabled: d[450] === 1,
+  };
+}
+
+/** BondingCurve.creator (IDL: 5 u64 + complete bool, then creator at 49). */
+export const curveCreator = (d: Uint8Array) => (d.length >= 81 ? b58encode(d.subarray(49, 81)) : null);

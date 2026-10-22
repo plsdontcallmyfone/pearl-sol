@@ -21,6 +21,7 @@ import { eventTopic } from "../../../../apps/explorer/src/contracts.ts";
 import { verifyAgent } from "./useragents.ts";
 import { decodeSocialTx } from "../../../../apps/explorer/src/social.ts";
 import { isSovereign } from "../../../swarm/agents/src/spec.ts";
+import { bondingCurvePda, curveCreator, decodePoolKeys } from "../sol.ts";
 import { ata, canonicalPool, compileLegacy, computeUnitLimit, createAtaIdempotent, type Ix, SYSTEM, TOKEN, TOKEN_2022, unsignedTx, AMM, ATA_PROGRAM } from "../sol.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -129,7 +130,11 @@ interface Trade {
   chain: "solana" | "cadre"; venue: "pumpswap" | "cadre-amm"; agent: string; account: string; via: "mandate" | "wallet";
   side: "buy" | "sell"; amount_in: string; amount_out: string; unit: string; token: string; at: number; ref: string; house: boolean; flags: string[];
   kind?: "house" | "user_agent" | "mandate" | "wallet"; receipt_post?: string | null; decided_by?: string | null;
+  /** The agent trading a token it launched itself (the pump curve's creator, or the PumpSwap pool's coin_creator, is the agent): labelled, never organic. */
+  self_trade?: boolean;
 }
+
+export const OWN_TOKEN_FLAG = "own token: launched by this agent";
 
 /** A user agent with the v2 trade skill, read from the chain (profile, spec in the profile blob). */
 export interface UserTrader { account: string; handle: string | null; name: string | null; creator: string; hosting: string; sovereign: boolean; mints: string[]; verified: boolean }
@@ -172,7 +177,8 @@ class TradingIndex {
   solScanAt = 0;
   cadre: { at: number; trades: Trade[]; pool: any; mandates: any[] } = { at: 0, trades: [], pool: null, mandates: [] };
   users: { at: number; v: UserTrader[] } = { at: 0, v: [] };
-  userSigs = new Map<string, Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint }[] }>>();
+  userSigs = new Map<string, Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint; self: boolean }[] }>>();
+  creators = new Map<string, { at: number; v: string | null }>(); // mint -> its pump creator (curve, else the canonical pool's coin_creator)
   userScanAt = new Map<string, number>();
   receipts = new Map<string, { post: string; decided_by: string | null }>(); // Solana signature -> the agent's receipt post on Cadre
   constructor(d: Deps, cfg: TradingConfig) { this.d = d; this.cfg = cfg; }
@@ -236,7 +242,18 @@ class TradingIndex {
           if (!t) return;
           const keys: string[] = (t.transaction?.message?.accountKeys ?? []).map((k: any) => (typeof k === "string" ? k : k?.pubkey ?? String(k)));
           const pump = keys.some((k) => PUMP_PROGRAMS.has(k));
-          const fills = pump ? u.mints.map((mint) => { const f = walletFill(t, u.account, mint); return f ? { mint, ...f } : null; }).filter((f): f is NonNullable<typeof f> => !!f) : [];
+          const fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint; self: boolean }[] = [];
+          if (pump) {
+            // the spec's mints, plus any other mint the agent holds in this tx whose pump creator is the agent (its own launches)
+            const extra = this.ownedMints(t, u.account).filter((m) => !u.mints.includes(m));
+            for (const mint of [...u.mints, ...extra]) {
+              const f = walletFill(t, u.account, mint);
+              if (!f) continue;
+              const self = (await this.creatorOf(mint).catch(() => null)) === u.account;
+              if (!u.mints.includes(mint) && !self) continue;
+              fills.push({ mint, ...f, self });
+            }
+          }
           seen.set(x.signature, { slot: x.slot, blockTime: x.blockTime, fills });
         }));
       }
@@ -249,7 +266,8 @@ class TradingIndex {
           const rc = this.receipts.get(sig);
           out.push({
             chain: "solana", venue: "pumpswap", agent: u.account, account: u.account, via: "wallet", side: f.side, amount_in: f.amount_in.toString(), amount_out: f.amount_out.toString(),
-            unit: "lamports", token: f.mint, at: (v.blockTime ?? 0) * 1000, ref: `sol:${sig}`, house: false, flags: [], kind: "user_agent", receipt_post: rc?.post ?? null, decided_by: rc?.decided_by ?? null,
+            unit: "lamports", token: f.mint, at: (v.blockTime ?? 0) * 1000, ref: `sol:${sig}`, house: false, flags: f.self ? [OWN_TOKEN_FLAG] : [], kind: "user_agent", receipt_post: rc?.post ?? null, decided_by: rc?.decided_by ?? null,
+            self_trade: f.self,
           });
         }
       }
@@ -258,6 +276,26 @@ class TradingIndex {
   }
 
   isHouse(a: string) { return !!this.cfg.house[a]; }
+
+  /** Mints (not wSOL) in a tx's token balances owned by `owner`. */
+  ownedMints(t: any, owner: string): string[] {
+    const m = t?.meta;
+    const xs = [...(m?.preTokenBalances ?? []), ...(m?.postTokenBalances ?? [])].filter((b: any) => b.owner === owner && typeof b.mint === "string" && b.mint !== WSOL).map((b: any) => b.mint as string);
+    return [...new Set(xs)];
+  }
+
+  /** The pump creator of `mint`: BondingCurve.creator, else (curve gone) the canonical PumpSwap pool's coin_creator; cached 10 min. */
+  async creatorOf(mint: string): Promise<string | null> {
+    const c = this.creators.get(mint);
+    if (c && Date.now() - c.at < 600_000) return c.v;
+    const [curve, pool] = await this.d.sol.getMultipleAccounts([bondingCurvePda(mint), canonicalPool(mint)]);
+    let v: string | null = null;
+    if (curve && curve.owner === "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P") v = curveCreator(curve.data);
+    if (!v && pool && pool.owner === "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" && pool.data.length >= 243) v = decodePoolKeys(pool.data).coinCreator;
+    if (v === "11111111111111111111111111111111") v = null;
+    this.creators.set(mint, { at: Date.now(), v });
+    return v;
+  }
 
   async solMandates(): Promise<MandateRec[]> {
     const s = this.cfg.solana;
@@ -430,13 +468,15 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     const pools = new Map<string, Awaited<ReturnType<typeof solPool>>>();
     const out: any[] = [];
     for (const u of users) {
-      for (const mint of u.mints) {
+      const own = new Set(trades.filter((t) => t.agent === u.account && t.self_trade).map((t) => t.token));
+      for (const mint of [...new Set([...u.mints, ...own])]) {
         const fills = trades.filter((t) => t.agent === u.account && t.token === mint).reverse();
         if (!pools.has(mint)) pools.set(mint, await solPool(mint).catch(() => null));
         const pool = pools.get(mint);
         const p = avgCostPnl(fills);
         out.push({
           chain: "solana", venue: "pumpswap", via: "wallet", kind: "user_agent", agent: u.account, handle: u.handle, name: u.name, creator: u.creator, hosting: u.hosting, sovereign: u.sovereign, verified: u.verified, mint,
+          own_token: own.has(mint),
           position_spl: p.position.toString(), cost_basis_lamports: p.cost_basis.toString(), realized_pnl_lamports: p.realized.toString(),
           marked_at_mid_lamports: pool ? midValue(p.position, pool.base_reserve, pool.quote_reserve).toString() : null,
           trades: fills.length, last_trade_at: fills.length ? fills[fills.length - 1].at : null,
@@ -503,7 +543,9 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     const [pool, t] = await Promise.all([solPool().catch(() => null), allTrades()]);
     const st = cfg.cadre ? await need().ix.cadreState().catch(() => null) : null;
     // quote side of each fill: what a buy spent, what a sell received
-    const vol = (xs: Trade[], house: boolean) => xs.filter((x) => x.house === house).reduce((s, x) => s + BigInt(x.side === "buy" ? x.amount_in : x.amount_out), 0n);
+    const sum = (xs: Trade[]) => xs.reduce((s, x) => s + BigInt(x.side === "buy" ? x.amount_in : x.amount_out), 0n);
+    const vol = (xs: Trade[], house: boolean) => sum(xs.filter((x) => x.house === house && !x.self_trade));
+    const selfVol = (xs: Trade[]) => sum(xs.filter((x) => !x.house && x.self_trade));
     return {
       venues: {
         solana: cfg.solana ? { program: cfg.solana.program, mint: cfg.solana.mint, pool: cfg.solana.pool, reserves: pool ? { cadre_spl: pool.base_reserve.toString(), sol_lamports: pool.quote_reserve.toString() } : null, buyback_vault: cfg.solana.buyback_vault } : null,
@@ -512,9 +554,9 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
       house_traders: Object.entries(cfg.house).map(([account, handle]) => ({ account, handle })),
       user_agents: (await need().ix.userTraders().catch(() => [])).length,
       volume: {
-        note: "quote-side volume per venue unit; house traders are excluded from organic and shown apart; user agents trading from their own wallets count as organic",
-        solana_lamports: { organic: vol(t.solana, false).toString(), house: vol(t.solana, true).toString() },
-        cadre_base_units: { organic: vol(t.cadre, false).toString(), house: vol(t.cadre, true).toString() },
+        note: "quote-side volume per venue unit; house traders are excluded from organic and shown apart; user agents trading from their own wallets count as organic, except an agent's trades in a token it launched itself (self_trade), which are shown apart and never organic",
+        solana_lamports: { organic: vol(t.solana, false).toString(), house: vol(t.solana, true).toString(), self_trade: selfVol(t.solana).toString() },
+        cadre_base_units: { organic: vol(t.cadre, false).toString(), house: vol(t.cadre, true).toString(), self_trade: selfVol(t.cadre).toString() },
       },
       trades: { solana: t.solana.length, cadre: t.cadre.length },
     };
@@ -529,7 +571,7 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     let xs = [...t.solana, ...t.cadre];
     if (venue) xs = xs.filter((x) => x.venue === venue);
     if (agent) xs = xs.filter((x) => x.agent === agent);
-    if (q.get("organic") === "1") xs = xs.filter((x) => !x.house);
+    if (q.get("organic") === "1") xs = xs.filter((x) => !x.house && !x.self_trade);
     const limit = Math.min(200, Math.max(1, Number(q.get("limit") ?? 50) || 50));
     return { trades: xs.slice(0, limit), total: xs.length, note: "Solana trades carry the block time in ms; Cadre trades carry the block height in `at`" };
   }, { cache: 10 });
@@ -552,7 +594,8 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
   api.get("/v1/trading/leaderboard", async () => {
     const { cfg } = need();
     const [sol, cad, w] = await Promise.all([solPositions(() => true), cadrePositions(), walletPositions()]);
-    const userBoard = w.map((x) => ({ ...x })).sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : BigInt(y.realized_pnl_lamports) < BigInt(x.realized_pnl_lamports) ? -1 : 0));
+    const ownBoard = w.filter((x) => x.own_token);
+    const userBoard = w.filter((x) => !x.own_token).map((x) => ({ ...x })).sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : BigInt(y.realized_pnl_lamports) < BigInt(x.realized_pnl_lamports) ? -1 : 0));
     const solBoard = sol.map((m) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, kind: m.house ? "house" : "mandate", mandate: m.mandate, user: m.user, realized_pnl_lamports: m.realized_pnl_lamports, position_cadre_spl: m.cadre_position_spl, position_marked_at_mid_lamports: m.marked_at_mid_lamports, trades: m.trades, revoked: m.revoked, client_capital: m.user !== m.agent }))
       .sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : -1));
     const cadBoard = [
@@ -562,6 +605,8 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     return {
       note: "ranked by realized PnL per venue unit (no conversion between SOL and CADRE). Mandate PnL is realized in SOL or CADRE only: buying moves value into a token position, shown apart at the pool mid and never counted as profit. Revoked and losing agents stay listed; house traders are labelled",
       user_agents: userBoard, user_agents_note: "user agents (organic): sovereign agents created by users, trading on Solana PumpSwap from their own wallets; realized PnL by average cost over their own fills, read from the landed txs",
+      user_agents_own_token: ownBoard,
+      user_agents_own_token_note: "user agents trading tokens they launched themselves (the pump creator is the agent): self-trades, labelled and left out of the user_agents ranking and of organic volume; their PnL by the same average-cost rule",
       solana: solBoard, cadre: cadBoard,
     };
   }, { cache: 15 });

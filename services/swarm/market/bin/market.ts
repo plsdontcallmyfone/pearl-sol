@@ -8,6 +8,10 @@
 //   node bin/market.ts offers   --keys <dir> --deploy <file>                        list the persona offers
 //   node bin/market.ts run      --keys <dir> --deploy <file> [--once]               the desk loop
 //   node bin/market.ts status   --deploy <file>
+//   node bin/market.ts fee-to-pool --keys <dir> --wasm <cadre_market.wasm> --deploy <file>
+//        market admin only: DeployCode of the v2 code, Migrate the live market to it (offers,
+//        hires and balance kept), then set_config with fee_to = the chain's mining pool, so the
+//        market fee funds miners (docs/MARKET.md 3, 2026-10-22). Idempotent.
 // Env: CADRE_RPC, GATEWAY_URL (default cadre-api's /v1/openai), SOLANA_RPC, MARKET_HIRE_EVERY_S (900),
 // MARKET_DAILY_CAP_CADRE (60 per buyer), MARKET_JUDGE_FEE_CADRE (0.5), MARKET_KILL_FILE, MARKET_STATE,
 // MARKET_BLOB_NODES (comma list of other nodes that also store every desk blob; default devnet nodes 1 and 2).
@@ -19,6 +23,8 @@ import { nativeTransferTx } from "../../src/pay.ts";
 import { FLAG } from "../../src/chaintx.ts";
 import { b58decode } from "../../src/b58.ts";
 import { Cadre, codeHash, contractAddress, errText } from "../../trading/src/cadre.ts";
+import { blake3 } from "../../src/blake3.ts";
+import { b58encode } from "../../src/b58.ts";
 import { Brain } from "../../trading/src/brain.ts";
 import { marketArgs, MarketIndex } from "../../../../apps/explorer/src/market.ts";
 import { JUDGE, PERSONAS } from "../src/personas.ts";
@@ -157,6 +163,32 @@ async function main() {
     return;
   }
   const dep = JSON.parse(readFileSync(arg("deploy"), "utf8"));
+  if (cmd === "fee-to-pool") {
+    const ops = loadWallet(keyFiles(arg("keys")).ops);
+    if (ops.address !== dep.admin) throw new Error(`the ops key is ${ops.address}, the market admin is ${dep.admin}`);
+    const code = readFileSync(arg("wasm"));
+    const hash = codeHash(code);
+    const pool = b58encode(blake3(Buffer.from("pearl-sol:mining-pool:v1")));
+    await c.init();
+    if (!(await c.rpc.call("getCode", { code_hash: hash }).catch(() => null))) await landed(c, "deploy_code", await c.sendContract(ops, { kind: "DeployCode", gasLimit: BigInt(40 * code.length + 200_000), code }));
+    const ct = await c.rpc.call("getContract", { address: dep.market });
+    if (ct.code_hash !== hash) {
+      const r = await landed(c, "migrate", await c.sendContract(ops, { kind: "Migrate", contract: dep.market, codeHash: hash, gasLimit: 5_000_000n, args: new Uint8Array() }));
+      dep.migrated = { from_code_hash: ct.code_hash, to_code_hash: hash, height: r.height };
+    } else log("already_migrated", { code_hash: hash });
+    const q = await c.query(dep.market, Buffer.from([6, ...Buffer.from("config")]));
+    const cur = { admin: q.addr(), fee_bps: q.u16(), fee_to: q.addr(), hires_paused: q.bool() };
+    if (cur.fee_to !== pool) {
+      const r = await landed(c, "set_config", await c.sendContract(ops, { kind: "Call", contract: dep.market, value: 0n, gasLimit: 0n, args: marketArgs.setConfig(cur.admin, cur.fee_bps, pool, cur.hires_paused) }));
+      dep.fee_to_set_height = r.height;
+    } else log("fee_to_is_pool", { pool });
+    dep.code_hash = hash;
+    dep.fee_to = pool;
+    dep.fee_to_label = "the chain's mining pool (blake3 pearl-sol:mining-pool:v1): market fees fund miners since 2026-10-22";
+    writeFileSync(arg("deploy"), JSON.stringify(dep, null, 2) + "\n");
+    log("fee_to_pool", { market: dep.market, code_hash: hash, fee_to: pool });
+    return;
+  }
   if (cmd === "status") {
     const ix = await new MarketIndex(dep.market, (m, p) => c.rpc.call(m, p as any)).refresh();
     console.log(JSON.stringify({ config: ix.config, offers: ix.offers.length, hires: ix.hires.size, by_status: [...ix.hires.values()].reduce((a: any, h) => ((a[h.status] = (a[h.status] ?? 0) + 1), a), {}), events: ix.events.length }, null, 2));

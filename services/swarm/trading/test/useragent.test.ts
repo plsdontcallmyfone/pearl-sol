@@ -110,3 +110,37 @@ test("own-wallet fills from the landed tx and average-cost PnL", () => {
   assert.equal(fillFromTx(tx(1, 1, 5, 5), me, MINT), null);
   assert.deepEqual(avgCost([buy, sell]), { position: 200_000n, cost: 5_000_000n, realized: 1_000_000n });
 });
+
+test("launch.trade_own: the agent's own token trades in the same rules, every receipt labelled a self-trade", async () => {
+  const { ut } = mk("BUY 5");
+  const own = new FakeVenue();
+  (own as any).name = "pump-curve";
+  own.describe = () => ({ venue: "pump-curve", via: "wallet", pool: "C", mint: "HzqW62Pm8UYNaDEkVo8Heaj9y5o5F7G7rKwoohWj4B7M" });
+  (ut.o as any).venueFor = () => own as any;
+  const t = await ut.addOwnToken("HzqW62Pm8UYNaDEkVo8Heaj9y5o5F7G7rKwoohWj4B7M");
+  assert.ok(t);
+  assert.equal(await ut.addOwnToken("HzqW62Pm8UYNaDEkVo8Heaj9y5o5F7G7rKwoohWj4B7M"), null, "added once");
+  assert.equal(ut.traders.length, 2);
+  t!.book = own.b;
+  const posts: string[] = [];
+  (t!.o as any).sendPost = async (b: string) => { posts.push(b); return { txHash: "cd".repeat(32), nonce: 4n }; };
+  // start() runs the first paid thought itself; wait for its stance
+  for (let i = 0; i < 50 && t!.strategy.stance !== "buy"; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(t!.strategy.stance, "buy");
+  await t!.onEvent({ venue: "pump-curve", base: own.r.base, quote: own.r.quote, at: performance.now(), ref: "slot:9" });
+  assert.equal(own.trades.length, 1);
+  assert.equal(own.trades[0].amountIn, 10_000_000n, "the spec's max order, never more");
+  assert.match(posts[0], /pump-curve buy: .*; own wallet; self-trade in its own launched token, not organic; stance buy 5 decided by req_ua$/);
+  ut.stop();
+});
+
+test("bonding curve reserves parse (virtual token at 8, virtual SOL at 16, complete at 48)", async () => {
+  const { curveReserves } = await import("../src/curve-venue.ts");
+  const d = Buffer.alloc(81);
+  d.writeBigUInt64LE(1_038_800_804_220_931n, 8);
+  d.writeBigUInt64LE(309_876_542n, 16);
+  assert.deepEqual(curveReserves(d), { base: 1_038_800_804_220_931n, quote: 309_876_542n, complete: false });
+  d[48] = 1;
+  assert.equal(curveReserves(d).complete, true);
+  assert.throws(() => curveReserves(Buffer.alloc(20)));
+});

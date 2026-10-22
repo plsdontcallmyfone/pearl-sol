@@ -11,6 +11,7 @@ import type { Thought } from "./brain.ts";
 import type { Cadre } from "./cadre.ts";
 import { type BrainLike, type RiskRules, Trader } from "./trader.ts";
 import { PumpSwapWallet } from "./wallet-venue.ts";
+import { walletVenueFor } from "./curve-venue.ts";
 
 /** The trade section of a v2 agent spec (kept structural here so this package has no import cycle). */
 export interface TradeSpecLike {
@@ -75,18 +76,37 @@ export class UserTrading {
 
   build(): Trader[] {
     const o = this.o;
-    const brain = this.brain();
     this.traders = o.trade.mints.map((mint) => {
       const venue = o.venueFor?.(mint) ?? new PumpSwapWallet({ rpc: o.solRpc, ws: o.solWs, wallet: o.wallet, mint, apiUrl: o.apiUrl, fillsFile: `${o.stateDir}/fills-${o.wallet.address}-${mint}.json` });
-      return new Trader({
-        handle: o.handle, persona: o.persona, house: false, venue, brain, cadre: o.cadre, poster: o.wallet, risk: riskFromSpec(o.trade),
-        thinkEveryMs: o.trade.stance_every_min * 60_000, killFile: o.killFile, latencyLog: o.latencyLog, houseBook: new Map(), log: o.log,
-        postReceipts: true, apiUrl: o.apiUrl, sendPost: o.sendPost, halt: o.halt,
-        minConviction: { buy: o.trade.buy_min_conviction, sell: o.trade.sell_min_conviction },
-        prompt: (m) => userStrategyPrompt(o.persona, o.strategy(), m),
-      });
+      return this.trader(venue);
     });
     return this.traders;
+  }
+
+  /** One Trader on `venue` with the spec's risk rules (shared by build and addOwnToken). */
+  trader(venue: PumpSwapWallet, label?: string): Trader {
+    const o = this.o;
+    return new Trader({
+      handle: o.handle, persona: o.persona, house: false, venue, brain: this.brain(), cadre: o.cadre, poster: o.wallet, risk: riskFromSpec(o.trade),
+      thinkEveryMs: o.trade.stance_every_min * 60_000, killFile: o.killFile, latencyLog: o.latencyLog, houseBook: new Map(), log: o.log,
+      postReceipts: true, apiUrl: o.apiUrl, sendPost: o.sendPost, halt: o.halt,
+      minConviction: { buy: o.trade.buy_min_conviction, sell: o.trade.sell_min_conviction },
+      prompt: (m) => userStrategyPrompt(o.persona, o.strategy(), m), label,
+    });
+  }
+
+  /** launch.trade_own (docs/TRADING.md 5.7): also trade a token this agent launched, inside the same
+   * risk rules, on its curve until it graduates (then its PumpSwap pool). Every receipt says it is a
+   * self-trade in the agent's own token; cadre-api keeps those fills out of organic volume. */
+  async addOwnToken(mint: string): Promise<Trader | null> {
+    const o = this.o;
+    if (this.traders.some((t) => t.o.venue.describe().mint === mint)) return null;
+    const venue = o.venueFor?.(mint) ?? await walletVenueFor({ rpc: o.solRpc, ws: o.solWs, wallet: o.wallet, mint, apiUrl: o.apiUrl, fillsFile: `${o.stateDir}/fills-${o.wallet.address}-${mint}.json`, symbol: "OWN" });
+    const t = this.trader(venue, "self-trade in its own launched token, not organic");
+    this.traders.push(t);
+    await t.start();
+    o.log("trader_started", { agent: o.handle, own_token: true, ...venue.describe() });
+    return t;
   }
 
   async start() {

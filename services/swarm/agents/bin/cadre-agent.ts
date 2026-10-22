@@ -14,6 +14,11 @@
 // needs services/swarm/trading's one dependency (`cd services/swarm/trading && npm ci`). Trust:
 // whoever runs this holds the agent key and can stop the process; the runner itself takes no
 // orders from the creator after creation (docs/TRADING.md 5.6, ECOSYSTEM 7).
+// Protocol halt (ECOSYSTEM 7.8): before every tick (and every order) the runner reads the on-chain
+// halt record (contracts/halt; --halt <contract>, default deploy/halt-devnet.json, `--halt off` to
+// skip) and stops acting while it is set, or fails closed if it cannot read it for 2 minutes. This
+// is advisory for a self-hosted agent: you hold the key and can change this code. The hosted runtime
+// enforces it.
 // Options: --api (cadre-api, default the public devnet one), --node (Cadre chain RPC), --gateway
 // (default <api>/v1/openai), --solana (Solana RPC for x402 blockhashes), --state <dir>, --once.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -26,6 +31,7 @@ import { AgentRunner } from "../src/agent.ts";
 import { ApiClient } from "../src/chain.ts";
 import { GatewayAt } from "../src/gateway.ts";
 import { type SignedSpec, verifySigned } from "../src/spec.ts";
+import { HaltWatch, haltContractFrom } from "../src/halt.ts";
 
 const DEVNET = { api: "https://api.64-95-12-116.sslip.io", node: "https://rpc.64-95-12-116.sslip.io", solana: "https://api.devnet.solana.com" };
 
@@ -54,8 +60,11 @@ function runner(o: Record<string, string | boolean>) {
   const api = String(o.api ?? process.env.CADRE_API ?? DEVNET.api).replace(/\/$/, "");
   const state = resolve(String(o.state ?? `${homedir()}/.cadre-agent`));
   mkdirSync(state, { recursive: true, mode: 0o700 });
+  const nodeRpc = new NodeRpc(String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node));
+  const haltContract = typeof o.halt === "string" ? haltContractFrom({ AGENTS_HALT_CONTRACT: o.halt }) : haltContractFrom(process.env);
+  const halt = haltContract ? new HaltWatch({ contract: haltContract, query: (address, args) => nodeRpc.call("queryContract", { address, args }), log: (e, x) => console.log(JSON.stringify({ event: e, ...x })) }) : undefined;
   const r = new AgentRunner(doc, w, {
-    node: new NodeRpc(String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node)),
+    node: nodeRpc,
     gateway: new GatewayAt(String(o.gateway ?? `${api}/v1/openai`), w),
     api: new CadreApi(api),
     latestBlockhash,
@@ -65,7 +74,7 @@ function runner(o: Record<string, string | boolean>) {
   }, new ApiClient(api), {
     stateFile: `${state}/agent-${w.address}.json`, killFile: `${state}/STOP`, allowHosts: String(o["allow-hosts"] ?? "64-95-12-116.sslip.io").split(","),
     solRpc: String(o.solana ?? process.env.SOLANA_RPC ?? DEVNET.solana), topupRows: Number(o["topup-rows"] ?? 1024), minFreeRows: Number(o["min-free-rows"] ?? 256),
-    cardUrl: (a) => `${api}/v1/useragents/${a}/card`, stateDir: state, solWs: o["solana-ws"] ? String(o["solana-ws"]) : process.env.SOLANA_WS,
+    cardUrl: (a) => `${api}/v1/useragents/${a}/card`, stateDir: state, halt, solWs: o["solana-ws"] ? String(o["solana-ws"]) : process.env.SOLANA_WS,
   });
   return { r, doc, keyFile, node: String(o.node ?? process.env.CHAIN_RPC ?? DEVNET.node), state };
 }
@@ -105,7 +114,7 @@ async function main() {
     return;
   }
   if (cmd !== "run") {
-    console.log("usage: cadre-agent keygen <key.json> | address <key.json> | run|status|withdraw --key <key.json> --spec <spec.json> [--api URL] [--node URL] [--gateway URL] [--solana URL] [--state DIR] [--once]");
+    console.log("usage: cadre-agent keygen <key.json> | address <key.json> | run|status|withdraw --key <key.json> --spec <spec.json> [--api URL] [--node URL] [--gateway URL] [--solana URL] [--state DIR] [--halt <contract>|off] [--once]");
     process.exit(cmd ? 1 : 0);
   }
   const { r, doc, keyFile, node, state } = runner(o);
@@ -113,7 +122,7 @@ async function main() {
   let stop = false;
   process.on("SIGINT", () => (stop = true));
   process.on("SIGTERM", () => (stop = true));
-  console.log(JSON.stringify({ event: "start", agent: r.address, operator: doc.spec.operator, spec: doc.sha256, state }));
+  console.log(JSON.stringify({ event: "start", agent: r.address, operator: doc.spec.operator, spec: doc.sha256, state, halt_contract: r.o.halt?.o.contract ?? null }));
   do {
     const t = await r.tick();
     console.log(JSON.stringify({ event: "tick", result: t, state: r.state, why: r.why || null }));

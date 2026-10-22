@@ -31,8 +31,10 @@ import { checkOutput } from "../../src/filter.ts";
 import { Cadre } from "../../trading/src/cadre.ts";
 import type { UserTrading } from "../../trading/src/useragent.ts";
 import { AgentMarket } from "./market.ts";
+import type { HaltWatch } from "./halt.ts";
+import { type LaunchHost, type LaunchRec, maybeLaunch } from "./launch.ts";
 
-export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error";
+export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error" | "halted";
 
 export interface LogLine { t: string; kind: string; text: string; tx?: string; sol?: string; request_id?: string; ok?: boolean }
 
@@ -63,6 +65,8 @@ export interface RunnerOpts {
   /** Trading (v2 trade skill): where the fills and latency rows go (default: next to stateFile). */
   stateDir?: string;
   solWs?: string;
+  /** The protocol halt record (halt.ts), shared by every agent of a runtime; checked before acting. */
+  halt?: HaltWatch;
 }
 
 export function configFor(s: AgentSpec, o: RunnerOpts): SwarmConfig {
@@ -100,6 +104,8 @@ export class AgentRunner extends Swarm {
   self: AgentSelf | null = null;
   evolvedAt = 0;
   trading: UserTrading | null = null;
+  launches: LaunchRec[] = [];
+  launchConsideredAt = 0;
   sendChain: Promise<unknown> = Promise.resolve();
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
@@ -120,6 +126,8 @@ export class AgentRunner extends Swarm {
       this.linkFeeTx = ex.linkFeeTx ?? null;
       this.self = ex.self ?? null;
       this.evolvedAt = ex.evolvedAt ?? 0;
+      this.launches = ex.launches ?? [];
+      this.launchConsideredAt = ex.launchConsideredAt ?? 0;
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
     if (this.self) this.me.persona = personaOf(doc.spec, this.self);
@@ -136,7 +144,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt };
     super.save();
   }
 
@@ -276,14 +284,58 @@ export class AgentRunner extends Swarm {
     return true;
   }
 
+  /** "" when `what` may run now, else the protocol halt's reason (halt.ts; ALL stops everything). */
+  haltReason(what: "all" | "trade" | "launch"): string {
+    return this.o.halt?.blocks(what) ?? "";
+  }
+
   override async tick(): Promise<string> {
     if (this.paused && !this.sovereign) { this.state = "paused"; return "paused"; }
+    await this.o.halt?.refresh();
+    const hb = this.haltReason("all");
+    if (hb) {
+      if (this.state !== "halted") this.note("halt", hb, { ok: false });
+      this.state = "halted";
+      this.why = hb;
+      return "halted";
+    }
     const r = await super.tick();
     if (r === "error") { this.state = "error"; this.why = this.lastError ?? ""; }
     if (this.state === "running") {
       await this.startTrading().catch((e) => this.note("trade_error", `trading did not start: ${(e as Error).message}`, { ok: false }));
       await this.evolve().catch((e) => this.note("evolve_error", (e as Error).message, { ok: false }));
+      await this.launchTick().catch((e) => this.note("launch_error", (e as Error).message.slice(0, 200), { ok: false }));
     }
+    return r;
+  }
+
+  /** The v2 launch skill (launch.ts), when the spec opts in. */
+  async launchTick(): Promise<string> {
+    const l = this.spec.launch;
+    if (!this.sovereign || !l || !this.spec.actions.launch || !this.spec.skills.includes("launch")) return "off";
+    const me = this;
+    const host: LaunchHost = {
+      address: this.address, handle: this.spec.handle, operator: this.spec.operator, specSha256: this.doc.sha256, persona: this.me.persona.persona,
+      apiUrl: (this.api as any).base as string, wallet: this.me.wallet, launch: l, launches: this.launches,
+      get consideredAt() { return me.launchConsideredAt; },
+      set consideredAt(v: number) { me.launchConsideredAt = v; },
+      now: () => this.d.now(),
+      haltLaunch: () => this.haltReason("launch"),
+      canSpendSol: (x) => this.budget.canTopup(x, this.d.now()),
+      bookSol: (x) => this.budget.bookTopup(x),
+      lamports: () => this.lamports(),
+      record: () => `counters ${JSON.stringify(this.ag(this.me).counters ?? {})}; tokens launched before: ${this.launches.map((x) => x.symbol).join(", ") || "none"}`,
+      think: async (m, n) => { const t = await this.think(this.me, m, n, "launch"); return t ? { text: t.text, requestId: t.requestId } : null; },
+      putBlob: (b) => this.d.node.putBlob(b, true),
+      build: (body, signers) => this.api.solanaMulti(signers, "/v1/tx/pump-create", body),
+      confirm: (sig) => this.api.confirmSolana(sig),
+      receipt: (text, sigs) => this.receipt(text, sigs),
+      note: (k, t, x) => this.note(k, t, x as Partial<LogLine>),
+      save: () => this.save(),
+      tradeOwn: async (mint) => { if (this.trading) await this.trading.addOwnToken(mint); },
+    };
+    const r = await maybeLaunch(host);
+    if (r === "launched") this.count(this.me, "launches");
     return r;
   }
 
@@ -318,10 +370,11 @@ export class AgentRunner extends Swarm {
         this.count(this.me, "trades");
         return { txHash, nonce };
       },
-      halt: () => (this.state === "running" ? "" : `agent is ${this.state}`),
+      halt: () => (this.state === "running" ? this.haltReason("trade") : this.why || `agent is ${this.state}`),
       log: (e, x) => this.log(e, x),
     });
     await this.trading.start();
+    if (this.spec.launch?.trade_own) for (const x of this.launches) await this.trading.addOwnToken(x.mint).catch((e) => this.note("trade_error", `own token ${x.mint} not added: ${(e as Error).message}`, { ok: false }));
     this.note("trading", `trading engine started on ${t.mints.length} PumpSwap pool(s) from its own wallet (max order ${t.max_order_lamports} lamports, max position ${t.max_position_lamports}, daily loss stop ${t.daily_loss_stop_lamports})`);
   }
 
@@ -594,6 +647,8 @@ export class AgentRunner extends Swarm {
       desktops: this.spec.desktops.length ? { requested: this.spec.desktops, running: false, why: "user agent desktops wait for the house desktop controller to host user agents (ECOSYSTEM 7.4)" } : null,
       self: this.self,
       trading: this.trading ? this.trading.status() : this.spec.trade ? { state: "not started", why: this.state === "running" ? "starting" : this.why || this.state } : null,
+      launches: this.spec.launch ? { bounds: this.spec.launch, launched: this.launches, considered_at: this.launchConsideredAt || null, label: "agent-launched (pump.fun create_v2 by this agent's key)" } : null,
+      halt: this.o.halt ? this.o.halt.status() : null,
       log: this.log2.slice(-60).reverse(),
     };
   }

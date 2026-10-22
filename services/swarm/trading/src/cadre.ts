@@ -53,9 +53,10 @@ export function contractAddress(creator: Uint8Array, nonce: bigint): string {
 export type ContractBody =
   | { kind: "DeployCode"; gasLimit: bigint; code: Uint8Array }
   | { kind: "Instantiate"; codeHash: string; admin: Uint8Array; value: bigint; gasLimit: bigint; label: string; args: Uint8Array }
-  | { kind: "Call"; contract: string; value: bigint; gasLimit: bigint; args: Uint8Array };
+  | { kind: "Call"; contract: string; value: bigint; gasLimit: bigint; args: Uint8Array }
+  | { kind: "Migrate"; contract: string; codeHash: string; gasLimit: bigint; args: Uint8Array };
 
-const CKIND = { DeployCode: 30, Instantiate: 31, Call: 32 } as const;
+const CKIND = { DeployCode: 30, Instantiate: 31, Call: 32, Migrate: 33 } as const;
 
 export function encodeContractBody(b: ContractBody): { kind: number; bytes: Uint8Array } {
   const w = new Abi();
@@ -70,6 +71,8 @@ export function encodeContractBody(b: ContractBody): { kind: number; bytes: Uint
       break;
     }
     case "Call": w.addr(b.contract).u64(b.value).u64(b.gasLimit).u16(b.args.length); w.parts.push(...b.args); break;
+    // CONTRACTS 2: contract [32] | code_hash [32] | gas_limit u64 | args (u16 len); admin only
+    case "Migrate": w.addr(b.contract).hash(b.codeHash).u64(b.gasLimit).u16(b.args.length); w.parts.push(...b.args); break;
   }
   return { kind: CKIND[b.kind], bytes: w.out() };
 }

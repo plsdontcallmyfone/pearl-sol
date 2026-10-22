@@ -61,6 +61,8 @@ export interface TraderOpts {
   minConviction?: { buy: number; sell: number };
   /** User agents: stop trading while this returns a reason (the runner's protocol kill switch, budget). */
   halt?: () => string;
+  /** User agents: a label added to every receipt (own launched token: "self-trade in its own launched token, not organic"). */
+  label?: string;
   /** User agents: the strategy prompt (persona and the agent's own strategy text) instead of the house one. */
   prompt?: (m: Parameters<typeof strategyPrompt>[1]) => { role: string; content: string }[];
 }
@@ -233,7 +235,7 @@ export class Trader {
     const b = (x: bigint) => (Number(x) / 10 ** this.o.venue.baseDecimals).toString();
     const tk = this.o.venue.baseSymbol;
     const what = f.side === 0 ? `${q(f.amountIn)} ${u} for ${b(f.out)} ${tk}` : `${b(f.amountIn)} ${tk} for ${q(f.out)} ${u}`;
-    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : "own wallet; "}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
+    const body = `receipt ${this.o.venue.receiptRef(f)} ${this.o.venue.name} ${side}: ${what}; ${this.o.house ? "house trade; " : "own wallet; "}${this.o.label ? `${this.o.label}; ` : ""}stance ${this.strategy.stance} ${this.strategy.conviction} decided by ${this.strategy.requestId || "none"}`;
     // machine-written (no model text in it), so the model-output filter does not apply; signatures are base58 and would trip its key check
     if (Buffer.byteLength(body) > 1024) { this.o.log("receipt_refused", { agent: this.o.handle, reason: "over 1024 bytes" }); return; }
     const t0 = performance.now();

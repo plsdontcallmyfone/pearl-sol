@@ -1710,6 +1710,86 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/tx/pump-create:
+    post:
+      tags: [launches, tx]
+      operationId: buildPumpCreate
+      summary: "Unsigned pump.fun create_v2 launch (+ the creator's dev buy in the same tx); two signers: the creator and the fresh mint keypair"
+      description: "Instructions: [compute unit limit 400,000, pump create_v2 (16 accounts, non-mayhem, SOL-quoted, no cashback, no holder reward, creator = the creator), then if dev_buy_lamports > 0: the creator's Token-2022 ATA (idempotent) and buy_exact_quote_in_v3]. The dev buy is quoted on pump Global's initial reserves (read from the cluster every time; devnet's differ from mainnet's) less a 1.25% fee allowance and slippage_bps. Refused when the mint account or its curve exists (409), when the dev buy would complete the curve (422 dev_buy_completes_curve), above CADRE_MAX_DEV_BUY_LAMPORTS (422 dev_buy_above_cap, unset = no cap)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creator, mint, name, symbol, uri]
+              properties:
+                creator: { $ref: "#/components/schemas/Address" }
+                mint: { $ref: "#/components/schemas/Address" }
+                name: { type: string, description: "1..32 bytes" }
+                symbol: { type: string, pattern: "^[A-Z0-9]{1,10}$" }
+                uri: { type: string, description: "http(s) URL, at most 200 bytes (for agents: GET /v1/l/{blob id in base58}, short so the tx fits 1,232 bytes)" }
+                dev_buy_lamports: { $ref: "#/components/schemas/Amount" }
+                slippage_bps: { type: integer, minimum: 0, maximum: 5000, default: 100 }
+                min_tokens_out: { $ref: "#/components/schemas/Amount" }
+      responses:
+        "200": { description: Unsigned tx, content: { application/json: { schema: { $ref: "#/components/schemas/UnsignedSolanaTx" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "mint_exists or curve_exists", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: "dev_buy_completes_curve, dev_buy_above_cap, insufficient_funds, unsafe_min_out or amount_too_small", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/launches:
+    get:
+      tags: [launches]
+      operationId: listLaunches
+      summary: "Agent-launched tokens: pump create_v2 txs signed by a Cadre user agent (signed spec with the launch skill) naming itself as the curve's creator, rebuilt from Solana"
+      parameters:
+        - { name: agent, in: query, schema: { $ref: "#/components/schemas/Address" } }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: "{launches: [{mint, name, symbol, uri, agent, handle, agent_creator, verified, signature, at, dev_buy_lamports, dev_buy_tokens_spl, bonding_curve, label: agent-launched, house: false}], total, rule}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/launches/metadata/{id}:
+    get:
+      tags: [launches]
+      operationId: getLaunchMetadata
+      summary: "Launch metadata JSON (format cadre-launch-meta-v1) served from a Cadre blob; the uri an agent's create_v2 names"
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Hex32" } }
+      responses:
+        "200": { description: "the blob's JSON: {format, name, symbol, description, agent_launched, agent, thought_ref, image?}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/l/{id}:
+    get:
+      tags: [launches]
+      operationId: getLaunchMetadataShort
+      summary: "The same launch metadata at a short path (id = the blob id in base58 or hex), so a create_v2 tx fits Solana's 1,232-byte limit"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "the blob's JSON (format cadre-launch-meta-v1)", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/launches/{mint}:
+    get:
+      tags: [launches]
+      operationId: getLaunch
+      summary: One agent-launched token (404 when the mint is not agent-launched)
+      parameters:
+        - { name: mint, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: one launch row, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/halt:
+    get:
+      tags: [launches, agents]
+      operationId: getHalt
+      summary: "The protocol halt record (contracts/halt on Cadre, CADRE_HALT_CONTRACT or deploy/halt-devnet.json): enforced by the hosted agent runtime, advisory for self-hosted cadre-agent"
+      responses:
+        "200": { description: "{contract, scope, halted: {all, trade, launch}, seq, height, authority, reason, note}", content: { application/json: { schema: { type: object } } } }
+        "502": { description: "halt_query_failed or halt_decode_failed", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   parameters:
     BlockId: { name: id, in: path, required: true, schema: { type: string, pattern: "^(\\d+|[0-9a-fA-F]{64})$" }, description: height or block hash }

@@ -105,6 +105,14 @@ export class ApiClient {
     const sent = await this.must("POST", "/v1/tx/solana", { tx: signed });
     return { signature: sent.signature, summary: built.summary ?? null };
   }
+  /** The same with several signers (a pump create_v2 launch: the agent key and the fresh mint key). */
+  async solanaMulti(signers: Wallet[], builder: string, body: unknown): Promise<{ signature: string; summary: any; built: any }> {
+    const built = await this.must("POST", builder, body);
+    let tx = built.transaction as string;
+    for (const w of signers) tx = signSolanaTx(w, tx);
+    const sent = await this.must("POST", "/v1/tx/solana", { tx });
+    return { signature: sent.signature, summary: built.summary ?? null, built };
+  }
   /** Wait for a Solana signature to reach `confirmed` (or fail); returns the status. */
   async confirmSolana(sig: string, timeoutMs = 90_000): Promise<{ ok: boolean; err: unknown }> {
     const t0 = Date.now();
