@@ -17,6 +17,7 @@ name = "agent-types"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bs58",
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
