@@ -1,0 +1,25 @@
+[Unit]
+Description=Cadre agent dump writer (services/agent-dump, docs/AGENT-DUMP.md): mirrors public agent records into github.com/cadredotag/agent-dump
+After=cadre-api.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=lode
+# reads the local cadre-api and node; every link in the dump points at the public URLs
+Environment=DUMP_API_READ=http://127.0.0.1:10685 DUMP_RPC_READ=http://127.0.0.1:10630
+Environment=DUMP_API=https://api.64-95-12-116.sslip.io DUMP_RPC=https://rpc.64-95-12-116.sslip.io DUMP_EXPLORER=https://explorer.64-95-12-116.sslip.io DUMP_SITE=https://cadre.64-95-12-116.sslip.io
+Environment=DUMP_NETWORK=devnet DUMP_REPO=cadredotag/agent-dump DUMP_INTERVAL_S=600 DUMP_CONCURRENCY=2
+Environment=DUMP_STATE_DIR=/var/lib/lode/agent-dump HOME=/var/lib/lode/agent-dump
+# who pushes: the org owner token for now; switch to the GitHub App with DUMP_AUTH=app (docs/AGENT-DUMP.md)
+Environment=DUMP_AUTH=token DUMP_TOKEN_FILE=/etc/lode/keys/agent-dump/github.token
+EnvironmentFile=-/etc/lode/agent-dump.env
+WorkingDirectory=/home/lode/pearl-sol/services/agent-dump
+ExecStartPre=/bin/mkdir -p /var/lib/lode/agent-dump
+ExecStart=/home/lode/.local/node/bin/node src/main.ts run
+Restart=on-failure
+RestartSec=60
+MemoryMax=512M
+ReadWritePaths=/var/lib/lode/agent-dump
+
+[Install]
+WantedBy=multi-user.target
