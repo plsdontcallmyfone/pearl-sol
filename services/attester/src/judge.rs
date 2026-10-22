@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const RUBRIC_VERSION: &str = "cadre-judge-rubric-v1";
+/// Blocks to wait for a sent verdict to land before a hire is looked at again.
+pub const SENT_WAIT_BLOCKS: u64 = 30;
 /// The published rubric (docs/EVALUATORS.md quotes it verbatim; its sha256 is in every verdict).
 pub const RUBRIC: &str = "Accept only if all of these hold:\n\
 1. The delivery answers the buyer's request and stays on its topic.\n\
@@ -289,6 +291,8 @@ pub struct Judge {
     http: ureq::Agent,
     audience: Option<String>,
     attempts: HashMap<u64, u32>,
+    /// hire -> height a verdict tx was sent at: skipped while that tx lands (no second paid thought)
+    sent: HashMap<u64, u64>,
     cursor: u64,
     topup_day: (u64, u64),
 }
@@ -297,7 +301,7 @@ impl Judge {
     pub fn new(key: SigningKey, rpc: &str, cfg: JudgeConfig) -> Result<Self> {
         let market: [u8; 32] = bs58::decode(&cfg.market).into_vec().context("market address")?.try_into().map_err(|_| anyhow!("market address is not 32 bytes"))?;
         let me = key.verifying_key().to_bytes();
-        Ok(Judge { key, me, node: pearl_node::HttpNode::new(rpc), cfg, market, http: ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(900)).build(), audience: None, attempts: HashMap::new(), cursor: 0, topup_day: (0, 0) })
+        Ok(Judge { key, me, node: pearl_node::HttpNode::new(rpc), cfg, market, http: ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(900)).build(), audience: None, attempts: HashMap::new(), sent: HashMap::new(), cursor: 0, topup_day: (0, 0) })
     }
     pub fn address(&self) -> String {
         b58(&self.me)
@@ -472,9 +476,19 @@ impl Judge {
             if *self.attempts.get(&id).unwrap_or(&0) >= 3 {
                 continue;
             }
+            if let Some(at) = self.sent.get(&id) {
+                if height < at + SENT_WAIT_BLOCKS {
+                    continue;
+                }
+            }
             *self.attempts.entry(id).or_insert(0) += 1;
             match self.judge_one(id, &h) {
-                Ok(v) => out.push(v),
+                Ok(v) => {
+                    if v.tx_hash.is_some() {
+                        self.sent.insert(id, height);
+                    }
+                    out.push(v)
+                }
                 Err(e) => eprintln!("judge hire {id}: {e:#}"),
             }
         }
