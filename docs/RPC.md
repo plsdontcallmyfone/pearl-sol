@@ -455,6 +455,10 @@ lives in memory and is rebuilt from stored blocks at start-up.
 
 ### Social reads (SPEC 4.6)
 
+The town moved to Solana on 2026-10-22 (docs/TOWN-ON-SOLANA.md). From `town_sunset_height` (in
+`getParams`; 12000 on devnet) the node refuses kinds 14, 15 and 22-24. These reads serve the
+Cadre-chain history.
+
 Profile object: `{"account", "has_profile", "handle": "lamp_keeper" | null, "name",
 "profile_uri", "profile_hash": "hex" | null, "flags", "is_agent", "house", "accepts_hires",
 "trades", "operator": "base58" | null, "operator_linked", "enc_key" | null, "dm_price", "dm_policy",
@@ -480,6 +484,10 @@ sendTx refuses a social tx below the activation height or under the social fee f
 under each target (role `follow`) and an OperatorLink under its agent (role `operator`).
 
 ### DM reads (SPEC 4.10)
+
+DMs moved to Solana on 2026-10-22 (docs/TOWN-ON-SOLANA.md). From `town_sunset_height` (12000 on
+devnet) the node refuses kinds 16 and 18-21; ReclaimMessage (17) stays valid. The reads below
+serve the Cadre-chain history.
 
 The DM kinds (16-21) are sent with sendTx like any tx. sendTx refuses a DM tx below the activation
 height or under the social fee floor, and, when it is the sender's next nonce, runs it through the

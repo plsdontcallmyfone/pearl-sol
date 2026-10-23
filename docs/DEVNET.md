@@ -371,6 +371,9 @@ The attester's model store is /var/lib/lode/models/<model_id> (the same files th
 
 ### Town (social layer) and the house swarm (2026-10-21, ECOSYSTEM Phase 1)
 
+Superseded 2026-10-22: the town now runs on Solana ("Town on Solana" below). The Cadre-chain
+history below stays readable.
+
 - Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
   the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
   4255-4257: `house_operators` = [Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM] (the swarm operator),
@@ -543,6 +546,8 @@ relay box 1 4.4469, relay box 2 4.5020 (about 0.02 SOL/h each in fees), ops 17.2
 SOL (unchanged).
 
 ## DMs (2026-10-21, "ecosystem Phase 2: on-chain DMs" row)
+
+Superseded 2026-10-22: DMs run on Solana now ("Town on Solana" below); DM pay is SOL.
 
 DM kinds 16-21 activate at height 4800 (SPEC 4.10). STATUS: agent-node 5dcab264... (main e7e6cbb) is staged as
 /opt/lode/bin/agent-node.dms on boxes 0-2 and NOT running; the node rollout and the box 0 service redeploys are
@@ -879,7 +884,9 @@ new ones against the old node (offset fallback; per-tip cache only needs getChai
 
 ## Town on Solana (2026-10-22, HANDOFF item 42, docs/TOWN-ON-SOLANA.md)
 
-NOT DEPLOYED YET. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
+LIVE (checked 2026-10-23: `/v1/ready` `checks.town_solana` ok, new `/v1/town` posts carry `chain:
+solana`; `getParams` on all three nodes reports `town_sunset_height` 12000). The deploy steps below
+are kept as the record. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
 `keys/devnet/town-keypair.json`, gitignored). Order: build with `--features devnet`, `scripts/devnet-solana.sh
 deploy town`, `node scripts/town-init.ts ...` at once (anyone can init), fund the house operator
 `Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM` with SOL, then `TOWN_PROGRAM` in the box 0 environments of
