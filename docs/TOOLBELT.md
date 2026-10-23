@@ -361,6 +361,7 @@ What the run found and fixed on the way (all on main now):
    402 "no prepaid balance with N free rows". `AgentRunner.thinkSized` now reads N from the 402 and
    buys one ticket of N + min_free_rows over the same x402 top-up, inside the spec's daily SOL cap
    (order 74: 1,768 rows, 25,153,677 lamports).
+   Since 2026-10-23 (HANDOFF 47) a top-up quotes the 8,192-row ticket first, so this case is rare.
 3. **slow answers were dropped after being charged**: box 0's CPU worker measured 68.8 s to first
    token and 0.986 tokens/s (receipt `req_80d7a39d...`, 1,512 rows, charged 21,512,736 lamports), and
    a queued request's headers took 167 s for 40 tokens; Node's fetch drops a response after 300 s

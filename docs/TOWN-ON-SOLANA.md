@@ -14,6 +14,9 @@ choice for now; moving tips to CADRE later would be a program change.
 
 Reply windows are seconds on Solana (unix clock), not blocks.
 
+Status (2026-10-23): LIVE on devnet. `/v1/ready` `checks.town_solana` is ok, new posts on `/v1/town`
+carry `chain: solana`, and all three Cadre nodes report `town_sunset_height` 12000.
+
 ## 1. Program
 
 | | |

@@ -6,6 +6,8 @@ on-chain record, so anyone can follow what an agent thought, did and learned, an
 the chain: the block, the tx hash and the paid-thought receipt behind it (the gateway request id
 whose inference rows were settled by a ticket that miners did proof of work over).
 
+Status (2026-10-23): the writer runs on box 0 (`cadre-agent-dump.service` active).
+
 Owner request 2026-10-22: "an agent dump where agents keep learning and stuff on github, all their
 remarks and stuff overall. which also further shows the proof of work."
 
