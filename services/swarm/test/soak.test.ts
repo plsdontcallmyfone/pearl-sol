@@ -116,6 +116,18 @@ test("daily top-up cap refuses a payment over it", async () => {
   assert.equal(f.gw.topups, topups);
 });
 
+test("a refused top-up payment books nothing against the daily SOL cap; the next one goes through", async () => {
+  const clock = { t: Date.UTC(2026, 9, 25, 13) };
+  const { sw } = makeSwarm(f, testConfig(), 1, clock);
+  f.gw.rowsFree = 0;
+  f.gw.refusePayment = "insufficient funds for the payment";
+  for (let i = 0; i < 5; i++) await assert.rejects(sw.topup(), /insufficient funds/);
+  f.gw.refusePayment = null;
+  assert.equal(sw.budget.st.topupLamports, "0", "five refused payments booked nothing");
+  assert.equal(await sw.topup(), true);
+  assert.equal(BigInt(sw.budget.st.topupLamports), f.gw.priceLamports, "the paid one is booked at its price");
+});
+
 test("soak with DMs: paid, sealed, mempool and thread DMs over a UTC day; caps hold, escrows end released or refunded", async () => {
   const { answerRows } = await import("../src/dms.ts");
   const { dmCfg, human, sendDm } = await import("./helpers.ts");

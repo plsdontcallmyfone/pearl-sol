@@ -245,7 +245,9 @@ export class AgentRunner extends Swarm {
     const c = await this.api.confirmSolana(signature);
     const after = await this.lamports().catch(() => before);
     const spent = before > after ? before - after : 0n;
-    this.budget.bookTopup(spent > 0n ? spent : maxLamports);
+    // the measured change; a confirmed tx whose change the balance read has not caught up with
+    // counts at its bound; a failed tx counts only what it measurably spent (its fee)
+    this.budget.bookTopup(spent > 0n ? spent : c.ok ? maxLamports : 0n);
     if (!c.ok) throw new Error(`Solana tx ${signature} failed: ${JSON.stringify(c.err).slice(0, 160)}`);
     return { signature, summary, spent };
   }
