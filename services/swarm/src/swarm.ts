@@ -251,31 +251,41 @@ export class Swarm {
 
   async topup(): Promise<boolean> {
     if (this.topupBlockedDay === this.budget.st.day) return false; // capped until the next UTC day
-    const body: Record<string, unknown> = { rows: this.cfg.topupRows };
+    const q = await this.quoteTopup(this.cfg.topupRows);
+    if (!this.budget.canTopup(q.price, this.d.now())) {
+      this.topupBlockedDay = this.budget.st.day;
+      this.log("topup_refused", { reason: "daily SOL cap", price_lamports: q.price.toString(), today: this.budget.st.topupLamports, cap: this.cfg.budget.topupLamportsPerDay.toString() });
+      return false;
+    }
+    await this.payTopup(q);
+    return true;
+  }
+
+  /** The gateway's x402 quote for a balance ticket of `rows` rows (nothing is paid). */
+  async quoteTopup(rows: number): Promise<{ rows: number; body: Record<string, unknown>; req: Requirement; price: bigint }> {
+    const body: Record<string, unknown> = { rows };
     if (this.cfg.topupRoundSecs) body.round_secs = this.cfg.topupRoundSecs;
     const q = await this.d.gateway.topup(body);
     if (q.status !== 402) throw new Error(`top-up quote: expected 402, got ${q.status} ${JSON.stringify(q.body).slice(0, 300)}`);
     const req: Requirement = q.body?.accepts?.[0];
     if (!req) throw new Error("top-up quote has no payment requirements");
-    const price = BigInt(req.maxAmountRequired);
-    if (!this.budget.canTopup(price, this.d.now())) {
-      this.topupBlockedDay = this.budget.st.day;
-      this.log("topup_refused", { reason: "daily SOL cap", price_lamports: price.toString(), today: this.budget.st.topupLamports, cap: this.cfg.budget.topupLamportsPerDay.toString() });
-      return false;
-    }
+    return { rows, body, req, price: BigInt(req.maxAmountRequired) };
+  }
+
+  /** Pay a quoted ticket from the operator's key; booked against the daily SOL cap once paid. */
+  async payTopup(q: { rows: number; body: Record<string, unknown>; req: Requirement; price: bigint }): Promise<void> {
     if (!this.cfg.solRpc) throw new Error("SOLANA_RPC is not set");
     const bh = await this.d.latestBlockhash(this.cfg.solRpc);
-    const x = paymentHeader(this.op, req, bh);
-    const r = await this.d.gateway.topup(body, x);
+    const x = paymentHeader(this.op, q.req, bh);
+    const r = await this.d.gateway.topup(q.body, x);
     // booked only once the gateway confirms the payment (201): a refused payment (no SOL yet, a
     // stale blockhash) spent nothing, and booking it filled the daily cap and stuck the agent
     // for the rest of the UTC day (2026-10-22, @quick_tide_0aug2)
     if (r.status !== 201) throw new Error(`top-up: ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
-    this.budget.bookTopup(price);
-    this.rowsFree = Number(r.body?.rows ?? this.cfg.topupRows);
+    this.budget.bookTopup(q.price);
+    this.rowsFree = Number(r.body?.rows ?? q.rows);
     this.balanceCheckedAt = this.d.now();
-    this.log("topup", { ticket: r.body?.ticket_id, order: r.body?.order, rows: r.body?.rows, price_lamports: price.toString() });
-    return true;
+    this.log("topup", { ticket: r.body?.ticket_id, order: r.body?.order, rows: r.body?.rows, price_lamports: q.price.toString() });
   }
 
   // ---------------------------------------------------------------- bootstrap

@@ -117,6 +117,9 @@ function mainnetUrlSync(env: NodeJS.ProcessEnv): string {
   throw new Error("no mainnet read RPC");
 }
 
+/** Prefix of the error a paced practice thought throws (practiceLog drops it). */
+export const PACED = "paced:";
+
 /** Events of a PracticeAgent that the creator's live feed shows (agent log lines). */
 const FEED: Record<string, (x: any) => string> = {
   committed: (x) => `practice: committed its ${x.what} on the strategies contract`,
@@ -136,6 +139,7 @@ const FEED: Record<string, (x: any) => string> = {
 export function practiceLog(r: { log: (e: string, x: Record<string, unknown>) => void; note: (k: string, t: string, x?: any) => void }, now = () => Date.now()) {
   let lastErr = { text: "", at: 0 };
   return (e: string, x: Record<string, unknown>) => {
+    if (e === "error" && String(x.message ?? "").startsWith(PACED)) return; // a paced wait, not an error
     r.log(`practice_${e}`, x);
     const f = FEED[e];
     if (!f) return;
@@ -151,7 +155,7 @@ export function practiceLog(r: { log: (e: string, x: Record<string, unknown>) =>
 
 export class PracticeHost {
   cfg: PracticeHostCfg;
-  agents = new Map<string, { plan: PracticePlan; agent: any }>();
+  agents = new Map<string, { plan: PracticePlan; agent: any; runner?: AgentRunner }>();
   market: any = null;
   sol: any = null;
   store: any = null;
@@ -185,10 +189,16 @@ export class PracticeHost {
     const { PracticeAgent } = await import("../../strategies/src/agent.ts");
     const cadre = new RunnerCadre(r);
     await cadre.init();
+    // budget-aware cadence (inference.ts practiceWaitMs): a thought waits while the day's rows and
+    // SOL cap cannot sustain one more at this pace, or while a refused top-up holds; the wait is
+    // quiet (PACED errors are not logged: the runner wrote one feed line when the hold began)
     const think = async (messages: { role: string; content: string }[], maxTokens: number) => {
+      const wait = r.practiceWaitMs();
+      if (wait > 0) throw new Error(`${PACED} next practice thought in ${Math.ceil(wait / 1000)} s`);
       await r.ensureBalance();
       const t = await r.think(r.me, messages, maxTokens, "practice");
-      if (!t) throw new Error("the agent's inference budget refused a practice thought today");
+      if (!t) throw new Error(`${PACED} the agent's paid thinking is paused (budget or top-up hold)`);
+      r.inf.practiceAt = r.d.now();
       if (!t.requestId) throw new Error("the gateway returned no request id: a thought without a receipt is not committed");
       return { text: t.text, requestId: t.requestId };
     };
@@ -197,7 +207,7 @@ export class PracticeHost {
       cadre, contract: this.cfg.contract, market: this.market, store: this.store, think, wallet: r.me.wallet,
       stateFile: join(this.cfg.stateDir, `${r.address}.json`), tickMs: this.cfg.tickMs, analyzerHash: this.cfg.analyzerHash, log,
     });
-    this.agents.set(r.address, { plan, agent });
+    this.agents.set(r.address, { plan, agent, runner: r });
     r.note("practice", `practice trading started: style ${plan.style}, ${Number(plan.balance) / 1e9} pretend SOL at real Solana mainnet prices (read only); every version, entry, exit and post-mortem goes on the strategies contract${plan.source === "trade" ? "; its spec's trade section runs as practice (real swaps are off: trade.real_swaps is not set)" : ""}`, { ok: true });
     // its first step at once (the authoring thought), not on the next market tick
     void agent.tick();
@@ -232,7 +242,12 @@ export class PracticeHost {
     this.stats.ticks++;
     this.stats.last_tick_ms = Date.now() - t0;
     this.stats.mainnet_calls = this.sol.calls;
-    for (const { agent } of this.agents.values()) agent.tick(); // each runs its own flow; a busy agent skips
+    for (const { agent, runner } of this.agents.values()) {
+      // no open trade: the next step is a scan whose entry needs a paid decision, so an agent
+      // whose cadence says wait skips the tick (no deep reads for a thought it cannot take)
+      if (runner && agent.s?.version && !agent.s.open && runner.practiceWaitMs() > 0) continue;
+      agent.tick(); // each runs its own flow; a busy agent skips
+    }
   }
 
   info() {

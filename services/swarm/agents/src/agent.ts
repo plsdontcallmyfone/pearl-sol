@@ -31,7 +31,8 @@ import { type Body, feeFor, REACTION } from "../../src/chaintx.ts";
 import { dmConfigFromEnv } from "../../src/dms.ts";
 import { isYes } from "../../src/filter.ts";
 import type { Persona } from "../../src/personas.ts";
-import { judgePrompt, type Item, postPrompt, replyPrompt } from "../../src/prompt.ts";
+import { judgePrompt, type Item, postPrompt, replyPrompt, rowsUpperBound } from "../../src/prompt.ts";
+import { dayOf } from "../../src/budget.ts";
 import { type Agent, type Deps, Swarm, type SwarmConfig } from "../../src/swarm.ts";
 import type { Wallet } from "../../src/wallet.ts";
 import { type ApiClient, signRegisterAgent } from "./chain.ts";
@@ -48,6 +49,7 @@ import type { Toolbelt } from "./toolbelt/index.ts";
 import { toolbeltFor } from "./toolbelt/host.ts";
 import { watch as toolWatch, type WatchState } from "./toolbelt/work.ts";
 import type { SwarmCtx } from "./swarms.ts";
+import { holdText, type InferenceState, MAX_TICKET_ROWS, need402, nextUtcDay, PRACTICE_ROWS_GUESS, practiceWaitMs, ticketLadder, TOPUP_SOL_RESERVE, WALLET_RECHECK_MS } from "./inference.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error" | "halted";
 
@@ -83,7 +85,10 @@ export interface RunnerOpts {
   killFile: string;
   allowHosts: string[];
   solRpc?: string;
+  /** The default prepaid ticket (rows); a top-up buys the largest ticket the caps allow (inference.ts). */
   topupRows: number;
+  /** Largest ticket to ask for (default MAX_TICKET_ROWS, cut to the chain's max_balance_rows). */
+  maxTopupRows?: number;
   minFreeRows: number;
   cardUrl: (agent: string) => string;
   maxTokens?: number;
@@ -158,6 +163,8 @@ export class AgentRunner extends Swarm {
   /** Set by pollTriggers: act on the next tick regardless of the cadence. */
   wakeAt = 0;
   triggersAt = 0;
+  /** Prepaid inference: a refused top-up's hold, the last quote, the practice cadence (inference.ts). */
+  inf: InferenceState = { hold: null };
 
   constructor(doc: SignedSpec, wallet: Wallet, deps: Deps, api: ApiClient, o: RunnerOpts, paused = false) {
     const me = { persona: personaOf(doc.spec), wallet };
@@ -182,6 +189,7 @@ export class AgentRunner extends Swarm {
       this.cadreBoot = ex.cadreBoot ?? null;
       this.liveAt = ex.liveAt ?? 0;
       this.firsts = ex.firsts ?? {};
+      if (ex.inference) this.inf = ex.inference;
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
     this.toolbelt = toolbeltFor(this, ex?.toolbelt);
@@ -206,7 +214,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, cadreBoot: this.cadreBoot, liveAt: this.liveAt, firsts: this.firsts, toolbelt: this.toolbelt?.toJSON(), watch: this.watchSt };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, cadreBoot: this.cadreBoot, liveAt: this.liveAt, firsts: this.firsts, toolbelt: this.toolbelt?.toJSON(), watch: this.watchSt, inference: this.inf };
     super.save();
   }
 
@@ -307,17 +315,110 @@ export class AgentRunner extends Swarm {
     return p;
   }
 
-  /** Every paid thought also goes into the agent's own log (the creator's live feed). */
+  /** Every paid thought also goes into the agent's own log (the creator's live feed). A thought
+   * the day's rows cannot admit returns null quietly (one feed line per UTC day); a 402 naming
+   * the free rows one ticket must have buys a ticket for it (topup), else null while the top-up
+   * waits (a hold, logged once). */
   override async think(a: Agent, messages: { role: string; content: string }[], maxTokens: number, purpose: string) {
-    const t = await super.think(a, messages, maxTokens, purpose);
+    const now = this.d.now();
+    const est = rowsUpperBound(messages, maxTokens);
+    if (!this.budget.admits(a.persona.handle, est, now)) {
+      const day = dayOf(now);
+      if (this.inf.rowsNoted !== day) {
+        this.inf.rowsNoted = day;
+        this.note("inference_hold", `paused its paid thinking until 00:00 UTC: today's rows are used (${this.budget.st.rows} of ${this.cfg.budget.rowsPerDay}; a ${purpose.replace(/_/g, " ")} thought may take up to ${est})`, { ok: false });
+        this.save();
+      }
+      return null;
+    }
+    let t;
+    try {
+      t = await super.think(a, messages, maxTokens, purpose);
+    } catch (e) {
+      const need = need402(e);
+      if (need === null) throw e;
+      if (!(await this.topup(need))) return null;
+      t = await super.think(a, messages, maxTokens, purpose);
+    }
     if (t) this.note("thought", `${purpose.replace(/_/g, " ")}: ${t.text.replace(/\s+/g, " ").trim().slice(0, 160)}`, { request_id: t.requestId, ok: true });
     return t;
   }
 
-  override async topup(): Promise<boolean> {
-    const ok = await super.topup();
-    if (ok) this.note("topup", `topped up its own prepaid inference over x402 (${this.rowsFree} rows)`, { ok: true });
-    return ok;
+  /** Is paid thinking waiting on a refused top-up? Lifts at the hold's time, or (a wallet hold)
+   * when the wallet balance changes (read at most every WALLET_RECHECK_MS). */
+  async held(): Promise<boolean> {
+    const h = this.inf.hold;
+    if (!h) return false;
+    const now = this.d.now();
+    if (h.until && now >= h.until) return this.lift("the UTC day rolled over");
+    if (h.reason !== "wallet") return true;
+    if (now - (h.checkedAt ?? 0) < WALLET_RECHECK_MS) return true;
+    h.checkedAt = now;
+    const lam = await this.lamports().catch(() => null);
+    if (lam !== null && lam.toString() !== h.lamports) return this.lift(`its wallet now holds ${lam} lamports`);
+    return true;
+  }
+
+  lift(why: string): boolean {
+    this.log("inference_resume", { agent: this.spec.handle, why, hold: this.inf.hold });
+    this.inf.hold = null;
+    this.save();
+    return false;
+  }
+
+  /** A prepaid top-up sized for value (inference.ts): the largest ticket (gateway max, then the
+   * default, then the least that serves a `need`-row thought) whose live x402 quote fits the rest
+   * of the spec's daily SOL cap and the wallet. Refused = a hold (next UTC day, or until the
+   * wallet balance changes) with one feed line; while held nothing is quoted or retried. */
+  override async topup(need = 0): Promise<boolean> {
+    if (await this.held()) return false;
+    const now = this.d.now();
+    const chainMax = Number(this.params?.max_balance_rows ?? 0);
+    const maxRows = Math.min(this.o.maxTopupRows ?? MAX_TICKET_ROWS, chainMax > 0 ? chainMax : MAX_TICKET_ROWS);
+    const ladder = ticketLadder(need, { defaultRows: this.cfg.topupRows, maxRows, minFree: this.cfg.minFreeRows });
+    if (!ladder.length) return this.hold({ reason: "too_big", since: now, until: nextUtcDay(now), need });
+    this.budget.roll(now);
+    const capLeft = this.cfg.budget.topupLamportsPerDay - BigInt(this.budget.st.topupLamports);
+    let wallet: bigint | null = null;
+    let fail: "sol_cap" | "wallet" = "sol_cap";
+    let price = 0n;
+    for (const rows of ladder) {
+      const q = await this.quoteTopup(rows);
+      price = q.price;
+      this.inf.quote = { rows, price: q.price.toString(), at: now };
+      if (q.price > capLeft) { fail = "sol_cap"; continue; }
+      wallet ??= await this.lamports().catch(() => null);
+      if (wallet !== null && wallet < q.price + TOPUP_SOL_RESERVE) { fail = "wallet"; continue; }
+      await this.payTopup(q);
+      this.note("topup", `topped up its own prepaid inference over x402: a ${rows}-row ticket for ${q.price} lamports${need ? ` (a ${need}-row thought was waiting)` : ""}`, { ok: true });
+      this.save();
+      return true;
+    }
+    return this.hold(fail === "sol_cap"
+      ? { reason: "sol_cap", since: now, until: nextUtcDay(now), need, price: price.toString() }
+      : { reason: "wallet", since: now, until: 0, need, price: price.toString(), lamports: (wallet ?? 0n).toString(), checkedAt: now });
+  }
+
+  hold(h: NonNullable<InferenceState["hold"]>): false {
+    this.inf.hold = h;
+    this.note("inference_hold", holdText(h, { today: this.budget.st.topupLamports, cap: this.cfg.budget.topupLamportsPerDay.toString(), wallet: h.lamports }), { ok: false });
+    this.save();
+    return false;
+  }
+
+  /** Budget-aware practice cadence: ms until the next practice thought may run (inference.ts). */
+  practiceWaitMs(): number {
+    const now = this.d.now();
+    const h = this.inf.hold;
+    if (h) return h.until ? Math.max(1, h.until - now) : WALLET_RECHECK_MS;
+    this.budget.roll(now);
+    const st = this.budget.st;
+    return practiceWaitMs({
+      now, lastAt: this.inf.practiceAt ?? 0,
+      avgRows: st.thoughts > 0 ? st.rows / st.thoughts : PRACTICE_ROWS_GUESS,
+      rowsLeft: this.cfg.budget.rowsPerDay - st.rows - st.reserved,
+      rowsFree: this.rowsFree, capLeft: this.cfg.budget.topupLamportsPerDay - BigInt(st.topupLamports), quote: this.inf.quote,
+    });
   }
 
   /** Cadre fees without a browser step: once, the agent buys CADRE with a little of its own SOL on
@@ -515,25 +616,10 @@ export class AgentRunner extends Swarm {
     return r;
   }
 
-  /** A paid thought that may be larger than one standard top-up ticket (toolbelt reports): when the
-   * open tickets have fewer free rows than the thought's upper bound, buy one ticket big enough for
-   * it (still through the swarm's x402 top-up, inside the spec's daily SOL cap). */
+  /** A paid thought that may be larger than one standard top-up ticket (toolbelt reports): think
+   * buys a ticket big enough for it on the gateway's 402 (topup with the rows it names). */
   async thinkSized(a: Agent, messages: { role: string; content: string }[], maxTokens: number, purpose: string) {
-    try {
-      return await this.think(a, messages, maxTokens, purpose);
-    } catch (e) {
-      // the gateway names the rows one ticket must have free ("no prepaid balance with N free rows")
-      const m = /\b402\b[\s\S]*with (\d+) free rows/.exec(String((e as Error).message));
-      if (!m) throw e;
-      const need = Number(m[1]);
-      const keep = this.cfg.topupRows;
-      this.cfg.topupRows = Math.max(keep, need + this.cfg.minFreeRows);
-      let ok = false;
-      try { ok = await this.topup(); } finally { this.cfg.topupRows = keep; }
-      this.note("inference_topup", ok ? `bought a ${Math.max(keep, need + this.cfg.minFreeRows)}-row prepaid ticket for a ${need}-row thought` : `could not top up for a ${need}-row thought (the spec's daily SOL cap, budget.sol_lamports_per_day, or the gateway refused)`, { ok });
-      if (!ok) return null;
-      return this.think(a, messages, maxTokens, purpose);
-    }
+    return this.think(a, messages, maxTokens, purpose);
   }
 
   /** v2 toolbelt standing work: the spec's watch list, and a receipt batch older than a day. */
@@ -892,6 +978,7 @@ export class AgentRunner extends Swarm {
         cadre_units: this.budget.st.transferUnits, cadre_units_cap: this.cfg.budget.transferUnitsPerDay.toString(),
         thoughts: this.budget.st.thoughts,
       },
+      inference: { hold: this.inf.hold, last_quote: this.inf.quote ?? null, practice_wait_ms: practicePlan(this.spec) ? this.practiceWaitMs() : null },
       counters: s.counters,
       next_at: s.nextAt ?? null,
       last_error: this.lastError,

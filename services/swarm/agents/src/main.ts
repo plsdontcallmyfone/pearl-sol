@@ -4,7 +4,8 @@
 // Env: AGENTS_STATE (default /var/lib/lode/agents), AGENTS_MASTER_KEY (default
 // /etc/lode/keys/agents/master.hex, created 0600 when missing), CHAIN_RPC, GATEWAY_URL,
 // CADRE_API, CADRE_PUBLIC_API, SOLANA_RPC, CADRE_NETWORK, AGENTS_ALLOW_HOSTS,
-// AGENTS_MAX_PER_OPERATOR (5), AGENTS_MAX (200), AGENTS_TOPUP_ROWS (1024),
+// AGENTS_MAX_PER_OPERATOR (5), AGENTS_MAX (200), AGENTS_TOPUP_ROWS (4096, the default ticket),
+// AGENTS_MAX_TOPUP_ROWS (8192, the largest ticket a top-up asks for; src/inference.ts),
 // AGENTS_MIN_FREE_ROWS (256), AGENTS_TICK_MS (10000; a new agent ticks at once), AGENTS_KILL_FILE, AGENTS_HALT_CONTRACT
 // (the protocol halt contract; default deploy/halt-devnet.json; "off" = none),
 // AGENTS_CADRE_BOOT_LAMPORTS (SOL each agent spends once on its own CADRE for Cadre fees, default
@@ -35,7 +36,8 @@ export function configFromEnv(): RuntimeConfig {
     allowHosts: (env.AGENTS_ALLOW_HOSTS ?? "64-95-12-116.sslip.io").split(",").map((s) => s.trim()).filter(Boolean),
     maxPerOperator: num("AGENTS_MAX_PER_OPERATOR", 5),
     maxAgents: num("AGENTS_MAX", 200),
-    topupRows: num("AGENTS_TOPUP_ROWS", 1024),
+    topupRows: num("AGENTS_TOPUP_ROWS", 4096),
+    maxTopupRows: num("AGENTS_MAX_TOPUP_ROWS", 8192),
     minFreeRows: num("AGENTS_MIN_FREE_ROWS", 256),
     tickMs: num("AGENTS_TICK_MS", 10_000),
     killFile: env.AGENTS_KILL_FILE ?? `${state}/STOP`,

@@ -55,6 +55,8 @@ export interface RuntimeConfig {
   maxPerOperator: number;
   maxAgents: number;
   topupRows: number;
+  /** Largest prepaid ticket (AGENTS_MAX_TOPUP_ROWS; default inference.ts MAX_TICKET_ROWS). */
+  maxTopupRows?: number;
   minFreeRows: number;
   tickMs: number;
   killFile: string;
@@ -150,7 +152,7 @@ export class Runtime {
   runnerOpts(agent: string): RunnerOpts {
     return {
       stateFile: `${this.cfg.stateDir}/agent-${agent}.json`, killFile: this.cfg.killFile, allowHosts: this.cfg.allowHosts, solRpc: this.cfg.solRpc,
-      topupRows: this.cfg.topupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt,
+      topupRows: this.cfg.topupRows, maxTopupRows: this.cfg.maxTopupRows, minFreeRows: this.cfg.minFreeRows, tickMs: this.cfg.tickMs, halt: this.halt,
       practice: this.practice ?? undefined, practiceOff: this.practiceOff || undefined, cadreBootLamports: this.cfg.cadreBootLamports, cardUrl: (a) => `${this.cfg.publicApiUrl.replace(/\/$/, "")}/v1/useragents/${a}/card`,
     };
   }
