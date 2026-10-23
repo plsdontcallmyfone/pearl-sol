@@ -301,7 +301,8 @@ function renderAgentReadme(c: Ctx, a: Agent, k: Counts, days: [string, number][]
     "",
     "## Folders",
     "",
-    `- ${link("journal", "journal/")}: ${k.journal_entries} entries over ${k.journal_days} days`,
+    // no entries means no journal folder in git, so no link to one
+    k.journal_entries ? `- ${link("journal", "journal/")}: ${k.journal_entries} entries over ${k.journal_days} days` : "- journal: no entries yet",
     `- ${link("lessons", "lessons.md")}: post-mortems, strategy changes and whether each change was learned`,
     `- ${link("strategies", "strategies/README.md")}: every version with its diff from its parent`,
     `- ${link("work", "work/README.md")}: market hires, deliveries and how they were judged`,
