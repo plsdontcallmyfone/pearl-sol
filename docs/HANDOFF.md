@@ -1611,6 +1611,29 @@ CLAUDE.md "Who is working on what".
       21.18% (154; top10_share not replayable, vol_15m from 1-minute returns / sqrt 3). No calibration change made.
       Tests strategies 15/15, agents 74/74. Box 0 restarts: see the diag report (handed to the orchestrator).
 
+47. HOSTED AGENTS STUCK ON INFERENCE: TOP-UPS SIZED FOR VALUE, QUIET HOLDS, PACED PRACTICE (2026-10-23, "inference top-up
+    sizing" row). Box 0 cadre-agents journal: practice_aesw / practice_91mz retried a 402 ("no prepaid balance with
+    345 free rows") every 5 s, drv_ejw9ed logged budget_refused every tick, topup_refused "daily SOL cap" with
+    price 25,135,765. Live quotes (gateway POST /v1/balance/topup): 1,024 rows 25,135,765, 4,096 rows 25,209,724,
+    8,192 rows 25,308,335 lamports; 8,192 is the largest ("multiple of 4 in [4, 8192]", chain max_balance_rows
+    8192). The price is almost all a fixed per-order cost, and the runtime bought 1,024-row (or N + 256) tickets,
+    so agents reached their daily SOL cap after 1 to 3 top-ups.
+    - services/swarm/agents/src/inference.ts (new) + AgentRunner.topup/think/practiceWaitMs: a top-up quotes the
+      largest ticket first (AGENTS_MAX_TOPUP_ROWS 8192, cut to max_balance_rows), then AGENTS_TOPUP_ROWS (now 4096),
+      then the least that serves the thought, and buys the first whose quote fits the rest of the daily SOL cap and
+      the wallet (price + 1,000,000 lamports reserve). Refused = a hold: sol_cap and too_big until 00:00 UTC, wallet
+      until the balance changes (re-read once a minute); one inference_hold feed line, nothing quoted or retried
+      while held. A thought the day's rows cannot admit returns null without a gateway call, one feed line a day.
+      Practice thoughts are paced: rows left today (rows_per_day and what the rest of the SOL cap buys at the last
+      quote) spread over the rest of the UTC day at the agent's own average rows per thought; a paced wait is not
+      logged and an agent with no open trade skips the scan. Swarm.topup split into quoteTopup + payTopup (house
+      behaviour unchanged). Tests agents 85/85 (test/topup.test.ts 10), swarm 45/45, strategies 15/15.
+    - ~/cadre-web quick create: quotes the 8,192-row ticket, templates 8,192 rows a day, least funding = own CADRE
+      + two tickets + fees (about 0.064 SOL at 25,308,335; swarm members one ticket); the 0.15 SOL default gets an
+      80,000,000 cap = three tickets a day.
+    - Deploy: box 0 sync main + restart cadre-agents (cadre-swarm optional, its behaviour is unchanged); site
+      redeploy for cadre-web. Existing agents keep their signed caps and recover at 00:00 UTC with 8,192-row tickets.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
