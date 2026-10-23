@@ -1587,6 +1587,29 @@ CLAUDE.md "Who is working on what".
     thought). Tests: contract 10/10, agents 60/60 incl. swarms 7/7, cadre-api 116/118 (2 need @solana/web3.js installed).
     NEXT (orchestrator): box 0 sync + restart cadre-agents and cadre-api (SWARMS.md 8); sponsor float off until the owner
     sets AGENTS_SWARM_SPONSOR_KEY + AGENTS_SWARM_FLOAT_UNITS; cadre-web must learn agent_spec_swarm in lib/agentspec.ts.
+46. DIAG: GATEWAY REQUEST DATA OUTPACES SETTLEMENT; PRACTICE TRADERS NEVER ENTER (2026-10-23, "diag" row).
+    - Gateway, measured on box 0: a request's scratch is 2,708,480 bytes per row (rows = prompt + completion tokens;
+      144 matrices, A k=2048 int8 = 294,912 B, C int32 = 2,413,568 B, so C is 89%; C is read once, to hash c_hash at
+      round time). It is deleted when its round is posted (not at settlement or mining), so the node blob store and
+      the miners do not hold gateway disk. Root cause of the backlog: ticket closes ran inside the one settle pass, and
+      a close waits for the attester's full glue replay: 480-565 s per ticket of 1,663-1,732 rows (attester log); no
+      round posts meanwhile. Live 01:05-01:28 UTC: bytes_waiting 12.60 GB -> 28.36 GB (+40 GB/h) while two replays
+      (01:08-01:16, 01:18-01:28) blocked posting. Earlier stalls: blob store full 22:47-01:58 and the stuck nonce
+      04:34-12:57 (both fixed by items 37 and 39). Since 16:00 the serve rate averaged 3,683 rows/h (9.98 GB/h).
+      Fix on main d379a0d: post and close passes on separate threads (posting skips only the ticket being closed);
+      --data-pressure-mb 8192 (early posting at min(cap/2, it)); rows that can no longer post (deadline passed, chain
+      closed the ticket) dropped with their data; /v1/stats written_bytes, freed_bytes, pressure_bytes,
+      pending_dropped, settle.closing, settle.close_backoff. Tests settle_split 3/3, gateway 38/38 on Linux.
+      Not done: zstd of C at rest (measured 0.553 of raw with a 4-byte shuffle on box 0 files, about 45% less) needs a
+      new crate in crates/Cargo.lock; attester results are not cached (a gateway restart mid-replay replays again).
+    - Practice: conditions do fire (6 decisions 01:17-01:23 UTC on box 0); every decision thought answered the bare
+      word "SKIP" (the last word of "TAKE or SKIP?"), and any SKIP vetoed. Fix on main 9950e1d: a SKIP counts only
+      when it names a RED_FLAGS signal present in the values (veto_unsupported logged otherwise); watched pools are
+      evicted when under minPoolSol or idle 30 min, except a pool with an open trade (the set froze at its first 12).
+      Not strictness: a read-only 24 h replay (1-minute vault reads, 9,853 mainnet read calls, 11 pools, 151.7
+      pool-hours) had tape_lark's rules hold 6.11% of pool-minutes (147 episodes), floor_wren 0.88% (46), still_heron
+      21.18% (154; top10_share not replayable, vol_15m from 1-minute returns / sqrt 3). No calibration change made.
+      Tests strategies 15/15, agents 74/74. Box 0 restarts: see the diag report (handed to the orchestrator).
 
 ## M1 components (SPEC v2, all DONE)
 

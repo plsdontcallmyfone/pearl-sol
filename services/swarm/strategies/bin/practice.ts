@@ -129,9 +129,10 @@ async function run() {
     try {
       if (Date.now() - lastDiscover > 15 * 60_000 || market.pools.size === 0) {
         const found = await discover(sol, { signatures: 100, txs: 40 });
-        const added = await market.refresh(found, { minPoolSol: 30, max: 12 });
+        const keep = new Set(agents.map((a) => a.s.open?.pool).filter((x): x is string => !!x));
+        const added = await market.refresh(found, { minPoolSol: 30, max: 12, keep });
         lastDiscover = Date.now();
-        log("discover", { found: found.size, added: added.length, watched: market.pools.size, mainnet_calls: sol.calls });
+        log("discover", { found: found.size, added: added.length, evicted: market.evicted.length, watched: market.pools.size, mainnet_calls: sol.calls });
       }
       const slot = await market.tick();
       log("tick", { slot, pools: market.pools.size, mainnet_calls: sol.calls });

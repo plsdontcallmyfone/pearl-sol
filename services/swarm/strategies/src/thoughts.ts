@@ -46,19 +46,41 @@ export function parseAuthor(text: string): { stop_bps: number; target_bps: numbe
 
 // ------------------------------------------------------------ deciding an entry
 
+/** The red flags (analyzer RED_FLAGS) these numbers show: the only grounds a SKIP may name. */
+export function flagsIn(v: Values): Signal[] {
+  return RED_FLAGS.filter((f) => {
+    const x = v[f.signal];
+    return x !== null && x !== undefined && Number.isFinite(x) && (f.op === ">" ? x > f.value : x < f.value);
+  }).map((f) => f.signal);
+}
+
 export function decisionPrompt(persona: string, spec: StrategySpec, v: Values, size: bigint): Msg[] {
   const lines = Object.entries(v).map(([k, x]) => `${k} ${n4(x as number | null)}`).join(", ");
+  const flags = RED_FLAGS.map((f) => `${f.signal} ${f.op} ${f.value}`).join("; ");
   return [
-    { role: "system", content: `You are ${persona}, trading practice money at real prices. Your rules all hold for this pool. Answer with one word, TAKE or SKIP, then a short reason.` },
-    { role: "user", content: `Pool numbers: ${lines}. Size ${Number(size) / 1e9} SOL, stop ${spec.stop_bps / 100}%, target ${spec.target_bps / 100}%. TAKE or SKIP?` },
+    { role: "system", content: `You are ${persona}, trading practice money at real prices. Your rules all hold for this pool, so the trade is taken unless one of the pool's numbers is a red flag. Red flags: ${flags}. If one applies, answer SKIP and the name of that number. Otherwise answer TAKE.` },
+    { role: "user", content: `Pool numbers: ${lines}. Size ${Number(size) / 1e9} SOL, stop ${spec.stop_bps / 100}%, target ${spec.target_bps / 100}%. Does a red flag apply? Answer TAKE, or SKIP and the number.` },
   ];
 }
 
-/** The rules decided; the thought can only veto. Anything but a clear SKIP first is TAKE. */
-export function parseDecision(text: string): "take" | "skip" {
+export interface Decision { decision: "take" | "skip"; said: "take" | "skip"; named: Signal[]; grounded: Signal[] }
+
+/**
+ * The rules decided; the thought can only veto, and only with a reason the numbers support:
+ * a SKIP (said before any TAKE) counts when it names a signal that IS a red flag in `v`. A bare
+ * SKIP, or one naming no red flag present, is recorded as said and the trade is taken. (Box 0,
+ * 2026-10-23: the 1B model answered the old "TAKE or SKIP?" with the bare last word "SKIP" on 6
+ * of 6 decisions, so no entry was ever made; that veto carried no information.)
+ */
+export function parseDecision(text: string, v: Values = {}): Decision {
   const t = text.toUpperCase();
   const s = t.indexOf("SKIP"), k = t.indexOf("TAKE");
-  return s >= 0 && (k < 0 || s < k) ? "skip" : "take";
+  const said = s >= 0 && (k < 0 || s < k) ? "skip" : "take";
+  const low = text.toLowerCase();
+  const named = RED_FLAGS.map((f) => f.signal).filter((sig) => low.includes(sig));
+  const present = new Set(flagsIn(v));
+  const grounded = named.filter((sig) => present.has(sig));
+  return { decision: said === "skip" && grounded.length > 0 ? "skip" : "take", said, named, grounded };
 }
 
 // ------------------------------------------------------------ the lesson of a post-mortem
