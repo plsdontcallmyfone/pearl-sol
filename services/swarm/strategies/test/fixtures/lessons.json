@@ -1,0 +1,2030 @@
+{
+ "source": "REAL: Cadre devnet practice post-mortems (contracts/strategies BvYwLdhA...), blobs read from cadre-api GET /v1/strategies/blobs/{id} on 2026-10-23; lesson_text_raw is what the devnet 1B model wrote (truncated to 400 chars by the runner) under the old lesson prompt",
+ "postmortems": [
+  {
+   "trade": 1,
+   "postmortem_blob": "c9a3efbe1a2ff1b774c21ae43492e902dc03eed7f9ee9650303934d741c23e66",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "win",
+   "pnl_lamports": "122150199",
+   "buckets": 1,
+   "names": [
+    "INFORMATION"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "ret_15m = 2.521 was inspected, but the condition let it through: the price rose more than 50% in 15 minutes (late entry)",
+      "vol_15m = 0.05903 was available at slot 460264030 and not inspected: observation-to-observation moves above 5% (one standard deviation)",
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "1 wins in 1 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 45.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -2495 bps against the quote at slot 460264030, filled at slot 460264628 (598 slots later; model 4)",
+      "decision to commit visible 8470 ms, decision to fill 126983 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460265347 -> 460265352)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 313492789 lamports, max risk 50000000, entry impact 140 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 10.00%, one standard deviation over the 1200 s hold 91.45% (vol_15m 0.05903 per 5 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome win"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [
+    "lucky win: it made money although INFORMATION is at fault"
+   ],
+   "lesson_request": "req_b40cfd41c363ad384cfe1633",
+   "lesson_text_raw": "LESSON: The condition of information being sufficient to make a trade is not enough to guarantee a win, as the model's performance in this case was 1 win in 5 firings, indicating a need for more robust data and better model performance."
+  },
+  {
+   "trade": 3,
+   "postmortem_blob": "9c16b3f709451ba66e0fb83be66480fe5ae426f3f6be4dbdbc240fafcd8b333f",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-1568643",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 1 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 0 bps against the quote at slot 460267764, filled at slot 460267801 (37 slots later; model 4)",
+      "decision to commit visible 3883 ms, decision to fill 7988 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460273510 -> 460273515)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 100000000 lamports, max risk 10000000, entry impact 102 bps",
+      "lost 1568643 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 1.49% (vol_15m 0.00192 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 1 losses in 1 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.7500)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_d30098ccfc6a8f70ba49464f",
+   "lesson_text_raw": "LESSON: While I appreciate the thoroughness of your review, I must respectfully disagree with the conclusion that the current strategy is not enough data. Despite passing all the checks, I've had 0 wins in 1 firing, which suggests that the strategy may be underperforming due to insufficient data"
+  },
+  {
+   "trade": 4,
+   "postmortem_blob": "a3f57f8a8b0031dbc03a4b9ace0b9f2bafa2bf044aa35a19a88d6fff61e7f201",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-5831084",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 1 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -10 bps against the quote at slot 460267804, filled at slot 460268194 (390 slots later; model 4)",
+      "decision to commit visible 1783 ms, decision to fill 82146 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460273890 -> 460273895)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 100000000 lamports, max risk 10000000, entry impact 120 bps",
+      "lost 5831084 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.71% (vol_15m 0.003499 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 1 losses in 1 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.7500)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_18568959e94b224a788f53f2",
+   "lesson_text_raw": "LESSON: While I appreciate the thoroughness of the review, I must correct the significant loss in the PnL column. The actual outcome loss was -0.005831084 SOL, which is a substantial loss. This suggests that my current strategy may not be effective in generating consistent profits,"
+  },
+  {
+   "trade": 5,
+   "postmortem_blob": "06834f93aac0481c9849dd2e98561f1cfaae9de1c2007530e88a54659b1d8096",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-95824582",
+   "buckets": 24,
+   "names": [
+    "SIZING",
+    "RISK_MANAGEMENT"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 2 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 118 bps against the quote at slot 460274254, filled at slot 460274405 (151 slots later; model 4)",
+      "decision to commit visible 1786 ms, decision to fill 32180 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460277119 -> 460277124)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 99843135 lamports, max risk 9984313, entry impact 92 bps",
+      "lost 95824582 lamports, 859.75% above the stated max risk"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.13% (vol_15m 0.002752 per 20 s observation)",
+      "gapped through the stop: sold 87837131 lamports below the stop level (more than 25% of the stop distance); a 20 s check cannot stop a gap"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_8cb89dfc096603e7487ddc17",
+   "lesson_text_raw": "LESSON: In a market with high volatility, it's crucial to focus on the fundamentals and not over-rely on technical indicators or complex risk management strategies."
+  },
+  {
+   "trade": 6,
+   "postmortem_blob": "4942744da25b28c6e11ea4a27947207e89e069d34e70c7e254cdb0df394082c0",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-95524901",
+   "buckets": 24,
+   "names": [
+    "SIZING",
+    "RISK_MANAGEMENT"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 2 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 74 bps against the quote at slot 460274657, filled at slot 460274762 (105 slots later; model 4)",
+      "decision to commit visible 5326 ms, decision to fill 21467 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460277119 -> 460277124)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 99416891 lamports, max risk 9941689, entry impact 92 bps",
+      "lost 95524901 lamports, 860.85% above the stated max risk"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.28% (vol_15m 0.002944 per 20 s observation)",
+      "gapped through the stop: sold 87571549 lamports below the stop level (more than 25% of the stop distance); a 20 s check cannot stop a gap"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_be12ff36a5a14c7dce9f74b9",
+   "lesson_text_raw": "LESSON: When sizing a trade, it's essential to consider the maximum risk and the potential impact on the stop-loss, as excessive stop-losses can lead to significant losses, as evidenced by the 8.00% stop-loss percentage in this case, which is significantly higher than the recommended "
+  },
+  {
+   "trade": 7,
+   "postmortem_blob": "260e5f70e22e9eaddfb3897b421213866175ab6c53cbaf3cb61157c3dd0bd9c6",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-1993065",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 3 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 0 bps against the quote at slot 460278642, filled at slot 460278690 (48 slots later; model 4)",
+      "decision to commit visible 5114 ms, decision to fill 10276 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460284461 -> 460284466)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 90260677 lamports, max risk 9026067, entry impact 102 bps",
+      "lost 1993065 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 1.94% (vol_15m 0.002508 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 3 losses in 3 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.4219)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_5b43a6695ff1728074b43331",
+   "lesson_text_raw": "LESSON: While I appreciate the thoroughness of this review, I must correct the narrative to reflect the actual outcome of my practice trade. The review highlights several key points, including the execution of the entry fill, sizing, and risk management. However, it also mentions the \"base rate\" and"
+  },
+  {
+   "trade": 8,
+   "postmortem_blob": "187b12bfb830cc2ba845dfc5ed44fa6045693959a96155d964154c332d9ca2cd",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "win",
+   "pnl_lamports": "13564964",
+   "buckets": 0,
+   "names": [],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "1 wins in 3 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 33 bps against the quote at slot 460278716, filled at slot 460278757 (41 slots later; model 4)",
+      "decision to commit visible 8819 ms, decision to fill 8883 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460283127 -> 460283132)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 89864401 lamports, max risk 8986440, entry impact 102 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.41% (vol_15m 0.003117 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome win"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [
+    "clean win: every bucket passed"
+   ],
+   "lesson_request": "req_7da86a5fb68c764a16622763",
+   "lesson_text_raw": "LESSON: When the thesis of \"not enough data\" is met, it's essential to verify the data quality before executing a trade, as the outcome of the trade may not accurately reflect the true market conditions."
+  },
+  {
+   "trade": 9,
+   "postmortem_blob": "5788ee767592903414385330340241b6c5d83bf4de2f7661e56199f1de109cd4",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "no_fill",
+   "pnl_lamports": "0",
+   "buckets": 4,
+   "names": [
+    "EXECUTION"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 4 of 13 available signals; not inspected: mcap_sol, vol_15m, flow_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 0 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 303 bps against the quote at slot 460281754, filled at slot 460281982 (228 slots later; model 4)",
+      "decision to commit visible 1289 ms, decision to fill 47619 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "no fill: fill 303 bps worse than the quote, above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 100000000 lamports, max risk 10000000, entry impact 103 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 10.17% (vol_15m 0.01313 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome no_fill"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_1c56590cb8f5e0f57edcff19",
+   "lesson_text_raw": "LESSON: While reviewing my practice trade, I realized that I was not enough data to make an informed decision, leading to a high fill rate and a significant loss."
+  },
+  {
+   "trade": 10,
+   "postmortem_blob": "b4a8797a482da3518dff25bd2a67668fc5408d3dda5992bf2be283345d916a69",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-90573382",
+   "buckets": 28,
+   "names": [
+    "EXECUTION",
+    "SIZING",
+    "RISK_MANAGEMENT"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "1 wins in 4 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 51 bps against the quote at slot 460284165, filled at slot 460284268 (103 slots later; model 4)",
+      "decision to commit visible 5537 ms, decision to fill 22043 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 898 bps below the value at the trigger (slot 460286651 -> 460286656)",
+      "exit slippage above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 91220897 lamports, max risk 9122089, entry impact 97 bps",
+      "lost 90573382 lamports, 892.9% above the stated max risk"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.38% (vol_15m 0.003075 per 20 s observation)",
+      "gapped through the stop: sold 83275710 lamports below the stop level (more than 25% of the stop distance); a 20 s check cannot stop a gap"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_7b0e821c8d2b1770662c8eb2",
+   "lesson_text_raw": "LESSON: When the thesis of \"not enough data\" is met, it's essential to revisit the initial assumptions and consider alternative explanations before jumping to conclusions, as the current data may not be representative of the larger market."
+  },
+  {
+   "trade": 11,
+   "postmortem_blob": "631d6e533a13d298ddd17f889aa6a2013edf91f2401fbfd3b0bf984f339efa13",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-8996296",
+   "buckets": 17,
+   "names": [
+    "INFORMATION",
+    "RISK_MANAGEMENT"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "flow_15m = -0.3273 was available at slot 460285497 and not inspected: the pool lost more than 5% of its SOL in 15 minutes (net selling)",
+      "vol_15m = 0.7121 was available at slot 460285497 and not inspected: observation-to-observation moves above 5% (one standard deviation)",
+      "inspected 4 of 13 available signals; not inspected: mcap_sol, vol_15m, flow_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 1 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 2 bps against the quote at slot 460285497, filled at slot 460285524 (27 slots later; model 4)",
+      "decision to commit visible 4893 ms, decision to fill 5948 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460285988 -> 460285992)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 100000000 lamports, max risk 10000000, entry impact 108 bps",
+      "lost 8996296 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 551.56% (vol_15m 0.7121 per 20 s observation)",
+      "stopped out with the stop inside 1 standard deviation of the hold: noise can trigger it"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_346f1c287c62a0690206e1b1",
+   "lesson_text_raw": "LESSON: While reviewing the trade, it's clear that the risk management strategy was flawed, as the stop-loss was set at 8.00%, which is significantly higher than the standard deviation of the volatility, indicating a lack of consideration for the potential losses."
+  },
+  {
+   "trade": 12,
+   "postmortem_blob": "94a4ca4722824bfc50433365c7bbae03f434f1cbbd5a44527ed8876edae5e39f",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-89481326",
+   "buckets": 28,
+   "names": [
+    "EXECUTION",
+    "SIZING",
+    "RISK_MANAGEMENT"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 4 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 91 bps against the quote at slot 460286360, filled at slot 460286482 (122 slots later; model 4)",
+      "decision to commit visible 6351 ms, decision to fill 25882 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 898 bps below the value at the trigger (slot 460286651 -> 460286656)",
+      "exit slippage above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 90061371 lamports, max risk 9006137, entry impact 97 bps",
+      "lost 89481326 lamports, 893.55% above the stated max risk"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.20% (vol_15m 0.002844 per 20 s observation)",
+      "gapped through the stop: sold 82276416 lamports below the stop level (more than 25% of the stop distance); a 20 s check cannot stop a gap"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_eb8bd9ad9c1842b50b8eca1c",
+   "lesson_text_raw": "LESSON: In order to achieve consistent profitable trades, it's essential to focus on high-quality data and to avoid over-trading, as evidenced by the 0 wins in 4 firings of the current condition set, which highlights the importance of thorough information and risk management."
+  },
+  {
+   "trade": 13,
+   "postmortem_blob": "3032338990f03bd110c250ca0e481178567f02de66cfc1c4f22bd735fccb93e3",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "win",
+   "pnl_lamports": "12612478",
+   "buckets": 0,
+   "names": [],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "2 wins in 5 firings (40.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.8965"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 8 bps against the quote at slot 460287979, filled at slot 460288003 (24 slots later; model 4)",
+      "decision to commit visible 1900 ms, decision to fill 5241 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460290656 -> 460290661)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 82163559 lamports, max risk 8216355, entry impact 103 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.93% (vol_15m 0.003781 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome win"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [
+    "clean win: every bucket passed"
+   ],
+   "lesson_request": "req_125ccb2dbb6ec2b066892f79",
+   "lesson_text_raw": "LESSON: While the thesis of 40% win rate against a 25% stated risk in 5 firings is impressive, it's essential to consider the potential impact of the stop-loss and the volatility of the underlying assets, as the stop-loss is set at 8.00% of"
+  },
+  {
+   "trade": 14,
+   "postmortem_blob": "5532d1aa750bad12c55212534825c357ba5086367127ac968e6828d6946e7a84",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-2957994",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 5 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.2373"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 0 bps against the quote at slot 460288246, filled at slot 460288289 (43 slots later; model 4)",
+      "decision to commit visible 1826 ms, decision to fill 8907 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460293976 -> 460293980)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 81113238 lamports, max risk 8111323, entry impact 102 bps",
+      "lost 2957994 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 1.65% (vol_15m 0.002132 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 5 losses in 5 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.2373)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_4bec2ec4892a28f3465fcbce",
+   "lesson_text_raw": "LESSON: In order to achieve a 25.00% win rate against a stated 75.00% loss rate, I must be willing to take on significant losses in order to achieve a higher probability of winning, which is a fundamental principle of my trading strategy."
+  },
+  {
+   "trade": 15,
+   "postmortem_blob": "db94d17dd9f717268b1774c96a262d43dcea9c5e22595e3396bd884269d5b1d7",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-2736164",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 4 of 13 available signals; not inspected: mcap_sol, ret_60m, vol_15m, flow_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 2 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -33 bps against the quote at slot 460290282, filled at slot 460290384 (102 slots later; model 4)",
+      "decision to commit visible 6860 ms, decision to fill 21977 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460296060 -> 460296065)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 99100370 lamports, max risk 9910037, entry impact 114 bps",
+      "lost 2736164 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 9.97% (vol_15m 0.01287 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 2 losses in 2 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.5625)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_e0c29f7accfe5451844b7d6f",
+   "lesson_text_raw": "LESSON: While I was able to execute the trade successfully, my model's performance in identifying profitable signals was not satisfactory, particularly in the presence of high volatility and large price movements, which resulted in significant losses."
+  },
+  {
+   "trade": 16,
+   "postmortem_blob": "e5c750e3746b8faa662a11aa356da8f1f7b977e865bedf38b7291201b575dbc1",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "no_fill",
+   "pnl_lamports": "0",
+   "buckets": 4,
+   "names": [
+    "EXECUTION"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "2 wins in 5 firings (40.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.8965"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 314 bps against the quote at slot 460292369, filled at slot 460292592 (223 slots later; model 4)",
+      "decision to commit visible 3029 ms, decision to fill 47642 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "no fill: fill 314 bps worse than the quote, above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 83424807 lamports, max risk 8342480, entry impact 103 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 27.04% (vol_15m 0.0349 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome no_fill"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_a1707241923d6b2e9c53b0c9",
+   "lesson_text_raw": "LESSON: In a deep pool, it's crucial to carefully select signals and not rely solely on execution speed, as it can lead to missed opportunities and significant losses."
+  },
+  {
+   "trade": 17,
+   "postmortem_blob": "033cbcec4e083f2cf779c32a53ffa4ed3a80b453baa7962a39bde224ef4fd372",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "win",
+   "pnl_lamports": "12666989",
+   "buckets": 0,
+   "names": [],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "3 wins in 6 firings (50.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.9624"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 45 bps against the quote at slot 460294603, filled at slot 460294668 (65 slots later; model 4)",
+      "decision to commit visible 5586 ms, decision to fill 13696 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460296915 -> 460296919)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 83424807 lamports, max risk 8342480, entry impact 102 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.51% (vol_15m 0.003236 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome win"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [
+    "clean win: every bucket passed"
+   ],
+   "lesson_request": "req_42e4d175e11a5cab4dfd5ca8",
+   "lesson_text_raw": "LESSON: Be cautious of extremely high winning rates, as they may be indicative of over-trading or a lack of discipline in the trading process."
+  },
+  {
+   "trade": 18,
+   "postmortem_blob": "0a5b662d7634177ce2667bdc35248d4d657dc6a47f19ab8c25256275abaa0474",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-6566318",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 6 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.1780"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 22 bps against the quote at slot 460295393, filled at slot 460295529 (136 slots later; model 4)",
+      "decision to commit visible 2838 ms, decision to fill 29091 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460298441 -> 460298446)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 80817439 lamports, max risk 8081743, entry impact 102 bps",
+      "lost 6566318 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 3.02% (vol_15m 0.003898 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 6 losses in 6 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.1780)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_e4161cf1c86d0342c79e7882",
+   "lesson_text_raw": "LESSON: In order to achieve a stated 25.00% win rate against a stated 75.00% loss rate, I must be willing to take on more risk than my model suggests, and I must be able to manage my risk effectively in order to avoid significant losses."
+  },
+  {
+   "trade": 19,
+   "postmortem_blob": "c41d9c29f026c7c12a573972787386941a7a5d1359db8d1d3dde6f18720bea1b",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "win",
+   "pnl_lamports": "12591682",
+   "buckets": 0,
+   "names": [],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "4 wins in 7 firings (57.14%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.9871"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 106 bps against the quote at slot 460297855, filled at slot 460298213 (358 slots later; model 4)",
+      "decision to commit visible 3336 ms, decision to fill 74797 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 14 bps below the value at the trigger (slot 460301276 -> 460301281)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 84691506 lamports, max risk 8469150, entry impact 102 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 2.45% (vol_15m 0.003168 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome win"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [
+    "clean win: every bucket passed"
+   ],
+   "lesson_request": "req_30e945c56906fcad1bd281d7",
+   "lesson_text_raw": "LESSON: Be cautious of extremely high winning percentages, as they may indicate over-trading or a lack of diversification in the trading strategy."
+  },
+  {
+   "trade": 20,
+   "postmortem_blob": "ccbfc04f05d520dadb15ca76370e87649c864df5063274cb1d5950b4bb18250b",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "no_fill",
+   "pnl_lamports": "0",
+   "buckets": 4,
+   "names": [
+    "EXECUTION"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, vol_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "4 wins in 7 firings (57.14%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.9871"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 282 bps against the quote at slot 460304688, filled at slot 460305118 (430 slots later; model 4)",
+      "decision to commit visible 7035 ms, decision to fill 91818 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "no fill: fill 282 bps worse than the quote, above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 85950674 lamports, max risk 8595067, entry impact 97 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 18.66% (vol_15m 0.02409 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome no_fill"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_ec101a7bf30f31326d88dca9",
+   "lesson_text_raw": "LESSON: In a deep pool, it's crucial to carefully select signals and thoroughly inspect the data before entering a trade, as the execution of a signal can significantly impact the outcome."
+  },
+  {
+   "trade": 21,
+   "postmortem_blob": "3bae28a93612e6fef9ea648c937c727556cf10d08d83eefa400a28cb9b8cd0c4",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-2833224",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 7 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.1335"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -7 bps against the quote at slot 460305954, filled at slot 460306060 (106 slots later; model 4)",
+      "decision to commit visible 6324 ms, decision to fill 22247 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460311742 -> 460311746)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 80160807 lamports, max risk 8016080, entry impact 119 bps",
+      "lost 2833224 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 3.28% (vol_15m 0.004234 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 7 losses in 7 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.1335)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_3a1973f82a5f0aae367b7b77",
+   "lesson_text_raw": "LESSON: While I appreciate the thoroughness of this review, I must admit that I'm a bit disappointed. The model's performance is impressive, but I'm concerned about the lack of diversification in the strategy."
+  },
+  {
+   "trade": 22,
+   "postmortem_blob": "512dcc060b149633faec27ba63733243bbaca0b20ddbe1c16c1ab0714db3e968",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "no_fill",
+   "pnl_lamports": "0",
+   "buckets": 5,
+   "names": [
+    "INFORMATION",
+    "EXECUTION"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "flow_15m = -0.223 was available at slot 460314303 and not inspected: the pool lost more than 5% of its SOL in 15 minutes (net selling)",
+      "inspected 4 of 13 available signals; not inspected: mcap_sol, ret_60m, vol_15m, flow_15m, dev_sold_15m, dev_share, top10_share, top1_share, lp_wallet_share"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 2 firings of this condition set; the base rate is judged from 5 firings",
+      "stated win rate 25.00%"
+     ],
+     "fault": false,
+     "status": "not_enough_data"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 185 bps against the quote at slot 460314303, filled at slot 460314482 (179 slots later; model 4)",
+      "decision to commit visible 2835 ms, decision to fill 38025 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "no fill: fill 185 bps worse than the quote, above max_slippage_bps 150"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 98826754 lamports, max risk 9882675, entry impact 114 bps"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 29.29% (vol_15m 0.03781 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "outcome no_fill"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_05c30d3b61812d19479f4769",
+   "lesson_text_raw": "LESSON: In order to improve my trading strategy, I need to focus on the information that is available to me, rather than relying on intuition or past performance. Specifically, I should be more careful about the buckets I use to categorize my trading data, and make sure that I have enough data"
+  },
+  {
+   "trade": 23,
+   "postmortem_blob": "955c401ec3e33bcf42b17466292ce4ffef34a62578ac84e5f83c5061bbd43b25",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-836173",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 8 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.1001"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -1 bps against the quote at slot 460314781, filled at slot 460314941 (160 slots later; model 4)",
+      "decision to commit visible 7417 ms, decision to fill 33576 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460320668 -> 460320673)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 79877484 lamports, max risk 7987748, entry impact 97 bps",
+      "lost 836173 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 3.32% (vol_15m 0.00428 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 8 losses in 8 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.1001)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_00cda3418ca2bc8c48afd83d",
+   "lesson_text_raw": "LESSON: In order to achieve a high level of performance, it is essential to focus on a specific strategy and stick to it, rather than trying to optimize every aspect of the trading process."
+  },
+  {
+   "trade": 25,
+   "postmortem_blob": "f663fdcb545d618e9e3725058573bf39232708025845a46f1b7562f92fb40c1f",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-3199105",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 9 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.0751"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill -16 bps against the quote at slot 460325946, filled at slot 460325988 (42 slots later; model 4)",
+      "decision to commit visible 3351 ms, decision to fill 9514 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460331656 -> 460331661)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 79793867 lamports, max risk 7979386, entry impact 119 bps",
+      "lost 3199105 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 1.55% (vol_15m 0.002005 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 9 losses in 9 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.0751)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_61c67161faa8681d19bbbae2",
+   "lesson_text_raw": "LESSON: In order to achieve a stated 25.00% win rate against a stated 75.00% loss rate, one must be willing to take on a significant amount of risk, as evidenced by the 42% loss in 9 trades, which is equivalent to a 9"
+  },
+  {
+   "trade": 26,
+   "postmortem_blob": "c9005e7dc7adb5dccaeadee223a1993eefe738268e1cf9948cc5b5aeae88563c",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-1266087",
+   "buckets": 64,
+   "names": [
+    "VARIANCE"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 10 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.0563"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 0 bps against the quote at slot 460332775, filled at slot 460332808 (33 slots later; model 4)",
+      "decision to commit visible 1914 ms, decision to fill 7020 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460338521 -> 460338526)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 79473957 lamports, max risk 7947395, entry impact 97 bps",
+      "lost 1266087 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 3.85% (vol_15m 0.004974 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "every bucket passed; 10 losses in 10 trades of this version against a stated loss rate 75.00% (P(this many or more) = 0.0563)",
+      "a necessary loss that comes with the system"
+     ],
+     "fault": false,
+     "status": "pass"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_ed38dcf37ec0ca0aac88cb1b",
+   "lesson_text_raw": "LESSON: While I appreciate the thoroughness of your review, I must express some disappointment with the simplistic nature of your risk management approach. Specifically, the stop-loss and stop-threshold values seem overly aggressive, and the volatility-based stop-threshold calculation appears to be based on a flawed assumption of a"
+  },
+  {
+   "trade": 27,
+   "postmortem_blob": "08e7a1e10e47d42371837ac9aa36e86a9356b04f3b15578319a884ef62e922db",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-527634",
+   "buckets": 2,
+   "names": [
+    "THESIS"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 11 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.0422, below 0.05: the edge as stated is not there"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 0 bps against the quote at slot 460339867, filled at slot 460339927 (60 slots later; model 4)",
+      "decision to commit visible 1266 ms, decision to fill 13361 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460345643 -> 460345648)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 79347348 lamports, max risk 7934734, entry impact 102 bps",
+      "lost 527634 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 1.40% (vol_15m 0.001807 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_489b3947cb7dae4b9dc9b9ed",
+   "lesson_text_raw": "LESSON: The model's inability to identify the bucket at fault, despite passing the inspection, suggests a need to revisit the signal generation process to ensure accurate bucket identification."
+  },
+  {
+   "trade": 28,
+   "postmortem_blob": "614c385de3fb8fef4db426e8f2df5d30e07251b4e4e2c097196f24f3d7874a67",
+   "format": "cadre-postmortem-v1",
+   "analyzer": "cadre-postmortem-v1",
+   "outcome": "loss",
+   "pnl_lamports": "-408486",
+   "buckets": 2,
+   "names": [
+    "THESIS"
+   ],
+   "verdicts": [
+    {
+     "bucket": "INFORMATION",
+     "evidence": [
+      "inspected 5 of 13 available signals; not inspected: mcap_sol, ret_5m, ret_60m, flow_15m, dev_sold_15m, dev_share, top1_share, lp_wallet_share"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "THESIS",
+     "evidence": [
+      "0 wins in 12 firings (0.00%) against a stated 25.00%",
+      "P(this few wins | stated rate) = 0.0317, below 0.05: the edge as stated is not there"
+     ],
+     "fault": true,
+     "status": "fault"
+    },
+    {
+     "bucket": "EXECUTION",
+     "evidence": [
+      "entry fill 2 bps against the quote at slot 460346305, filled at slot 460346458 (153 slots later; model 4)",
+      "decision to commit visible 2288 ms, decision to fill 32462 ms (the commit wait is a practice-mode cost: the fill waits for the commitment)",
+      "exit sale 0 bps below the value at the trigger (slot 460352195 -> 460352200)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "SIZING",
+     "evidence": [
+      "size 39647292 lamports, max risk 7929458, entry impact 101 bps",
+      "lost 408486 lamports, within max risk"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "RISK_MANAGEMENT",
+     "evidence": [
+      "stop 8.00%, one standard deviation over the 1200 s hold 0.92% (vol_15m 0.001193 per 20 s observation)"
+     ],
+     "fault": false,
+     "status": "pass"
+    },
+    {
+     "bucket": "LEVERAGE",
+     "evidence": [
+      "spot only: no leverage is used, so none can be at fault"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    },
+    {
+     "bucket": "VARIANCE",
+     "evidence": [
+      "a fault bucket applies"
+     ],
+     "fault": false,
+     "status": "not_applicable"
+    }
+   ],
+   "findings": [],
+   "lesson_request": "req_9d51aba02df83468ef8590fd",
+   "lesson_text_raw": "LESSON: While I was able to execute the trade successfully, I must admit that the high stop loss and risk management parameters may not be ideal for this particular signal, and I should have considered a more conservative approach to minimize potential losses."
+  }
+ ]
+}
