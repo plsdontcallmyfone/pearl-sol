@@ -134,7 +134,7 @@ The owner runs these (sessions here cannot restart services on the boxes):
 
 ```sh
 # on the Mac: copy the token to box 0 without printing it
-scp -i ~/.ssh/<box0 key> ~/.config/cadre/github-org-owner.token root@64.95.12.116:/tmp/agent-dump.token
+scp -i ~/.ssh/lode_devnet0 ~/.config/cadre/github-org-owner.token root@64.95.12.116:/tmp/agent-dump.token
 # on box 0 as root
 install -d -m 700 -o lode -g lode /etc/lode/keys/agent-dump
 install -m 600 -o lode -g lode /tmp/agent-dump.token /etc/lode/keys/agent-dump/github.token && shred -u /tmp/agent-dump.token
