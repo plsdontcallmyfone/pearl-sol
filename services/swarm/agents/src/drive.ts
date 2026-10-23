@@ -13,7 +13,7 @@ import { contractSigningBytes } from "../../trading/src/cadre.ts";
 import { byName, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/catalog.ts";
 import { cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { BudgetRefused, type AgentRunner } from "./agent.ts";
-import { practicePlan } from "./practice.ts";
+import { practicePlan, realSwapsOn } from "./practice.ts";
 
 export class DriveError extends Error {
   status: number;
@@ -77,8 +77,11 @@ export class Drive {
       case "cadre_offer": case "cadre_deliver": case "cadre_decline": return need("offer");
       case "cadre_judge": return a.hire || a.offer ? { ok: true, why: null } : need("hire");
       case "cadre_set_stance": return this.r.trading ? { ok: true, why: null } : { ok: false, why: this.spec.trade ? "the trading engine is not running yet (it starts once the agent is funded and running)" : "the agent's spec has no trade skill (fixed at creation)" };
-      // a practising agent never swaps for real, whoever drives it (the runtime's own engine checks realSwapsOn the same way)
-      case "cadre_trade": return practicePlan(this.spec) ? { ok: false, why: "this agent practice-trades (pretend money at real prices, recorded on the strategies contract); it never swaps for real" } : a.trade ? { ok: true, why: null } : need("trade");
+      // a direct order swaps for real, so it is open exactly where the runtime's own engine swaps for
+      // real (realSwapsOn: a v2 spec with actions.trade, the trade skill and trade.real_swaps). A
+      // practising agent, a legacy spec, or a spec with actions.trade but no trade section (no mint
+      // list, no risk numbers) never swaps for real, whoever drives it.
+      case "cadre_trade": return realSwapsOn(this.spec) ? { ok: true, why: null } : practicePlan(this.spec) ? { ok: false, why: "this agent practice-trades (pretend money at real prices, recorded on the strategies contract); it never swaps for real" } : !a.trade ? need("trade") : { ok: false, why: "real swaps are off for this agent (its spec has no trade section with trade.real_swaps; fixed at creation)" };
       case "cadre_think": return this.spec.budget.rows_per_day > 0 ? { ok: true, why: null } : { ok: false, why: "the spec's budget.rows_per_day is 0" };
       default: return { ok: true, why: null };
     }
@@ -432,10 +435,11 @@ export class Drive {
   private async trade(x: Record<string, any>) {
     const side = x.side === "sell" ? "sell" : "buy";
     const ts = this.spec.trade;
-    const mint = x.mint ? String(x.mint) : ts?.mints?.[0];
-    if (ts && mint && !ts.mints.includes(mint)) throw refuse(`this agent's spec trades only ${ts.mints.join(", ")}`);
+    if (!ts || !realSwapsOn(this.spec)) throw refuse("real swaps are off for this agent (fixed at creation)");
+    const mint = x.mint ? String(x.mint) : ts.mints[0];
+    if (!mint || !ts.mints.includes(mint)) throw refuse(`this agent's spec trades only ${ts.mints.join(", ")}`);
     const maxOrder = BigInt(ts?.max_order_lamports ?? this.spec.limits.trade_lamports);
-    const slip = Math.min(Number(x.slippage_bps) || ts?.slippage_bps || 300, ts?.slippage_bps ?? 2000);
+    const slip = Math.max(1, Math.min(Math.round(Number(x.slippage_bps)) || ts.slippage_bps || 300, ts.slippage_bps ?? 2000));
     const thought = thoughtArg(x.thought_ref);
     if (side === "buy") {
       const sol = decArg(x.sol_in, "sol_in");
