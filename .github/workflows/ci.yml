@@ -13,8 +13,10 @@ on:
 permissions:
   contents: read
 
+# Several sessions push to main: every push to main gets its own run (grouped by commit);
+# only a superseded pull_request run is cancelled.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -76,6 +78,7 @@ jobs:
             token -> target
             token/tests/bridge-litesvm -> target
             token/tests/lightclient-litesvm -> target
+            services/header-relay -> target
       - name: anchor build (localnet program ids from keys/localnet)
         working-directory: token
         run: |
@@ -96,6 +99,9 @@ jobs:
         run: cargo test --locked
       - name: light client LiteSVM
         working-directory: token/tests/lightclient-litesvm
+        run: cargo test --locked
+      - name: header-relay (loads token/target/deploy/lightclient.so)
+        working-directory: services/header-relay
         run: cargo test --locked
 
   node:
@@ -144,9 +150,6 @@ jobs:
             run: cargo test --locked
           - name: pearl-verify-sbf
             dir: crates/pearl-verify-sbf
-            run: cargo test --locked
-          - name: header-relay
-            dir: services/header-relay
             run: cargo test --locked
           - name: contracts
             dir: contracts/tests
