@@ -69,8 +69,8 @@ export interface Decision { decision: "take" | "skip"; said: "take" | "skip"; na
  * The rules decided; the thought can only veto, and only with a reason the numbers support:
  * a SKIP (said before any TAKE) counts when it names a signal that IS a red flag in `v`. A bare
  * SKIP, or one naming no red flag present, is recorded as said and the trade is taken. (Box 0,
- * 2026-10-23: the 1B model answered the old "TAKE or SKIP?" with the bare last word "SKIP" on 7
- * of 7 decisions, so no entry was ever made; that veto carried no information.)
+ * 2026-10-23: the 1B model answered the old "TAKE or SKIP?" with the bare last word "SKIP" on 6
+ * of 6 decisions, so no entry was ever made; that veto carried no information.)
  */
 export function parseDecision(text: string, v: Values = {}): Decision {
   const t = text.toUpperCase();
