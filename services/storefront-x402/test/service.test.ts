@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { Ed25519Program, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction, ComputeBudgetProgram } from "@solana/web3.js";
 import { Clock, FailedTransactionMetadata, LiteSVM } from "litesvm";
 import { LiteSvmChain } from "./litesvm-chain.ts";
-import { Service } from "../src/service.ts";
+import { orphanDrafts, Service } from "../src/service.ts";
 import type { HttpRes } from "../src/service.ts";
 import * as sf from "../src/storefront.ts";
 import { buildNativePayment, decodePaymentHeader, encodePaymentHeader, PaymentError, verifyExact } from "../src/x402.ts";
@@ -484,6 +484,72 @@ test("a refund that failed (RPC 429) is retried by reconcile; records without v 
   assert.equal(svm.getBalance(client.publicKey)!, c0, "client whole again");
   const un = ((await s2.handle({ method: "GET", url: "/payments/unserved", headers: {} })).body as any).payments;
   assert.deepEqual(un.map((p: any) => p.id), ["legacy"]);
+});
+
+/** LiteSVM cannot list program accounts: list the drafts of the ids this test knows about. */
+class ListingChain extends FaultChain {
+  known = new Set<bigint>();
+  async listDrafts(buyer: PublicKey, program: PublicKey) {
+    const out = [];
+    for (const id of this.known) {
+      const address = sf.draftPda(buyer, id, program);
+      const [a] = await this.inner.getAccounts([address]);
+      if (a && a.owner.equals(program) && a.data.length) out.push({ address: address.toBase58(), draftId: id, recipient: client.publicKey.toBase58(), lamports: a.lamports });
+    }
+    return out;
+  }
+}
+
+test("orphanDrafts keeps drafts an unserved payment names, cancels the rest", () => {
+  const d = (id: bigint) => ({ address: `d${id}`, draftId: id, recipient: "r", lamports: 4_109_720n });
+  const payments: Record<string, any> = {
+    inflight: { payer: "p", amount: "1", signature: "s1", at: 0, v: 2, draft: "1" }, // placement running / reconcile decides
+    review: { payer: "p", amount: "1", signature: "s2", at: 0, v: 2, draft: "2", buy_sent: true, review: "check" },
+    served: { payer: "p", amount: "1", signature: "s3", at: 0, v: 2, draft: "3", nonce: "9" },
+    refunded: { payer: "p", amount: "1", signature: "s4", at: 0, v: 2, draft: "4", refund: "sig" },
+    legacy: { payer: "p", amount: "1", signature: "s5", at: 0 }, // crash before v 2: names no draft
+  };
+  assert.deepEqual(orphanDrafts([1n, 2n, 3n, 4n, 5n].map(d), payments).map((x) => x.draftId), [3n, 4n, 5n]);
+  assert.deepEqual(orphanDrafts([d(1n)], { a: { ...payments.inflight, cancelled: true } }).map((x) => x.draftId), [1n], "our own cancel confirmed: not in use");
+});
+
+test("the running service cancels orphaned drafts, never one a placement or reconcile still needs", async () => {
+  const lc = new ListingChain(chain), stateFile = tmpState();
+  lc.rule = (ixs) => (isIx("buy_job")(ixs) ? "hang" : undefined);
+  const svc = new Service({ chain: lc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  // two placements stuck after buy_job was sent: both drafts open, both payments unserved
+  await payThrough(svc, stateFile);
+  const first = Object.values(JSON.parse(readFileSync(stateFile, "utf8")).payments)[0] as any;
+  const s2 = restarted(stateFile, lc as any);
+  await payThrough(s2, stateFile);
+  const recs = JSON.parse(readFileSync(stateFile, "utf8")).payments;
+  const ids = Object.values(recs).map((r: any) => BigInt(r.draft));
+  assert.equal(ids.length, 2);
+  ids.forEach((i) => lc.known.add(i));
+  // the first one becomes what a pre-v-2 crash left: a record that names no draft
+  const st = JSON.parse(readFileSync(stateFile, "utf8"));
+  for (const r of Object.values(st.payments) as any[]) if (r.signature === first.signature) { delete r.v; delete r.draft; delete r.buy_sent; delete r.opened; }
+  writeFileSync(stateFile, JSON.stringify(st));
+  lc.rule = () => undefined;
+  const live = new Service({ chain: lc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  const w0 = svm.getBalance(wallet.publicKey)!;
+  const done = await live.sweepDrafts();
+  assert.equal(done.length, 1, JSON.stringify(done, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
+  assert.ok(done[0].sig);
+  const orphan = sf.draftPda(wallet.publicKey, BigInt(first.draft));
+  const g = svm.getAccount(orphan);
+  assert.ok(!g || g.data.length === 0, "orphan cancelled");
+  assert.ok(svm.getBalance(wallet.publicKey)! > w0, "rent back to the wallet");
+  const other = ids.find((i) => i !== BigInt(first.draft))!;
+  assert.ok(svm.getAccount(sf.draftPda(wallet.publicKey, other))?.data.length, "the unserved payment's draft is kept");
+  assert.deepEqual(await live.sweepDrafts(), [], "nothing left to sweep");
+  // reconcile still sees its own draft and cancels it before refunding
+  const c0 = svm.getBalance(client.publicKey)!;
+  // (the second payment was taken on restarted()'s clock, 10 min ahead: reconcile 20 min ahead)
+  const later = new Service({ chain: lc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, now: () => Date.now() + 1_200_000, log: quiet });
+  const r = await later.reconcile();
+  assert.equal(r.filter((x) => !x.result.startsWith("review")).length, 1);
+  assert.ok(svm.getBalance(client.publicKey)! > c0, "refunded");
 });
 
 test("CU of the service's buy_job tx", () => {

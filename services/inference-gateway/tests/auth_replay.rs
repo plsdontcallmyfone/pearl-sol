@@ -18,9 +18,10 @@ fn signed(sk: &SigningKey, method: &str, path: &str, body: &[u8], ts: u64) -> Ve
 #[test]
 fn a_request_signed_before_a_restart_is_not_replayable() {
     let sk = SigningKey::from_bytes(&[9; 32]);
+    // the gateway boots first (Keys records its boot time), then the client signs
+    let mut before = Keys::default();
     let ts = now_ms();
     let h = signed(&sk, "POST", "/v1/chat/completions", b"{}", ts);
-    let mut before = Keys::default();
     assert_eq!(before.check("POST", "/v1/chat/completions", &h, b"{}", ts).unwrap(), Auth::Wallet(sk.verifying_key().to_bytes()));
     std::thread::sleep(std::time::Duration::from_millis(5));
     // the gateway restarts: its keys are loaded from ledger.json, the replay guard is empty

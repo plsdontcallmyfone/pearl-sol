@@ -36,7 +36,7 @@ Checked 2026-10-23 ~03:40 UTC against the live devnet, read only: cadre-api (`/v
 | 0, lode-devnet-0, 64.95.12.116 (checkout main 8821e75) | cadre-node, cadre-miner, cadre-attester, cadre-relayer, cadre-settle, cadre-header-relay, cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-gateway, cadre-worker, cadre-agents (hosted runtime, 12 agents), cadre-swarm, cadre-desktops (30 agents, 36 desktops), cadre-practice, cadre-agent-dump, caddy, cadre-health.timer. Not running: cadre-trading, cadre-feed-bot |
 | 1, lode-devnet-1, 64.95.13.213 | cadre-node, cadre-miner, cadre-header-relay, caddy |
 | 2, lode-devnet-2, 64.95.12.22 | cadre-node, cadre-miner, cadre-header-relay, caddy |
-| test box, 64.95.13.106 | cadre-api (test), caddy, x-agents (not Cadre); row leftovers by PID: house traders `~/trading`, market desk and judge `~/market-build`, self-hosted agent `~/usertrade` (agent1.pid) |
+| test box, 64.95.13.106 | cadre-api (test-localnet, idle), caddy, x-agents (not Cadre); by PID (run-*.sh, *.pid): house traders `~/trading` and market desk + judge `~/market-build` on main c286391 with `TOWN_PROGRAM` + `SOLANA_RPC` (Solana town, 2026-10-23); self-hosted agent `~/usertrade` (agent1.pid) still on its 2026-10-21 code with no TownNode, so its posts stop at 12000 (open issue 7) |
 
 Solana devnet programs (DEVNET.md): reserve `8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi`, bridge
 `3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN`, storefront `9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu`,
@@ -67,9 +67,20 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
 6. Connect SDK and py: local posts and DMs still need the Solana town builders (item 43).
 7. The self-hosted agent on the test box (`~/usertrade`, tide_ledger, item 33) was set up on
    2026-10-21 as a real-swap trader, before the practice-only rule. Stop it or move it to practice.
+   Its code predates the town move; main would run its trade section as practice (no `trade.real_swaps` in
+   its signed spec), so it was not updated: town posts from it fail from height 12000 until the owner decides.
 8. Strict auth (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) waits for a wallet release (item 28).
 9. Swarm sponsor float is off until the owner sets its key (item 45).
 10. The test box demo stack (scripts/demo.sh) is down since the 2026-10-21 reboot.
+11. (Fixed 2026-10-23, practice-polish, NOT DEPLOYED) Swarm kickoff resumable: swarms.json keeps the
+    kickoff state, the plan and the one planned hire; a stop no longer marks it failed, `run()`
+    resumes it, a lead whose inference top-up is held waits (`waiting_budget`) and the tick resumes
+    it when the hold lifts; the planned hire is sent at most once (a hire from the lead to that
+    member already on the market counts). Devnet swarm 1 ("QA rql2", lead 8B5Tv9...) shows "the
+    runtime stopped before the kickoff"; after a box 0 cadre-agents restart on this code it resumes
+    by itself. Its lead's inference is held by its daily SOL cap until 00:00 UTC and its wallet held
+    0.0165 SOL against a 0.0251 SOL quote for its usual ticket on 2026-10-23, so the kickoff may
+    then wait on a wallet hold until someone sends the lead SOL.
 
 ## Goal (owner, 2026-10-16, ongoing)
 
@@ -1805,6 +1816,27 @@ CLAUDE.md "Who is working on what".
       landed; GET /payments/unserved; src/reconcile.ts for the legacy ones (list, --check, --refund, --cancel-drafts,
       refuses while the service runs). Tests: storefront-x402 20, header-relay 1 + 3 + 8 catchup, explorer 68.
     - Deploy and the refund steps: DEVNET.md "Storefront pending orders (2026-10-23)".
+
+52. JUDGE TOP-UP 400 AND THE STOREFRONT DRAFTS (2026-10-23, "judge top-up + storefront drafts" row).
+    - Cause: cadre-storefront was stopped 04:39:20-04:59:48 UTC to run reconcile.ts --cancel-drafts (the tool did its
+      refunds, then hung). Meanwhile the gateway's top-up called the storefront, got "connection refused", and its
+      catch-all turned that into 400 invalid_request_error, so the judge logged "top-up quote: status code 400".
+      Nothing in the judge's request was wrong (ureq sends the same POST {"rows":2048} as curl; it got 402 again from
+      05:00). Hire 73 then used its 3 tries on gateway 402s and the judge skipped it from then on; it expired at
+      7180 unjudged (buyer refunds from the hire page).
+    - Fixes on main: gateway topup and per-request x402 answer 503 upstream_unavailable + Retry-After 30 when the
+      storefront or the blob store does not answer (tests/upstream_down.rs). Judge (judge.rs): failures before a paid
+      answer (gateway 402/408/429/5xx or transport, failed top-up, node reads, blobs not served yet) are free retries
+      with a 20 s doubling backoff (10 min cap) and do not use the 3 tries, which now count only answers that cost a
+      thought; the top-up error logs the gateway's body.
+    - Test box judge rebuilt (~/market-build, judge.rs from 3143f7e) and restarted 05:42 UTC, pid 1132393: topped up
+      2048 rows; verdicts REJECT 77 (107dc1b6...), REJECT 78 (414e59be...), ACCEPT 79 (c5cd8027...).
+    - Not fixed: hires 76 and 81 got "no VERDICT line" 3 times each. Decoding is greedy, so the 3 tries give the same
+      answer and cost 3 thoughts; the 1B model's format is the problem (judge prompt / parse_answer).
+    - storefront-x402: bounded RPC (30 s requests, polled confirmation <= 90 s, no websocket), reconcile.ts always
+      exits (watchdog), --cancel-drafts runs with the service up and skips drafts an unserved payment names, and the
+      service sweeps orphaned drafts itself every 10 min (test/rpc-bounds.test.ts, 2 new tests in service.test.ts;
+      29 pass). The 6 drafts are still open and orphaned; deploy = DEVNET "Storefront draft sweep".
 
 ## M1 components (SPEC v2, all DONE)
 

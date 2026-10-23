@@ -25,6 +25,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const RUBRIC_VERSION: &str = "cadre-judge-rubric-v1";
 /// Blocks to wait for a sent verdict to land before a hire is looked at again.
 pub const SENT_WAIT_BLOCKS: u64 = 30;
+/// Tries per hire that end after a paid thought (no VERDICT line, the verdict tx refused):
+/// each one costs a thought, so they are capped.
+pub const MAX_PAID_TRIES: u32 = 3;
+
+/// A failure before any paid answer came back (the gateway refused or was down, the judge
+/// could not top up, a blob is not served yet): it costs nothing, so the hire is tried again
+/// later with a backoff instead of using up one of its MAX_PAID_TRIES. On devnet 2026-10-23
+/// the storefront was stopped for 20 minutes, every top-up failed, and hire 73 used its 3
+/// tries on gateway 402s and was never judged after the storefront came back.
+#[derive(Debug)]
+pub struct Retry(pub String);
+impl std::fmt::Display for Retry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Retry {}
+
+/// Gateway statuses that say "not now" rather than "this request is wrong": no prepaid
+/// balance (402), rate limited (429), the gateway or what it depends on down (5xx).
+pub fn retryable_status(status: u16) -> bool {
+    status == 402 || status == 408 || status == 429 || status >= 500
+}
+
+/// Seconds before the next free retry of a hire after `n` failed ones: 20 s doubling, 10 min cap.
+pub fn retry_backoff_secs(n: u32) -> u64 {
+    (20u64 << n.min(5)).min(600)
+}
 /// The published rubric (docs/EVALUATORS.md quotes it verbatim; its sha256 is in every verdict).
 pub const RUBRIC: &str = "Accept only if all of these hold:\n\
 1. The delivery answers the buyer's request and stays on its topic.\n\
@@ -308,6 +336,8 @@ pub struct Judge {
     http: ureq::Agent,
     audience: Option<String>,
     attempts: HashMap<u64, u32>,
+    /// hire -> (free retries so far, not before this unix ms)
+    retry_at: HashMap<u64, (u32, u64)>,
     /// hire -> height a verdict tx was sent at: skipped while that tx lands (no second paid thought)
     sent: HashMap<u64, u64>,
     cursor: u64,
@@ -318,7 +348,7 @@ impl Judge {
     pub fn new(key: SigningKey, rpc: &str, cfg: JudgeConfig) -> Result<Self> {
         let market: [u8; 32] = bs58::decode(&cfg.market).into_vec().context("market address")?.try_into().map_err(|_| anyhow!("market address is not 32 bytes"))?;
         let me = key.verifying_key().to_bytes();
-        Ok(Judge { key, me, node: pearl_node::HttpNode::new(rpc), cfg, market, http: ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(900)).build(), audience: None, attempts: HashMap::new(), sent: HashMap::new(), cursor: 0, topup_day: (0, 0) })
+        Ok(Judge { key, me, node: pearl_node::HttpNode::new(rpc), cfg, market, http: ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(900)).build(), audience: None, attempts: HashMap::new(), retry_at: HashMap::new(), sent: HashMap::new(), cursor: 0, topup_day: (0, 0) })
     }
     pub fn address(&self) -> String {
         b58(&self.me)
@@ -399,6 +429,7 @@ impl Judge {
         let q = self.http.post(&self.gw_url("/v1/balance/topup")).send_json(body.clone());
         let req = match q {
             Err(ureq::Error::Status(402, r)) => r.into_json::<Value>()?["accepts"][0].clone(),
+            Err(ureq::Error::Status(s, r)) => bail!("top-up quote: HTTP {s}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>()),
             Err(e) => bail!("top-up quote: {e}"),
             Ok(r) => bail!("top-up quote: expected 402, got {}", r.status()),
         };
@@ -415,6 +446,7 @@ impl Judge {
                 Ok(())
             }
             Ok(r) => bail!("top-up: HTTP {}", r.status()),
+            Err(ureq::Error::Status(s, r)) => bail!("top-up: HTTP {s}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>()),
             Err(e) => bail!("top-up: {e}"),
         }
     }
@@ -432,8 +464,14 @@ impl Judge {
         }
         let resp = match req.send_string(&body) {
             Ok(r) => r,
-            Err(ureq::Error::Status(s, r)) => bail!("gateway {s}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>()),
-            Err(e) => bail!("gateway: {e}"),
+            Err(ureq::Error::Status(s, r)) => {
+                let msg = format!("gateway {s}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>());
+                if retryable_status(s) {
+                    return Err(Retry(msg).into());
+                }
+                bail!(msg)
+            }
+            Err(e) => return Err(Retry(format!("gateway: {e}")).into()),
         };
         let rid = resp.header("x-cadre-request").unwrap_or("").to_string();
         let v: Value = resp.into_json()?;
@@ -490,7 +528,10 @@ impl Judge {
             if h.status != 1 || h.voted & (1 << i) != 0 || height + 1 > h.deadline || h.provider == self.me {
                 continue;
             }
-            if *self.attempts.get(&id).unwrap_or(&0) >= 3 {
+            if *self.attempts.get(&id).unwrap_or(&0) >= MAX_PAID_TRIES {
+                continue;
+            }
+            if self.retry_at.get(&id).is_some_and(|(_, at)| now_ms() < *at) {
                 continue;
             }
             if let Some(at) = self.sent.get(&id) {
@@ -498,15 +539,24 @@ impl Judge {
                     continue;
                 }
             }
-            *self.attempts.entry(id).or_insert(0) += 1;
             match self.judge_one(id, &h) {
                 Ok(v) => {
+                    self.retry_at.remove(&id);
                     if v.tx_hash.is_some() {
                         self.sent.insert(id, height);
                     }
                     out.push(v)
                 }
-                Err(e) => eprintln!("judge hire {id}: {e:#}"),
+                Err(e) if e.downcast_ref::<Retry>().is_some() => {
+                    let n = self.retry_at.get(&id).map_or(0, |r| r.0);
+                    let wait = retry_backoff_secs(n);
+                    self.retry_at.insert(id, (n + 1, now_ms() + wait * 1000));
+                    eprintln!("judge hire {id}: {e:#} (free retry {} in {wait} s)", n + 1);
+                }
+                Err(e) => {
+                    *self.attempts.entry(id).or_insert(0) += 1;
+                    eprintln!("judge hire {id}: {e:#} (try {} of {MAX_PAID_TRIES})", self.attempts[&id]);
+                }
             }
         }
         self.cursor = lowest_open.unwrap_or(n);
@@ -514,6 +564,15 @@ impl Judge {
     }
 
     fn judge_one(&mut self, id: u64, h: &HireRec) -> Result<JudgeVerdict> {
+        let mut asked = false;
+        match self.judge_inner(id, h, &mut asked) {
+            // nothing was asked of the gateway yet (a node read, a blob, the top-up): free to retry
+            Err(e) if !asked && e.downcast_ref::<Retry>().is_none() => Err(Retry(format!("{e:#}")).into()),
+            r => r,
+        }
+    }
+
+    fn judge_inner(&mut self, id: u64, h: &HireRec, asked: &mut bool) -> Result<JudgeVerdict> {
         let mut oa = method("offer");
         oa.extend_from_slice(&h.offer.to_le_bytes());
         let (title, spec_uri) = decode_offer(&self.query(&oa)?)?;
@@ -525,11 +584,11 @@ impl Judge {
         } else {
             String::new()
         };
-        let request = self.blob_text(&h.request_uri, "request")?.ok_or_else(|| anyhow!("request blob {} not available yet", h.request_uri))?;
+        let request = self.blob_text(&h.request_uri, "request")?.ok_or_else(|| Retry(format!("request blob {} not available yet", h.request_uri)))?;
         // mechanical check first: the delivery blob must hash to the delivered result_hash
         let raw = self.blob(&h.result_uri)?;
         let (accept, reason, thought, answer) = match &raw {
-            None => bail!("delivery blob {} not available yet", h.result_uri),
+            None => return Err(Retry(format!("delivery blob {} not available yet", h.result_uri)).into()),
             Some(b) if *blake3::hash(b).as_bytes() != h.result_hash => (false, "mechanical: the delivery blob does not hash to the delivered result_hash".to_string(), String::new(), String::new()),
             Some(b) => {
                 let s = String::from_utf8_lossy(b).into_owned();
@@ -537,8 +596,18 @@ impl Judge {
                 if delivery.trim().is_empty() {
                     (false, "mechanical: the delivery is empty".to_string(), String::new(), String::new())
                 } else {
-                    self.ensure_rows().unwrap_or_else(|e| eprintln!("judge top-up: {e:#}"));
-                    let (text, rid) = self.think(judge_messages(&title, &promise, &request, &delivery))?;
+                    let topup = self.ensure_rows().map_err(|e| format!("{e:#}"));
+                    if let Err(e) = &topup {
+                        eprintln!("judge top-up: {e}");
+                    }
+                    *asked = true;
+                    let (text, rid) = match self.think(judge_messages(&title, &promise, &request, &delivery)) {
+                        Ok(x) => x,
+                        Err(e) => match (&topup, e.downcast_ref::<Retry>()) {
+                            (Err(t), Some(r)) => return Err(Retry(format!("{r} (top-up: {t})")).into()),
+                            _ => return Err(e),
+                        },
+                    };
                     let Some((acc, why)) = parse_answer(&text) else { bail!("no VERDICT line in the judge's answer (request {rid}); no vote sent") };
                     (acc, why, rid, text)
                 }
@@ -616,6 +685,24 @@ mod tests {
         assert_eq!((h.offer, h.deadline, h.status, h.voted), (3, 160, 1, 0));
         assert_eq!(h.evaluators, vec![[4; 32]]);
         assert_eq!((h.request_uri.as_str(), h.result_uri.as_str()), ("blob:aa", "blob:bb"));
+    }
+
+    #[test]
+    fn free_failures_are_retried_with_a_backoff_paid_ones_are_capped() {
+        // no prepaid balance, rate limit, gateway/storefront down: retry later at no cost
+        for s in [402, 408, 429, 500, 502, 503, 504] {
+            assert!(retryable_status(s), "{s}");
+        }
+        // the request itself is wrong: counts against MAX_PAID_TRIES
+        for s in [400, 401, 403, 404, 413, 422] {
+            assert!(!retryable_status(s), "{s}");
+        }
+        assert_eq!((retry_backoff_secs(0), retry_backoff_secs(1), retry_backoff_secs(2)), (20, 40, 80));
+        assert_eq!(retry_backoff_secs(5), 600);
+        assert_eq!(retry_backoff_secs(40), 600);
+        let e: anyhow::Error = Retry("gateway 402: no prepaid balance".into()).into();
+        assert!(e.downcast_ref::<Retry>().is_some());
+        assert!(anyhow!("no VERDICT line").downcast_ref::<Retry>().is_none());
     }
 
     #[test]

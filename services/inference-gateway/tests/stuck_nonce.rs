@@ -437,6 +437,12 @@ fn a_resumed_round_keeps_its_requests_and_replaces_the_stuck_txs() {
         assert_eq!(tk.pending, vec!["r3"]);
         assert!(tk.posting.is_none());
     }
+    // the background Miner includes the last replacement on its own clock (every 15 ms), so
+    // settle_pass can return while it is still pooled: wait for the pool to drain, bounded
+    let t_drain = std::time::Instant::now();
+    while e.sim.s.lock().unwrap().pool.keys().any(|k| k.0 == me) && t_drain.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(15));
+    }
     {
         let s = e.sim.s.lock().unwrap();
         assert_eq!(s.segments[&standing::segment_id(&t, 1, 0)].0, m_chain);
