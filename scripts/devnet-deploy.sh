@@ -14,7 +14,7 @@
 #   scripts/devnet-deploy.sh harden N          install the systemd sandbox drop-ins (deploy/systemd/hardening) for every cadre-* unit on box N; NO restart (each unit picks them up at its next restart: announced window only)
 #   scripts/devnet-deploy.sh health            install/refresh the health check (scripts/devnet-health.sh + cadre-health.timer) on box 0; runs it once
 #   scripts/devnet-deploy.sh os N              key-only sshd drop-in + unattended-upgrades (no auto reboot) on box N; reloads sshd only after a test login
-#   scripts/devnet-deploy.sh site              ~/cadre-web main -> box 0 (git bundle), npm ci + build for devnet, restart cadre-web
+#   scripts/devnet-deploy.sh site              ~/cadre-web main -> box 0 (git bundle), build in a new release dir, keep old chunks, switch ~/cadre-web-current, restart cadre-web
 # Only committed files travel to the boxes. The deployer key never leaves the Mac.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -169,11 +169,15 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     scpb 0 "$tmp/web.bundle" "lode@$BOX0_IP:web.bundle"
     sshb 0 lode "mkdir -p ~/site-installer/scripts"
     scpb 0 "$tmp/install-miner.sh" "lode@$BOX0_IP:site-installer/scripts/install-miner.sh"
-    sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git checkout -- public/install-miner.sh && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
-      cd ~/cadre-web && git log --oneline -1 && export PATH=\$HOME/.local/node/bin:\$PATH NEXT_TELEMETRY_DISABLED=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-      npm ci --no-audit --no-fund >/dev/null
-      CADRE_SOL=\$HOME/site-installer NEXT_PUBLIC_CADRE_API=https://api.$dash.sslip.io NEXT_PUBLIC_CADRE_NETWORK=devnet NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.$dash.sslip.io npm run build 2>&1 | tail -25"
-    sshb 0 root "systemctl enable --now cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
+    git -C "$ROOT" show main:deploy/site-release.sh > "$tmp/site-release.sh"
+    scpb 0 "$tmp/site-release.sh" "lode@$BOX0_IP:site-installer/site-release.sh"
+    # build a new release next to the live one, keep the old chunks, switch ~/cadre-web-current
+    # (deploy/site-release.sh); the source checkout ~/cadre-web is only pulled, never built in
+    sshb 0 lode "set -e; if [ -d ~/cadre-web/.git ]; then cd ~/cadre-web && git checkout -q -- . && git pull -q --ff-only ~/web.bundle main; else git clone -q -b main ~/web.bundle ~/cadre-web; fi
+      export PATH=\$HOME/.local/node/bin:\$PATH; bash ~/site-installer/site-release.sh https://api.$dash.sslip.io https://explorer.$dash.sslip.io"
+    # the unit runs from ~/cadre-web-current (deploy/systemd/cadre-web.service); refreshed on every deploy
+    sshb 0 root 'cat > /etc/systemd/system/cadre-web.service.new && mv /etc/systemd/system/cadre-web.service.new /etc/systemd/system/cadre-web.service && systemctl daemon-reload' < "$ROOT/deploy/systemd/cadre-web.service"
+    sshb 0 root "systemctl enable cadre-web >/dev/null 2>&1; systemctl restart cadre-web; sleep 3; systemctl is-active cadre-web"
     ;;
   swarm)
     # swarm [keys|unit]: the house swarm on box 0 (services/swarm, cadre-swarm.service). `keys` copies

@@ -7,6 +7,10 @@ fast. The fast path signs over RPC from the runtime, never by clicking in a desk
 thought sets the strategy and a deterministic in-process executor reacts to market events within
 it. Every stage of the latency chain is measured.
 
+**Current rule (2026-10-22): user agents trade PRACTICE only**, pretend money at real Solana prices
+(docs/STRATEGIES.md 6.1). The own-wallet engine of 5.6 runs only for a spec with
+`trade.real_swaps: true`, which no creation flow sets. House traders below are separate.
+
 **Phase 4b, 2026-10-21 (owner scope, through the orchestrator): trading for everyone, on Solana
 only, by sovereign agents.** Trades happen on Solana venues only (PumpSwap now, Jupiter later).
 User agents are their own bosses: a user creates an agent, funds it once, and from then on the

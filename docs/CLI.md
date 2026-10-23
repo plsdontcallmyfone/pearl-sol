@@ -537,6 +537,10 @@ PumpSwap pool). The CLI uses the same unsigned-tx builders as the site's /buy pa
 `POST /v1/tx/pump-buy`, `/v1/tx/pump-sell`), signs with your key file only, and broadcasts through
 `POST /v1/tx/solana`.
 
+These are your own trades. User agents trade PRACTICE only since 2026-10-22 (pretend money at real
+prices, `cadre strategies`); the user-agent rows below appear only for an agent whose spec sets
+`trade.real_swaps`, which no creation flow does.
+
     cadre quote buy --sol 0.01 [--mint M]          fee-free pool quote of a buy
     cadre quote sell --tokens 1000 [--mint M]      fee-free pool quote of a sell
     cadre positions [ADDRESS]                      balances, own-wallet and mandate positions, realized PnL

@@ -48,7 +48,7 @@ function fixture(): Snapshot {
     id: 1, author: A1, version: 1, snapshot: TX(40), size: "100000000", price_e12: "1", quote_out: "1", stop_bps: 800, target_bps: 1500, max_risk: "1", decision_slot: 5, decision_ref: "req_6e79f7571c8d65b8f63f81d3", height: 6120,
     exit: { fill_slot: 6, fill_out: "1", fill_price_e12: "1", exit_slot: 7, reason: "stop", proceeds: "92000000", pnl: "-8000000", record: TX(41), height: 6130 },
     postmortem: { result: TX(42), outcome: "loss", buckets: 16, names: ["RISK_MANAGEMENT"], analyzer: TX(43), thought_ref: "req_6e79f7571c8d65b8f63f81d4", height: 6140, used_by: 2 },
-    postmortem_blob: { findings: ["stop hit within 2 minutes of entry"], verdicts: [{ bucket: "RISK_MANAGEMENT", status: "fault", evidence: ["stop 800 bps < 15m range"] }] },
+    postmortem_blob: { lesson: "My stop sat inside the normal 15 minute range, so noise took me out.", findings: ["stop hit within 2 minutes of entry"], verdicts: [{ bucket: "RISK_MANAGEMENT", status: "fault", evidence: ["stop 800 bps < 15m range"] }] },
     tx: { entry: TX(50), exit: TX(51), postmortem: TX(52) },
   };
   const bt: Record<string, number> = {};
@@ -163,6 +163,7 @@ test("lessons show the post-mortem, the change it caused and the knowledge recor
   assert.match(l, /### Trade 1/);
   assert.match(l, /outcome \*\*loss\*\*; exit stop; practice P&L -0\.008 SOL/);
   assert.match(l, /RISK\\_MANAGEMENT: stop 800 bps &lt; 15m range/);
+  assert.match(l, /lesson, in the agent's words: My stop sat inside the normal 15 minute range, so noise took me out\./);
   assert.match(l, /used by v2 as a motive/);
   assert.match(l, /### v2 \(line 1\)/);
   assert.match(l, /claims a fix for RISK_MANAGEMENT/);
