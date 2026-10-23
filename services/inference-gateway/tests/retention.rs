@@ -2,7 +2,8 @@
 //! 2026-10-22): a request's A/C scratch files are deleted as soon as its round is posted; a dead
 //! ticket's and an orphan's are swept; a paid request that would pass the data cap or the disk
 //! reserve answers 503 insufficient_storage before any rows are reserved; over half the cap the
-//! waiting rounds are posted early instead of waiting for the round period.
+//! waiting rounds are posted early instead of waiting for the round period. Since the audit
+//! follow-up of 2026-10-23 a posted round's data is kept until its PostSegments are final.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,8 +84,9 @@ impl Evaluator for NoEval {
     }
 }
 
-/// MockNode plus the reads settlement makes: the ticket is on the chain, every tx is included.
-struct ChainNode(MockNode);
+/// MockNode plus the reads settlement makes: the ticket is on the chain, and getTx answers the
+/// test's value for every tx (default final; "included" or null to test retention until final).
+struct ChainNode(MockNode, Arc<std::sync::Mutex<Value>>);
 impl pearl_node::NodeApi for ChainNode {
     fn block_template(&self, payout: &[u8; 32]) -> Result<pearl_node::Template> {
         self.0.block_template(payout)
@@ -112,21 +114,28 @@ impl pearl_node::NodeApi for ChainNode {
             "getParams" => Ok(json!({"max_balance_rows": 65_536, "max_job_blocks": 100_000, "target_block_time_ms": 60_000, "min_fee": 1000})),
             "getTicket" => Ok(json!({"standing": {"rounds": 0}, "deadline_height": 1_000_000, "max_blocks": 100_000})),
             "getChainInfo" => Ok(json!({"chain_id": 1, "height": 10})),
-            "getTx" => Ok(json!({"status": "included"})),
+            "getTx" => Ok(self.1.lock().unwrap().clone()),
             _ => self.0.call(method, p),
         }
     }
 }
 
 fn gateway(tag: &str, cfg: impl FnOnce(&mut Config)) -> (Arc<Gateway>, Arc<AtomicUsize>) {
+    let (gw, calls, _) = gateway_tx(tag, json!({"status": "final", "final": true}), cfg);
+    (gw, calls)
+}
+
+/// A gateway whose node answers getTx with the returned handle's value.
+fn gateway_tx(tag: &str, tx: Value, cfg: impl FnOnce(&mut Config)) -> (Arc<Gateway>, Arc<AtomicUsize>, Arc<std::sync::Mutex<Value>>) {
+    let tx = Arc::new(std::sync::Mutex::new(tx));
     let md = model();
     let calls = Arc::new(AtomicUsize::new(0));
     let mut c = Config { work_dir: tmp(tag), ticket_wait: Duration::from_secs(60), poll: Duration::from_millis(10), balance_rows: 1024, max_new_tokens: 32,
         min_free_disk_bytes: 0, ..Config::default() };
     cfg(&mut c);
-    let gw = Arc::new(Gateway::new(Box::new(ChainNode(MockNode::new(1, 0x207fffff))), Box::new(FakeSf), Box::new(FakeWorker(md.clone(), bts(&md), calls.clone())),
+    let gw = Arc::new(Gateway::new(Box::new(ChainNode(MockNode::new(1, 0x207fffff), tx.clone())), Box::new(FakeSf), Box::new(FakeWorker(md.clone(), bts(&md), calls.clone())),
         Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, c, Box::new(|_| {})));
-    (gw, calls)
+    (gw, calls, tx)
 }
 
 fn signed(sk: &SigningKey, method: &str, path: &str, body: &[u8]) -> Vec<(String, String)> {
@@ -231,4 +240,110 @@ fn the_sweep_removes_dead_tickets_data_and_old_orphans_only() {
     assert_eq!(gw.sweep_request_data(), 1);
     assert!(!req_dir(&gw, &id1).exists());
     assert!(orphan.exists(), "a fresh orphan is still within its grace");
+}
+
+/// Audit follow-up 2026-10-23: a posted round's data is kept until its last PostSegments is
+/// final (finality_k blocks), counted in the cap but not in data pressure, then deleted.
+#[test]
+fn a_posted_round_keeps_its_data_until_final() {
+    let bpr = 2048 + 4 * 16 + 2048 + 4 * 8;
+    let (gw, _, tx) = gateway_tx("final", json!({"status": "included", "final": false}), |c| {
+        c.round_every = Duration::from_millis(0);
+        c.max_request_data_bytes = 16 * bpr;
+    });
+    let ticket = topup(&gw);
+    let (_, _, id1) = complete(&gw, 1);
+    let (_, _, id2) = complete(&gw, 2);
+    let (id1, id2) = (id1.unwrap(), id2.unwrap());
+    gw.settle_pass();
+    {
+        let l = gw.ledger.lock().unwrap();
+        assert_eq!(l.tickets[&ticket].rounds.len(), 1, "posted");
+        assert!(l.tickets[&ticket].rounds[0].awaiting_final);
+    }
+    assert!(req_dir(&gw, &id1).join("c/0.i32").exists() && req_dir(&gw, &id2).join("a/1.i8").exists(), "included, not final: kept");
+    assert_eq!(gw.request_data_bytes(), 0, "nothing waits for a round (no data pressure from it)");
+    assert_eq!(gw.final_wait_bytes(), 12 * bpr);
+    let st = gw.stats_json();
+    assert_eq!(st["request_data"]["bytes_awaiting_final"], 12 * bpr);
+    assert_eq!(st["request_data"]["rounds_awaiting_final"], 1);
+    assert_eq!(st["request_data"]["delete_on"], "final");
+    // the sweep keeps it too, and the cap counts it: 12 kept + 6 new rows > 16
+    assert_eq!(gw.sweep_request_data(), 0);
+    let (s3, v3, _) = complete(&gw, 3);
+    assert_eq!(s3, 503, "{v3}");
+    assert_eq!(v3["error"]["type"], "insufficient_storage");
+    // final: the next pass deletes it, and the cap has room again
+    *tx.lock().unwrap() = json!({"status": "final", "final": true});
+    gw.settle_pass();
+    assert!(!req_dir(&gw, &id1).exists() && !req_dir(&gw, &id2).exists(), "final: deleted");
+    assert_eq!(gw.final_wait_bytes(), 0);
+    assert!(!gw.ledger.lock().unwrap().tickets[&ticket].rounds[0].awaiting_final);
+    let st = gw.stats_json();
+    assert_eq!(st["request_data"]["rounds_final"], 1);
+    assert_eq!(st["request_data"]["deleted"], 2);
+    assert_eq!(complete(&gw, 4).0, 200);
+}
+
+/// A reorg that drops a posted round's txs (neither in a block nor pooled on three checks in a
+/// row) puts the round back, and the next pass posts it again from the kept data with the same
+/// requests; one miss alone (a tx read between disconnect and reinsert) changes nothing.
+#[test]
+fn a_round_dropped_by_a_reorg_is_posted_again_from_the_kept_data() {
+    let (gw, _, tx) = gateway_tx("reorg", json!({"status": "included", "final": false}), |c| c.round_every = Duration::from_millis(0));
+    let ticket = topup(&gw);
+    let (_, _, id1) = complete(&gw, 1);
+    let (_, _, id2) = complete(&gw, 2);
+    let (id1, id2) = (id1.unwrap(), id2.unwrap());
+    gw.settle_pass();
+    let first = gw.ledger.lock().unwrap().tickets[&ticket].rounds[0].clone();
+    assert_eq!(first.requests, vec![id1.clone(), id2.clone()]);
+    *tx.lock().unwrap() = Value::Null;
+    gw.finality_pass();
+    *tx.lock().unwrap() = json!({"status": "pending"}); // reinserted into the pool
+    gw.finality_pass();
+    *tx.lock().unwrap() = Value::Null;
+    gw.finality_pass();
+    gw.finality_pass();
+    assert_eq!(gw.ledger.lock().unwrap().tickets[&ticket].rounds.len(), 1, "two misses in a row are not yet a drop");
+    gw.finality_pass();
+    {
+        let l = gw.ledger.lock().unwrap();
+        let t = &l.tickets[&ticket];
+        assert!(t.rounds.is_empty(), "the dropped round left the ledger");
+        assert_eq!(t.pending, vec![id1.clone(), id2.clone()]);
+        assert_eq!(t.posting.as_ref().map(|p| (p.round, p.m, p.requests.clone())), Some((0, first.m, first.requests.clone())));
+        assert_eq!(l.requests[&id1].round, None);
+    }
+    assert!(req_dir(&gw, &id1).exists() && req_dir(&gw, &id2).exists(), "the data is still there");
+    assert_eq!(gw.stats_json()["request_data"]["rounds_reorged"], 1);
+    // the chain answers again: the round is posted again, same rows, then final and deleted
+    *tx.lock().unwrap() = json!({"status": "included", "final": false});
+    gw.settle_pass();
+    {
+        let l = gw.ledger.lock().unwrap();
+        let t = &l.tickets[&ticket];
+        assert_eq!(t.rounds.len(), 1);
+        assert_eq!((t.rounds[0].round, t.rounds[0].m, &t.rounds[0].requests), (0, first.m, &first.requests));
+        assert_eq!(t.rounds[0].txs.len(), first.txs.len(), "every segment sent again");
+        assert!(t.pending.is_empty() && t.posting.is_none());
+    }
+    *tx.lock().unwrap() = json!({"status": "final", "final": true});
+    gw.settle_pass();
+    assert!(!req_dir(&gw, &id1).exists());
+}
+
+/// --delete-on-post: the behaviour before the change (delete as soon as the round is included).
+#[test]
+fn delete_on_post_deletes_at_inclusion() {
+    let (gw, _, _) = gateway_tx("onpost", json!({"status": "included", "final": false}), |c| {
+        c.round_every = Duration::from_millis(0);
+        c.delete_on_post = true;
+    });
+    let ticket = topup(&gw);
+    let (_, _, id1) = complete(&gw, 1);
+    gw.settle_pass();
+    assert!(!gw.ledger.lock().unwrap().tickets[&ticket].rounds[0].awaiting_final);
+    assert!(!req_dir(&gw, &id1.unwrap()).exists());
+    assert_eq!(gw.stats_json()["request_data"]["delete_on"], "posted");
 }

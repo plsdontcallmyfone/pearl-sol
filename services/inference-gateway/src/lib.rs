@@ -1441,7 +1441,8 @@ impl Gateway {
             // collect inclusions in nonce order
             while done < hs.len() {
                 let t = self.node.call("getTx", json!({"tx_hash": hs[done]}))?;
-                if t["status"] == json!("included") {
+                // a tx already K blocks deep reads "final" (getTx), which is included too
+                if t["status"] == json!("included") || t["status"] == json!("final") {
                     done += 1;
                     foreign = 0;
                     continue;

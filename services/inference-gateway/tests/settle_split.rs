@@ -129,7 +129,7 @@ impl pearl_node::NodeApi for ChainNode {
             "getParams" => Ok(json!({"max_balance_rows": 65_536, "max_job_blocks": 100_000, "target_block_time_ms": 60_000, "min_fee": 1000})),
             "getTicket" => Ok(json!({"standing": {"rounds": 0}, "deadline_height": self.deadline, "max_blocks": 100_000})),
             "getChainInfo" => Ok(json!({"chain_id": 1, "height": self.tip.load(Ordering::SeqCst)})),
-            "getTx" => Ok(json!({"status": "included"})),
+            "getTx" => Ok(json!({"status": "final", "final": true})),
             _ => self.node.call(method, p),
         }
     }
