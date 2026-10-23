@@ -1,5 +1,5 @@
 const {Connection,PublicKey,Keypair,Transaction,TransactionInstruction,SystemProgram,ComputeBudgetProgram,LAMPORTS_PER_SOL}=require('@solana/web3.js');
-const {LiteSVM,Clock}=require('litesvm');
+const {LiteSVM,Clock}=require('./litesvm-web3.cjs');
 const BN=require('bn.js');
 const sdk=require('@pump-fun/pump-sdk');
 const {PUMP_SDK}=sdk;

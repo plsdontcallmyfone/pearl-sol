@@ -107,12 +107,11 @@ jobs:
         working-directory: services/header-relay
         run: cargo test --locked
 
-  # macOS: litesvm 0.3.3's linux-x64-gnu napi binding corrupts memory (std::bad_alloc aborts on
-  # Node 22, garbage BN values on Node 24; LiteSVM/litesvm#171, fixed upstream in a later
-  # litesvm). The darwin binding is sound, and the .so/IDL artifact is platform independent.
+  # Linux again since litesvm 1.4.0 (LiteSVM/litesvm#398 clears the x87 state the SBPF JIT left
+  # behind, the cause of 0.3.3's std::bad_alloc / garbage numbers on linux-x64, #171).
   node:
     needs: programs
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
