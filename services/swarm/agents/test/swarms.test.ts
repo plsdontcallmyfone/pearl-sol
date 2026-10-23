@@ -167,6 +167,20 @@ test("refusals: bad signature, bad input, no contract", async () => {
   assert.equal((await post(off.rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "2000" })).body.error.code, "swarms_not_deployed");
 });
 
+// QA 2026-10-23: a 0.06 SOL swarm of 2 was accepted through the API; each member bought its CADRE for
+// fees, then a ticket would pass its cap and its wallet: held for good, it never thought
+test("a member share below fee CADRE + one ticket at the newest quote + fees is refused", async () => {
+  const { rt } = setup();
+  const plan = (t: string) => post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: t });
+  assert.equal((await plan("60000000")).status, 200, "no quote seen yet: no floor");
+  rt.runners.set("quoted", { inf: { quote: { rows: 8192, price: "25308335", at: Date.now() } } } as any);
+  const low = await plan("60000000");
+  assert.equal(low.body.error.code, "bad_swarm");
+  assert.match(low.body.error.message, /at least 34308335 lamports/);
+  assert.equal((await plan("68616670")).status, 200);
+  rt.runners.delete("quoted");
+});
+
 // security review 2026-10-23: plans need no signature, so a flood of them (random creators) used to
 // fill the 64-slot table and refuse every real creator ("busy") for 15 minutes
 test("plan flood: one pending plan per creator, and a full table drops its oldest plan instead of refusing", async () => {

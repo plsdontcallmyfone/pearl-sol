@@ -222,6 +222,15 @@ pub fn begin_verify_job(authority: Pubkey, work: Pubkey, hash: &[u8; 32], block:
     )
 }
 
+/// `begin_verify_job` with a posting `block` on the job block's own branch that is not
+/// canonical: `between` are the Verified ancestors from the job block's parent down to just
+/// above `block` (empty when `block` is the parent).
+pub fn begin_verify_job_via(authority: Pubkey, work: Pubkey, hash: &[u8; 32], block: &[u8; 32], between: &[[u8; 32]], proof_len: u32, tx: Vec<u8>, path: Vec<u8>) -> Instruction {
+    let mut i = begin_verify_job(authority, work, hash, block, proof_len, tx, path);
+    i.accounts.extend(between.iter().map(|h| AccountMeta::new_readonly(header_addr(h), false)));
+    i
+}
+
 pub fn close_header(hash: &[u8; 32], relayer: Pubkey) -> Instruction {
     ix(accounts::CloseHeader { config: config_pda(), canon: canon_pda(), acc: acc_addr(), header: header_addr(hash), relayer }, instruction::CloseHeader {})
 }

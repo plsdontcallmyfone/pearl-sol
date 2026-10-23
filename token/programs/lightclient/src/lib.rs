@@ -646,7 +646,13 @@ pub mod lightclient {
     /// job block. Exactly the checks of `register_job` + the JobCommit branch of
     /// `begin_verify`, but nothing is stored outside the relayer's work account: no
     /// JobCommit rent and no registration tx per posted job; only mined jobs cost anything.
-    pub fn begin_verify_job(ctx: Context<BeginVerifyJob>, proof_len: u32, tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
+    ///
+    /// `block` may also sit on the job block's own branch without being canonical (2026-10-23:
+    /// an equal-work fork at the tip stalled devnet at 7497, because the node's branch mined
+    /// jobs posted in its own fork block and `reorg` needs strictly more work): it is the job
+    /// block's parent, or remaining accounts give the Verified ancestors between them,
+    /// newest first (the parent first, ending just above `block`).
+    pub fn begin_verify_job<'info>(ctx: Context<'_, '_, 'info, 'info, BeginVerifyJob<'info>>, proof_len: u32, tx: Vec<u8>, path: Vec<u8>) -> Result<()> {
         let rec = ctx.accounts.header.load()?;
         require!(rec.status == STATUS_PENDING, LcError::NotPending);
         let h = Header(&rec.header);
@@ -654,7 +660,8 @@ pub mod lightclient {
         let canon = ctx.accounts.canon.load()?;
         let block = ctx.accounts.block.load()?;
         require!(block.height < h.height(), LcError::JobMissing);
-        let pj = prove_job(&ctx.accounts.config, &canon, &block, &h.job_id(), &tx, &path)?;
+        let own = on_own_branch(ctx.remaining_accounts, h.prev_hash(), &block)?;
+        let pj = prove_job_on(&ctx.accounts.config, &canon, &block, own, &h.job_id(), &tx, &path)?;
         let params = JobParams {
             job_key: pj.job_key,
             config: pv::config::MiningConfig::from_bytes(&pj.config).map_err(|_| error!(LcError::JobMissing))?,
@@ -850,8 +857,36 @@ pub struct ProvenJob {
 }
 
 fn prove_job(c: &Config, canon: &Canon, block: &HeaderRecord, job_id: &[u8; 32], tx: &[u8], path: &[u8]) -> Result<ProvenJob> {
+    prove_job_on(c, canon, block, false, job_id, tx, path)
+}
+
+/// Most Verified ancestors `begin_verify_job` walks between a job block and a posting block
+/// on its own (non-canonical) branch.
+pub const MAX_BRANCH_WALK: usize = 16;
+
+/// True when `block` is an ancestor of a job block whose parent is `prev`: `prev` itself, or
+/// reached through the remaining accounts, each a Verified `HeaderRecord` linked by prev hash
+/// (newest first). A wrong or unlinked account is refused, never skipped.
+fn on_own_branch<'info>(rem: &'info [AccountInfo<'info>], prev: [u8; 32], block: &HeaderRecord) -> Result<bool> {
+    let mut p = prev;
+    for ai in rem.iter().take(MAX_BRANCH_WALK) {
+        if p == block.hash {
+            return Ok(true);
+        }
+        require_keys_eq!(*ai.owner, crate::ID, LcError::BadPath);
+        let loader = AccountLoader::<HeaderRecord>::try_from(ai)?;
+        let r = loader.load()?;
+        require!(r.hash == p && r.status == STATUS_VERIFIED && r.height > block.height, LcError::BadPath);
+        p = Header(&r.header).prev_hash();
+    }
+    Ok(p == block.hash)
+}
+
+/// `prove_job`, where `own_branch` also admits a Verified posting block on the job block's own
+/// branch (see `begin_verify_job`).
+fn prove_job_on(c: &Config, canon: &Canon, block: &HeaderRecord, own_branch: bool, job_id: &[u8; 32], tx: &[u8], path: &[u8]) -> Result<ProvenJob> {
     require!(block.status == STATUS_VERIFIED, LcError::NotVerified);
-    require!(block.is_final == 1 || is_canonical(canon, c, &block.hash, block.height), LcError::NotCanonical);
+    require!(block.is_final == 1 || own_branch || is_canonical(canon, c, &block.hash, block.height), LcError::NotCanonical);
     let h = Header(&block.header);
     let th = pv::chaintx::tx_hash(tx);
     pv::chaintx::verify_tx_path(&th, path, &h.tx_root()).map_err(verr)?;

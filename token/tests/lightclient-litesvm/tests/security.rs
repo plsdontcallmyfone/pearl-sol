@@ -170,3 +170,77 @@ fn l2_tip_jump_past_the_canonical_ring_does_not_stall_finality() {
     let (start, count, _) = env.acc();
     assert_eq!(start + count, floor + 1);
 }
+
+/// Devnet stall 2026-10-23 at height 7497: two blocks at 7497 with equal work. The light client
+/// kept the first (canonical), the node chose the other, and the node's next blocks mined jobs
+/// posted in that other 7497. `begin_verify_job` wanted the posting block final or canonical, and
+/// `reorg` wants strictly more work, so no header of the node's branch could ever verify: the
+/// light client stopped for good. Now a Verified posting block on the job block's own branch is
+/// accepted (its parent, or through Verified ancestors), never one on another branch.
+#[test]
+fn equal_work_fork_at_the_tip_does_not_stall_job_blocks() {
+    use rand::{Rng, SeedableRng};
+    let p = params(4);
+    let g = genesis(0x1e100000);
+    let mut env = Env::new(p, &g);
+    let (pk, w) = (env.payer.pubkey(), env.work.pubkey());
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7497);
+    let (m, n) = (64u32, 64u32);
+    let k = LOCAL_K as usize;
+    let a: Vec<i8> = (0..m as usize * k).map(|_| rng.random_range(-64i8..=64)).collect();
+    let b: Vec<i8> = (0..k * n as usize).map(|_| rng.random_range(-64i8..=64)).collect();
+    let poster = [0x52u8; 32];
+    let (job_id, terms) = post_job_ids(&poster, 0, m, n, 5_000, 1_000, 500, 10);
+    let cfg = pearl_job::MiningConfig::localnet_default();
+    let jh = pearl_job::JobHeader { job_pubkey: job_id, terms_hash: terms, created_slot: 0, target_bits: 0 };
+    let prep = pearl_job::PreparedJob::with_computed_commitments(pearl_job::Job { header: jh, config: cfg, m, n, hash_a: [0; 32], hash_b: [0; 32] }, &a, &b).unwrap();
+    let post = PostJob { m, n, config: cfg.to_bytes(), hash_a: prep.job.hash_a, hash_b: prep.job.hash_b, worker_pay: 5_000, protocol_fee: 1_000, deadline: 500, max_blocks: 10, evaluators: vec![[0x41; 32]] };
+    let ptx = tx_bytes(&poster, 0, 2, &post.body());
+    let (root, paths) = tx_root(&[ptx.clone()]);
+
+    let b1 = child(&p, &g, &Work::Fallback, ChildOpts::default());
+    env.relay(&b1).unwrap();
+    // two children of b1 with the same work: x2 reaches the light client first and stays the tip
+    let x2 = child(&p, &b1, &Work::Fallback, ChildOpts { miner: 0x11, ..Default::default() });
+    let y2 = child(&p, &b1, &Work::Fallback, ChildOpts { tx_root: root, miner: 0x22, ..Default::default() });
+    env.relay(&x2).unwrap();
+    env.relay(&y2).unwrap();
+    assert_eq!(env.status(&y2.hash), lightclient::STATUS_VERIFIED);
+    assert_eq!(env.config().tip_hash, x2.hash, "equal work: the first stays the tip");
+    assert!(env.send(&[client::reorg(&y2.hash, &[b1.hash])], &[]).is_err(), "reorg needs strictly more work");
+
+    // y3: a fallback block on y2 (Verified, off the tip); y4 mines the job posted in y2
+    let y3 = child(&p, &y2, &Work::Fallback, ChildOpts::default());
+    env.relay(&y3).unwrap();
+    assert_eq!(env.config().tip_hash, x2.hash);
+    let y4 = child(&p, &y3, &Work::Job(&prep, job_id), ChildOpts::default());
+    env.submit(&y4).unwrap();
+    let plen = y4.proof.len() as u32;
+    // without the ancestors the posting block is neither canonical nor the parent: refused
+    let e = env.send(&[client::begin_verify_job(pk, w, &y4.hash, &y2.hash, plen, ptx.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::NotCanonical))(&e), "{e:?}");
+    // a wrong link is refused, not skipped
+    let e = env.send(&[client::begin_verify_job_via(pk, w, &y4.hash, &y2.hash, &[x2.hash], plen, ptx.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::BadPath))(&e), "{e:?}");
+    // a job block on the other branch cannot bind a job posted in y2
+    let x3 = child(&p, &x2, &Work::Job(&prep, job_id), ChildOpts::default());
+    env.submit(&x3).unwrap();
+    let e = env.send(&[client::begin_verify_job_via(pk, w, &x3.hash, &y2.hash, &[x2.hash], x3.proof.len() as u32, ptx.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::BadPath))(&e), "{e:?}");
+    let e = env.send(&[client::begin_verify_job(pk, w, &x3.hash, &y2.hash, x3.proof.len() as u32, ptx.clone(), paths[0].clone())], &[]).unwrap_err();
+    assert!(custom(lc_code(LcError::NotCanonical))(&e), "{e:?}");
+
+    // the fix: y2 through its Verified descendant y3; y4 verifies, its branch is heavier, reorg
+    env.send(&[client::begin_verify_job_via(pk, w, &y4.hash, &y2.hash, &[y3.hash], plen, ptx.clone(), paths[0].clone())], &[]).unwrap();
+    let mut off = 0;
+    while off < y4.proof.len() {
+        let c = client::WRITE_CHUNK.min(y4.proof.len() - off);
+        env.send(&[client::write_proof(pk, w, off as u32, y4.proof[off..off + c].to_vec())], &[]).unwrap();
+        off += c;
+    }
+    let plan = env.plan(&y4);
+    env.steps(&y4, &plan).unwrap();
+    assert_eq!(env.status(&y4.hash), lightclient::STATUS_VERIFIED);
+    env.send(&[client::reorg(&y4.hash, &[y3.hash, y2.hash, b1.hash])], &[]).unwrap();
+    assert_eq!(env.config().tip_hash, y4.hash);
+}
