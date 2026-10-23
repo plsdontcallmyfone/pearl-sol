@@ -102,19 +102,7 @@ impl Node {
     /// `None` for the genesis block and for a pre-R1 node.
     pub fn block_body(&self, hash: &[u8; 32]) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
         let v = self.rpc.call("getBlock", json!({"hash": hex::encode(hash)}))?;
-        let txs = v["txs"].as_array().cloned().unwrap_or_default();
-        let mut txs = txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect::<Result<Vec<_>>>()?;
-        // A block with contract txs has a contracts record leaf between the txs and the
-        // receipt (docs/CONTRACTS.md). It is appended here so tx_root paths stay right; it
-        // never parses as a tx (version byte 0x02), so tx scans skip it.
-        if let Some(r) = v["contracts"]["record"].as_str() {
-            txs.push(hex::decode(r)?);
-        }
-        let cb = match v["coinbase"]["record"].as_str() {
-            Some(r) => Some(hex::decode(r)?),
-            None => None,
-        };
-        Ok((txs, cb))
+        block_body_of(&v).with_context(|| format!("block {}", hex::encode(hash)))
     }
 
     pub fn withdrawal_proof(&self, nonce: u64) -> Result<Value> {
@@ -125,6 +113,39 @@ impl Node {
     pub fn withdrawal_proof_at(&self, nonce: u64, at_height: u64) -> Result<Value> {
         self.rpc.call("getWithdrawalProof", json!({"nonce": nonce, "at_height": at_height}))
     }
+}
+
+/// The tx_root leaves of a getBlock reply, in the chain's order (chain/agent-types
+/// block.rs, tests/uncle_body.rs): the txs, then the contracts record when the block has
+/// contract txs (docs/CONTRACTS.md), then one record per uncle (docs/SPEED.md 3.3), and the
+/// coinbase receipt last (returned apart). The records are appended to the tx list so the
+/// tx_root paths stay right; none parses as a tx (version bytes 0x02 / 0x03), so tx scans
+/// skip them. When the reply carries `header_fields.tx_root`, the rebuilt root must match
+/// it: a wrong leaf set would make every begin_verify_job / finalize proof against the block
+/// fail on Solana (TxPath, 6016) and be resent forever, so it is refused here instead.
+pub fn block_body_of(v: &Value) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
+    let txs = v["txs"].as_array().cloned().unwrap_or_default();
+    let mut txs = txs.iter().map(|t| b64d(t["tx"].as_str().context("tx b64")?)).collect::<Result<Vec<_>>>()?;
+    if let Some(r) = v["contracts"]["record"].as_str() {
+        txs.push(hex::decode(r)?);
+    }
+    if let Some(us) = v["uncles"].as_array() {
+        for (i, u) in us.iter().enumerate() {
+            let r = u["record"].as_str().with_context(|| format!("uncle {i} has no record"))?;
+            txs.push(hex::decode(r)?);
+        }
+    }
+    let cb = match v["coinbase"]["record"].as_str() {
+        Some(r) => Some(hex::decode(r)?),
+        None => None,
+    };
+    if let Some(want) = v["header_fields"]["tx_root"].as_str() {
+        let (root, _) = tx_root_paths(&txs, cb.as_deref());
+        if hex::encode(root) != want.to_ascii_lowercase() {
+            return Err(anyhow!("tx_root mismatch: rebuilt {} from {} leaves, header says {want}", hex::encode(root), txs.len() + cb.is_some() as usize));
+        }
+    }
+    Ok((txs, cb))
 }
 
 /// chain/agent-types/src/merkle.rs: root and per-leaf paths (33-byte entries) over the
