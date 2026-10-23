@@ -85,8 +85,11 @@ jobs:
           solana --version && anchor --version
           mkdir -p target/deploy
           for p in bridge lightclient mandate reserve storefront town; do cp ../keys/localnet/$p-keypair.json target/deploy/; done
-          anchor build
+          set -o pipefail
+          anchor build 2>&1 | tee anchor-build.log
           ls -l target/deploy/*.so target/idl/*.json
+      - name: SBF stack frames (a function flagged over 4096 bytes must not be linked)
+        run: scripts/ci/sbf-stack.sh token/anchor-build.log token/target
       - uses: actions/upload-artifact@v7
         with:
           name: token-programs
