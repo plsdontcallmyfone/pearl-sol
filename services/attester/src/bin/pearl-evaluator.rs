@@ -73,7 +73,9 @@ struct Args {
     solana_rpc: String,
     #[arg(long, default_value_t = 2048)]
     topup_rows: u64,
-    #[arg(long, default_value_t = 400)]
+    /// Top up below this many free rows on one ticket: a judge request (prompt + judge_max_tokens) is
+    /// about 520 rows on devnet, reserved on a single ticket, so 400 let it run dry (2026-10-23).
+    #[arg(long, default_value_t = 1024)]
     min_rows: u64,
     /// Daily cap on the judge's own top-up spend (lamports).
     #[arg(long, default_value_t = 150_000_000)]
