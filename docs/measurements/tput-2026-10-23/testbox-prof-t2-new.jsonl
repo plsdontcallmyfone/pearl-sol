@@ -1,0 +1,9 @@
+{"label": "t2-new", "shape": "p16", "rows": 16, "threads": 2, "ctx": 300, "step_s": 0.5166, "min_s": 0.5114, "rows_per_s": 30.97, "cpus": 8, "loadavg_1m": 2.05029296875}
+{"label": "t2-new", "shape": "p32", "rows": 32, "threads": 2, "ctx": 300, "step_s": 0.7709, "min_s": 0.7631, "rows_per_s": 41.51, "cpus": 8, "loadavg_1m": 2.05029296875}
+{"label": "t2-new", "shape": "p64", "rows": 64, "threads": 2, "ctx": 300, "step_s": 1.6472, "min_s": 1.639, "rows_per_s": 38.85, "cpus": 8, "loadavg_1m": 2.0419921875}
+{"label": "t2-new", "shape": "p128", "rows": 128, "threads": 2, "ctx": 300, "step_s": 3.4284, "min_s": 3.4183, "rows_per_s": 37.33, "cpus": 8, "loadavg_1m": 1.9619140625}
+{"label": "t2-new", "shape": "d1", "rows": 1, "threads": 2, "ctx": 300, "step_s": 0.1586, "min_s": 0.158, "rows_per_s": 6.3, "cpus": 8, "loadavg_1m": 2.04833984375}
+{"label": "t2-new", "shape": "d2", "rows": 2, "threads": 2, "ctx": 300, "step_s": 0.3019, "min_s": 0.2973, "rows_per_s": 6.63, "cpus": 8, "loadavg_1m": 2.10791015625}
+{"label": "t2-new", "shape": "d4", "rows": 4, "threads": 2, "ctx": 300, "step_s": 0.4547, "min_s": 0.4543, "rows_per_s": 8.8, "cpus": 8, "loadavg_1m": 2.05908203125}
+{"label": "t2-new", "shape": "d8", "rows": 8, "threads": 2, "ctx": 300, "step_s": 0.6178, "min_s": 0.6137, "rows_per_s": 12.95, "cpus": 8, "loadavg_1m": 2.01513671875}
+{"label": "t2-new", "shape": "m8", "rows": 71, "threads": 2, "ctx": 300, "step_s": 1.5491, "min_s": 1.5412, "rows_per_s": 45.83, "cpus": 8, "loadavg_1m": 1.91650390625}

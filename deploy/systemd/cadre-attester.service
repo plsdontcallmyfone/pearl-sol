@@ -6,6 +6,9 @@ After=cadre-node.service
 User=lode
 WorkingDirectory=/var/lib/lode
 ExecStart=/opt/lode/bin/pearl-attester --keypair /etc/lode/keys/attester.json --port 10661 --rpc http://127.0.0.1:10630 --mode node
+# below the paid inference worker: its ticket-close replays (480-565 s each, 1.5 cores) are not latency
+# bound, the worker's answers are (docs/SPEED.md 8); the miner already runs at Nice=10
+Nice=10
 Restart=always
 RestartSec=5
 

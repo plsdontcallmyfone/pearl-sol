@@ -1,0 +1,21 @@
+# torch 2.5.1+cpu torch._int_mm(v [m x 2048] int8, w [n x 2048]^T int8) on the test box (Xeon Gold 6142, the devnet box 0 CPU), 2 threads, idle.
+# exact = equal to a binary64 reference product. Script: scratchpad mmbench.py (loop of 30 calls, 5 for n 128256).
+n m ms exact
+8192 1 0.58 True
+8192 2 2.21 True
+8192 4 2.30 True
+8192 8 2.63 True
+8192 16 3.32 True
+8192 17 3.42 True
+8192 24 4.07 True
+8192 32 5.21 True
+8192 64 7.94 True
+128256 1 15.10 True
+128256 2 40.66 True
+128256 4 43.49 True
+128256 8 47.65 True
+128256 16 63.76 True
+128256 17 61.99 True
+128256 24 71.07 True
+128256 32 86.87 True
+128256 64 131.89 True
