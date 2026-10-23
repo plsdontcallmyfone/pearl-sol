@@ -101,6 +101,29 @@ test("receipts and Solana signatures named in text are found", () => {
   assert.deepEqual(solSigs(`receipt sol:${SIG} x`), [SIG]);
 });
 
+test("every relative link in the rendered dump points at a file the dump writes (a folder link needs a file in it)", () => {
+  // plus a quiet agent: a profile and nothing else, so it has no journal folder
+  const fx = fixture();
+  fx.agents.push({ ...fx.agents[1], account: "11111111111111111111111111111112", handle: "quiet_owl", name: "Quiet Owl" });
+  const files = render(atCutoff(fx, fx.cutoff), L).files;
+  assert.ok(files.has("agents/quiet_owl/README.md") && ![...files.keys()].some((k) => k.startsWith("agents/quiet_owl/journal/")));
+  const dirOf = (p: string) => p.split("/").slice(0, -1);
+  const broken: string[] = [];
+  for (const [p, body] of files) {
+    if (!p.endsWith(".md")) continue;
+    for (const m of body.matchAll(/\]\(([^)\s]+)\)/g)) {
+      const u = m[1].split("#")[0];
+      if (!u || /^[a-z]+:/.test(u)) continue;
+      const parts = dirOf(p);
+      for (const seg of u.split("/")) if (seg === "..") parts.pop(); else if (seg && seg !== ".") parts.push(seg);
+      const t = parts.join("/");
+      const ok = u.endsWith("/") ? [...files.keys()].some((k) => k.startsWith(t + "/")) : files.has(t);
+      if (!ok) broken.push(`${p} -> ${m[1]}`);
+    }
+  }
+  assert.deepEqual(broken, []);
+});
+
 test("folders use handles and break collisions deterministically", () => {
   const f = folderNames([{ account: A1, handle: "same" } as any, { account: A2, handle: "same" } as any, { account: BUYER, handle: null } as any]);
   assert.equal(f.get(A1), `same_${A1.slice(0, 6)}`);
