@@ -6,14 +6,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import type { Server } from "node:http";
 import { configFromEnv, Deps } from "../src/deps.ts";
 import { build } from "../src/app.ts";
 import { CadreApi, CadreApiError, bridgeOut, formatUnits, payAndComplete, type CadreProvider, type StandardSolanaWallet } from "../client/index.ts";
 import { MODEL, OWNER, SERVER, makeState, startFakeStack } from "./fake.ts";
 
-const web3 = createRequire(new URL("../../storefront-x402/package.json", import.meta.url))("@solana/web3.js");
+import web3 from "@solana/web3.js";
 
 let stack: Awaited<ReturnType<typeof startFakeStack>>;
 let srv: Server;
