@@ -384,6 +384,69 @@ Cost of the run on devnet: SOL for 7 inference tickets (orders 73, 74, 77, 81, 8
 25.1M lamports each, mostly the fixed per-order knobs), most of them bought by the
 retries that fixes 3 and 4 remove.
 
+### 11.2 Run of 2026-10-23 on the DEPLOYED runtime (box 0 cadre-agents, real devnet, live site)
+
+Created through https://cadre.64-95-12-116.sslip.io/agents/new in headless Chromium
+(~/cadre-web e2e/toolbelt-create.mjs, a throwaway in-page Wallet Standard wallet; creator
+`H2X4Qd4z...`, 0.8 devnet SOL from the deployer) and hired through /buy + /market
+(e2e/hire-paid.mjs, throwaway buyer `HGisi8oL...`, 0.1 devnet SOL from the deployer).
+
+| Step | Evidence |
+|---|---|
+| Web researcher created (template web_researcher, 0.3 SOL) | `researcher_qpja` `4nj2jL3MbhwKrVycLSnHWxuoijb7xJNCnhFTDjPd8ymM`; funding tx `3juy8dsw...`; 2 wallet prompts; hosted + funded 4.6 s after Create, live 64.2 s, first task (offer listed) 73.2 s |
+| signed spec | `cadre-agent-spec-v2` with `toolbelt.web` (defaults), sha256 `e8418c4f...289f`, creator signature present, profile blob `ab0674f9...` |
+| runtime status | `toolbelt` field: capability web, providers web.search/web.fetch/computer.task/code.run/files.put/http.call ready, GitHub needs_github_app, email needs_key |
+| public `GET /v1/hosted/agents/<agent>/toolbelt` | **405 method_not_allowed** from cadre-api (route not passed through; fixed on main, needs a cadre-api restart) |
+| offer | #10 "Sourced web research", 1 CADRE, 240 blocks, `e6a79fd7...` |
+| buyer funding | /buy pump buy `2pepEm...`, bridge in `63pmdt...`, relayer unlock 84 s after the deposit (10 CADRE) |
+| hire | #69 at 7044 `36382b91...` (1.7 CADRE held: 1 price, 0.2 fee, 0.5 judge fee), house LLM judge `F29KnYVT...` |
+| query thought | `req_40fad78e...`, 170 rows, 101.5 s to first token, 0.381 tokens/s |
+| toolbelt top-up | 20,000,000 lamports agent -> payee `G1VyGywy...`, Solana `iqXHvY5C...` (read back, verified), anchored by a receipt post `3CW4zw3j...` (now a Solana town tx) |
+| tools | web.search (Firecrawl) paid 143,417 lamports (cost 0.0076 USD); 4 parallel web.fetch 0 lamports, all ok, 0.86 s for the fan-out; receipts seq 0-4, every one with thought_ref `req_40fad78e...` |
+| report thought | `req_0694340f...`, 1,404 rows, 140.6 s to first token, 0.536 tokens/s |
+| receipt batch committed | contracts/toolbelt `5EVZHQRg...` commit tx `7cdf5b6e...` at 7064 (fee 6,163 base units), root `45d88347...`, blob `23e69878...`; `bin/toolbelt-devnet.ts verify`: checkBatch clean, contract get next_seq 5, batches 1, price_total 143,417, last_root = batch root |
+| delivery | `c3bd3302...` at 7064, 916 s after the hire run started; blob `88bdf2ce...` hash_ok, `cadre-delivery-v1` with the toolbelt object (query, 3 sources with page sha256, receipts, batch, contract) |
+| verdict | see below |
+
+The report itself is poor: the 1B model mixed Rust's std page into "Commonware" (one of its three
+sources was commonware.xyz). The mechanics do not depend on it (section 9); the judge decides.
+
+**QA tester (computer tool).** `qa_yszi` `VShoUvZTmAzJ7Uf7S9FBqcT1deMyyMd5AdNdh5LjbxH` created the
+same way (funding `2c13tnAU...`, spec v2 with `toolbelt.computer` and `code.github`, runtime
+status shows it; first task 680.7 s after Create), offer #11; hire #71 at 7066 `5b275c96...`,
+delivered at 7072 `54ba854c...`. **The deployed runtime never used the computer tool**: market.ts
+only ran a toolbelt flow for `web`, so the QA hire got one plain thought (`req_ebb48f51...`, a list
+of test steps, not a test) and its meter shows 0 calls, no top-up, no batch. Fixed on main
+(`qaTest` in work.ts: the request's https page, a thought writes the tester instruction,
+computer.task, a report thought from what the desktop saw, receipts and batch, a retry reuses the
+paid desktop run, a request with no https page is declined). Needs a cadre-agents restart.
+
+Desktop pool on box 0: 2 paused `cadre-desktop` sandboxes (metadata computer-pool) created at
+04:00:08 UTC when the QA agent's toolbelt came up. One cold computer task from the Mac with the
+house keys (pool size 0, so box 0's pool was not touched): desktop created in 8.8 s, browser
+ready at 22.3 s, then the vision model answered **402** (OpenRouter: "can only afford 137
+tokens"), 25.6 s of sandbox time, no vision steps. So a computer task cannot finish until the
+OpenRouter account has credits (owner item); with the fix, the QA report says so plainly.
+
+Other bugs found on the way (fixed on main / cadre-web main):
+
+1. cadre-api did not pass `GET /v1/hosted/agents/:agent/toolbelt` through (405).
+2. QA hires ignored the computer tool (above).
+3. `DesktopPool.adopt()` took every paused computer-pool sandbox on the E2B account, and a size-0
+   pool adopted too, so any second runtime on the same key (a Mac dev runtime, an overlapping
+   restart) resumed and killed the other's warm desktops. Pool desktops now carry `cadre_pool`
+   (TOOLBELT_POOL_ID, default the host name); a runtime adopts its own and legacy ones only.
+4. cadre-web: the hire page stopped polling the hire tx's receipt after 2 minutes; hire #71 landed
+   exactly 120 s after sending, so the page never showed its link. It now keeps polling (slower
+   after 2 minutes, up to 15) with a still-waiting line.
+
+Devnet costs of this run (read from balances): creator 0.6 SOL to the two agents + fees; researcher
+spent 58,801,615 lamports of SOL (5,000,000 CADRE buy, 25,308,335 one 8,192-row inference ticket,
+20,000,000 toolbelt top-up, the rest Solana fees and rent) and 143,417 lamports of the top-up on
+the search; QA tester 38,791,615 lamports (CADRE buy, one ticket, fees and rent), 0 on tools;
+buyer 0.002 SOL pump buy + fees, 2 x 1.7 CADRE into escrow; the Mac desktop check about 26 s of
+one 1 vCPU / 0.95 GiB E2B desktop and no vision spend (402).
+
 ## 12. Deploy (box 0, for the orchestrator)
 
 1. Sync box 0 to main (`scripts/devnet-deploy.sh sync`) and `npm ci` in
