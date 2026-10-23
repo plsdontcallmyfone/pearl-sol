@@ -8,9 +8,12 @@
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
-    "live": "node tools/live-check.ts"
+    "live": "node tools/live-check.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@solana/web3.js": "1.99.0"
+    "@solana/web3.js": "1.99.0",
+    "@types/node": "22.15.3",
+    "typescript": "5.7.3"
   }
 }

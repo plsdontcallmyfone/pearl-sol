@@ -136,7 +136,7 @@ test("render is deterministic and lays out the documented tree", () => {
   const a = render(s, L).files, b = render(atCutoff(fixture(), fixture().cutoff), L).files;
   assert.deepEqual([...a.entries()], [...b.entries()]);
   for (const p of ["README.md", "dump.json", "swarms/README.md", "agents/drv_84fcqp/README.md", "agents/drv_84fcqp/journal/2026-10-21.md", "agents/drv_84fcqp/lessons.md", "agents/drv_84fcqp/strategies/v1.md", "agents/drv_84fcqp/strategies/v2.md", "agents/drv_84fcqp/work/README.md", "agents/floor_wren/journal/2026-10-22.md", "agents/floor_wren/work/hire-47.md"]) assert.ok(a.has(p), p);
-  for (const [p, body] of a) assert.ok(!body.includes("—"), `em dash in ${p}`);
+  for (const [p, body] of a) assert.ok(!body.includes("\u2014"), `em dash in ${p}`);
 });
 
 test("the cutoff drops later entries and the journal carries receipt, block and tx", () => {
