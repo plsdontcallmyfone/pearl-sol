@@ -136,6 +136,7 @@ OPENROUTER_CREDITS_URL="${OPENROUTER_CREDITS_URL:-https://openrouter.ai/api/v1/c
 DESKTOPS_ENV="${DESKTOPS_ENV:-/etc/lode/desktops.env}"
 GATEWAY_STATS_URL="${GATEWAY_STATS_URL:-http://127.0.0.1:10664/v1/stats}"
 MAX_REQUEST_DATA_GB="${MAX_REQUEST_DATA_GB:-16}"
+MIN_NODE_BLOB_HEADROOM_GB="${MIN_NODE_BLOB_HEADROOM_GB:-2}"      # WARN under this node blob RPC headroom (gateway /v1/stats)
 AGENTS_PAY_MAX="${AGENTS_PAY_MAX:-20}"              # inference_hold + 402 lines per window before WARN
 PRACTICE_THOUGHT_MAX_AGE="${PRACTICE_THOUGHT_MAX_AGE:-2h}"
 
@@ -181,20 +182,28 @@ print("%.2f" % (float(d["total_credits"]) - float(d["total_usage"])))' 2>/dev/nu
   unset key
 fi
 
-# 9c. gateway request data: backlog over MAX_REQUEST_DATA_GB, or refused_storage rising since the last run
+# 9c. gateway request data: backlog over MAX_REQUEST_DATA_GB, refused_storage or refused_node_storage rising
+#     since the last run, or the node blob store's RPC headroom (as the gateway reads it) under MIN_NODE_BLOB_HEADROOM_GB
 if unit_on cadre-gateway; then
   gs="$(curl -s -m 10 "$GATEWAY_STATS_URL" | python3 -c '
 import json, sys
 r = json.load(sys.stdin)["request_data"]
-print(int(r["bytes_waiting"]), int(r.get("refused_storage", 0)), int(r.get("refused_node_storage", 0)))' 2>/dev/null)"
+h = r.get("node_blob_headroom_bytes")
+print(int(r["bytes_waiting"]), int(r.get("refused_storage", 0)), int(r.get("refused_node_storage", 0)), -1 if h is None else int(h))' 2>/dev/null)"
   if [[ -z $gs ]]; then emit WARN gateway_data "gateway stats did not answer"; else
-    read -r waiting refused refused_node <<<"$gs"
+    read -r waiting refused refused_node headroom <<<"$gs"
     prev="$(cat "$STATE_DIR/gateway_refused" 2>/dev/null || echo "$refused $refused_node")"; read -r p1 p2 <<<"$prev"
     echo "$refused $refused_node" > "$STATE_DIR/gateway_refused"
     lvl=OK; (( waiting > MAX_REQUEST_DATA_GB * 1024 * 1024 * 1024 )) && lvl=WARN
     (( refused > p1 || refused_node > p2 )) && lvl=WARN
     emit "$lvl" gateway_data "$(python3 -c "print(f'{$waiting/2**30:.1f}')") GB waiting (max $MAX_REQUEST_DATA_GB), refused_storage $refused (was $p1), refused_node_storage $refused_node (was $p2)"
   fi
+    # node blob store headroom (getBlobStats rpc_headroom_bytes via the gateway; -1 = the gateway could not read it)
+    if (( headroom < 0 )); then emit WARN node_blobs "gateway reports no node blob headroom (getBlobStats unreadable)"; else
+      lvl=OK; (( headroom < MIN_NODE_BLOB_HEADROOM_GB * 1024 * 1024 * 1024 )) && lvl=WARN
+      (( refused_node > p2 )) && lvl=WARN
+      emit "$lvl" node_blobs "$(python3 -c "print(f'{$headroom/2**30:.2f}')") GB node blob headroom (warn under $MIN_NODE_BLOB_HEADROOM_GB), refused_node_storage $refused_node (was $p2)"
+    fi
 fi
 
 # 9d. hosted agents: repeated inference holds and 402s (paid inference refused)

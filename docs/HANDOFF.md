@@ -1888,6 +1888,31 @@ CLAUDE.md "Who is working on what".
       lesson_model, lesson_guard. Fixtures: test/fixtures/lessons.json; strategies 18/18, agents practice 12/12.
     - Deploy: test box judge rebuilt + restarted (see the row); box 0: sync main, restart cadre-practice and
       cadre-agents (DEVNET steps in the row's report).
+55. BOX 0 NODE BLOB STORE FULL AGAIN; PAID INFERENCE REFUSED (2026-10-23, "node blob store full" row; box 0 read only).
+    - Measured 10:07-10:27 UTC: gateway /v1/stats request_data node_blob_headroom_bytes 685,020,117 then 630,431,438,
+      refused_node_storage 372 then 468 (rising). Node getBlobStats: total 37,314,979,883 of max_total_bytes
+      40,000,000,000 (node.json `blobs`, node-local), rpc_put_limit 38 GB (rpc_reserve 2 GB), segment_a 35.43 GB in
+      27,120 blobs, ALL kept, 0 prunable; model 1.78 GB pinned. Disk 145 GB, 77 used, 68 free; node-blobs dir 35 GB.
+    - What limits it: the node-local quota only (not disk, not a consensus param). What frees A: SPEC 4.5 retention,
+      node prune pass (getBlobStats last_prune_height follows the tip). keep_replay is true on box 0, so a live ticket's
+      segment A is kept until the ticket's deadline + W (720 blocks); 73 of the 100 tickets in the gateway journal are
+      Open, deadlines 14,737 to 17,582 at tip 7,824 (about 6,900 to 9,760 blocks ahead, 2.5 to 3.5 days at the measured
+      30.8 s a block, 7783 -> 7824 in 21 min). So almost nothing is prunable until those tickets close.
+    - Why now: the 2026-10-22 sizing (SPEC 4.5) assumed 20 live balances and about 2,200 rows an hour. Posted rows from
+      the gateway journal: 126,348 rows in 222 rounds over 12 h (about 10,500 rows an hour, about 2.4 GB of A an hour at
+      231,424 bytes per row), 172,384 rows over 24 h; the last hour 4,724 rows (throttled by the refusals). Item 47
+      (top-ups buy the largest ticket first, up to 8192 rows) and item 53 (worker throughput) raised both the number of
+      live tickets and the rows. Not a code bug: retention works as specified; the live-ticket replay hold no longer fits
+      the 40 GB quota at this traffic.
+    - Gateway refusal: node_storage_refusal compares (waiting rows + request rows) x a_bytes_per_row (144 x 2048 =
+      294,912, an upper bound; real blobs are 231,424 per row plus padding to the round period) with the headroom, so at
+      5.0 GB waiting it refuses nearly every paid request while rounds keep posting.
+    - Health: scripts/devnet-health.sh 9c now emits `node_blobs` (WARN under MIN_NODE_BLOB_HEADROOM_GB, default 2, or
+      when refused_node_storage rose since the last run, or when the gateway cannot read getBlobStats).
+    - Proposed fixes (NOT applied; headroom was above the 300 MB apply threshold): see the row's report. Option A: raise
+      box 0 `blobs.max_total_bytes` 40e9 -> 60e9 (backup node.json, restart cadre-node only); about 19.7 GB more RPC room (5% reserve), about 8 h at the
+      12 h rate. Option B (policy decision): box 0 `keep_replay` false like boxes 1-2, frees the A of every live ticket
+      outside the mining rule; costs fraud-proof localization data for live tickets (honest replays read no A).
 
 ## M1 components (SPEC v2, all DONE)
 
