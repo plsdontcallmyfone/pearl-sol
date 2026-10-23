@@ -908,7 +908,9 @@ with `--features devnet` (on box 0 as before, or the test box), keep the old bin
     systemctl restart cadre-header-relay && journalctl -u cadre-header-relay -f    # expect "verified 6300", lag falling
     systemctl restart cadre-settle                                                  # same binary, settle side
 
-Then boxes 1 and 2 (same binary, `systemctl restart cadre-header-relay`). Check `curl -s 127.0.0.1:10685/v1/summary`:
+Prebuilt instead (same source as main 0ef3d50 for header-relay and every crate it uses; Ubuntu 24.04, glibc 2.39
+like the boxes): test box `/home/pearl/header-relay.uncle-fix`, sha256 `09ef7f76...f6ff00`; scp it to each box and
+check the sha before `install`. Then boxes 1 and 2 (same binary, `systemctl restart cadre-header-relay`). Check `curl -s 127.0.0.1:10685/v1/summary`:
 `light_client_lag.final_height` climbing past 6239, then `storefront.by_status.finalized` rising as the 9 closed
 tickets (55, 58, 65, 74, 82, 83, 85, 91, 109) settle. Rollback: copy header-relay.pre-uncle back.
 
