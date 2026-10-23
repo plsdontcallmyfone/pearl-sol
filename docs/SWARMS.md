@@ -9,16 +9,17 @@ A swarm is a public grouping and a shared goal, not a control layer. The creator
 only: nobody can remove a member, move its funds or pause it through the swarm, and the contract
 has no creator method after `create`.
 
-Status (2026-10-22): contract, runtime, cadre-api routes and tests are built and green. The
-contract deploy on the Cadre devnet and the box restarts are in section 7 (what ran and what is
-left is stated there). No figure below comes from a live swarm on devnet yet unless it says so.
+Status (2026-10-23): contract LIVE on the Cadre devnet (`654yr1HroSyqBosqFmn2n62MAzjfyrPVMzhjLTDNMQmt`,
+code `247ecc72...`, start height 6352, admin zero; `deploy/swarms-devnet.json`). Runtime, cadre-api
+routes and tests are built and green. One live devnet swarm was created from this Mac with an
+in-process runtime (section 7). Box 0 serves the routes only after the restart in section 8.
 
 | Part | Where |
 |---|---|
 | Contract | `contracts/swarms` (WASM, admin zero, start-height gate) |
 | Contract tests | `contracts/tests/tests/swarms.rs` (real executor, supply invariant every block), 10 tests |
 | Byte formats (shared) | `services/swarm/agents/src/swarmabi.ts` |
-| Runtime | `services/swarm/agents/src/swarms.ts` (+ `swarmpractice.ts`; hooks in `runtime.ts`, `agent.ts`, `market.ts`, `spec.ts`) |
+| Runtime | `services/swarm/agents/src/swarms.ts` (hooks in `runtime.ts`, `agent.ts`, `market.ts`, `spec.ts`; practice through `practice.ts` PracticeHost) |
 | Runtime tests | `services/swarm/agents/test/swarms.test.ts`, 7 tests |
 | API | `services/cadre-api/src/routes/swarms.ts`, `/v1/swarms*`, `/v1/hosted/swarms*`, `/v1/tx/swarm` |
 | Deploy script | `services/swarm/agents/bin/swarms-deploy.ts` |
@@ -121,10 +122,12 @@ No new tx kind and no consensus change: it cannot fork the running devnet.
 - The lead's hires prefer its members' offers, chosen by a paid thought that sees the goal and
   those offers. A member delivers its swarm's hires before outside ones. Hires between members are
   normal market hires: paid, judged, on the record. The request blob names the swarm.
-- Trading swarms: each worker runs a different practice style on the strategies contract
-  (momentum, bounce, calm: the house practice agents' conditions), when the runtime has a
-  read-only mainnet RPC and the strategies deploy file. Members past the third get no practice
-  style. `GET /v1/swarms/{id}` compares their strategy records.
+- Trading swarms: each worker's spec gets a `practice` section with a different style (the
+  strategies module's list: momentum, bounce, calm, contrarian, accumulator) and the runtime's
+  PracticeHost runs it like any practice agent (pretend balance, real mainnet prices read only,
+  every version, entry, exit and post-mortem on the strategies contract), when the runtime has a
+  read-only mainnet RPC. Workers past the fifth get no style. `GET /v1/swarms/{id}` compares their
+  strategy records.
 
 ## 5. Reads
 
@@ -157,13 +160,47 @@ Shapes: `services/cadre-api/openapi.yaml` (tag `swarms`).
   a member thinks and acts on Solana, but its Cadre actions wait for CADRE: either the sponsor
   float (off until the owner sets an amount) or the normal transfer. The lead's kickoff thought
   needs SOL only.
-- Time from commit to the lead's first action: measured only in process (fakes): 310 ms with the
-  lead's SOL landing at +300 ms, so the kickoff starts about 10 ms after the SOL is there. On
-  devnet it is bounded by the Solana transfer's confirmation and one paid inference; not measured
-  on devnet yet.
+- Time from commit to the lead's first action, measured on devnet 2026-10-23 00:08 UTC (swarm
+  `291775e8...`, 2 members, 0.2 SOL; runtime in process on the Mac against the public devnet
+  node, gateway and cadre-api): commit answered in 18 ms; the creator's one Solana tx (264 bytes,
+  both transfers) sent at 0.7 s and confirmed at 3.1 s; the lead's kickoff thought
+  (`req_7c96c396b50994cc248ebb09`) done at 71.1 s. The 68 s after the SOL landed are the lead's
+  first x402 top-up (1,024 rows for 25,135,765 lamports) and the paid thought itself; this run did
+  not split them. One run, not a distribution. In process with fakes: 313 ms with the SOL at +300 ms.
+- In that run the lead answered `HIRE researcher_5b6a1` (a handle, not a number); the kickoff now
+  accepts a number, a handle or a role.
+- A top-up attempted before the SOL lands books its price against the agent's daily SOL cap
+  (Swarm.topup books before sending); the kickoff therefore waits for the SOL first. Other paths
+  that top up early can still hit this.
 - Hires wait for the members' offers to be on chain, so the first hire comes a block or more
   after the members hold CADRE.
 - The site's own spec verifier (cadre-web `lib/agentspec.ts`) must learn `agent_spec_swarm`;
   cadre-api already verifies it.
-- Practice for trading swarms runs through `swarmpractice.ts` until the practice-agents branch
-  lands; then it moves onto that branch's `PracticeHost` and `AgentRunner.sendCall`.
+- With main's self-funding, a hosted v2 agent buys its own CADRE with a little of its SOL and
+  bridges it (agent.ts selfFundCadre), so Cadre actions start after that bridge lands; the sponsor
+  float, when turned on, makes them start with the registration instead.
+
+## 8. Deploy (devnet)
+
+Done 2026-10-22 by this row: the contract (deployer `2YdC8R1BHK8uTvNv5GCJ4YZUYwevvb94ULJ1S7Vk5yLd`,
+`keys/devnet/swarms/deployer.json`, funded 5 CADRE from miner0; the code holds a 3.32 CADRE
+storage deposit):
+
+```sh
+(cd contracts && cargo build --release --target wasm32-unknown-unknown -p cadre-swarms)
+node services/swarm/agents/bin/swarms-deploy.ts --key keys/devnet/swarms/deployer.json
+```
+
+For the orchestrator (box 0, after main is synced): `deploy/swarms-devnet.json` is read from the
+repo by both services, so a restart is enough.
+
+```sh
+scripts/devnet-deploy.sh sync                      # box 0 ~/pearl-sol to main
+sudo systemctl restart cadre-agents && curl -fsS http://127.0.0.1:10730/v1/hosted/swarms/styles >/dev/null
+sudo systemctl restart cadre-api    && curl -fsS http://127.0.0.1:10685/v1/swarms >/dev/null
+```
+
+Optional, off by default: a sponsor that registers each swarm at once and pays each member a CADRE
+float in the same call. Set both in the cadre-agents environment, then restart cadre-agents:
+`AGENTS_SWARM_SPONSOR_KEY=/etc/lode/keys/agents/swarm-sponsor.json` (mode 600, a funded Cadre key)
+and `AGENTS_SWARM_FLOAT_UNITS=<units per member>`.
