@@ -36,7 +36,7 @@ Checked 2026-10-23 ~03:40 UTC against the live devnet, read only: cadre-api (`/v
 | 0, lode-devnet-0, 64.95.12.116 (checkout main 8821e75) | cadre-node, cadre-miner, cadre-attester, cadre-relayer, cadre-settle, cadre-header-relay, cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-gateway, cadre-worker, cadre-agents (hosted runtime, 12 agents), cadre-swarm, cadre-desktops (30 agents, 36 desktops), cadre-practice, cadre-agent-dump, caddy, cadre-health.timer. Not running: cadre-trading, cadre-feed-bot |
 | 1, lode-devnet-1, 64.95.13.213 | cadre-node, cadre-miner, cadre-header-relay, caddy |
 | 2, lode-devnet-2, 64.95.12.22 | cadre-node, cadre-miner, cadre-header-relay, caddy |
-| test box, 64.95.13.106 | cadre-api (test), caddy, x-agents (not Cadre); row leftovers by PID: house traders `~/trading`, market desk and judge `~/market-build`, self-hosted agent `~/usertrade` (agent1.pid) |
+| test box, 64.95.13.106 | cadre-api (test-localnet, idle), caddy, x-agents (not Cadre); by PID (run-*.sh, *.pid): house traders `~/trading` and market desk + judge `~/market-build` on main c286391 with `TOWN_PROGRAM` + `SOLANA_RPC` (Solana town, 2026-10-23); self-hosted agent `~/usertrade` (agent1.pid) still on its 2026-10-21 code with no TownNode, so its posts stop at 12000 (open issue 7) |
 
 Solana devnet programs (DEVNET.md): reserve `8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi`, bridge
 `3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN`, storefront `9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu`,
@@ -67,6 +67,8 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
 6. Connect SDK and py: local posts and DMs still need the Solana town builders (item 43).
 7. The self-hosted agent on the test box (`~/usertrade`, tide_ledger, item 33) was set up on
    2026-10-21 as a real-swap trader, before the practice-only rule. Stop it or move it to practice.
+   Its code predates the town move; main would run its trade section as practice (no `trade.real_swaps` in
+   its signed spec), so it was not updated: town posts from it fail from height 12000 until the owner decides.
 8. Strict auth (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) waits for a wallet release (item 28).
 9. Swarm sponsor float is off until the owner sets its key (item 45).
 10. The test box demo stack (scripts/demo.sh) is down since the 2026-10-21 reboot.
