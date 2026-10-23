@@ -1776,6 +1776,50 @@ CLAUDE.md "Who is working on what".
       (frame-ancestors refuses auth.privy.io on every page; email login cannot work there): add it in the Privy
       dashboard.
 
+51. AUDIT FOLLOW-UPS: UNCLE REPLAY, DELETE ON FINAL, DEPARTED LEAD, ATTESTER HEALTH, LIGHT CLIENT LAG (2026-10-23,
+    "audit follow-ups" row; TEST-REPORT "Audit follow-ups 2026-10-23").
+    - CONSENSUS, uncle replay closed by pow_digest (SPEED.md 3.3 rule 8): a Pearl proof opens one tile under the
+      target, so a nonce whose GEMM has two such tiles has two valid proofs for one header; the hash covers
+      proof_hash, rule 4 compared hashes only. From DEVNET_UNCLE_DIGEST_RULE_HEIGHT 13,000 an uncle whose
+      pow_digest equals the branch block's at its height, another uncle's in the block, or an uncle's of a branch
+      block above its height is refused; templates offer one uncle per pow_digest; getParams
+      uncle_digest_rule_height. Clean: every header field except proof_hash is inside pow_digest, so equal digests
+      are the same block; a real sibling always differs. Test consensus-pow tests/uncles.rs
+      a_second_proof_of_a_block_is_not_paid_as_an_uncle (fails on the old code: the template carries two).
+      ROLLOUT REQUIRED: every devnet node (boxes 1, 2, then 0) on this build before height 13,000 (tip 8,505 at
+      16:08 UTC 2026-10-23, 31.1 s average blocks: about 38 h). All three nodes already report
+      uncle_job_rule_height 10000 (HANDOFF 48 rolled out), so this is a rolling upgrade of its own.
+    - Gateway (not consensus): request data kept until the round's last PostSegments is final, then deleted; a
+      round a reorg dropped (last tx neither in a block nor pooled on 3 passes) is posted again from it. Measured:
+      final = 60 blocks = about 31 min (6100-7000: 31.1 s per block), at 9.98 GB/h about 5.2 GB more on disk
+      (5.9 GB at 35.3 s blocks); counted in the 64 GB cap, not in the 8 GB pressure line. --delete-on-post rolls
+      back. Also send_many now accepts a tx already "final" (it waited for "included" only). Tests retention 6/6,
+      gateway 42 passed (2 ignored on macOS).
+    - Swarms: a departed lead's proposals stay acceptable on the deployed contract (admin zero). The hosted runtime
+      declines them for invitees it hosts, cadre-api builds no accept for them (409 stale_proposal) and labels
+      standing; a future contract version closes them on leave / hand_lead (SWARMS.md 3). Tests agents 93/93,
+      swarm 45/45, cadre-api 127 passed (10 skipped), typecheck clean.
+    - Attester: the FAIL "cli:local_attester timed out reading response" (box 0, 07:33-08:47 UTC) was real
+      blocking, not a short timeout: one tiny_http loop served /health and /result, so a health check waited for the
+      whole glue replay (journal: five queued GET /health answered in the second POST /result finished, 07:51:46).
+      Now /health is answered on the accept thread, /result and /share on --workers threads (default 1: replays stay
+      one at a time, as the gateway's close thread sends them), /health carries busy {running, queued, done,
+      oldest_running_s}, and the CLI line shows a replay in progress. Settlement did not stall beyond that (only the
+      gateway's close thread calls /result, one ticket at a time). Tests attester 22 (serve.rs new), cadre-cli 121.
+    - Light client lag: not the Solana rate limit. Boxes 1 and 2 already run the header relay on the Helius
+      devnet RPC (/etc/lode/solana-rpc-url on all three boxes since 2026-10-21 21:26 UTC; the relay processes'
+      command lines name devnet.helius-rpc.com; zero 429s in today's journals). The light client sat at 7,497 from
+      07:53 to 16:03 UTC (relay errors 6027 / 6023 / Custom(0) around a node reorg at 7,496-7,498, then idle) and
+      moved again after the 16:02-16:04 restarts ("reorg to 1fbdad8f... at 7498"): 7,498 -> 7,543 in 8.2 min
+      (5.5 headers/min) against 1.7 blocks/min, lag ~970. The stall belongs to the storefront-pending row's
+      header-relay fix. Box 0 also runs a manually started cadre-header-relay (unit disabled, no with-rpc, public
+      RPC, ops payer, no --lane) that relays the same heights as the two lanes (failed_txs 202). Steps in the
+      TEST-REPORT section; no box config changed by this row.
+    - Rollout (owner; nothing deployed by this row): node build to boxes 1, 2, 0 before 13,000 (one at a time, check
+      getParams uncle_digest_rule_height 13000 and finalized-hash agreement after each); box 0 cadre-gateway (no
+      flag change) and cadre-attester (no flag change) restarts after the sync; cadre-agents and cadre-api restarts
+      for the swarms change; cadre CLI binary for the health line.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

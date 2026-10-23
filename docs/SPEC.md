@@ -1847,6 +1847,20 @@ failures in `settle.close_backoff`). Early posting starts at `min(cap / 2,
 drain. Served rows a ticket can no longer post (its chain deadline passed, or the chain no
 longer has it Open) are dropped from the ticket with their data (`pending_dropped` event;
 the receipts stay; a ticket with no posted round becomes `failed`).
+Delete on final (audit follow-up 2026-10-23): a posted round's data now stays until its last
+PostSegments tx reads `final` (getTx; the txs share the server key, so the last nonce final means
+every earlier one is), K = 60 blocks after inclusion, then a settlement pass deletes it. A round
+whose last tx is neither in a block nor pooled on 3 passes in a row (a reorg dropped it and the
+mempool did not take it back) is put back: it and any later round of the ticket leave the ledger,
+the first becomes the round being posted with the same requests, and the next pass posts it again
+from the kept data (`round_reorged` event). The cap counts posted-not-final data
+(`bytes_awaiting_final`), data pressure does not (posting early frees none of it); `/v1/stats`
+`request_data` adds `bytes_awaiting_final`, `rounds_awaiting_final`, `rounds_final`,
+`rounds_reorged`, `delete_on`. `--delete-on-post` restores deletion at inclusion. Cost, measured:
+heights 6100-7000 averaged 31.1 s per block, so final is about 31 min after inclusion; at the
+9.98 GB/h average serve rate (HANDOFF 46) that holds about 5.2 GB more on disk (5.9 GB at the
+35.3 s blocks of 7000-7080), inside the 64 GB cap; box 0 had 72.6 GB free over its 20 GB reserve
+at 2026-10-23 when measured.
 Node blob backpressure (2026-10-22, the node's blob store filled next): the gateway also reads
 the node's getBlobStats `rpc_headroom_bytes` (at most every 10 s; an older node: `max_total_bytes -
 total_bytes`; no getBlobStats: no check) and answers a paid request 503 `insufficient_storage`

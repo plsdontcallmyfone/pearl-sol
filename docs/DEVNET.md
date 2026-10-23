@@ -529,7 +529,10 @@ which reads the file at start; without it the public RPC in the env files stays.
 scheme://host of the Solana RPC. The Mac-side scripts (devnet-solana.sh, devnet-init, devnet-e2e) keep
 the public RPC. Status 2026-10-20 03:50 UTC: plumbing deployed, file not provided yet, so every
 service runs on the public RPC. Still not provided at 15:20 UTC (`rpc-url` says so and changes
-nothing).
+nothing). Installed since 2026-10-21 21:25-21:26 UTC on boxes 0-2 (checked 2026-10-23
+16:10 UTC: a Helius devnet URL; the header relays on boxes 1 and 2 run through with-rpc on it, no 429s;
+box 0's cadre-header-relay unit, disabled but started by hand, has no with-rpc and uses the public
+RPC: TEST-REPORT "Audit follow-ups 2026-10-23").
 
 SOL totals (devnet, 2026-10-20 03:50 UTC): deployer 89.9999 -> 45.9612 (11.54 program rent, 20 to ops,
 0.5 to the storefront wallet, 12 to the two relay keys); ops 17.8916, storefront wallet 0.5190, relay

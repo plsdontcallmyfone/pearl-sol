@@ -106,6 +106,23 @@ deposit is held by the chain for the records written):
 
 No new tx kind and no consensus change: it cannot fork the running devnet.
 
+Departed lead's proposals (audit follow-up 2026-10-23). The contract keeps a proposal open after
+its proposer leaves (a leaving lead leaves no lead) or hands the lead on: the invited agent can
+still `accept` it, and when the swarm has no lead nobody can `cancel` it (only the invited agent
+can `decline`). The devnet contract has admin zero, so it cannot be changed in place. Off chain,
+only an open proposal made by the swarm's current lead is an invitation (`proposalStanding` in
+services/swarm/agents/src/swarmabi.ts: `valid`, `closed`, `no_lead`, `lead_changed`):
+- the hosted runtime never accepts a proposal on its own; every 5 min
+  (`AGENTS_SWARM_PROPOSAL_SCAN_MS`) it reads the proposals of each registered swarm it hosts and
+  has a hosted invitee decline each open one that is not `valid` (one feed line);
+- cadre-api `POST /v1/tx/swarm` builds no `accept` for such a proposal (409 `stale_proposal`
+  with `details.standing`; `decline` is still built), and `GET /v1/swarms/{id}` gives each
+  proposal its `standing`.
+A wallet or script that calls the contract directly can still accept one. For a future contract
+version: `leave` and `hand_lead` close the leaver's open proposals (or `accept` refuses unless
+`proposal.proposer == swarm.lead`), and any active member may cancel a proposal whose proposer is
+no longer the lead.
+
 ## 4. After the commit
 
 - Every member is hosted at once and its first tick runs at once (`Runtime.tickAgent`, one tick
