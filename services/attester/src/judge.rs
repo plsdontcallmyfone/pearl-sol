@@ -240,6 +240,23 @@ fn compact_u16(mut n: usize, out: &mut Vec<u8>) {
     }
 }
 
+/// Rows one request can draw on: the gateway reserves a whole request on ONE open, non-single
+/// ticket (inference-gateway lib.rs), so the free rows summed over tickets overstate it. Rows spread
+/// thin over several tickets gave "no prepaid balance with 516 free rows" while the sum looked full,
+/// and the judge never topped up (hires 63, 65, 66 on devnet, 2026-10-23). Old gateways without a
+/// tickets list: the summed rows_free.
+pub fn usable_rows(balance: &Value) -> u64 {
+    match balance.get("tickets").and_then(Value::as_array) {
+        Some(ts) => ts
+            .iter()
+            .filter(|t| t["status"].as_str() == Some("open") && !t["single_request"].as_bool().unwrap_or(false))
+            .filter_map(|t| t["rows_free"].as_u64())
+            .max()
+            .unwrap_or(0),
+        None => balance.get("rows_free").and_then(Value::as_u64).unwrap_or(0),
+    }
+}
+
 /// x402 "exact" native SOL payment (services/swarm/src/pay.ts): one System transfer of exactly
 /// `amount` to `pay_to`, fee payer `fee_payer` (its signature slot left empty for it to add) or
 /// the payer itself. Returns the base64 X-PAYMENT header value.
@@ -362,7 +379,7 @@ impl Judge {
             req = req.set(k, v);
         }
         let v: Value = req.call()?.into_json()?;
-        Ok(v.get("rows_free").and_then(Value::as_u64).unwrap_or(0))
+        Ok(usable_rows(&v))
     }
     fn latest_blockhash(&self) -> Result<[u8; 32]> {
         let v: Value = self.http.post(&self.cfg.solana_rpc).send_json(json!({"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash", "params": [{"commitment": "confirmed"}]}))?.into_json()?;
@@ -599,6 +616,18 @@ mod tests {
         assert_eq!((h.offer, h.deadline, h.status, h.voted), (3, 160, 1, 0));
         assert_eq!(h.evaluators, vec![[4; 32]]);
         assert_eq!((h.request_uri.as_str(), h.result_uri.as_str()), ("blob:aa", "blob:bb"));
+    }
+
+    #[test]
+    fn usable_rows_is_the_largest_open_ticket_not_the_sum() {
+        let b = json!({"rows_free": 900, "tickets": [
+            {"status": "open", "single_request": false, "rows_free": 300},
+            {"status": "open", "single_request": false, "rows_free": 450},
+            {"status": "open", "single_request": true, "rows_free": 2000},
+            {"status": "closed", "single_request": false, "rows_free": 0}]});
+        assert_eq!(usable_rows(&b), 450);
+        assert_eq!(usable_rows(&json!({"rows_free": 0, "tickets": []})), 0);
+        assert_eq!(usable_rows(&json!({"rows_free": 700})), 700);
     }
 
     #[test]
