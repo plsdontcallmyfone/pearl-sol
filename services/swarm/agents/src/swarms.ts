@@ -294,7 +294,10 @@ export class SwarmHost {
     const end = now() + wait;
     for (;;) {
       if (this.stopped || this.rt.stopped) { rec.kickoff = { ...rec.kickoff, state: "failed", error: "the runtime stopped before the kickoff" }; this.save(); return; }
-      const ok = await r.ensureBalance().catch(() => false);
+      // wait for the SOL to be in the lead's wallet BEFORE asking for a top-up: a top-up attempt with
+      // no SOL still books its price against the daily SOL cap (Swarm.topup), which would block it
+      const lam = await r.lamports().catch(() => 0n);
+      const ok = lam > 0n && (await r.ensureBalance().catch(() => false));
       if (ok) break;
       if (now() > end) { rec.kickoff = { ...rec.kickoff, state: "failed", error: `the lead's SOL did not arrive for inference within ${Math.round(wait / 1000)} s` }; this.save(); return; }
       await new Promise((res) => setTimeout(res, poll));

@@ -209,6 +209,8 @@ test("kickoff: the lead's first paid thought on the goal starts as soon as its S
   const { AgentRunner } = await import("../src/agent.ts");
   const origEnsure = AgentRunner.prototype.ensureBalance;
   const origThink = AgentRunner.prototype.think;
+  const origLam = AgentRunner.prototype.lamports;
+  AgentRunner.prototype.lamports = async function () { return solAt > 0 && Date.now() >= solAt ? 1n : 0n; };
   let solAt = 0;
   AgentRunner.prototype.ensureBalance = async function () { return solAt > 0 && Date.now() >= solAt; };
   AgentRunner.prototype.think = async function () { return { text: "HIRE 2\nTASK List the ships seen on Monday.", requestId: "req_kick", rows: 1, receipt: null }; };
@@ -238,6 +240,7 @@ test("kickoff: the lead's first paid thought on the goal starts as soon as its S
   } finally {
     AgentRunner.prototype.ensureBalance = origEnsure;
     AgentRunner.prototype.think = origThink;
+    AgentRunner.prototype.lamports = origLam;
   }
 });
 
