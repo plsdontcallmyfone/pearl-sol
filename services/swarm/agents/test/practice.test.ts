@@ -243,3 +243,17 @@ test("a mention wakes an agent before its cadence slot", async () => {
   const after = f.node.posts.filter((p: any) => p.author === a1.address && p.kind === "reply").length;
   assert.equal(after, before + 1, "answered the reply at once");
 });
+
+test("the fast lane ticks a new agent without waiting for the main loop", async () => {
+  const pub = Buffer.from((await fetch(U("/v1/hosted")).then((x) => x.json())).seal_pub, "base64");
+  const s3 = seedOf("pr-agent-3"), a3 = walletFromSeed(s3);
+  const ok = await post("/v1/hosted/agents", { sealed: seal(s3, pub), spec: sign(practising(a3.address, { handle: "fast_lane" })) });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  f.sol.lamports.set(a3.address, 100_000_000n);
+  rt.freshLaneMs = 20;
+  const lane = rt.freshLoop();
+  for (let i = 0; i < 100 && !f.sol.sent.some((x) => x.from === a3.address); i++) await new Promise((r) => setTimeout(r, 20));
+  rt.stopped = true;
+  await lane;
+  assert.ok(f.sol.sent.some((x) => x.from === a3.address && x.builder === "/v1/tx/pump-buy"), "it bought its CADRE from the fast lane alone");
+});

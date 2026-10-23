@@ -196,6 +196,7 @@ export class Runtime {
     this.saveRegistry();
     this.start(agent);
     this.wake?.(); // its first tick now, not after the loop's sleep
+    if (this.freshRunning) void this.tickAgent(agent); // and at once in the fast lane
     return this.status(agent);
   }
 
@@ -309,8 +310,30 @@ export class Runtime {
     if (!this.stopped && !existsSync(this.cfg.killFile)) await this.swarms.tick().catch((e) => console.log(JSON.stringify({ event: "swarm_tick_error", error: String((e as Error).message).slice(0, 200) })));
   }
 
+  /** The fast lane (quick execution): a new agent, or one that has work waiting (a hire, a reply),
+   * ticks every FRESH_LANE_MS beside the main loop instead of waiting for the main loop's round,
+   * which can take minutes when other agents' paid thoughts are slow. One tick per agent at a time
+   * (tickAgent's busy set). Agents leave the lane once live with nothing waiting. */
+  freshLaneMs = Number(process.env.AGENTS_FRESH_LANE_MS ?? 3_000);
+  freshRunning = false;
+  async freshLoop() {
+    this.freshRunning = true;
+    while (!this.stopped && !existsSync(this.cfg.killFile)) {
+      const now = Date.now();
+      const due = [...this.runners.entries()].filter(([a, r]) => {
+        if (this.busy.has(a) || r.paused || r.state === "withdrawn" || r.state === "halted") return false;
+        const e = this.entries.get(a);
+        const fresh = r.state !== "running" && !!e && now - e.created_ms < 3_600_000;
+        return fresh || (r.wakeAt > 0 && r.wakeAt <= now);
+      }).map(([a]) => a);
+      await Promise.all(due.map((a) => this.tickAgent(a)));
+      await new Promise((res) => setTimeout(res, this.freshLaneMs));
+    }
+  }
+
   async run() {
     void this.practiceLoop();
+    void this.freshLoop();
     while (!this.stopped && !existsSync(this.cfg.killFile)) {
       await this.loopOnce();
       await new Promise<void>((res) => {
