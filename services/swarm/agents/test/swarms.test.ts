@@ -167,6 +167,26 @@ test("refusals: bad signature, bad input, no contract", async () => {
   assert.equal((await post(off.rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "2000" })).body.error.code, "swarms_not_deployed");
 });
 
+// security review 2026-10-23: plans need no signature, so a flood of them (random creators) used to
+// fill the 64-slot table and refuse every real creator ("busy") for 15 minutes
+test("plan flood: one pending plan per creator, and a full table drops its oldest plan instead of refusing", async () => {
+  const { rt } = setup();
+  const first = await post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "2000" });
+  const again = await post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "2000" });
+  const sw = (rt as any).swarms;
+  assert.equal(sw.plans.has(first.body.plan_id), false, "the creator's newer plan replaced the older one");
+  assert.equal(sw.plans.has(again.body.plan_id), true);
+  for (let i = 0; i < 520; i++) {
+    const r = await post(rt, "/v1/hosted/swarms/plan", { creator: walletFromSeed(seedOf(`flood-${i}`)).address, goal: GOAL, size: 2, total_sol_lamports: "2000" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  assert.ok(sw.plans.size <= 512);
+  const real = await post(rt, "/v1/hosted/swarms/plan", { creator: other.address, goal: GOAL, size: 2, total_sol_lamports: "2000" });
+  assert.equal(real.status, 200, "a real creator still gets a plan after the flood");
+  const sig = Buffer.from(other.sign(Buffer.from(real.body.creator_message, "utf8"))).toString("hex");
+  assert.equal((await post(rt, "/v1/hosted/swarms", { plan_id: real.body.plan_id, creator_sig: sig })).status, 201);
+});
+
 test("registration: the sponsor registers at once (with each member's CADRE float); else the lead does, and the id is picked up by definition", async () => {
   const s1 = setup();
   const sent: { args: Buffer; value: bigint }[] = [];

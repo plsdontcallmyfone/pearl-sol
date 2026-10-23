@@ -214,7 +214,12 @@ export class SwarmHost {
     const { def, message, goal: gb } = proofDefinition({ ...proof, creator_sig: "" });
     // pending plans are bounded and expire; their keys live only in memory until the commit
     for (const [k, p] of this.plans) if (p.expires_ms < now()) { p.seeds.forEach((x) => x.fill(0)); this.plans.delete(k); }
-    if (this.plans.size >= 64) { seeds.forEach((x) => x.fill(0)); throw new E(503, "busy", "too many pending swarm plans on this runtime; try again in a few minutes"); }
+    // plans are unauthenticated (the creator signs only at commit), so a flood must not lock real
+    // creators out: one pending plan per creator (a new one replaces it), and when the table is
+    // full the oldest plan makes room instead of every new creator being refused for 15 minutes
+    const drop = (k: string) => { const q = this.plans.get(k); q?.seeds.forEach((x) => x.fill(0)); this.plans.delete(k); };
+    for (const [k, q] of this.plans) if (q.creator === creator) drop(k);
+    while (this.plans.size >= 512) drop(this.plans.keys().next().value!);
     this.plans.set(def, { key: def, contract: cfg.contract, creator, name, kind, goal, lead: agents[leadIx], salt, seeds, specs, roles, styles, sol, proof, message, expires_ms: now() + 15 * 60_000 });
     return {
       plan_id: def, expires_ms: now() + 15 * 60_000, contract: cfg.contract,
