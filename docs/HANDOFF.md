@@ -1838,6 +1838,35 @@ CLAUDE.md "Who is working on what".
       service sweeps orphaned drafts itself every 10 min (test/rpc-bounds.test.ts, 2 new tests in service.test.ts;
       29 pass). The 6 drafts are still open and orphaned; deploy = DEVNET "Storefront draft sweep".
 
+53. JUDGE VERDICTS AND PRACTICE LESSONS WITH THE 1B MODEL (2026-10-23, "judge verdicts with the 1B model" row).
+    - What the model emitted: hires 76 and 81 got `VERDICT: VERDICT: REJECT\nREASON: ...` (label doubled) under
+      prompt v1; the old parser saw no verdict word after the first `VERDICT:` and paid 3 identical thoughts each.
+      Proven by replay: `pearl-evaluator --judge-probe` (new, never votes) gave answers whose sha256 equals the
+      text_sha256 of the original receipts (req_3ede2c2b..., req_c2779eca..., req_8c9bc163..., req_72f26401...,
+      req_09d1b8f4...). The offer spec blobs were already pruned, so the judge saw no promise at all.
+    - Judge (services/attester/src/judge.rs, prompt cadre-judge-prompt-v2): `/v1/completions` with the chat
+      template written out and the assistant turn begun with `VERDICT:`; first word must be ACCEPT(ED) or
+      REJECT(ED) (markdown, case, a doubled label tolerated; `NOT ACCEPT`, `ACCEPTABLE` refused). One paid
+      thought per hire, then ABSTAIN (no vote, buyer refunded at the deadline, MARKET 5); a failed verdict tx is
+      resent from the kept answer. A shorter one-word retry form was measured and dropped: ACCEPT on all 11 it
+      answered, junk included. New mechanical rejects without a thought: refusal, copy of the request, link,
+      delivery that writes a verdict or tells the judge to ignore the rubric. Missing spec: the promise line is
+      left out (a placeholder there was quoted back by the model). Gateway 400 "worker Connection refused" is a
+      free retry (the gateway reports a down worker as 400; seen 07:4x UTC; gateway-side 503 is still to do).
+    - Measured on 12 recorded cases (6 real hires, 6 synthetic bad deliveries): verdict word 12/12, matches the
+      reviewer's reading 8/12 by the model alone, 10/12 with the mechanical checks; still wrong: hire 78 (five
+      fine names rejected) and "two names for five" accepted. Fixtures: services/attester/tests/fixtures/
+      judge-answers.json; tests 10 judge unit (attester 25 total).
+    - Lessons (services/swarm/strategies thoughts.ts, agent.ts): the lesson now starts with the analyzer's facts
+      written by code (`lessonFacts`), the model gives one answer-first `FIX:`/`KEEP:` line for the analyzer's
+      bucket, and `lessonContradiction` drops it if it contradicts the facts (no-fill or flat called a gain or
+      loss, win/loss swapped, wrong SOL amount, a bucket not found, a reply to "your review"). On the 26 real
+      devnet post-mortems the guard drops 8 old lessons (trade 9, a no-fill called "a significant loss"); the
+      new prompt on 6 of them gave 6 answer-first lines, all passing the guard. Blob adds lesson_facts,
+      lesson_model, lesson_guard. Fixtures: test/fixtures/lessons.json; strategies 18/18, agents practice 12/12.
+    - Deploy: test box judge rebuilt + restarted (see the row); box 0: sync main, restart cadre-practice and
+      cadre-agents (DEVNET steps in the row's report).
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

@@ -2026,5 +2026,50 @@
    "lesson_request": "req_9d51aba02df83468ef8590fd",
    "lesson_text_raw": "LESSON: While I was able to execute the trade successfully, I must admit that the high stop loss and risk management parameters may not be ideal for this particular signal, and I should have considered a more conservative approach to minimize potential losses."
   }
+ ],
+ "v2_source": "REAL answers of the devnet model to the NEW lessonPrompt (answer first), recorded 2026-10-23 by pearl-evaluator --judge-probe (chat completions on the box 0 gateway, max_tokens 60); not committed on chain",
+ "v2_answers": [
+  {
+   "trade": 9,
+   "persona": "Floor Wren, who buys the first bounce after a fall",
+   "request_id": "req_9481fffdd1092fc07de662a9",
+   "text": "FIX: Reduce the time spent on the commit decision by optimizing the commit wait.",
+   "text_sha256": "7e904539b1f2042c58895034e9412b93c2c64715a9bb89f5818adb06fce3c595"
+  },
+  {
+   "trade": 16,
+   "persona": "Tape Lark, a momentum trader who buys strength in deep pools",
+   "request_id": "req_d475af0d60b7cac417a03293",
+   "text": "FIX: Reduce the time between decision to commit and fill.",
+   "text_sha256": "0e5d4a8a31f5a1596d09a9a0087fc5a655b866a8cab5bdab5e8a831f05167953"
+  },
+  {
+   "trade": 28,
+   "persona": "Still Heron, who only trades calm, liquid pools",
+   "request_id": "req_61ea700d408df677984c0e76",
+   "text": "FIX: Increase the stated win rate to 25.00% and the stated edge to 0.05 or more.",
+   "text_sha256": "74692826e4e6e52dff36212183d1ce096565e681ca50f9b86ef455d08549122f"
+  },
+  {
+   "trade": 4,
+   "persona": "Tape Lark, a momentum trader who buys strength in deep pools",
+   "request_id": "req_2129a67b45089e7c5205c87b",
+   "text": "KEEP buying strength in the market.",
+   "text_sha256": "156678490b79e3c64441c5ef9270f8d9d0e1fc62fec6182dbdcb857e5c66c2c2"
+  },
+  {
+   "trade": 8,
+   "persona": "Floor Wren, who buys the first bounce after a fall",
+   "request_id": "req_674c2b395b5b8bf88f924d1d",
+   "text": "KEEP focusing on the bounce, not the fall.",
+   "text_sha256": "d9edcb5073c7fda61d3e7efcba33ea5e551a4c4ae78dc8d7ba335cb2581761e4"
+  },
+  {
+   "trade": 5,
+   "persona": "Still Heron, who only trades calm, liquid pools",
+   "request_id": "req_f529ca6f26c22cd45178a949",
+   "text": "FIX: Consider using a more conservative sizing approach, such as 1.5x the size, to avoid excessive risk.",
+   "text_sha256": "f2d84abd2fc0effedc3e08f2f85deb1613cf2128617462e61d4f7f9e76deef71"
+  }
  ]
 }

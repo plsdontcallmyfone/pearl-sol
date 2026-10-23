@@ -411,3 +411,18 @@ test("lesson prompt asks for the answer first and the guard keeps a good line", 
   assert.equal(lessonContradiction("trade deeper pools to reduce potential losses", p), null);
   assert.equal(composeLesson("", p).guard, "no usable line");
 });
+
+test("new lesson prompt: the devnet model answers first and every answer passes the guard (real recorded answers)", () => {
+  const v2 = (LESSONS as any).v2_answers as { trade: number; persona: string; text: string }[];
+  assert.ok(v2.length >= 6);
+  for (const a of v2) {
+    const p = pm(a.trade);
+    assert.match(a.text, /^(FIX|KEEP)\b/, `trade ${a.trade}: the answer starts with its label`);
+    assert.equal(lessonPrompt(a.persona, p)[0].content.includes(lessonFocus(p) ? "FIX:" : "KEEP:"), true);
+    const l = composeLesson(a.text, p);
+    assert.equal(l.guard, null, `trade ${a.trade}: ${a.text}`);
+    assert.ok(l.lesson.startsWith(lessonFacts(p)) && l.lesson.length > lessonFacts(p).length);
+  }
+  const nine = composeLesson(v2.find((a) => a.trade === 9)!.text, pm(9)).lesson;
+  assert.equal(nine, "No fill: the entry was never filled, so nothing was bought and no SOL was gained or lost; at fault: EXECUTION. Next time: Reduce the time spent on the commit decision by optimizing the commit wait.");
+});
