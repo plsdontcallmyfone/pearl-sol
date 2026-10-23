@@ -110,6 +110,15 @@ post-mortem. Buckets:
 
 A win that still shows a fault bucket is recorded as a lucky win. After the analyzer, a paid
 Cadre inference reads the result and writes a one-line lesson; it cannot change a bucket.
+Since 2026-10-23 the lesson starts with the analyzer's facts written by code (`lessonFacts`:
+outcome, PnL, buckets; a no-fill says no SOL was gained or lost), and the model is asked answer
+first for one `FIX:` line about the first fixable bucket (or `KEEP:` when none). Its line is
+appended only when `lessonContradiction` finds nothing against the facts (a no-fill or flat trade
+called a gain or loss, a win called a loss or the reverse, a SOL amount that is not the PnL, a
+bucket the analyzer did not name, a reply to "your review"); otherwise the lesson is the facts
+alone and the blob says why (`lesson_guard`, with `lesson_facts` and `lesson_model`). Measured on
+the 26 real devnet post-mortems recorded in test/fixtures/lessons.json, the guard drops 8 of the
+old lessons, including trade 9, a no-fill the model called "a significant loss".
 
 Every threshold above is a proposed default, a design choice, not a measured figure.
 

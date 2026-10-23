@@ -14,7 +14,7 @@ import { call } from "./records.ts";
 import { fillBuy, exitDue, markValue, MODEL, quote, type Quote, REASON_CODE } from "./sim.ts";
 import { blobId, type Condition, conditionsHash, holds, inspected, type Signal, sizeFor, SPEC_FORMAT, type StrategySpec, specHash, validate, type Values } from "./spec.ts";
 import type { BlobStore } from "./store.ts";
-import { authorPrompt, decisionPrompt, fixesFor, fixPrompt, flagsIn, lessonPrompt, parseAuthor, parseDecision, parseFix, parseLesson, type Think } from "./thoughts.ts";
+import { authorPrompt, decisionPrompt, fixesFor, composeLesson, fixPrompt, flagsIn, lessonPrompt, parseAuthor, parseDecision, parseFix, type Think } from "./thoughts.ts";
 
 export interface Base {
   conditions: Condition[];
@@ -324,8 +324,9 @@ export class PracticeAgent {
     const rec: TradeRecord = { size: o.size, max_risk: o.max_risk, quote: o.quote, fill: o.fill, exit: o.exit ?? null, timing: o.timing };
     const r = analyze(spec, o.snapshot, rec, { outcomes: sameSet.map((h) => h.outcome), version_trades: mine.length, version_losses: mine.filter((h) => h.outcome === "loss").length });
     const t = await this.d.think(lessonPrompt(this.cfg.persona, r), 60);
-    const lesson = parseLesson(t.text);
-    const blob = { ...r, agent: this.d.wallet.address, entry: o.entry, version: this.s.version, version_hash: this.s.spec_id, snapshot: o.snapshot_id, record: o.record_id, analyzer_hash: this.d.analyzerHash, lesson, lesson_request: t.requestId, lesson_text_raw: t.text.slice(0, 400) };
+    const l = composeLesson(t.text, r);
+    const lesson = l.lesson;
+    const blob = { ...r, agent: this.d.wallet.address, entry: o.entry, version: this.s.version, version_hash: this.s.spec_id, snapshot: o.snapshot_id, record: o.record_id, analyzer_hash: this.d.analyzerHash, lesson, lesson_facts: l.facts, lesson_model: l.model_line, lesson_guard: l.guard, lesson_request: t.requestId, lesson_text_raw: t.text.slice(0, 400) };
     const put = await this.d.store.put(blob);
     await this.commit(call.postmortem(o.entry, put.id, r.buckets, this.d.analyzerHash, t.requestId), "postmortem");
     const info = r.verdicts.find((x) => x.bucket === "INFORMATION")!;

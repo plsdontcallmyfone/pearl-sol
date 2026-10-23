@@ -80,6 +80,10 @@ struct Args {
     /// Daily cap on the judge's own top-up spend (lamports).
     #[arg(long, default_value_t = 150_000_000)]
     max_topup_lamports_per_day: u64,
+    /// With --judge-market: run the recorded cases in this JSON file through the paid gateway,
+    /// print what the model wrote as JSON and exit. Never votes (judge.rs `probe`).
+    #[arg(long)]
+    judge_probe: Option<PathBuf>,
 }
 
 fn run_judge(a: &Args, market: &str) -> Result<()> {
@@ -90,6 +94,11 @@ fn run_judge(a: &Args, market: &str) -> Result<()> {
         max_topup_lamports_per_day: a.max_topup_lamports_per_day, submit: !a.no_submit,
     };
     let mut j = Judge::new(pearl_node::read_key_file(&a.keypair)?, &a.rpc, cfg)?;
+    if let Some(p) = &a.judge_probe {
+        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(p)?)?;
+        println!("{}", serde_json::to_string_pretty(&j.probe(&cases)?)?);
+        return Ok(());
+    }
     eprintln!("pearl-evaluator judge {} on market {market} (node {}, pid {})", j.address(), a.rpc, std::process::id());
     loop {
         match j.round() {

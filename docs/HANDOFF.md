@@ -1860,6 +1860,59 @@ CLAUDE.md "Who is working on what".
       sync main, worker drop-in (CADRE_MAX_STEP_ROWS=32 CADRE_MAX_LIVE_ROWS=4096 CADRE_PREFILL_ORDER=short
       OMP_WAIT_POLICY=PASSIVE), restart cadre-worker when /health active is 0; attester drop-in Nice=10, restart
       cadre-attester when /v1/stats settle.closing is null.
+54. JUDGE VERDICTS AND PRACTICE LESSONS WITH THE 1B MODEL (2026-10-23, "judge verdicts with the 1B model" row).
+    - What the model emitted: hires 76 and 81 got `VERDICT: VERDICT: REJECT\nREASON: ...` (label doubled) under
+      prompt v1; the old parser saw no verdict word after the first `VERDICT:` and paid 3 identical thoughts each.
+      Proven by replay: `pearl-evaluator --judge-probe` (new, never votes) gave answers whose sha256 equals the
+      text_sha256 of the original receipts (req_3ede2c2b..., req_c2779eca..., req_8c9bc163..., req_72f26401...,
+      req_09d1b8f4...). The offer spec blobs were already pruned, so the judge saw no promise at all.
+    - Judge (services/attester/src/judge.rs, prompt cadre-judge-prompt-v2): `/v1/completions` with the chat
+      template written out and the assistant turn begun with `VERDICT:`; first word must be ACCEPT(ED) or
+      REJECT(ED) (markdown, case, a doubled label tolerated; `NOT ACCEPT`, `ACCEPTABLE` refused). One paid
+      thought per hire, then ABSTAIN (no vote, buyer refunded at the deadline, MARKET 5); a failed verdict tx is
+      resent from the kept answer. A shorter one-word retry form was measured and dropped: ACCEPT on all 11 it
+      answered, junk included. New mechanical rejects without a thought: refusal, copy of the request, link,
+      delivery that writes a verdict or tells the judge to ignore the rubric. Missing spec: the promise line is
+      left out (a placeholder there was quoted back by the model). Gateway 400 "worker Connection refused" is a
+      free retry (the gateway reports a down worker as 400; seen 07:4x UTC; gateway-side 503 is still to do).
+    - Measured on 12 recorded cases (6 real hires, 6 synthetic bad deliveries): verdict word 12/12, matches the
+      reviewer's reading 8/12 by the model alone, 10/12 with the mechanical checks; still wrong: hire 78 (five
+      fine names rejected) and "two names for five" accepted. Fixtures: services/attester/tests/fixtures/
+      judge-answers.json; tests 10 judge unit (attester 25 total).
+    - Lessons (services/swarm/strategies thoughts.ts, agent.ts): the lesson now starts with the analyzer's facts
+      written by code (`lessonFacts`), the model gives one answer-first `FIX:`/`KEEP:` line for the analyzer's
+      bucket, and `lessonContradiction` drops it if it contradicts the facts (no-fill or flat called a gain or
+      loss, win/loss swapped, wrong SOL amount, a bucket not found, a reply to "your review"). On the 26 real
+      devnet post-mortems the guard drops 8 old lessons (trade 9, a no-fill called "a significant loss"); the
+      new prompt on 6 of them gave 6 answer-first lines, all passing the guard. Blob adds lesson_facts,
+      lesson_model, lesson_guard. Fixtures: test/fixtures/lessons.json; strategies 18/18, agents practice 12/12.
+    - Deploy: test box judge rebuilt + restarted (see the row); box 0: sync main, restart cadre-practice and
+      cadre-agents (DEVNET steps in the row's report).
+55. BOX 0 NODE BLOB STORE FULL AGAIN; PAID INFERENCE REFUSED (2026-10-23, "node blob store full" row; box 0 read only).
+    - Measured 10:07-10:27 UTC: gateway /v1/stats request_data node_blob_headroom_bytes 685,020,117 then 630,431,438,
+      refused_node_storage 372 then 468 (rising). Node getBlobStats: total 37,314,979,883 of max_total_bytes
+      40,000,000,000 (node.json `blobs`, node-local), rpc_put_limit 38 GB (rpc_reserve 2 GB), segment_a 35.43 GB in
+      27,120 blobs, ALL kept, 0 prunable; model 1.78 GB pinned. Disk 145 GB, 77 used, 68 free; node-blobs dir 35 GB.
+    - What limits it: the node-local quota only (not disk, not a consensus param). What frees A: SPEC 4.5 retention,
+      node prune pass (getBlobStats last_prune_height follows the tip). keep_replay is true on box 0, so a live ticket's
+      segment A is kept until the ticket's deadline + W (720 blocks); 73 of the 100 tickets in the gateway journal are
+      Open, deadlines 14,737 to 17,582 at tip 7,824 (about 6,900 to 9,760 blocks ahead, 2.5 to 3.5 days at the measured
+      30.8 s a block, 7783 -> 7824 in 21 min). So almost nothing is prunable until those tickets close.
+    - Why now: the 2026-10-22 sizing (SPEC 4.5) assumed 20 live balances and about 2,200 rows an hour. Posted rows from
+      the gateway journal: 126,348 rows in 222 rounds over 12 h (about 10,500 rows an hour, about 2.4 GB of A an hour at
+      231,424 bytes per row), 172,384 rows over 24 h; the last hour 4,724 rows (throttled by the refusals). Item 47
+      (top-ups buy the largest ticket first, up to 8192 rows) and item 53 (worker throughput) raised both the number of
+      live tickets and the rows. Not a code bug: retention works as specified; the live-ticket replay hold no longer fits
+      the 40 GB quota at this traffic.
+    - Gateway refusal: node_storage_refusal compares (waiting rows + request rows) x a_bytes_per_row (144 x 2048 =
+      294,912, an upper bound; real blobs are 231,424 per row plus padding to the round period) with the headroom, so at
+      5.0 GB waiting it refuses nearly every paid request while rounds keep posting.
+    - Health: scripts/devnet-health.sh 9c now emits `node_blobs` (WARN under MIN_NODE_BLOB_HEADROOM_GB, default 2, or
+      when refused_node_storage rose since the last run, or when the gateway cannot read getBlobStats).
+    - Proposed fixes (NOT applied; headroom was above the 300 MB apply threshold): see the row's report. Option A: raise
+      box 0 `blobs.max_total_bytes` 40e9 -> 60e9 (backup node.json, restart cadre-node only); about 19.7 GB more RPC room (5% reserve), about 8 h at the
+      12 h rate. Option B (policy decision): box 0 `keep_replay` false like boxes 1-2, frees the A of every live ticket
+      outside the mining rule; costs fraud-proof localization data for live tickets (honest replays read no A).
 
 ## M1 components (SPEC v2, all DONE)
 

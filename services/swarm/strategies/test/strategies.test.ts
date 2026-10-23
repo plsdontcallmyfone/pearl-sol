@@ -362,3 +362,67 @@ test("market: discovery evicts rugged and idle pools so the watched set never fr
   assert.deepEqual(out.sort(), ["idle", "rugged"]);
   assert.deepEqual([...m.pools.keys()].sort(), ["idleOpen", "live", "young"], "an open trade's pool and a pool watched under 30 min stay");
 });
+
+// ------------------------------------------------------------ lessons: answer first, the analyzer's facts win
+
+import { readFileSync } from "node:fs";
+import { composeLesson, lessonContradiction, lessonFacts, lessonFocus, lessonPrompt } from "../src/thoughts.ts";
+import type { Result } from "../src/analyzer.ts";
+
+// REAL devnet post-mortems with what the 1B model wrote under the old prompt (fixtures/lessons.json)
+const LESSONS = JSON.parse(readFileSync(new URL("./fixtures/lessons.json", import.meta.url), "utf8")) as { postmortems: (Result & { trade: number; lesson_text_raw: string })[] };
+const pm = (trade: number) => LESSONS.postmortems.find((p) => p.trade === trade)!;
+
+test("lesson facts come from the analyzer; a no-fill is never a loss (real devnet fixtures)", () => {
+  for (const p of LESSONS.postmortems) {
+    const l = composeLesson(p.lesson_text_raw, p);
+    assert.ok(l.lesson.startsWith(lessonFacts(p)), `trade ${p.trade}: the lesson starts with the facts`);
+    if (l.guard === null) assert.equal(lessonContradiction(l.model_line, p), null);
+  }
+  // trade 9: no fill, the model wrote "...leading to a high fill rate and a significant loss."
+  const nine = composeLesson(pm(9).lesson_text_raw, pm(9));
+  assert.equal(pm(9).outcome, "no_fill");
+  assert.match(nine.guard ?? "", /never filled/);
+  assert.equal(nine.lesson, "No fill: the entry was never filled, so nothing was bought and no SOL was gained or lost; at fault: EXECUTION.");
+  // trade 16: no fill, "...missed opportunities and significant losses."
+  assert.match(composeLesson(pm(16).lesson_text_raw, pm(16)).guard ?? "", /never filled/);
+  // "While I appreciate the thoroughness of your review..." (trades 3, 4, 7, 21, 26)
+  for (const t of [3, 4, 7, 21, 26]) assert.match(composeLesson(pm(t).lesson_text_raw, pm(t)).guard ?? "", /answers the review/, `trade ${t}`);
+  // trade 4: a VARIANCE loss: the facts say so instead of "a substantial loss" in the model's words
+  assert.equal(lessonFacts(pm(4)), "Loss: -0.005831084 SOL on this trade; no bucket at fault, the loss fits the stated win rate (VARIANCE).");
+});
+
+test("lesson prompt asks for the answer first and the guard keeps a good line", () => {
+  const p = pm(28); // loss, THESIS
+  assert.equal(lessonFocus(p), "THESIS");
+  const m = lessonPrompt("still_heron", p);
+  assert.match(m[0].content, /Answer first: one line that starts with FIX:/);
+  assert.match(m[1].content, /^Facts: Loss: -0\.000408486 SOL on this trade; at fault: THESIS\./);
+  const ok = composeLesson("FIX: enter only when ret_15m is clearly above the threshold, not at its edge.", p);
+  assert.equal(ok.guard, null);
+  assert.equal(ok.lesson, "Loss: -0.000408486 SOL on this trade; at fault: THESIS. Next time: enter only when ret_15m is clearly above the threshold, not at its edge.");
+  assert.equal(lessonFocus(pm(8)), null, "a clean win has nothing to fix");
+  assert.match(lessonPrompt("x", pm(8))[0].content, /starts with KEEP:/);
+  // contradictions the guard refuses
+  assert.match(lessonContradiction("this win was a big loss", pm(8)) ?? "", /calls a win a loss/);
+  assert.match(lessonContradiction("I won this one", p) ?? "", /calls a loss a win/);
+  assert.match(lessonContradiction("losing 2 SOL hurt", p) ?? "", /names 2 SOL/);
+  assert.match(lessonContradiction("SIZING was too big", p) ?? "", /names SIZING/);
+  assert.equal(lessonContradiction("trade deeper pools to reduce potential losses", p), null);
+  assert.equal(composeLesson("", p).guard, "no usable line");
+});
+
+test("new lesson prompt: the devnet model answers first and every answer passes the guard (real recorded answers)", () => {
+  const v2 = (LESSONS as any).v2_answers as { trade: number; persona: string; text: string }[];
+  assert.ok(v2.length >= 6);
+  for (const a of v2) {
+    const p = pm(a.trade);
+    assert.match(a.text, /^(FIX|KEEP)\b/, `trade ${a.trade}: the answer starts with its label`);
+    assert.equal(lessonPrompt(a.persona, p)[0].content.includes(lessonFocus(p) ? "FIX:" : "KEEP:"), true);
+    const l = composeLesson(a.text, p);
+    assert.equal(l.guard, null, `trade ${a.trade}: ${a.text}`);
+    assert.ok(l.lesson.startsWith(lessonFacts(p)) && l.lesson.length > lessonFacts(p).length);
+  }
+  const nine = composeLesson(v2.find((a) => a.trade === 9)!.text, pm(9)).lesson;
+  assert.equal(nine, "No fill: the entry was never filled, so nothing was bought and no SOL was gained or lost; at fault: EXECUTION. Next time: Reduce the time spent on the commit decision by optimizing the commit wait.");
+});
