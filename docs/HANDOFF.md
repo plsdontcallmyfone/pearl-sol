@@ -1913,6 +1913,16 @@ CLAUDE.md "Who is working on what".
       box 0 `blobs.max_total_bytes` 40e9 -> 60e9 (backup node.json, restart cadre-node only); about 19.7 GB more RPC room (5% reserve), about 8 h at the
       12 h rate. Option B (policy decision): box 0 `keep_replay` false like boxes 1-2, frees the A of every live ticket
       outside the mining rule; costs fraud-proof localization data for live tickets (honest replays read no A).
+    - FIXED in the gateway (2026-10-23, "gateway node blob estimate" row; not deployed): node_storage_refusal now sizes
+      the A the waiting rounds will put with the blob encoder's layout, `12 + m x k` per DISTINCT A blob (matrices with
+      byte-identical A share one content-addressed blob; learned from a request's a/*.i8 files or a posted round's
+      segments, 113 of 144 on box 0), each round padded to the row period and packed like round_take; a round half put
+      by the posting thread counts only the blobs still to put (that was a double count: its rows stayed pending after
+      their blobs were already in the node's total). Box 0 backlog at 10:40 UTC: old 706,904,064 bytes, new 555,421,668.
+      Of 467 refusals logged by gateway clients 07:54-10:35 UTC, 453 would have been admitted (old need x 231,424 /
+      294,912 + 10 MB of padding still under the headroom). /v1/stats request_data adds node_blob_need_bytes,
+      a_bytes_per_row, a_blobs_per_round. Tests: tests/node_blobs.rs (estimate == bytes put, half-posted round,
+      box 0 recorded backlog).
 
 ## M1 components (SPEC v2, all DONE)
 
