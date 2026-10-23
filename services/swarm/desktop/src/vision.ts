@@ -7,10 +7,15 @@
 // credit; OpenRouter routes anthropic/claude-haiku-5.5 at the same list price, 0.10 / 0.50 USD per
 // million tokens, read 2026-10-21). Every response's `usage.cost` (USD, OpenRouter's own figure)
 // is booked in the spend ledger, so the cost per agent hour is measured, not modelled.
+import { type CreditError, creditError } from "./credits.ts";
 import type { SandboxLike } from "./desk.ts";
 
 export interface StepLog { step: number; t: string; action: string; args?: Record<string, unknown>; note?: string }
-export interface TaskResult { ok: boolean; summary: string; steps: number; usd: number; inTokens: number; outTokens: number; log: StepLog[]; error?: string }
+export interface TaskResult {
+  ok: boolean; summary: string; steps: number; usd: number; inTokens: number; outTokens: number; log: StepLog[]; error?: string;
+  /** the model refused for lack of credit (402, "can only afford N tokens"): never retried, the controller pauses */
+  credit?: CreditError;
+}
 
 export interface Chat {
   (body: Record<string, unknown>): Promise<{ status: number; json: any }>;
@@ -24,6 +29,14 @@ export function openRouterChat(key: string, base = "https://openrouter.ai/api/v1
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(90_000),
     });
+    return { status: r.status, json: await r.json().catch(() => null) };
+  };
+}
+
+/** GET /api/v1/key: the key's own limit and usage (no tokens spent). Used by the credit probe. */
+export function openRouterKeyInfo(key: string, base = "https://openrouter.ai/api/v1"): () => Promise<{ status: number; json: any }> {
+  return async () => {
+    const r = await fetch(`${base}/key`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(20_000) });
     return { status: r.status, json: await r.json().catch(() => null) };
   };
 }
@@ -88,7 +101,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function runTask(
   sbx: SandboxLike,
   chat: Chat,
-  o: { model: string; system: string; task: string; maxSteps: number; maxUsd: number; onStep?: (s: StepLog) => void; verbatim?: string; openUrl?: string },
+  o: {
+    model: string; system: string; task: string; maxSteps: number; maxUsd: number; onStep?: (s: StepLog) => void; verbatim?: string; openUrl?: string;
+    /** max_tokens per model turn (default 400) */
+    maxTokens?: number;
+    /** checked before every model call: true stops the task (another task found the account out of credit) */
+    halted?: () => boolean;
+  },
 ): Promise<TaskResult> {
   const log: StepLog[] = [];
   let usd = 0, inTok = 0, outTok = 0;
@@ -117,17 +136,26 @@ export async function runTask(
   await shot(`Task: ${o.task}${o.openUrl ? `\nThe browser has just opened ${o.openUrl} for you; do not open it again.` : ""}\nThis is the screen now.`);
   for (let step = 1; step <= o.maxSteps; step++) {
     if (usd > o.maxUsd) return { ok: false, summary: "stopped: task spend cap", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: "task_usd_cap" };
+    if (o.halted?.()) return { ok: false, summary: "stopped: vision model paused (out of credit)", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: "vision_paused" };
     // a model error (429, 5xx, a dropped connection) is retried twice before the task gives up
     // (2026-10-21: one post failed on a single "vision model error")
-    const body = { model: o.model, messages, tools: o.verbatim !== undefined ? [...TOOLS, TYPE_GIVEN] : TOOLS, tool_choice: "auto", max_tokens: 400, usage: { include: true } };
+    const body = { model: o.model, messages, tools: o.verbatim !== undefined ? [...TOOLS, TYPE_GIVEN] : TOOLS, tool_choice: "auto", max_tokens: o.maxTokens ?? 400, usage: { include: true } };
     let r: { status: number; json: any } = { status: 0, json: null };
+    let credit: CreditError | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       r = await chat(body).catch((e: any) => ({ status: 0, json: { error: String(e?.message ?? e).slice(0, 120) } }));
       if (r.status === 200 && r.json?.choices?.[0]) break;
+      // out of credit (402, "can only afford N tokens", "Prompt tokens limit exceeded"): a retry cannot
+      // succeed until someone adds credit, so the task stops here and the controller pauses
+      credit = creditError(r.status, r.json);
+      if (credit) break;
       if (r.status !== 0 && r.status !== 408 && r.status !== 429 && r.status < 500) break;
       await sleep(attempt === 0 ? 2000 : 5000);
     }
     if (r.status !== 200 || !r.json?.choices?.[0]) {
+      // a 402 can still carry usage (OpenRouter bills the prompt it read before the limit hit)
+      usd += Number(r.json?.usage?.cost ?? 0) || 0;
+      if (credit) return { ok: false, summary: "vision model out of credit", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: `model ${r.status}: ${credit.message}`, credit };
       return { ok: false, summary: "vision model error", steps: step - 1, usd, inTokens: inTok, outTokens: outTok, log, error: `model ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}` };
     }
     const u = r.json.usage ?? {};

@@ -97,6 +97,39 @@ running desktops to midnight, and at the cap every desktop is paused until 00:00
 Admin flag: the file `DESK_KILL_FILE` (`/var/lib/lode/desktops/STOP`) or `DESK_ENABLED=0`.
 On devnet: `scripts/devnet-desktops.sh stop`.
 
+## Vision credit gate (src/credits.ts)
+
+The first vision response that says the OpenRouter account is out of credit (402, "can only afford N
+tokens", "Prompt tokens limit exceeded") pauses all model-driven work: no vision task starts, tasks in
+flight stop at their next model call, and the swarm's posts, replies and reactions wait (they would pay
+for a Cadre thought no desktop can type; DMs still run). One `vision_paused` line, `vision_paused: true`
+in `/status` and `/health`, `vision_gate` in `/status` (reason, affordable tokens, next probe, probes,
+skipped work). A 402 is never retried.
+
+While paused, every `DESK_CREDIT_PROBE_S` the controller probes: `GET /api/v1/key` first (free; an empty
+per-key limit or org budget stays paused without spending), then one "Reply with: ok" request with
+`max_tokens` `DESK_CREDIT_PROBE_MAX_TOKENS` (OpenRouter refuses it up front unless that many tokens are
+affordable). The first pass resumes everything (`vision_resumed`). After `DESK_CREDIT_HOLD_DESKS_S` paused,
+the desktops themselves are paused (E2B bills running seconds) and resumed on credit: one pause and one
+resume per outage. A pause soon after a resume doubles the probe interval up to `DESK_CREDIT_PROBE_MAX_S`.
+A `vision_still_paused` line every `DESK_CREDIT_REMIND_S`. Probe cost is booked as vision spend.
+
+## Spend lines
+
+`spend` every hour (today so far: E2B, vision, probes, total, cap, `within_cap`, left, the E2B cost if
+the running desktops run to midnight, `vision_paused`), `spend_day` once per UTC day for the day that
+ended, and `/status` `spend_days` (today plus 14 days, each with `within_cap`).
+
+## Memory
+
+Every health tick logs one `desk_health` line: per kind (two-desktop Social, two-desktop Work,
+one-desktop) MB available (min, p10, p50), desktops under `DESK_MEM_LOW_MB`, tabs, Chromium and
+encoder RSS. Under `DESK_MEM_LOW_MB` the browser host first closes every tab but the working one; only
+if the next check is still low is the browser restarted. The browser host also closes the activity
+console when it is not wanted, keeps 2 tabs (plus the console) on a 1 GiB desktop and 3 on larger
+ones, and trims by itself under `DESK_TRIM_MB` (120). `desk_unhealthy` is logged when the problems
+change or something was repaired, else at most every 30 min per desktop.
+
 ## Config (env)
 
 | env | default | what |
@@ -120,6 +153,11 @@ On devnet: `scripts/devnet-desktops.sh stop`.
 | DESK_WORK_TEMPLATE, DESK_WORK_MEM_MB | (none) | Work desktops only: their own template and size (devnet: cadre-desktop-1536, 1536); an old Work desktop of another size is replaced |
 | DESK_KEEPALIVE_S / DESK_SESSION_MAX_S | 900 / 86400 | timeout push, E2B session length (Pro) |
 | DESK_PORT | 10720 | controller, 127.0.0.1 only |
+| DESK_CREDIT_PROBE_S / DESK_CREDIT_PROBE_MAX_S / DESK_CREDIT_FLAP_S | 300 / 3600 / 600 | credit probe interval while paused; its cap; a pause within this long after a resume doubles it |
+| DESK_CREDIT_HOLD_DESKS_S | 1800 | paused this long, the desktops are paused too (-1 never, 0 at once) |
+| DESK_CREDIT_PROBE_MAX_TOKENS / DESK_CREDIT_MIN_USD | 1600 / 0.01 | the probe's max_tokens (a step's 400 out + about 4,000 prompt tokens at the list prices); `/key` remaining under this USD stays paused |
+| DESK_CREDIT_REMIND_S | 1800 | "still paused" line interval |
+| DESK_MEM_LOW_MB | 80 | memory problem threshold: trim tabs, then restart the browser if still low |
 
 The template: `node src/template.ts --name cadre-desktop --vcpu 1 --mem 1024 --check` (E2B's
 `desktop` + Node 22 + Playwright Chromium, screensaver removed; built 2026-10-21 in 143 s).

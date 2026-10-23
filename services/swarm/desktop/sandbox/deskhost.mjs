@@ -144,6 +144,11 @@ async function consoleTick() {
   // a vision task is starting, or the console is no longer wanted (Social mode): its working tab goes back in front
   if (front && (busy || !want)) await consoleAway();
   wasBusy = busy;
+  // not wanted (a one-desktop agent in Social mode): close it. It refreshes every second, and a
+  // background console kept on every one-desktop agent was one of the extra tabs that held 1 GiB
+  // Social desktops at 55-260 MB free on 2026-10-23 (two-desktop Social desktops, which never open it,
+  // logged 6 memory warnings in 24 h against 1,301 on one-desktop agents)
+  if (!want) for (const p of ctx.pages().filter(isConsole)) await p.close().catch(() => {});
   if (!want || busy) { writeFront('work'); return; }
   if (front && !front.isClosed() && isConsole(front)) return;
   lastWork = ctx.pages().filter(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')).pop() ?? lastWork;
@@ -153,17 +158,58 @@ async function consoleTick() {
   front = c;
   writeFront('console');
 }
+// memory (MB) from /proc/meminfo; null when unreadable
+function memMb() {
+  try {
+    const m = readFileSync('/proc/meminfo', 'utf8');
+    const k = key => Number((new RegExp(`^${key}:\\s+(\\d+)`, 'm').exec(m) ?? [])[1]) / 1024;
+    return { total: k('MemTotal'), avail: k('MemAvailable') };
+  } catch { return null; }
+}
+// tabs besides the console: 2 on a 1 GiB desktop (976 MB total), 3 on larger ones
+const MEM0 = memMb();
+const MAX_TABS = Number(process.env.DESK_MAX_TABS ?? (MEM0 && MEM0.total < 1200 ? 2 : 3));
+// below this many MB available (or when the controller writes ~/.cadre/trim) every tab but the working
+// one is closed, while no vision task runs
+const TRIM_MB = Number(process.env.DESK_TRIM_MB ?? 120);
+let lastTrimAt = 0;
+async function trimTabs(why) {
+  const before = memMb();
+  const keep = lastWork && !lastWork.isClosed() && !isConsole(lastWork) ? lastWork : ctx.pages().find(p => !isConsole(p)) ?? null;
+  let closed = 0;
+  for (const p of ctx.pages()) {
+    if (p === keep || (isConsole(p) && p === front)) continue;
+    await p.close().catch(() => {});
+    closed++;
+  }
+  if (!ctx.pages().length) { const p = await ctx.newPage(); await p.goto(`${site}/town`).catch(() => {}); }
+  await sleep(1500);
+  const after = memMb();
+  log('tabs_trimmed', { why, closed, avail_before_mb: before ? Math.round(before.avail) : null, avail_after_mb: after ? Math.round(after.avail) : null });
+}
 for (let n = 0; ; n++) {
   await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));
   if (n % 5 === 0) {
     await unlockIfLocked().catch(() => {});
-    // keep the tab count small on a 1 GiB desktop: at most 3 tabs plus the console; close the oldest
-    // non-wallet tabs, never the focused one the vision model works in
+    const busy = existsSync(`${HOME}/busy`);
+    const mem = memMb();
+    const asked = existsSync(`${HOME}/trim`);
+    if (!busy && (asked || (mem && mem.avail < TRIM_MB && Date.now() - lastTrimAt > 10 * 60_000))) {
+      rmSync(`${HOME}/trim`, { force: true });
+      lastTrimAt = Date.now();
+      await trimTabs(asked ? 'controller' : `memory ${Math.round(mem.avail)} MB`).catch(e => log('trim_error', { error: String(e.message).slice(0, 120) }));
+    }
+    // keep the tab count small: at most MAX_TABS tabs plus the console; close the oldest first, never
+    // the focused one the vision model works in; one wallet tab at most (a wallet task opens the wallet
+    // in the working tab, and those tabs used to be exempt from closing, so they piled up)
     const pages = ctx.pages().filter(p => !isConsole(p));
-    let extra = pages.length - 3;
+    // never while a task runs (a wallet approval window is an extension page the task needs)
+    let extra = busy ? 0 : pages.length - MAX_TABS;
+    const walletTabs = pages.filter(p => p.url().startsWith('chrome-extension://'));
     for (const p of pages) {
       if (extra <= 0) break;
-      if (p.url().startsWith(`chrome-extension://`) || p === lastWork) continue;
+      if (p === lastWork) continue;
+      if (p.url().startsWith('chrome-extension://') && p === walletTabs[walletTabs.length - 1]) continue;
       await p.close().catch(() => {});
       extra--;
     }

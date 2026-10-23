@@ -153,8 +153,12 @@ for line in sys.stdin:
     m402 += "model 402" in str(e.get("error", ""))
 print(n, bad, m402)' 2>/dev/null)"
   read -r n bad m402 <<<"${r:-0 0 0}"
+  # since the desktops resilience change (HANDOFF 49) the controller pauses vision on the first 402
+  # and logs it once, so the paused flag on /health is the signal, not a stream of 402 task lines
+  vp="$(curl -s -m 10 "${DESKTOPS_URL:-http://127.0.0.1:10720}/health" | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("vision_paused") else 0)' 2>/dev/null)"
   lvl=OK
   (( m402 > 0 )) && lvl=FAIL
+  [[ $vp == 1 ]] && { lvl=FAIL; m402="$m402 (vision paused: out of model credit)"; }
   if [[ $lvl == OK ]] && (( n >= DESK_TASK_MIN )) && python3 -c "import sys; sys.exit(0 if $bad / $n >= $DESK_FAIL_RATIO else 1)"; then lvl=WARN; fi
   emit "$lvl" desktop_tasks "$bad of $n tasks failed in $LOG_WINDOW, $m402 model 402 (out of model credit)"
 fi
