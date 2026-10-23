@@ -26,9 +26,37 @@ export class GatewayAt extends Gateway {
   at(path: string) {
     return this.viaApi ? this.base + path.replace(/^\/v1/, "") : this.base + path;
   }
+  /** Streamed (SSE) so the response headers arrive at once: a long thought on a CPU worker (measured on
+   * devnet box 0: 69 s to first token, about 1 token/s) outlives fetch's 300 s headers timeout when the
+   * gateway answers only at the end. The chunks are folded back into the non-stream body shape. */
   override async chat(model: string | undefined, messages: { role: string; content: string }[], maxTokens: number) {
-    const body = JSON.stringify({ ...(model ? { model } : {}), messages, max_tokens: maxTokens });
-    return fetchJson(this.at("/v1/chat/completions"), { method: "POST", headers: await this.signedHeaders("POST", "/v1/chat/completions", body), body }, 900_000);
+    const body = JSON.stringify({ ...(model ? { model } : {}), messages, max_tokens: maxTokens, stream: true });
+    const r = await fetch(this.at("/v1/chat/completions"), { method: "POST", headers: { ...(await this.signedHeaders("POST", "/v1/chat/completions", body)), accept: "text/event-stream" }, body, signal: AbortSignal.timeout(1_800_000) });
+    if (!(r.headers.get("content-type") ?? "").includes("event-stream")) {
+      const t = await r.text();
+      let j: any = t;
+      try { j = JSON.parse(t); } catch { /* text */ }
+      return { status: r.status, body: j, headers: r.headers };
+    }
+    let text = "", last: any = null, err: any = null, buf = "";
+    const dec = new TextDecoder();
+    for await (const part of r.body as any) {
+      buf += dec.decode(part, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        const line = ev.split("\n").find((l) => l.startsWith("data: "));
+        if (!line || line === "data: [DONE]") continue;
+        let j: any;
+        try { j = JSON.parse(line.slice(6)); } catch { continue; }
+        if (j.error) err = j.error;
+        const d = j.choices?.[0]?.delta?.content;
+        if (typeof d === "string") text += d;
+        if (j.cadre || j.usage) last = j;
+      }
+    }
+    if (err) return { status: 502, body: { error: err }, headers: r.headers };
+    return { status: 200, body: { choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: last?.choices?.[0]?.finish_reason ?? null }], usage: last?.usage ?? null, cadre: last?.cadre ?? null }, headers: r.headers };
   }
   override async balance() {
     return fetchJson(this.at("/v1/balance"), { method: "GET", headers: await this.signedHeaders("GET", "/v1/balance", "") }, 30_000);

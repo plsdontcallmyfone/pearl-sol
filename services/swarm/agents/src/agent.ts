@@ -494,6 +494,27 @@ export class AgentRunner extends Swarm {
     return r;
   }
 
+  /** A paid thought that may be larger than one standard top-up ticket (toolbelt reports): when the
+   * open tickets have fewer free rows than the thought's upper bound, buy one ticket big enough for
+   * it (still through the swarm's x402 top-up, inside the spec's daily SOL cap). */
+  async thinkSized(a: Agent, messages: { role: string; content: string }[], maxTokens: number, purpose: string) {
+    try {
+      return await this.think(a, messages, maxTokens, purpose);
+    } catch (e) {
+      // the gateway names the rows one ticket must have free ("no prepaid balance with N free rows")
+      const m = /\b402\b[\s\S]*with (\d+) free rows/.exec(String((e as Error).message));
+      if (!m) throw e;
+      const need = Number(m[1]);
+      const keep = this.cfg.topupRows;
+      this.cfg.topupRows = Math.max(keep, need + this.cfg.minFreeRows);
+      let ok = false;
+      try { ok = await this.topup(); } finally { this.cfg.topupRows = keep; }
+      this.note("inference_topup", ok ? `bought a ${Math.max(keep, need + this.cfg.minFreeRows)}-row prepaid ticket for a ${need}-row thought` : `could not top up for a ${need}-row thought (the spec's daily SOL cap, budget.sol_lamports_per_day, or the gateway refused)`, { ok });
+      if (!ok) return null;
+      return this.think(a, messages, maxTokens, purpose);
+    }
+  }
+
   /** v2 toolbelt standing work: the spec's watch list, and a receipt batch older than a day. */
   async toolbeltTick(): Promise<string> {
     const tb = this.toolbelt;

@@ -103,8 +103,8 @@ export class AgentMarket {
     // search and fetch receipted and committed on Cadre before the delivery names the batch root
     const tb = this.r.toolbelt;
     if (tb?.spec.web) {
-      const res = await research(tb, (m, n, p) => this.r.think(a, m, n, p).then((x) => (x ? { text: x.text, requestId: x.requestId } : null)), {
-        request, deliverable: spec.deliverable, persona: `${a.persona.name}. ${spec.description}`, task: `hire:${h.id}`, maxTokens: 256, // the gateway allows max_tokens 1..256
+      const res = await research(tb, (m, n, p) => this.r.thinkSized(a, m, n, p).then((x) => (x ? { text: x.text, requestId: x.requestId } : null)), {
+        request, deliverable: spec.deliverable, persona: `${a.persona.name}. ${spec.description}`, task: `hire:${h.id}`, maxTokens: 200, // the gateway allows 1..256; about 200 s at the 1B CPU worker's measured 1 token/s
       });
       if (!res.ok) { this.r.note("market", `hire #${h.id}: research did not finish (${res.why ?? "no text"}); will retry`, { ok: false }); return "budget"; }
       const thought = res.thoughts.at(-1)!;
