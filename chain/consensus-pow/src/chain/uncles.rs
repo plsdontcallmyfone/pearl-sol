@@ -86,6 +86,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if depth < 1 || depth > MAX_UNCLE_DEPTH {
             return invalid(format!("uncle depth {depth} (allowed 1..={MAX_UNCLE_DEPTH})"));
         }
+        if u.height == 0 {
+            return invalid("uncle parent is not on the branch"); // same refusal as before, without the u64 wrap
+        }
         let Some(up) = self.branch_at(parent, u.height - 1) else { return invalid("uncle parent is not on the branch") };
         if u.prev_hash != up.hash {
             return invalid("uncle parent is not on the branch");
@@ -110,6 +113,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         let job = JobRecord::decode(&v).map_err(|e| ChainError::Internal(e.to_string()))?;
         if job.created_height >= u.height {
             return invalid("uncle names a job posted after its parent");
+        }
+        // the job must have been mineable at the uncle's height (audit 2026-10-23, own height)
+        if height >= agent_types::speed::uncle_job_rule_height(self.genesis.chain_id) {
+            if let Err(e) = executor::check_mineable(&job, u.height) {
+                return invalid(format!("uncle names a job that was not mineable: {e}"));
+            }
         }
         let pj = job.pearl_job().map_err(ChainError::Invalid)?;
         let cfg = self.live.get(parent).map(|n| n.config.clone()).ok_or_else(|| ChainError::Internal("parent not live".into()))?;

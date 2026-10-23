@@ -170,7 +170,7 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
 - Speed (docs/SPEED.md 3.2): `emission_ppb` (key 45; subsidy rate in parts per billion of the pool
   per block, 0 = `emission_ppm` applies; 3500 on the devnet from the speed height, the same
   emission per day at 30 s), settable from the speed height; `speed_height` (uncle rules apply from
-  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration).
+  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration). `uncle_job_rule_height`: from this including-block height an uncle must name a job mineable at its own height (SPEED.md 3.3 rule 7).
 - `segment_replay_blocks` (key 48, own record, SPEC 4.5 "Segment data retention"; default 720) and
   `blob_params_activation_height` (the height from which key 48 may be set: devnet 5800, else 0).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
