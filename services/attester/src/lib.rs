@@ -384,3 +384,82 @@ pub fn check_segment(node: &dyn NodeApi, store: &pearl_job::standing::ModelStore
     ensure!(Some(result_hash(&prep.job_key, &c)) == j.result_hash, "committed C does not equal A B");
     Ok(())
 }
+
+// ---------------------------------------------------------------- HTTP serving
+
+/// Work in progress on the serving threads, for `/health` (`busy`).
+#[derive(Default)]
+pub struct ServeStats {
+    /// Requests being handled now, and when the oldest of them started (ms since start).
+    pub running: std::sync::atomic::AtomicUsize,
+    pub queued: std::sync::atomic::AtomicUsize,
+    pub done: std::sync::atomic::AtomicU64,
+    oldest: std::sync::Mutex<Vec<Instant>>,
+}
+
+impl ServeStats {
+    pub fn json(&self) -> Value {
+        use std::sync::atomic::Ordering::SeqCst;
+        let oldest = self.oldest.lock().unwrap().iter().min().map(|t| t.elapsed().as_secs());
+        json!({"running": self.running.load(SeqCst), "queued": self.queued.load(SeqCst), "done": self.done.load(SeqCst), "oldest_running_s": oldest})
+    }
+}
+
+/// Serve HTTP (the pearl-attester binary): `GET /health` is answered on the accepting thread at
+/// once, every other request on one of `workers` threads in arrival order. Before 2026-10-23 one
+/// loop did both, so a health check waited behind a ticket's glue replay (480-565 s on box 0,
+/// HANDOFF 46) and the devnet health check read "timed out reading response" while the attester
+/// was working normally. `health` builds the health body; `stats` is added to it as `busy`.
+pub fn serve<H, W>(server: tiny_http::Server, workers: usize, health: H, work: W, stats: std::sync::Arc<ServeStats>, log: bool)
+where
+    H: Fn() -> Value,
+    W: Fn(&str, &str, &[u8]) -> (u16, Value) + Send + Sync + 'static,
+{
+    use std::io::Read;
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::{mpsc, Arc, Mutex};
+    fn respond(req: tiny_http::Request, status: u16, v: &Value) {
+        let resp = tiny_http::Response::from_string(v.to_string())
+            .with_status_code(status)
+            .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap());
+        let _ = req.respond(resp);
+    }
+    let (tx, rx) = mpsc::channel::<(tiny_http::Request, String, String, Vec<u8>)>();
+    let rx = Arc::new(Mutex::new(rx));
+    let work = Arc::new(work);
+    for _ in 0..workers.max(1) {
+        let (rx, work, stats) = (Arc::clone(&rx), Arc::clone(&work), Arc::clone(&stats));
+        std::thread::spawn(move || loop {
+            let next = rx.lock().unwrap().recv();
+            let Ok((req, method, path, body)) = next else { return };
+            stats.queued.fetch_sub(1, SeqCst);
+            stats.running.fetch_add(1, SeqCst);
+            let t0 = Instant::now();
+            stats.oldest.lock().unwrap().push(t0);
+            let (status, v) = work(&method, &path, &body);
+            stats.oldest.lock().unwrap().retain(|t| *t != t0);
+            stats.running.fetch_sub(1, SeqCst);
+            stats.done.fetch_add(1, SeqCst);
+            if log {
+                eprintln!("{method} {path} -> {status} ({} ms){}", t0.elapsed().as_millis(), v.get("error").map(|e| format!(" {e}")).unwrap_or_default());
+            }
+            respond(req, status, &v);
+        });
+    }
+    for mut req in server.incoming_requests() {
+        let method = req.method().as_str().to_uppercase();
+        let path = req.url().split('?').next().unwrap_or("").to_string();
+        if method == "GET" && path == "/health" {
+            let mut v = health();
+            v["busy"] = stats.json();
+            respond(req, 200, &v);
+            continue;
+        }
+        let mut body = Vec::new();
+        let _ = req.as_reader().take(64 << 20).read_to_end(&mut body);
+        stats.queued.fetch_add(1, SeqCst);
+        if tx.send((req, method, path, body)).is_err() {
+            return;
+        }
+    }
+}

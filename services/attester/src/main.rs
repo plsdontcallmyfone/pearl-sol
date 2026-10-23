@@ -4,7 +4,6 @@
 //!   POST /share   {job, miner, proof_b64[, job_spec]}   (v1 modes only)
 //!   POST /result  {job, deliverer, result_b64 | result_uri[, job_spec]}
 
-use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -41,6 +40,10 @@ struct Args {
     /// node's blobs when missing).
     #[arg(long, default_value = "models")]
     models: PathBuf,
+    /// Threads handling /result and /share (each a full replay or Freivalds check; requests
+    /// beyond them wait in arrival order). /health never waits for them.
+    #[arg(long, default_value_t = 1)]
+    workers: usize,
 }
 
 fn main() -> Result<()> {
@@ -59,18 +62,10 @@ fn main() -> Result<()> {
     // Binding fails if anything already holds the port; we never take it over.
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("bind {addr}: {e} (is the port in use? lsof -ti :{})", a.port))?;
     eprintln!("pearl-attester {} listening on http://{addr} (mode {}, pid {})", att.pubkey_b58(), a.mode, std::process::id());
-    for mut req in server.incoming_requests() {
-        let mut body = Vec::new();
-        let limit = 64 << 20;
-        let _ = req.as_reader().take(limit).read_to_end(&mut body);
-        let method = req.method().as_str().to_uppercase();
-        let path = req.url().split('?').next().unwrap_or("").to_string();
-        let (status, v) = att.route(&method, &path, &body);
-        eprintln!("{method} {path} -> {status}{}", v.get("error").map(|e| format!(" {e}")).unwrap_or_default());
-        let resp = tiny_http::Response::from_string(v.to_string())
-            .with_status_code(status)
-            .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap());
-        let _ = req.respond(resp);
-    }
+    // /health answers at once; /result and /share run on --workers threads (a glue replay takes
+    // minutes, and the health check used to wait behind it)
+    let att = std::sync::Arc::new(att);
+    let a2 = std::sync::Arc::clone(&att);
+    pearl_attester::serve(server, a.workers, move || att.route("GET", "/health", &[]).1, move |m, p, b| a2.route(m, p, b), Default::default(), true);
     Ok(())
 }

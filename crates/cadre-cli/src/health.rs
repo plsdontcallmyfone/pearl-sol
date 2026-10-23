@@ -724,7 +724,12 @@ pub fn local_checks(ctx: &Ctx) -> Vec<Check> {
                 let g = st(v, "/glue");
                 format!("answers{}", if g.is_empty() { String::new() } else { format!("; glue {g}") })
             })),
-            s.spawn(|| simple_health("Box", "local attester", e.get("attester"), "/health", "not set", |v| format!("{} mode {}", short(st(v, "/attester")), st(v, "/mode")))),
+            s.spawn(|| simple_health("Box", "local attester", e.get("attester"), "/health", "not set", |v| {
+                // busy: replays in progress (an attester from 2026-10-23 answers /health during them)
+                let b = &v["busy"];
+                let busy = if n(b, "/running") > 0 { format!("; replaying {} ({} s), {} queued", n(b, "/running"), n(b, "/oldest_running_s"), n(b, "/queued")) } else { String::new() };
+                format!("{} mode {}{busy}", short(st(v, "/attester")), st(v, "/mode"))
+            })),
             s.spawn(|| match e.get("swarm") {
                 None => Check::new("Box", "local swarm budget", Level::Skip, "not set"),
                 Some(x) => {
