@@ -100,6 +100,8 @@ export class Toolbelt {
   set pending(v: ToolReceipt[]) { this.meter.st.pending = v; this.meter.save(); }
   batches: { first_seq: number; n: number; root: string; blob: string; tx: string; via: string; price_lamports: string; t_ms: number }[] = [];
   createdRepos: string[] = [];
+  /** paid research steps per task, reused by a retry of the same task (work.ts research) */
+  taskCache = new Map<string, { at: number; query: string; thought: string; pages: any[]; receipts: number[] }>();
   inbox: string | null = null;
   private topping = false;
 

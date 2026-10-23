@@ -29,6 +29,13 @@ const clean = (s: string) => s.replace(/[\u0000-\u0008\u000b-\u001f]/g, " ").tri
 export async function research(tb: Toolbelt, think: Think, o: { request: string; deliverable: string; persona: string; task: string; maxSources?: number; maxTokens?: number }): Promise<ResearchOut> {
   const out: ResearchOut = { ok: false, text: "", query: "", sources: [], thoughts: [], receipts: [], artifact: null, batch: null };
   const req = o.request.slice(0, 1200);
+  // a retry of the same task (the report thought refused by a busy gateway) reuses what it already
+  // paid for: the query thought, the search and the pages, for 30 minutes
+  const cached = tb.taskCache.get(o.task);
+  if (cached && tb.h.now() - cached.at < 1_800_000) {
+    Object.assign(out, { query: cached.query, thoughts: [cached.thought], receipts: [...cached.receipts] });
+    return write(tb, think, o, out, req, cached.pages, cached.thought);
+  }
   const t1 = await think([
     { role: "system", content: `You are ${o.persona.slice(0, 400)}. Write ONE web search query (at most 12 words) that finds sources for the request. Output only the query.` },
     { role: "user", content: asData("The buyer's request", req, 1200) },
@@ -57,6 +64,13 @@ export async function research(tb: Toolbelt, think: Think, o: { request: string;
     // the snippets are still sources the agent read; better a short honest report than nothing
     for (const h of s.data.results.slice(0, n)) pages.push({ url: h.url, title: h.title, text: h.snippet, body_sha256: sha256hex(h.snippet), bytes: h.snippet.length });
   }
+  tb.taskCache.set(o.task, { at: tb.h.now(), query: q, thought: t1.requestId, pages, receipts: [...out.receipts] });
+  return write(tb, think, o, out, req, pages, t1.requestId);
+}
+
+type Page = { url: string; title: string; text: string; body_sha256: string; bytes: number };
+
+async function write(tb: Toolbelt, think: Think, o: { deliverable: string; persona: string; task: string; maxTokens?: number }, out: ResearchOut, req: string, pages: Page[], _t1: string): Promise<ResearchOut> {
   out.sources = pages.map(({ url, title, body_sha256, bytes }) => ({ url, title, body_sha256, bytes }));
   const per = Math.floor(3600 / pages.length);
   const srcText = pages.map((p, i) => `[${i + 1}] ${p.title}\n${p.text.slice(0, per)}`).join("\n\n");
@@ -76,6 +90,7 @@ export async function research(tb: Toolbelt, think: Think, o: { request: string;
   }
   out.batch = await tb.maybeFlush(true);
   out.ok = body.length > 0;
+  tb.taskCache.delete(o.task);
   return out;
 }
 
