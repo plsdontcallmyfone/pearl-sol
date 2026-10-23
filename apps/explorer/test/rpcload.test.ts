@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Indexer } from "../src/indexer.ts";
 import { JsonRpc, RpcGate } from "../src/rpc.ts";
+import { pendingStages } from "../src/models.ts";
 
 const Z = "0".repeat(64);
 
@@ -79,6 +80,49 @@ test("indexer: one full jobs scan, then the newest page + getJob refresh; window
   height = 4;
   await ix.pollChain();
   assert.ok(count("getBlock") >= 1, "new tip: the window is read");
+  srv.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("indexer: an order's job older than the listJobs window is read by getJob and kept across full scans", async () => {
+  const old = { job_id: "e".repeat(64), poster: "p", status: "open", kind: "ticket", protocol_fee: "1", worker_pay: "1", posted_height: 1, closed_height: 0 };
+  const window = Array.from({ length: 5 }, (_, i) => ({ ...old, job_id: i.toString(16).padStart(64, "0"), kind: "segment" }));
+  const calls: string[] = [];
+  const node = (m: string, p: any) => {
+    calls.push(m);
+    switch (m) {
+      case "getChainInfo": return { genesis_hash: "ab".repeat(32), height: 1, tip: "1".repeat(64), finality_k: 2 };
+      case "getParams": return {};
+      case "getBlock": return p.height > 1 ? null : { hash: "1".repeat(64), header_fields: { height: 1, prev_hash: Z, timestamp_ms: 1, miner: "m", job_id: Z, proof_hash: Z, target_bits: 1 }, txs: [] };
+      case "listJobs": return { total: window.length, jobs: window.slice(p.offset, p.offset + p.limit) }; // the old job is out of the window
+      case "getJob": return p.job_id === old.job_id ? old : window.find((j) => j.job_id === p.job_id) ?? null;
+      case "getBridgeEvents": return { withdrawals: [] };
+    }
+    return null;
+  };
+  const srv = createServer((req, res) => {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => {
+      const j = JSON.parse(b);
+      const one = (x: any) => ({ jsonrpc: "2.0", id: x.id, result: node(x.method, x.params) });
+      res.end(JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)));
+    });
+  }).listen(0, "127.0.0.1"); // ephemeral port
+  await new Promise((r) => srv.once("listening", r));
+  const dir = mkdtempSync(join(tmpdir(), "rpcload-"));
+  const ix = new Indexer({ nodeUrl: `http://127.0.0.1:${(srv.address() as any).port}`, solUrl: "http://127.0.0.1:1", stateDir: dir, jobsFullMs: 0, jobsRefreshPerPoll: 3, jobsPollMs: 0, log: () => {} });
+  await ix.pollChain(); // first run: genesis recorded (a new genesis resets the orders)
+  ix.orders.set("37", { nonce: "37", jobId: old.job_id, status: "pending" } as any);
+  await ix.pollChain();
+  assert.equal(ix.jobs.get(old.job_id)?.kind, "ticket", "fetched by getJob");
+  calls.length = 0;
+  await ix.pollChain(); // jobsFullMs 0: another full scan clears and refills the map
+  assert.ok(ix.jobs.has(old.job_id), "kept across the full scan");
+  assert.equal(calls.filter((c) => c === "getJob").length, 0, "not fetched again");
+  ix.orders.set("38", { nonce: "38", jobId: "d".repeat(64), status: "pending" } as any);
+  await ix.pollChain();
+  assert.deepEqual(pendingStages(ix), { not_unlocked: 1, job_open: 1, awaiting_light_client: 0, settleable: 0, job_unknown: 0 });
   srv.close();
   rmSync(dir, { recursive: true, force: true });
 });

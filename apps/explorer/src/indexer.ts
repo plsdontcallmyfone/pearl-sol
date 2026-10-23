@@ -283,9 +283,11 @@ export class Indexer {
       }
       this.jobs.clear();
       for (const j of jobs) this.jobs.set(j.job_id, j);
+      for (const [id, j] of this.orderJobsOutOfWindow) if (!this.jobs.has(id)) this.jobs.set(id, j);
       this.jobsFullAt = now;
       this.jobsAt = now;
       this.jobsTotal = total;
+      await this.fillOrderJobs();
       return;
     }
     if (now - this.jobsAt < this.o.jobsPollMs) return;
@@ -312,10 +314,38 @@ export class Indexer {
       this.jobsCursor = start + n;
       const res = await chunkedBatch<any>(this.node, pick.map((j) => ["getJob", { job_id: j.job_id }]), 50, 1);
       res.forEach((r, i) => {
-        if (r && !(r instanceof Error) && r.job_id) this.jobs.set(r.job_id, r);
-        else if (r === null) this.jobs.delete(pick[i].job_id);
+        if (r && !(r instanceof Error) && r.job_id) {
+          this.jobs.set(r.job_id, r);
+          if (this.orderJobsOutOfWindow.has(r.job_id)) this.orderJobsOutOfWindow.set(r.job_id, r);
+        } else if (r === null) {
+          this.jobs.delete(pick[i].job_id);
+          this.orderJobsOutOfWindow.delete(pick[i].job_id);
+        }
       });
     }
+    await this.fillOrderJobs();
+  }
+
+  /**
+   * Storefront orders whose job is older than the node's listJobs window (the newest 10,000 jobs;
+   * standing segment jobs fill it within hours) are read by getJob and kept across full scans, so
+   * an order's job, its status and its settlement wait stay known (devnet 2026-10-23: 55 of 64
+   * pending orders showed on_chain_job false while every job was on the chain). Up to 100 per poll.
+   */
+  orderJobsOutOfWindow = new Map<string, any>();
+  /** Order jobs the node does not know (getJob null): the deposit is not unlocked. */
+  orderJobsMissing = new Set<string>();
+  private async fillOrderJobs() {
+    const want = [...new Set([...this.orders.values()].filter((o) => o.status !== "refunded" && o.jobId && !this.jobs.has(o.jobId)).map((o) => o.jobId))].slice(0, 100);
+    if (!want.length) return;
+    const res = await chunkedBatch<any>(this.node, want.map((id) => ["getJob", { job_id: id }]), 50, 1);
+    res.forEach((r, i) => {
+      if (r && !(r instanceof Error) && r.job_id) {
+        this.jobs.set(r.job_id, r);
+        this.orderJobsOutOfWindow.set(r.job_id, r);
+        this.orderJobsMissing.delete(r.job_id);
+      } else if (r === null) this.orderJobsMissing.add(want[i]); // not on the chain (yet): not unlocked
+    });
   }
 
   private dropBlock(h: number) {

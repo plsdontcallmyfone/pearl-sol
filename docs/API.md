@@ -72,7 +72,7 @@ reachable and the index complete; gateway / storefront / pool reported, not gati
 
 | Group | Endpoint | What |
 |---|---|---|
-| Stats | `GET /v1/summary` | explorer summary (paid-block ratio, totals, payers, jobs, inference, light client) + `light_client_lag`, `buyback`, `reserve`, `supply` |
+| Stats | `GET /v1/summary` | explorer summary (paid-block ratio, totals, payers, jobs, inference, light client) + `light_client_lag`, `buyback`, `reserve`, `supply`. `storefront.pending_by_stage` splits Pending Orders (all paid): `not_unlocked`, `job_open` (job or prepaid ticket still open), `awaiting_light_client` (closed above the light client's final), `settleable`, `job_unknown` |
 | | `GET /v1/feed?filter=all\|paid\|fallback&before=H&limit=N` | block feed, fallback runs grouped |
 | | `GET /v1/blocks/{height\|hash}`, `/v1/blocks/{id}/proof` | one block: who paid, W, P, subsidy vs cap, light-client verdict, txs; raw proof |
 | | `GET /v1/jobs?status&kind&poster&offset&limit`, `/v1/jobs/{id}` | jobs and tickets; one job with bound bar, blocks, chain txs, order |

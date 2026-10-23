@@ -119,6 +119,7 @@ export function summaryModel(ix: Indexer) {
     storefront: {
       orders: t.storefront.orders,
       by_status: t.storefront.byStatus,
+      pending_by_stage: pendingStages(ix),
       sol_settled: s(t.storefront.solSettled),
       sol_pending: s(t.storefront.solPending),
       sol_expired: s(t.storefront.solExpired),
@@ -437,6 +438,27 @@ export function orderPageModel(ix: Indexer, nonce: string) {
   const o = ix.orders.get(nonce);
   if (!o) return null;
   return { ...orderModel(o), on_chain_job: ix.jobs.has(o.jobId), settlement_wait: settlementWait(ix, o), job: ix.jobs.has(o.jobId) ? jobSummary(ix, ix.jobs.get(o.jobId)) : null };
+}
+
+/**
+ * Where each Pending Order is (a Pending Order is always paid: buy_job created it):
+ * `not_unlocked` no job on the chain yet (relayer); `job_open` the job (or prepaid ticket) is still
+ * open or delivered, nothing to settle yet; `awaiting_light_client` the job closed above the light
+ * client's final height (header relay); `settleable` closed at or below it (cadre-settle's turn);
+ * `job_unknown` the indexer has not read the job.
+ */
+export function pendingStages(ix: Indexer) {
+  const out = { not_unlocked: 0, job_open: 0, awaiting_light_client: 0, settleable: 0, job_unknown: 0 };
+  const fin = ix.lc.config?.finalHeight ?? null;
+  for (const o of ix.orders.values()) {
+    if (o.status !== "pending") continue;
+    const j = ix.jobs.get(o.jobId);
+    if (!j) ix.orderJobsMissing.has(o.jobId) ? out.not_unlocked++ : out.job_unknown++;
+    else if (!(j.closed_height > 0)) out.job_open++;
+    else if (fin === null || j.closed_height > fin) out.awaiting_light_client++;
+    else out.settleable++;
+  }
+  return out;
 }
 
 /** When a pending Order can settle by proof: the light client's final height must reach the job's close (CompleteJob / ExpireJob). */
