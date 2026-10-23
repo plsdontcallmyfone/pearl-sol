@@ -118,7 +118,7 @@ class Ctx {
       if (r.charged_lamports) parts.push(`, ${sol(r.charged_lamports)}`);
       if (r.paid_by) parts.push(`, paid by ${this.who(r.paid_by, 3)}`);
       parts.push(`) ${link("receipt", this.L.receipt(r.id))}`);
-      if (r.ticket_id) parts.push(` ${link("ticket on chain", this.L.job(r.ticket_id))}`);
+      if (r.ticket_id) parts.push(` ${link("ticket and the blocks mined over it", this.L.ticket(r.ticket_id))}`);
       return parts.join("");
     }
     if (id && isReq(id)) return `receipt ${code(id)} ${link("receipt", this.L.receipt(id))}`;
@@ -210,7 +210,7 @@ export function renderJournalDay(c: Ctx, a: Agent, date: string, entries: Journa
     `${entries.length} entr${entries.length === 1 ? "y" : "ies"}, oldest first, times are block times in UTC. Every entry names its block (or Solana slot), its tx and its paid-thought receipt when one is on chain. ${link("How to check a line", "../../../README.md#check-a-journal-line-against-the-chain")}.`,
     "",
   ];
-  return head.join("\n") + entries.map((e) => renderEntry(c, e)).join("\n\n") + "\n";
+  return head.join("\n") + "\n" + entries.map((e) => renderEntry(c, e)).join("\n\n") + "\n";
 }
 
 // ------------------------------------------------------------------ counts
@@ -257,7 +257,8 @@ function renderAgentReadme(c: Ctx, a: Agent, k: Counts, days: [string, number][]
     if (a.user.spec_sha256) rows.push(["signed spec sha256", code(a.user.spec_sha256)]);
     rows.push(["spec checks", a.user.verified ? "verified by cadre-api against the chains" : "not verified"]);
   }
-  if (a.profile_uri) rows.push(["profile record", `${code(a.profile_uri)}${a.set_height !== null ? ` set at ${a.profile_chain === "solana" ? "Solana slot" : "block"} ${a.set_height}` : ""}`]);
+  const setAt = a.profile_chain === "solana" ? (a.set_slot !== null ? ` set at Solana slot ${a.set_slot}` : "") : a.set_height !== null ? ` set at block ${a.set_height}` : "";
+  if (a.profile_uri) rows.push(["profile record", `${code(a.profile_uri)}${setAt} (live: the newest profile, which may postdate this cutoff)`]);
   const links: string[] = [];
   if (a.handle && isHandle(a.handle)) links.push(link("profile on the Cadre site", L.profile(a.handle)));
   links.push(link("account in the explorer", L.account(a.account)), link("agent page", L.agentExplorer(a.account)));

@@ -12,9 +12,10 @@ export interface Cache {
   trades: Record<string, Trade & { settled: boolean }>;
   events: Record<string, { tx_hash: string; height: number }>; // "Version:3" -> tx
   block_times: Record<string, number>;
+  cards: Record<string, { handle: string | null; name: string | null; house: boolean; is_agent: boolean }>; // agents seen in market and strategy records
 }
 
-export const emptyCache = (): Cache => ({ posts: {}, hires: {}, versions: {}, trades: {}, events: {}, block_times: {} });
+export const emptyCache = (): Cache => ({ posts: {}, hires: {}, versions: {}, trades: {}, events: {}, block_times: {}, cards: {} });
 
 const TERMINAL = new Set(["Completed", "Expired", "Refunded", "Cancelled", "Closed"]);
 const str = (v: unknown): string | null => (typeof v === "string" && v.length ? v : null);
@@ -68,6 +69,8 @@ export function normAgent(r: any, ua: any | null): Agent {
     operator_linked: r.operator_linked === true,
     created_height: num(r.created_height),
     set_height: num(r.set_height),
+    created_slot: num(r.created_slot),
+    set_slot: num(r.set_slot),
     profile_uri: str(r.profile_uri),
     profile_chain: r.chain === "solana" ? "solana" : "cadre",
     user: ua
@@ -143,6 +146,17 @@ const unavailable = (e: unknown) => (e instanceof HttpError ? `${e.status} ${e.b
 export interface CollectOptions {
   log?: (s: string) => void;
   network?: string;
+  solanaRpc?: string; // for the finalized slot (the Solana side of the cutoff); default public devnet
+}
+
+async function solanaFinalized(url: string): Promise<number | null> {
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getSlot", params: [{ commitment: "finalized" }] }), signal: AbortSignal.timeout(15_000) });
+    const j: any = await r.json();
+    return typeof j?.result === "number" ? j.result : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function collect(api: Api, cache: Cache = emptyCache(), o: CollectOptions = {}): Promise<{ snapshot: Snapshot; cache: Cache }> {
@@ -150,6 +164,7 @@ export async function collect(api: Api, cache: Cache = emptyCache(), o: CollectO
   const summary = await api.get("/v1/summary");
   const cutoffHeight = Number(summary?.chain?.finalized_height);
   if (!Number.isSafeInteger(cutoffHeight) || cutoffHeight < 1) throw new Error("summary has no finalized_height");
+  const solFinal = await solanaFinalized(o.solanaRpc ?? "https://api.devnet.solana.com");
 
   const blockTime = async (h: number): Promise<number> => {
     const k = String(h);
@@ -174,6 +189,94 @@ export async function collect(api: Api, cache: Cache = emptyCache(), o: CollectO
     agents.push(normAgent(r, ua));
   }));
   log(`agents ${agents.length}`);
+
+  // ---- market hires
+  let marketContract: string | null = null;
+  try {
+    const l = await api.get("/v1/market/hires?limit=200");
+    marketContract = str(l.contract);
+    const card = (c: any) => { if (c && isB58(c.account)) cache.cards[c.account] = { handle: str(c.handle), name: str(c.name), house: c.house === true, is_agent: c.is_agent === true }; };
+    for (const h of l.hires ?? []) { card(h.buyer_card); card(h.provider_card); for (const e of h.evaluator_cards ?? []) card(e); }
+    const maxId = Math.max(0, ...(l.hires ?? []).map((h: any) => Number(h.id)));
+    for (let id = 1; id <= maxId; id++) {
+      const c = cache.hires[String(id)];
+      if (c?.closed && Math.max(...c.timeline.map((e) => e.height)) <= cutoffHeight) continue;
+      try { cache.hires[String(id)] = normHire(await api.get(`/v1/market/hires/${id}`)); } catch (e) { if (!(e instanceof HttpError && e.status === 404)) throw e; }
+    }
+  } catch (e) {
+    log(`market unavailable: ${unavailable(e)}`);
+  }
+  const hires = Object.values(cache.hires).map(({ closed: _c, ...h }) => h);
+  log(`hires ${hires.length}`);
+  for (const h of hires) for (const e of h.timeline) if (e.height <= cutoffHeight) await blockTime(e.height);
+
+  // ---- strategies
+  let strategies: Snapshot["strategies"] = { available: false, reason: null, contract: null, rules: null };
+  try {
+    const s = await api.get("/v1/strategies");
+    strategies = { available: true, reason: null, contract: str(s.contract), rules: s.rules ?? null };
+    // event tx hashes (newest first; stop at the first page that holds only known keys)
+    for (const name of ["Version", "Entry", "Exit", "PostMortem"]) {
+      for (let off = 0; off < 100_000; ) {
+        const r = await api.get(`/v1/contracts/${s.contract}/events?topic=${name}&limit=100&offset=${off}`);
+        let fresh = 0;
+        for (const ev of r.events ?? []) {
+          const t3 = ev.topics?.[3];
+          if (!isHex(t3)) continue;
+          const id = Number(Buffer.from(t3, "hex").readBigUInt64LE(0));
+          const k = `${name}:${id}`;
+          if (!cache.events[k]) { cache.events[k] = { tx_hash: ev.tx_hash, height: Number(ev.height) }; fresh++; }
+        }
+        if (!fresh || r.next_offset == null || !(r.events ?? []).length) break;
+        off = Number(r.next_offset);
+      }
+    }
+    const nv = Number(s.counts?.versions ?? 0), ne = Number(s.counts?.entries ?? 0);
+    for (let id = 1; id <= nv; id++) {
+      if (cache.versions[String(id)]) continue;
+      const r = await api.get(`/v1/strategies/versions/${id}`);
+      const v = r.version;
+      if (isB58(v.author)) cache.cards[v.author] = { ...(cache.cards[v.author] ?? { name: null }), handle: str(v.handle) ?? cache.cards[v.author]?.handle ?? null, house: v.house === true, is_agent: true };
+      cache.versions[String(id)] = {
+        id: Number(v.id), author: String(v.author), line: Number(v.line), parent: Number(v.parent), hash: String(v.hash), spec_uri: String(v.spec_uri), thought_ref: String(v.thought_ref ?? ""),
+        claimed: Number(v.claimed ?? 0), motives: (v.motives ?? []).map(Number), height: Number(v.height), superseded_by: 0, open_entry: 0, entries: 0, stats: null,
+        spec: r.spec ?? null, spec_verified: typeof r.spec_verified === "boolean" ? r.spec_verified : null, tx_hash: cache.events[`Version:${id}`]?.tx_hash ?? null,
+      };
+    }
+    for (const v of Object.values(cache.versions)) if (!v.tx_hash) v.tx_hash = cache.events[`Version:${v.id}`]?.tx_hash ?? null;
+    for (let id = 1; id <= ne; id++) {
+      const c = cache.trades[String(id)];
+      if (c?.settled) continue;
+      let r: any;
+      try { r = await api.get(`/v1/strategies/trades/${id}`); } catch (e) { if (e instanceof HttpError && e.status === 404) continue; throw e; }
+      const t = r.trade;
+      const tr: Trade & { settled: boolean } = {
+        id: Number(t.id), author: String(t.author), version: Number(t.version), snapshot: String(t.snapshot), size: String(t.size), price_e12: String(t.price_e12), quote_out: String(t.quote_out),
+        stop_bps: Number(t.stop_bps), target_bps: Number(t.target_bps), max_risk: String(t.max_risk), decision_slot: Number(t.decision_slot), decision_ref: String(t.decision_ref ?? ""), height: Number(t.height),
+        exit: t.exit ?? null, postmortem: t.postmortem ?? null, postmortem_blob: r.blobs?.postmortem ?? null,
+        tx: { entry: null, exit: null, postmortem: null },
+        settled: !!(t.exit && t.postmortem && t.postmortem.height <= cutoffHeight),
+      };
+      cache.trades[String(id)] = tr;
+    }
+    for (const t of Object.values(cache.trades)) t.tx = { entry: cache.events[`Entry:${t.id}`]?.tx_hash ?? null, exit: cache.events[`Exit:${t.id}`]?.tx_hash ?? null, postmortem: cache.events[`PostMortem:${t.id}`]?.tx_hash ?? null };
+  } catch (e) {
+    strategies = { available: false, reason: unavailable(e), contract: null, rules: null };
+    log(`strategies unavailable: ${strategies.reason}`);
+  }
+  log(`strategies ${strategies.available ? "read" : "unavailable"}`);
+  const versions = Object.values(cache.versions);
+  const trades = Object.values(cache.trades).map(({ settled: _s, ...t }) => t);
+  for (const v of versions) if (v.height <= cutoffHeight) await blockTime(v.height);
+  for (const t of trades) for (const h of [t.height, t.exit?.height, t.postmortem?.height]) if (h && h <= cutoffHeight) await blockTime(h);
+
+  // ---- agents without a town profile that act in the market or the strategies contract
+  const known = new Set(agents.map((a) => a.account));
+  for (const [acct, c] of Object.entries(cache.cards).sort(([a], [b]) => a.localeCompare(b))) {
+    if (known.has(acct) || !c.is_agent || !isB58(acct)) continue;
+    agents.push(normAgent({ account: acct, handle: c.handle, name: c.name, house: c.house, chain: "cadre" }, null));
+    known.add(acct);
+  }
 
   // ---- posts: newest first until a cached final post, keeping only final ones
   let solSlot: number | null = null;
@@ -214,84 +317,8 @@ export async function collect(api: Api, cache: Cache = emptyCache(), o: CollectO
   }
   const posts = Object.values(cache.posts).flat();
   for (const p of posts) if (p.chain === "solana" && p.slot !== null) solSlot = Math.max(solSlot ?? 0, p.slot);
+  if (solFinal !== null) solSlot = solFinal; // every cached Solana post is final, so its slot is at or below this
   log(`posts ${posts.length}`);
-
-  // ---- market hires
-  let marketContract: string | null = null;
-  try {
-    const l = await api.get("/v1/market/hires?limit=200");
-    marketContract = str(l.contract);
-    const maxId = Math.max(0, ...(l.hires ?? []).map((h: any) => Number(h.id)));
-    for (let id = 1; id <= maxId; id++) {
-      const c = cache.hires[String(id)];
-      if (c?.closed && Math.max(...c.timeline.map((e) => e.height)) <= cutoffHeight) continue;
-      try { cache.hires[String(id)] = normHire(await api.get(`/v1/market/hires/${id}`)); } catch (e) { if (!(e instanceof HttpError && e.status === 404)) throw e; }
-    }
-  } catch (e) {
-    log(`market unavailable: ${unavailable(e)}`);
-  }
-  const hires = Object.values(cache.hires).map(({ closed: _c, ...h }) => h);
-  log(`hires ${hires.length}`);
-  for (const h of hires) for (const e of h.timeline) if (e.height <= cutoffHeight) await blockTime(e.height);
-
-  // ---- strategies
-  let strategies: Snapshot["strategies"] = { available: false, reason: null, contract: null, rules: null };
-  try {
-    const s = await api.get("/v1/strategies");
-    strategies = { available: true, reason: null, contract: str(s.contract), rules: s.rules ?? null };
-    // event tx hashes (newest first; stop at the first page that holds only known keys)
-    for (const name of ["Version", "Entry", "Exit", "PostMortem"]) {
-      for (let off = 0; off < 100_000; ) {
-        const r = await api.get(`/v1/contracts/${s.contract}/events?topic=${name}&limit=100&offset=${off}`);
-        let fresh = 0;
-        for (const ev of r.events ?? []) {
-          const t3 = ev.topics?.[3];
-          if (!isHex(t3)) continue;
-          const id = Number(Buffer.from(t3, "hex").readBigUInt64LE(0));
-          const k = `${name}:${id}`;
-          if (!cache.events[k]) { cache.events[k] = { tx_hash: ev.tx_hash, height: Number(ev.height) }; fresh++; }
-        }
-        if (!fresh || r.next_offset == null || !(r.events ?? []).length) break;
-        off = Number(r.next_offset);
-      }
-    }
-    const nv = Number(s.counts?.versions ?? 0), ne = Number(s.counts?.entries ?? 0);
-    for (let id = 1; id <= nv; id++) {
-      if (cache.versions[String(id)]) continue;
-      const r = await api.get(`/v1/strategies/versions/${id}`);
-      const v = r.version;
-      cache.versions[String(id)] = {
-        id: Number(v.id), author: String(v.author), line: Number(v.line), parent: Number(v.parent), hash: String(v.hash), spec_uri: String(v.spec_uri), thought_ref: String(v.thought_ref ?? ""),
-        claimed: Number(v.claimed ?? 0), motives: (v.motives ?? []).map(Number), height: Number(v.height), superseded_by: 0, open_entry: 0, entries: 0, stats: null,
-        spec: r.spec ?? null, spec_verified: typeof r.spec_verified === "boolean" ? r.spec_verified : null, tx_hash: cache.events[`Version:${id}`]?.tx_hash ?? null,
-      };
-    }
-    for (const v of Object.values(cache.versions)) if (!v.tx_hash) v.tx_hash = cache.events[`Version:${v.id}`]?.tx_hash ?? null;
-    for (let id = 1; id <= ne; id++) {
-      const c = cache.trades[String(id)];
-      if (c?.settled) continue;
-      let r: any;
-      try { r = await api.get(`/v1/strategies/trades/${id}`); } catch (e) { if (e instanceof HttpError && e.status === 404) continue; throw e; }
-      const t = r.trade;
-      const tr: Trade & { settled: boolean } = {
-        id: Number(t.id), author: String(t.author), version: Number(t.version), snapshot: String(t.snapshot), size: String(t.size), price_e12: String(t.price_e12), quote_out: String(t.quote_out),
-        stop_bps: Number(t.stop_bps), target_bps: Number(t.target_bps), max_risk: String(t.max_risk), decision_slot: Number(t.decision_slot), decision_ref: String(t.decision_ref ?? ""), height: Number(t.height),
-        exit: t.exit ?? null, postmortem: t.postmortem ?? null, postmortem_blob: r.blobs?.postmortem ?? null,
-        tx: { entry: null, exit: null, postmortem: null },
-        settled: !!(t.exit && t.postmortem && t.postmortem.height <= cutoffHeight),
-      };
-      cache.trades[String(id)] = tr;
-    }
-    for (const t of Object.values(cache.trades)) t.tx = { entry: cache.events[`Entry:${t.id}`]?.tx_hash ?? null, exit: cache.events[`Exit:${t.id}`]?.tx_hash ?? null, postmortem: cache.events[`PostMortem:${t.id}`]?.tx_hash ?? null };
-  } catch (e) {
-    strategies = { available: false, reason: unavailable(e), contract: null, rules: null };
-    log(`strategies unavailable: ${strategies.reason}`);
-  }
-  log(`strategies ${strategies.available ? "read" : "unavailable"}`);
-  const versions = Object.values(cache.versions);
-  const trades = Object.values(cache.trades).map(({ settled: _s, ...t }) => t);
-  for (const v of versions) if (v.height <= cutoffHeight) await blockTime(v.height);
-  for (const t of trades) for (const h of [t.height, t.exit?.height, t.postmortem?.height]) if (h && h <= cutoffHeight) await blockTime(h);
 
   // ---- swarms (fresh every batch: membership changes)
   let swarms: Snapshot["swarms"] = { available: false, reason: null, list: [] };
@@ -337,10 +364,23 @@ export function atCutoff(s: Snapshot, cut: Snapshot["cutoff"]): Snapshot {
   for (const t of trades) for (const x of [t.height, t.exit?.height, t.postmortem?.height]) if (x) heights.add(String(x));
   const bt: Record<string, number> = {};
   for (const k of [...heights].sort((a, b) => Number(a) - Number(b))) if (s.block_times[k] !== undefined) bt[k] = s.block_times[k];
+  const posts = s.posts.filter(inCut);
+  const active = new Set<string>();
+  for (const p of posts) active.add(p.author);
+  for (const h of hires) for (const x of [h.buyer, h.provider, ...h.evaluators]) active.add(x);
+  for (const v of versions) active.add(v.author);
+  const S = cut.solana_slot;
+  const agents = s.agents.filter((a) => {
+    if (active.has(a.account)) return true;
+    if (a.created_height !== null) return a.created_height <= H;
+    if (a.created_slot !== null) return S !== null && a.created_slot <= S;
+    return true;
+  });
   return {
     ...s,
     cutoff: { ...cut, time_ms: s.block_times[String(H)] ?? cut.time_ms },
-    posts: s.posts.filter(inCut),
+    agents,
+    posts,
     hires,
     versions,
     trades,

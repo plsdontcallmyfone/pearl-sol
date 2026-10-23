@@ -49,6 +49,7 @@ export async function sync(dir: string, remote: string, auth: Auth | null): Prom
 
 /** Replace every tracked file with the rendered set (files not rendered any more are removed). */
 export function writeFiles(dir: string, files: Map<string, string>): void {
+  mkdirSync(dir, { recursive: true });
   for (const e of readdirSync(dir)) if (e !== ".git") rmSync(join(dir, e), { recursive: true, force: true });
   for (const [p, body] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     if (p.startsWith("/") || p.split("/").includes("..")) throw new Error(`refusing path ${p}`);

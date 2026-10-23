@@ -24,7 +24,7 @@ export function commitMessage(prev: Manifest | null, next: Manifest, changedFile
   const moved: string[] = [];
   for (const [f, a] of Object.entries(next.agents)) {
     const p = prev?.agents[f];
-    if (!p || p.journal_entries !== a.journal_entries) moved.push(f);
+    if (a.journal_entries > (p?.journal_entries ?? 0)) moved.push(f);
   }
   moved.sort();
   const lines = [`${head}: ${parts.length ? parts.join(", ") : "profile and record updates"}`, ""];

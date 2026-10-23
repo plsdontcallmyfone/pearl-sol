@@ -6,7 +6,8 @@
 //   node scripts/verify-dump.ts --dump ~/agent-dump --file ... --chain 50  also getTx up to 50 tx lines
 //   --api URL / --rpc URL override the sources named in dump.json (links in the files keep theirs)
 //
-// Exit 0 when every checked file is byte-equal to the re-derived one and every checked tx is on
+// agents/<h>/README.md carries live profile fields; a diff there is reported as LIVE, not failed,
+// unless --strict. Exit 0 when every other checked file is byte-equal to the re-derived one and every checked tx is on
 // chain at the height the line names; 1 otherwise.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -39,7 +40,8 @@ const { files } = render(atCutoff(snapshot, manifest.cutoff), links);
 
 const wanted = all("--file");
 const paths = wanted.length ? wanted : [...files.keys()].sort();
-let bad = 0;
+const strict = args.includes("--strict");
+let bad = 0, live = 0;
 for (const p of paths) {
   const want = files.get(p);
   const disk = existsSync(join(dump, p)) ? readFileSync(join(dump, p), "utf8") : null;
@@ -47,12 +49,15 @@ for (const p of paths) {
   if (want === undefined) { console.log(`EXTRA   ${p}: in the dump, not derivable now`); bad++; continue; }
   if (disk === null) { console.log(`ABSENT  ${p}: derivable, not in the dump`); bad++; continue; }
   if (want === disk) { console.log(`OK      ${p}`); continue; }
-  bad++;
-  console.log(`DIFF    ${p}`);
+  // agents/<h>/README.md shows the live profile (bio, name, self-description, spec summary): a change
+  // after the cutoff is expected there and is reported, not failed (unless --strict)
+  const isLive = /^agents\/[^/]+\/README\.md$/.test(p) && !strict;
+  if (isLive) live++; else bad++;
+  console.log(`${isLive ? "LIVE   " : "DIFF   "} ${p}`);
   const d = lineDiff(disk, want).split("\n").filter((l) => l.startsWith("- ") || l.startsWith("+ "));
   for (const l of d.slice(0, 40)) console.log(`        ${l}`);
   if (d.length > 40) console.log(`        ... ${d.length - 40} more changed lines`);
-  if (/README\.md$|lessons\.md$/.test(p)) console.log("        (profiles, self-descriptions and knowledge records are read as they are now; a change made after the cutoff shows here)");
+  if (isLive) console.log("        (live profile fields changed after the cutoff; the next batch carries them)");
 }
 
 const chainN = Number(opt("--chain") ?? 0);
@@ -71,5 +76,5 @@ if (chainN > 0) {
     }
   }
 }
-console.log(bad ? `${bad} problem(s)` : "all checked files match the chain");
+console.log(bad ? `${bad} problem(s)${live ? `, ${live} live profile change(s)` : ""}` : `all checked files match the chain${live ? ` (${live} profile README(s) changed after the cutoff: live data)` : ""}`);
 process.exit(bad ? 1 : 0);

@@ -56,8 +56,8 @@ function fixture(): Snapshot {
   return {
     format: SNAPSHOT_FORMAT, network: "devnet", cutoff: { height: 6250, time_ms: bt["6250"], solana_slot: null },
     agents: [
-      { account: A1, account_cx: "Cx68f2375B0693F64E6723c0427d10f5177784af54320033dE792A0F0a429C7011", handle: "drv_84fcqp", name: "Driven [Tide]", house: false, bio: "bio with ![img](http://x)", appearance: null, operator: BUYER, operator_cx: null, operator_linked: true, created_height: 6000, set_height: 6001, profile_uri: null, profile_chain: "cadre", user: { verified: true, sovereign: true, template: "momentum_scout", practice_style: "momentum", skills: ["town", "practice"], topics: [], hosting: "hosted", spec_sha256: TX(60), self: null } },
-      { account: A2, account_cx: null, handle: "floor_wren", name: "Floor Wren", house: true, bio: null, appearance: null, operator: null, operator_cx: null, operator_linked: false, created_height: 1, set_height: 1, profile_uri: null, profile_chain: "cadre", user: null },
+      { account: A1, account_cx: "Cx68f2375B0693F64E6723c0427d10f5177784af54320033dE792A0F0a429C7011", handle: "drv_84fcqp", name: "Driven [Tide]", house: false, bio: "bio with ![img](http://x)", appearance: null, operator: BUYER, operator_cx: null, operator_linked: true, created_height: 6000, set_height: 6001, created_slot: null, set_slot: null, profile_uri: null, profile_chain: "cadre", user: { verified: true, sovereign: true, template: "momentum_scout", practice_style: "momentum", skills: ["town", "practice"], topics: [], hosting: "hosted", spec_sha256: TX(60), self: null } },
+      { account: A2, account_cx: null, handle: "floor_wren", name: "Floor Wren", house: true, bio: null, appearance: null, operator: null, operator_cx: null, operator_linked: false, created_height: 1, set_height: 1, created_slot: null, set_slot: null, profile_uri: null, profile_chain: "cadre", user: null },
     ],
     posts, hires: [h], market_contract: null,
     strategies: { available: true, reason: null, contract: null, rules: { learning: "a revision must claim one fixable bucket" } },
@@ -183,4 +183,14 @@ test("commit message is counts only", () => {
   assert.ok(!m.includes("click") && !m.includes("evil"));
   const again = commitMessage(manifest, manifest, 0);
   assert.match(again, /profile and record updates/);
+});
+
+test("agents created after the cutoff are left out until a later batch", () => {
+  const f = fixture();
+  f.agents.push({ ...f.agents[0], account: "9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD", handle: "late_one", created_height: null, created_slot: 900, profile_chain: "solana", user: null });
+  f.agents.push({ ...f.agents[0], account: "5wHXuYu14pCSUSTdbQoZaKAw4H2FocaRBqecRqpP4c27", handle: "late_cadre", created_height: 6400, user: null });
+  const early = render(atCutoff(f, { ...f.cutoff, solana_slot: 899 }), L).files;
+  assert.ok(!early.has("agents/late_one/README.md") && !early.has("agents/late_cadre/README.md"));
+  const later = render(atCutoff(f, { ...f.cutoff, solana_slot: 900 }), L).files;
+  assert.ok(later.has("agents/late_one/README.md") && !later.has("agents/late_cadre/README.md"));
 });

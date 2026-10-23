@@ -25,6 +25,8 @@ export interface Agent {
   operator_linked: boolean;
   created_height: number | null;
   set_height: number | null;
+  created_slot: number | null; // Solana town profile
+  set_slot: number | null;
   profile_uri: string | null;
   profile_chain: string; // cadre or solana (where the profile record lives)
   user: null | {

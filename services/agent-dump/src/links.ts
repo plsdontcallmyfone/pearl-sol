@@ -35,7 +35,7 @@ export class Links {
   }
   cadreTx = (h: string) => `${this.c.site}/explorer/tx/${ok(HEX, h)}`;
   block = (height: number) => `${this.c.explorer}/block/${Math.trunc(height)}`;
-  job = (id: string) => `${this.c.explorer}/job/${ok(HEX, id)}`;
+  ticket = (id: string) => `${this.c.api}/v1/inference/receipts/${ok(HEX, id)}`; // the ticket: fee, order, blocks mined over it, subsidy
   receipt = (req: string) => `${this.c.api}/v1/openai/requests/${ok(REQ, req)}`;
   solTx = (sig: string) => `https://explorer.solana.com/tx/${ok(B58, sig)}?cluster=${this.c.solanaCluster}`;
   solAddr = (a: string) => `https://explorer.solana.com/address/${ok(B58, a)}?cluster=${this.c.solanaCluster}`;

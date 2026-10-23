@@ -40,7 +40,7 @@ async function batch(opts: { dryOut?: string }): Promise<void> {
   const statePath = join(stateDir, "state.json");
   const state = opts.dryOut && env.DUMP_DRY_STATE !== "1" ? { version: 1 as const, cache: emptyCache(), cursor: null } : loadState(statePath);
   const t0 = Date.now();
-  const { snapshot, cache } = await collect(api, state.cache, { log, network: env.DUMP_NETWORK ?? "devnet" });
+  const { snapshot, cache } = await collect(api, state.cache, { log, network: env.DUMP_NETWORK ?? "devnet", solanaRpc: env.DUMP_SOLANA_RPC });
   const { files, manifest } = render(snapshot, new Links(lc));
   log(`collected at cutoff ${snapshot.cutoff.height} in ${Date.now() - t0} ms, ${api.calls} API calls, ${files.size} files`);
   if (opts.dryOut) {
