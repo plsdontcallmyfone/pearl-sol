@@ -247,7 +247,7 @@ test("thought parsers: bounded menus, veto only on a clear SKIP, fixes stay insi
   assert.deepEqual([a.stop_bps, a.target_bps, a.max_hold_s, a.win_rate], [800, 2500, 20 * 60, 0.7]);
   assert.equal(a.rationale, "deep pools trend");
   assert.deepEqual(parseAuthor("whatever"), { stop_bps: 800, target_bps: 1500, max_hold_s: 1200, win_rate: 0.4, rationale: "" });
-  // a veto counts only when it names a red flag the numbers show (box 0: a bare "SKIP" echo, 7 of 7)
+  // a veto counts only when it names a red flag the numbers show (box 0: a bare "SKIP" echo, 6 of 6)
   const hot = { ret_15m: 0.8, vol_15m: 0.01, pool_sol: 100 };
   assert.equal(parseDecision("SKIP ret_15m, too hot", hot).decision, "skip");
   assert.deepEqual(parseDecision("SKIP ret_15m, too hot", hot).grounded, ["ret_15m"]);

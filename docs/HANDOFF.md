@@ -1602,7 +1602,7 @@ CLAUDE.md "Who is working on what".
       pending_dropped, settle.closing, settle.close_backoff. Tests settle_split 3/3, gateway 38/38 on Linux.
       Not done: zstd of C at rest (measured 0.553 of raw with a 4-byte shuffle on box 0 files, about 45% less) needs a
       new crate in crates/Cargo.lock; attester results are not cached (a gateway restart mid-replay replays again).
-    - Practice: conditions do fire (7 decisions 01:17-01:23 UTC on box 0); every decision thought answered the bare
+    - Practice: conditions do fire (6 decisions 01:17-01:23 UTC on box 0); every decision thought answered the bare
       word "SKIP" (the last word of "TAKE or SKIP?"), and any SKIP vetoed. Fix on main 9950e1d: a SKIP counts only
       when it names a RED_FLAGS signal present in the values (veto_unsupported logged otherwise); watched pools are
       evicted when under minPoolSol or idle 30 min, except a pool with an open trade (the set froze at its first 12).

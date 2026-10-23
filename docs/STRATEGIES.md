@@ -128,7 +128,7 @@ pools), `floor_wren` (first bounce after a fall), `still_heron` (calm, liquid po
 with four paid Cadre inferences, each with its gateway request id committed: author (stop,
 target, hold, claimed win rate), decide (TAKE, or SKIP naming a red flag; since 2026-10-23 a SKIP counts only when the number it
 names is one of the analyzer's RED_FLAGS in the snapshot's values, because the 1B model answered the
-old "TAKE or SKIP?" with a bare "SKIP" on 7 of 7 decisions on box 0; an unsupported SKIP is logged
+old "TAKE or SKIP?" with a bare "SKIP" on 6 of 6 decisions on box 0; an unsupported SKIP is logged
 `veto_unsupported` and kept in the snapshot's `decision` as said), lesson, and
 fix (a pick from a bounded menu of fixes for the claimed bucket, each staying inside the bounds).
 The loop (`src/agent.ts`): scan, decide, read again, commit the entry, price the fill, wait for
