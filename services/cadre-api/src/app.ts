@@ -18,6 +18,7 @@ import { registerDesktops } from "./routes/desktops.ts";
 import { registerUserAgents } from "./routes/useragents.ts";
 import { registerTemplates } from "./routes/templates.ts";
 import { registerContracts } from "./routes/contracts.ts";
+import { registerWalletConfig } from "./routes/walletconfig.ts";
 import { registerTxStatus } from "./routes/txstatus.ts";
 import { registerTrading } from "./routes/trading.ts";
 import { registerServices } from "./routes/services.ts";
@@ -86,6 +87,7 @@ export function build(d: Deps): Api {
 
   registerStats(api, d);
   registerWallet(api, d);
+  registerWalletConfig(api, d);
   registerMining(api, d);
   registerAgents(api, d);
   registerInference(api, d);

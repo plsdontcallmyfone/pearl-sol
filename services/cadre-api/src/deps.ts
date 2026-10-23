@@ -34,6 +34,8 @@ export interface Config {
   publicUrl: string | null;
   /** The `town` program id on SOLANA_RPC (docs/TOWN-ON-SOLANA.md); null = the town stays on the Cadre chain. */
   townProgram: string | null;
+  /** Signed Cadre Wallet config served at GET /v1/wallet/config (signed offline; null = not published). */
+  walletConfigFile: string | null;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: string }): Config {
@@ -59,6 +61,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv, defaults: { stateDir: stri
     network: env.CADRE_NETWORK ?? "localnet",
     publicUrl: opt("CADRE_PUBLIC_URL", null),
     townProgram: opt("TOWN_PROGRAM", null),
+    walletConfigFile: opt("WALLET_CONFIG_FILE", null),
   };
 }
 

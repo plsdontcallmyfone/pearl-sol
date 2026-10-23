@@ -74,6 +74,15 @@ paths:
       summary: Liveness (the process answers)
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /v1/wallet/config:
+    get:
+      tags: [meta]
+      operationId: walletConfig
+      summary: Signed Cadre Wallet remote config (display settings only)
+      description: The file at WALLET_CONFIG_FILE, served byte for byte. It is signed offline with ed25519 (cadre-extension scripts/cadre/sign-wallet-config.mjs) and the wallet verifies it against keys baked into its build; this API holds no signing key. It never carries program ids, RPCs, fee recipients or anything that moves funds (cadre-extension docs/REMOTE-CONFIG.md). 404 when none is published.
+      responses:
+        "200": { description: The signed config document, content: { application/json: { schema: { type: object } } } }
+        "404": { description: No wallet config published, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /v1/ready:
     get:
       tags: [meta]
