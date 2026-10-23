@@ -236,6 +236,11 @@ test("kickoff: the lead's first paid thought on the goal starts as soon as its S
     lead.market.call = async (b: any) => { calls.push(b); return { tx: "t", review: "ok" }; };
     assert.equal(await lead.market.hire(lead.me), "hire");
     assert.equal(calls[0].offer, 11);
+    // a handle instead of a number also names the member
+    rec.kickoff.state = "waiting_sol";
+    AgentRunner.prototype.think = async function () { return { text: `HIRE ${plan.body.members[1].handle}\nTASK Count the ships.`, requestId: "req_h", rows: 1, receipt: null }; };
+    await host.kickoff(rec, { pollMs: 5 });
+    assert.equal(lead.swarmPlan!.member, plan.body.members[1].agent);
     assert.equal(lead.swarmPlan, null);
   } finally {
     AgentRunner.prototype.ensureBalance = origEnsure;

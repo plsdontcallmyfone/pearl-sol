@@ -310,7 +310,9 @@ export class SwarmHost {
     ], 80, "swarm_kickoff").catch((e) => { rec.kickoff.error = (e as Error).message.slice(0, 200); return null; });
     if (!t) { rec.kickoff = { ...rec.kickoff, state: "failed", error: rec.kickoff.error ?? "the lead's inference budget refused the kickoff thought" }; this.save(); return; }
     rec.kickoff = { state: "done", request_id: t.requestId, text: t.text.slice(0, 400), ms_after_commit: now() - t0, error: null };
-    const n = Number(/HIRE\s*(\d+)/i.exec(t.text)?.[1] ?? 0);
+    // the model may name the member by its number or by its handle (seen on devnet: "HIRE researcher_5b6a1")
+    const said = (/HIRE\s*:?\s*@?([A-Za-z0-9_]+)/i.exec(t.text)?.[1] ?? "").toLowerCase();
+    const n = /^\d+$/.test(said) ? Number(said) : others.findIndex((m) => m.handle.toLowerCase() === said || m.role.toLowerCase() === said) + 1;
     const task = /TASK\s*:?\s*(.+)/i.exec(t.text)?.[1]?.trim() ?? null;
     if (n >= 1 && n <= others.length && task) r.swarmPlan = { member: others[n - 1].agent, task, request_id: t.requestId };
     r.note("swarm_kickoff", `first plan for the goal: ${t.text.slice(0, 200)}`, { request_id: t.requestId, ok: true });
