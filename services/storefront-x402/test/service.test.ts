@@ -6,7 +6,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ed25519Program, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction, ComputeBudgetProgram } from "@solana/web3.js";
@@ -369,6 +370,120 @@ test("POST /jobs: buyer-named evaluators are posted as given (open evaluation)",
   const o = sf.decodeOrder(svm.getAccount(sf.orderPda(BigInt((r.body as any).id)))!.data);
   assert.deepEqual(o.spec.evaluators, mine);
   assert.equal(o.spec.threshold, 1);
+});
+
+// ---- payments left unserved by a crash or a failed refund (devnet 2026-10-20/21) ----
+
+type Fault = "hang" | "land-then-hang" | "fail" | undefined;
+/** ChainIO over the test chain that can stall or fail chosen txs (a "crash" mid-placement). */
+class FaultChain {
+  rule: (ixs: TransactionInstruction[]) => Fault = () => undefined;
+  readonly inner: LiteSvmChain;
+  constructor(inner: LiteSvmChain) {
+    this.inner = inner;
+  }
+  getAccounts(keys: PublicKey[]) { return this.inner.getAccounts(keys); }
+  sendRaw(raw: Uint8Array) { return this.inner.sendRaw(raw); }
+  latestBlockhash() { return this.inner.latestBlockhash(); }
+  async send(ixs: TransactionInstruction[], payer: Keypair, extra?: Keypair[], cu?: number): Promise<string> {
+    const f = this.rule(ixs);
+    if (f === "hang") return new Promise<string>(() => {});
+    if (f === "fail") throw new Error("429 Too Many Requests (injected)");
+    const sig = await this.inner.send(ixs, payer, extra, cu);
+    if (f === "land-then-hang") return new Promise<string>(() => {});
+    return sig;
+  }
+}
+const isIx = (name: string) => (ixs: TransactionInstruction[]) => ixs.some((ix) => ix.data.subarray(0, 8).equals(disc(name)));
+const isRefund = (ixs: TransactionInstruction[]) => ixs.some((ix) => ix.programId.equals(SystemProgram.programId));
+const tmpState = () => join(mkdtempSync(join(tmpdir(), "sf-state-")), "state.json");
+const pricing = { baseLamports: 10_000_000n, lamportsPerGflop: 100_000n, overheadLamports: 14_000_000n };
+const quiet = () => {};
+
+/** Pays a job through a service on `fc`; returns once the payment is recorded (the placement may hang). */
+async function payThrough(svc: Service, stateFile: string) {
+  const req: PaymentRequirements = ((await svc.handle({ method: "POST", url: "/jobs", headers: {}, body: JSON.stringify(jobBody()) })).body as any).accepts[0];
+  const header = buildNativePayment(client, req, await chain.latestBlockhash());
+  const pending = svc.handle({ method: "POST", url: "/jobs", headers: { "x-payment": header }, body: JSON.stringify(jobBody()) });
+  for (let i = 0; i < 200 && !existsSync(stateFile); i++) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 20));
+  return { price: BigInt(req.maxAmountRequired), pending };
+}
+/** The service after a restart on the same state file, its clock 10 min later. */
+const restarted = (stateFile: string, inner = chain) =>
+  new Service({ chain: inner, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, now: () => Date.now() + 600_000, log: quiet });
+
+test("crash before open_order lands: the restarted service refunds the payment", async () => {
+  const fc = new FaultChain(chain), stateFile = tmpState();
+  fc.rule = (ixs) => (isIx("open_order")(ixs) ? "hang" : undefined);
+  const svc = new Service({ chain: fc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  const c0 = svm.getBalance(client.publicKey)!;
+  const { price } = await payThrough(svc, stateFile);
+  assert.equal(c0 - svm.getBalance(client.publicKey)!, price, "paid");
+  const s2 = restarted(stateFile);
+  const un = (await s2.handle({ method: "GET", url: "/payments/unserved", headers: {} })).body as any;
+  assert.equal(un.payments.length, 1);
+  assert.equal(un.payments[0].v, 2);
+  const done = await s2.reconcile();
+  assert.equal(done.length, 1);
+  assert.equal(svm.getBalance(client.publicKey)!, c0, "client whole again");
+  assert.equal(((await s2.handle({ method: "GET", url: "/payments/unserved", headers: {} })).body as any).payments.length, 0);
+  assert.deepEqual(await s2.reconcile(), [], "refunded once");
+});
+
+test("crash after buy_job was sent but did not land: reconcile cancels the draft, then refunds", async () => {
+  const fc = new FaultChain(chain), stateFile = tmpState();
+  fc.rule = (ixs) => (isIx("buy_job")(ixs) ? "hang" : undefined);
+  const svc = new Service({ chain: fc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  const c0 = svm.getBalance(client.publicKey)!;
+  await payThrough(svc, stateFile);
+  const rec = JSON.parse(readFileSync(stateFile, "utf8")).payments;
+  const r = Object.values(rec)[0] as any;
+  assert.equal(r.buy_sent, true);
+  const draft = sf.draftPda(wallet.publicKey, BigInt(r.draft));
+  assert.ok(svm.getAccount(draft)?.data.length, "draft open");
+  await restarted(stateFile).reconcile();
+  const gone = svm.getAccount(draft);
+  assert.ok(!gone || gone.data.length === 0, "draft cancelled");
+  assert.equal(svm.getBalance(client.publicKey)!, c0, "client whole again");
+});
+
+test("crash after buy_job landed: no refund (an Order exists), payment held for review", async () => {
+  const fc = new FaultChain(chain), stateFile = tmpState();
+  fc.rule = (ixs) => (isIx("buy_job")(ixs) ? "land-then-hang" : undefined);
+  const svc = new Service({ chain: fc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  const c0 = svm.getBalance(client.publicKey)!;
+  const { price } = await payThrough(svc, stateFile);
+  const s2 = restarted(stateFile);
+  const done = await s2.reconcile();
+  assert.match(done[0].result, /^review/);
+  assert.equal(c0 - svm.getBalance(client.publicKey)!, price, "no double payout: the Order serves the payment");
+  const un = ((await s2.handle({ method: "GET", url: "/payments/unserved", headers: {} })).body as any).payments;
+  assert.match(un[0].review, /Order may exist/);
+  assert.deepEqual(await s2.reconcile(), [], "review is not retried");
+});
+
+test("a refund that failed (RPC 429) is retried by reconcile; records without v are left alone", async () => {
+  rawSend([updateConfigIx(configParams({ slippage: 0 }))], [admin]); // buy_job fails
+  const fc = new FaultChain(chain), stateFile = tmpState();
+  fc.rule = (ixs) => (isRefund(ixs) ? "fail" : undefined);
+  const svc = new Service({ chain: fc, wallet, network: NETWORK, publicUrl: "http://storefront.test", pricing, stateFile, log: quiet });
+  const c0 = svm.getBalance(client.publicKey)!;
+  const { pending } = await payThrough(svc, stateFile);
+  const r = await pending;
+  assert.equal(r.status, 502);
+  assert.match((r.body as any).payment.refund, /^FAILED/);
+  rawSend([updateConfigIx(configParams({ slippage: 300 }))], [admin]);
+  // a legacy record (before v 2) with no Order: listed, never auto-refunded
+  const st = JSON.parse(readFileSync(stateFile, "utf8"));
+  st.payments["legacy"] = { payer: client.publicKey.toBase58(), amount: "1000", signature: "x", at: 0 };
+  writeFileSync(stateFile, JSON.stringify(st));
+  const s2 = restarted(stateFile);
+  const done = await s2.reconcile();
+  assert.equal(done.length, 1);
+  assert.equal(svm.getBalance(client.publicKey)!, c0, "client whole again");
+  const un = ((await s2.handle({ method: "GET", url: "/payments/unserved", headers: {} })).body as any).payments;
+  assert.deepEqual(un.map((p: any) => p.id), ["legacy"]);
 });
 
 test("CU of the service's buy_job tx", () => {
