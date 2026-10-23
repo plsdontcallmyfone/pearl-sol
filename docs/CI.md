@@ -9,7 +9,7 @@ secrets, and checkout does not persist the token.
 |---|---|
 | lint | `node scripts/ci/lint.mjs`: no em dash (U+2014) in any tracked text file; packages/cadre-py unit tests (`python3 -m unittest`, stdlib only) |
 | programs | Agave 3.1.12 + Anchor 0.31.1 release binaries, `anchor build` in token/ (program ids from keys/localnet), then `cargo test` in token/tests/bridge-litesvm, token/tests/lightclient-litesvm and services/header-relay (its catch-up tests load lightclient.so). Uploads token/target/{deploy,idl} for the node job |
-| node | builds the `pearl-job` CLI, then `scripts/ci/node.sh`: `npm ci` per package, every `npm test`, the `typecheck` scripts (cadre-api, crank, relayer, storefront-x402, extension) and the extension build |
+| node | Node 24 (litesvm 0.3.3's Linux binding aborts with std::bad_alloc under Node 22, LiteSVM/litesvm#171); builds the `pearl-job` CLI, then `scripts/ci/node.sh`: `npm ci` per package, every `npm test`, the `typecheck` scripts (cadre-api, crank, relayer, storefront-x402, extension) and the extension build |
 | rust (matrix) | `cargo test` in chain/ (Rust 1.95), crates/ (pearl-job, pearl-chain, pearl-node, cadre-glue, miner, attester, pool, inference-gateway), crates/cadre-cli, crates/pearl-verify-sbf, contracts/ (wasm build, then contracts/tests in the real executor, plus crates/cadre-contract-sdk) |
 
 To run the same thing locally: `cd token && anchor build` (copy keys/localnet/<p>-keypair.json

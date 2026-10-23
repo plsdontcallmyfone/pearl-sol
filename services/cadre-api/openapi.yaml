@@ -1475,6 +1475,15 @@ paths:
       responses:
         "200": { description: Agent, content: { application/json: { schema: { type: object } } } }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/hosted/agents/{agent}/toolbelt:
+    get:
+      tags: [useragents]
+      operationId: hostedAgentToolbelt
+      summary: "The agent's toolbelt status (docs/TOOLBELT.md section 10), public, passed through from the agent runtime"
+      parameters: [{ name: agent, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }]
+      responses:
+        "200": { description: Toolbelt status, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
   /v1/hosted/agents/{agent}/{verb}:
     post:
       tags: [useragents]

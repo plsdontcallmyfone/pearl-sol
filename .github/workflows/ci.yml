@@ -112,9 +112,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # Node 24, not 22: litesvm 0.3.3's linux-x64-gnu napi binding aborts with std::bad_alloc
+      # under Node 22 (LiteSVM/litesvm#171); the macOS binding and Node 24 on Linux are fine.
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: "**/package-lock.json"
       - uses: actions/download-artifact@v8
