@@ -1,5 +1,5 @@
 // House-rules lint for CI: no em dashes (U+2014) in any tracked text file. Detectors write the
-// character as —. Binary files (images, .so, keypairs) and the research clone are skipped.
+// character as \u2014. Binary files (images, .so, keypairs) and the research clone are skipped.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 

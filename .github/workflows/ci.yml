@@ -1,0 +1,176 @@
+# Cadre CI: lint, typecheck, unit + LiteSVM tests. Offline by design: no secrets, no devnet, no
+# deploys. Triggered by push to main and by pull_request (never pull_request_target), so a fork's
+# PR runs with a read-only GITHUB_TOKEN and no secrets; checkout does not persist credentials.
+# What is left out and why: see docs/CI.md.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  AGAVE_VERSION: "3.1.12"
+  ANCHOR_VERSION: "0.31.1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: node scripts/ci/lint.mjs
+      - name: cadre-py unit tests (stdlib only, offline)
+        working-directory: packages/cadre-py
+        run: python3 -m unittest discover -s tests -v
+
+  # token/ Anchor programs (SBF) + IDLs: the LiteSVM suites, relayer, storefront-x402, the
+  # extension and cadre-api all load token/target/{deploy,idl}.
+  programs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: cache Agave + platform tools + Anchor
+        id: soltools
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+            ~/.local/bin/anchor
+          key: soltools-${{ runner.os }}-agave-${{ env.AGAVE_VERSION }}-anchor-${{ env.ANCHOR_VERSION }}
+      - name: install Agave and Anchor (release binaries)
+        if: steps.soltools.outputs.cache-hit != 'true'
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${AGAVE_VERSION}/install)"
+          mkdir -p ~/.local/bin
+          curl -sSfL -o ~/.local/bin/anchor \
+            "https://github.com/solana-foundation/anchor/releases/download/v${ANCHOR_VERSION}/anchor-${ANCHOR_VERSION}-x86_64-unknown-linux-gnu"
+          chmod +x ~/.local/bin/anchor
+      - run: |
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            token -> target
+            token/tests/bridge-litesvm -> target
+            token/tests/lightclient-litesvm -> target
+      - name: anchor build (localnet program ids from keys/localnet)
+        working-directory: token
+        run: |
+          solana --version && anchor --version
+          mkdir -p target/deploy
+          for p in bridge lightclient mandate reserve storefront town; do cp ../keys/localnet/$p-keypair.json target/deploy/; done
+          anchor build
+          ls -l target/deploy/*.so target/idl/*.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: token-programs
+          path: |
+            token/target/deploy/*.so
+            token/target/idl/*.json
+          retention-days: 3
+      - name: bridge LiteSVM
+        working-directory: token/tests/bridge-litesvm
+        run: cargo test --locked
+      - name: light client LiteSVM
+        working-directory: token/tests/lightclient-litesvm
+        run: cargo test --locked
+
+  node:
+    needs: programs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: "**/package-lock.json"
+      - uses: actions/download-artifact@v8
+        with:
+          name: token-programs
+          path: token/target
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> target
+          shared-key: pearl-job
+      - name: pearl-job CLI (extension job-parity tests)
+        run: cargo build --release --locked --manifest-path crates/Cargo.toml -p pearl-job --bin pearl-job
+      - name: every Node suite (scripts/ci/node.sh)
+        run: scripts/ci/node.sh
+        env:
+          PEARL_JOB_BIN: ${{ github.workspace }}/crates/target/release/pearl-job
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: chain
+            dir: chain
+            run: cargo test --workspace --locked
+          - name: crates
+            dir: crates
+            run: cargo test --workspace --locked
+          - name: cadre-cli
+            dir: crates/cadre-cli
+            run: cargo test --locked
+          - name: pearl-verify-sbf
+            dir: crates/pearl-verify-sbf
+            run: cargo test --locked
+          - name: header-relay
+            dir: services/header-relay
+            run: cargo test --locked
+          - name: contracts
+            dir: contracts/tests
+            run: |
+              (cd .. && cargo build --release --locked --target wasm32-unknown-unknown)
+              cargo test --locked
+              (cd ../../crates/cadre-contract-sdk && cargo test --workspace --locked)
+    name: rust (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml where the workspace pins one)
+        working-directory: ${{ matrix.dir }}
+        run: |
+          if [ -f rust-toolchain.toml ]; then rustup toolchain install; fi
+          if [ -f ../rust-toolchain.toml ] && [ "${{ matrix.name }}" = contracts ]; then (cd .. && rustup toolchain install); fi
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ${{ matrix.dir }} -> target
+            contracts -> target
+          key: ${{ matrix.name }}
+      - name: cargo test
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.run }}
