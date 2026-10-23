@@ -283,3 +283,51 @@ fn early_posting_starts_at_the_pressure_threshold_not_half_a_raised_cap() {
     assert_eq!(e2.gw.ledger.lock().unwrap().tickets[&a2].rounds.len(), 0);
     let _ = e.tip;
 }
+
+/// Audit 2026-10-23: a request reserved on a ticket while the close thread builds and delivers
+/// its result was served but never posted (the result names only the rounds already posted, and a
+/// delivered ticket posts no more rounds). The close now marks the ticket closing first.
+#[test]
+fn no_request_is_reserved_on_a_ticket_while_it_is_being_closed() {
+    // every ticket with a posted round is due to close (fewer free rows than min_free_rows)
+    let e = env("closerace", 1_000_000, |c| c.min_free_rows = u64::MAX);
+    let gw = &e.gw;
+    let a = topup(gw);
+    let r1 = complete(gw, 1);
+    gw.post_pass();
+    assert_eq!(gw.ledger.lock().unwrap().tickets[&a].rounds.len(), 1);
+    let b = topup(gw);
+    assert!(a < b, "reservations pick the first open ticket: A");
+    // the close thread stops inside the close (here: the evaluator; on a real chain also the
+    // SubmitResult wait before it)
+    let g2 = Arc::clone(gw);
+    let closer = std::thread::spawn(move || g2.close_pass());
+    let t = Instant::now();
+    while e.entered.load(Ordering::SeqCst) == 0 {
+        assert!(t.elapsed() < Duration::from_secs(10), "the close never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // a request served now must not land on A
+    let r2 = complete(gw, 2);
+    assert_eq!(gw.ledger.lock().unwrap().requests[&r2].ticket_id, b, "served on the ticket being closed");
+    e.release.store(true, Ordering::SeqCst);
+    closer.join().unwrap();
+    let l = gw.ledger.lock().unwrap();
+    assert_eq!(l.tickets[&a].state, "completed");
+    assert!(l.tickets[&a].pending.is_empty(), "nothing stranded on the completed ticket");
+    assert_eq!(l.requests[&r1].round, Some(0));
+}
+
+/// Audit 2026-10-23: at tip == deadline a PostSegments can only land above the deadline, which
+/// the chain refuses; the rows are dropped then, not one block later after a refused post.
+#[test]
+fn served_rows_at_the_deadline_tip_are_dropped() {
+    let e = env("attip", 100, |c| c.round_every = Duration::from_secs(3600));
+    let gw = &e.gw;
+    let a = topup(gw);
+    let r1 = complete(gw, 1);
+    e.tip.store(100, Ordering::SeqCst);
+    gw.post_pass();
+    assert!(gw.ledger.lock().unwrap().tickets[&a].pending.is_empty());
+    assert!(!dir(gw, &r1).exists());
+}

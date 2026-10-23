@@ -1,10 +1,72 @@
 # pearl-sol handoff
 
-> 2026-10-20: session handoff (account switch) in docs/SESSION-HANDOFF.md; read it first.
+> 2026-10-20: session handoff (account switch) in docs/SESSION-HANDOFF.md (history now; the current state is the next section).
 
 READ THIS FIRST in a new session. Update it after every step (decision, commit,
 agent result). Keep it current, not historical: rewrite stale lines instead of
 appending.
+
+## Current state, 2026-10-23
+
+Checked 2026-10-23 ~03:40 UTC against the live devnet, read only: cadre-api (`/v1/ready`,
+`/v1/summary`, `/v1/hosted`, `/v1/strategies`, `/v1/swarms`, `/v1/connect`), `getChainInfo` and
+`getParams` on all three nodes, and `systemctl` on the boxes. Docs index: docs/README.md. Items
+1-47 below are history; an item a later decision replaced carries a SUPERSEDED line.
+
+**Facts that hold everywhere now**
+
+- The town and DMs are on Solana, program `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ`
+  (TOWN-ON-SOLANA.md). Tips and paid DMs are SOL in lamports, not CADRE. All three nodes refuse
+  town and DM kinds from height 12000 (`town_sunset_height`, provisional; at 30 s blocks that is
+  about 42 h after tip 6998). Old history stays readable; ReclaimMessage (17) stays valid.
+- User agents trade PRACTICE only: pretend money at real Solana mainnet prices, committed on the
+  strategies contract (STRATEGIES.md, SPEC 4.8). Real swaps sit behind `trade.real_swaps`, which
+  no creation flow sets. House traders are separate (TRADING.md).
+- Creating an agent is one screen with two wallet prompts: a signMessage over the spec (it also
+  authorizes hosting) and one Solana tx with the SOL. The step-by-step form is only
+  `/agents/new?advanced=1`.
+- Hosted agents buy 8,192-row inference tickets, the largest the chain allows (`max_balance_rows`
+  8192; item 47).
+- Chain: 30 s target, finality 60, uncles, all from height 6000 (SPEED.md).
+
+**What runs where**
+
+| Box | Runs |
+|---|---|
+| 0, lode-devnet-0, 64.95.12.116 (checkout main 8821e75) | cadre-node, cadre-miner, cadre-attester, cadre-relayer, cadre-settle, cadre-header-relay, cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-gateway, cadre-worker, cadre-agents (hosted runtime, 12 agents), cadre-swarm, cadre-desktops (30 agents, 36 desktops), cadre-practice, cadre-agent-dump, caddy, cadre-health.timer. Not running: cadre-trading, cadre-feed-bot |
+| 1, lode-devnet-1, 64.95.13.213 | cadre-node, cadre-miner, cadre-header-relay, caddy |
+| 2, lode-devnet-2, 64.95.12.22 | cadre-node, cadre-miner, cadre-header-relay, caddy |
+| test box, 64.95.13.106 | cadre-api (test), caddy, x-agents (not Cadre); row leftovers by PID: house traders `~/trading`, market desk and judge `~/market-build`, self-hosted agent `~/usertrade` (agent1.pid) |
+
+Solana devnet programs (DEVNET.md): reserve `8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi`, bridge
+`3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN`, storefront `9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu`,
+lightclient `47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m`, town `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ`,
+mandate `BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc`. CADRE mint `BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e`.
+
+Cadre contracts (deploy/*.json): market `E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym`, strategies
+`BvYwLdhADUUHcxUufQig4ZufpoJoN1EZmtTHxf6UZSXr` (from 6160), swarms `654yr1HroSyqBosqFmn2n62MAzjfyrPVMzhjLTDNMQmt`
+(from 6352), toolbelt `5EVZHQRgQkLTthSXzKJck9AFpdNcuYMzi2nde1bNokpB`, halt
+`88uaR3ea34nB1KGAPGZpvRYyUvLvKjLjopWyM54dpAPL`, Cadre AMM pool `65QGmPmEyGBVFic2A5sDvnKWW9Kw4yWCHLA9sWRe4ZFn`,
+mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
+`GqHzh8yz4jNkHJhdgEV8ooJ8WVfzCxTVGh4cTFK7GWdw` (trading-devnet.json).
+
+**Known open issues**
+
+1. Boards `most_tipped` and `paid_dms` still count CADRE on the Cadre chain only (their metric text
+   on `/v1/leaderboards`); Solana tips and DM pay in lamports are on no board yet.
+2. Toolbelt: merged, and the box 0 runtime serves its status route, but none of the 12 hosted
+   agents has a toolbelt. The TOOLBELT.md 11.1 e2e delivery is unfinished.
+3. The paid planner for one-screen create is off (no `AGENTS_PLANNER_KEY`); the site matches keywords.
+4. Gateway request data: 8.59 GB waiting at the 8 GB pressure line; the 64 GB cap is item 37's
+   stopgap, to revert after the drain. Storefront: 64 of 93 orders pending (`/v1/summary`).
+5. Desktops: one unhealthy (campion66 Social, "browser host down"); model 402 pauses are the
+   desktops resilience row's work.
+6. Connect SDK and py: local posts and DMs still need the Solana town builders (item 43).
+7. The self-hosted agent on the test box (`~/usertrade`, tide_ledger, item 33) was set up on
+   2026-10-21 as a real-swap trader, before the practice-only rule. Stop it or move it to practice.
+8. Strict auth (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) waits for a wallet release (item 28).
+9. Swarm sponsor float is off until the owner sets its key (item 45).
+10. The test box demo stack (scripts/demo.sh) is down since the 2026-10-21 reboot.
 
 ## Goal (owner, 2026-10-16, ongoing)
 
@@ -754,6 +816,7 @@ CLAUDE.md "Who is working on what".
      and quantize.py's equal-shard rule for vocabularies like Qwen3-8B's (MAINNET.md section 11 item 11).
 
 22. ECOSYSTEM PHASE 1, "THE TOWN IS ALIVE" (M1.1-M1.5, 2026-10-20/21, "ecosystem Phase 1" row):
+   SUPERSEDED 2026-10-22 (item 42): the town moved to Solana; tips are SOL. The Cadre-chain kinds below stop at height 12000.
    - Owner decisions recorded in docs/ECOSYSTEM.md 5.1: D2 outside AI price = 2 x the measured A40 cost
      ($3.86 per 1M tokens) = chain config key 25 `price_mlamports_per_gflop` 14736 (derivation there, SOL/USD
      105.985 Coinbase spot 2026-10-20 20:00 UTC); D1/D3 about 30 house personas on the 1B CPU worker, A40 +
@@ -782,6 +845,8 @@ CLAUDE.md "Who is working on what".
      after this report. The wallet's town screens were checked headless on mocks, not signed live on devnet.
      Phase 2 (DMs) next.
 23. USER AGENTS: "SPAWN YOUR OWN CADRE AGENT" (owner 2026-10-21; ECOSYSTEM 7, SPEC 4.8, API.md "User agents"):
+   SUPERSEDED in part: the multi-step wizard is now `/agents/new?advanced=1`; the default is one screen with two
+   wallet prompts (spec signMessage, then the SOL tx); spec v1 creator controls were dropped for v2 sovereign agents (item 33).
    BUILT. services/swarm/agents: AgentRunner subclasses the house swarm's Swarm (operator = the user;
    same tick/budget/paid thoughts/filter/encoder), agent spec v1 signed by the operator's Solana
    wallet and committed in the profile blob, per-day SOL/CADRE/row caps from the agent's own wallet,
@@ -1025,6 +1090,7 @@ CLAUDE.md "Who is working on what".
 
 29. ECOSYSTEM PHASE 2: ON-CHAIN DMs (M2.1-M2.4, 2026-10-21, "ecosystem Phase 2: on-chain DMs" row; SPEC 4.10,
    API.md "DMs and channels", RPC.md "DM reads", cadre-docs protocol/messages):
+   SUPERSEDED 2026-10-22 (item 42): DMs moved to Solana; DM pay is SOL. Group channels were not carried over.
    - Owner decisions: DMs on the Cadre chain (each message a tx); D4 sealed (X25519 + XChaCha20-Poly1305) for
      human-agent, public for agent-agent (client defaults; the chain takes both); D5 priced cold DMs with escrow,
      refund if unanswered, 100% to the agent (`dm_protocol_bps` key exists, 0); every DM parameter is AdminConfig.
@@ -1171,6 +1237,8 @@ CLAUDE.md "Who is working on what".
    optionally moving the traders to box 0 (deploy/systemd/cadre-trading.service), TRADING.md 10.
 
 33. TRADING FOR EVERYONE: SOVEREIGN AGENTS ON SOLANA (Phase 4b, owner 2026-10-21 via the orchestrator:
+   [SUPERSEDED for user agents 2026-10-22, STRATEGIES.md 6.1: user agents trade PRACTICE only; the real-swap
+   engine below runs only with `trade.real_swaps`, which no creation flow sets.]
    "people ... create their own agents ... and start trading themselves", then: trades on Solana only;
    agents are their own bosses, "that applies for all"; "trading for everyone" row): DONE in code, LIVE on
    devnet from the test box. Agent spec v2 (SPEC 4.8): sovereign, fixed at creation, trade skill with hard
@@ -1530,6 +1598,7 @@ CLAUDE.md "Who is working on what".
 
 41. STRATEGIES WITH POST-MORTEMS: PRACTICE TRADES AT MAINNET PRICES, COMMITTED ON CADRE (2026-10-22, "strategies
    with post-mortems" row; owner idea, weft.fi style). docs/STRATEGIES.md is the spec and status.
+   UPDATE 2026-10-23: deployed since (deploy/strategies-devnet.json, start 6160); `/v1/strategies` is live.
    - Contract `contracts/strategies` (publish, enter, exit, postmortem; learning rule and forward-only order enforced
      on chain; no new tx kind, no consensus change); 4/4 executor tests with the supply invariant.
    - Runner `services/swarm/strategies` (read-only mainnet client, PumpSwap quotes with the live fee tiers, fills
@@ -1541,6 +1610,7 @@ CLAUDE.md "Who is working on what".
      STRATEGIES.md 9; after the deploy, box 0 needs a sync + cadre-api restart for the routes and the deploy file.
 
 42. TOWN AND DMS MOVE TO SOLANA (owner decision 2026-10-22; "town + DMs move to Solana" row; docs/TOWN-ON-SOLANA.md).
+   UPDATE 2026-10-23: deployed and live (`/v1/ready` checks.town_solana); all nodes report town_sunset_height 12000.
    New Solana program `town` (token/programs/town; devnet id DAyyoBkS..., localnet 9pgMbpDs...; LiteSVM 13/13):
    profiles, first-come handles, operator links (house flag only from a house operator's link), posts and
    reactions as events, tips, one follow edge per pair, consent, plain and sealed DMs with priced escrow
@@ -1633,6 +1703,35 @@ CLAUDE.md "Who is working on what".
       80,000,000 cap = three tickets a day.
     - Deploy: box 0 sync main + restart cadre-agents (cadre-swarm optional, its behaviour is unchanged); site
       redeploy for cadre-web. Existing agents keep their signed caps and recover at 00:00 UTC with 8,192-row tickets.
+
+48. CORRECTNESS AUDIT OF THE LAST TWO DAYS (2026-10-23, "chain + contracts correctness audit" row). Reviewed the
+    town sunset gate, contracts/strategies, contracts/swarms, contracts/toolbelt and its runtime, the gateway
+    settle/close split (d379a0d), and chain/ + crates/ since 2026-10-21 (uncles, weak blocks, blob lifecycle,
+    repair, job perf, DMs). Fixed (each with a regression test that fails on the old code):
+    - CONSENSUS, chain/consensus-pow/src/chain/uncles.rs + agent-types speed.rs: an uncle could name a job that was
+      not mineable at its height (Completed or Expired with cap left, past its deadline, or past max_blocks) and be
+      paid 1/2 (or 1/4) plus the 1/32 nephew bonus from the pool. From DEVNET_UNCLE_JOB_RULE_HEIGHT 10,000 an uncle
+      must pass executor::check_mineable at U.height (SPEED.md 3.3 rule 7); getParams uncle_job_rule_height. Below
+      10,000 nothing changes, so a node replaying from genesis agrees with today's nodes. ROLLOUT REQUIRED: every
+      devnet node (boxes 1, 2, 0) on this build before height 10,000 (tip was ~7006 at 00:45 UTC 2026-10-23, 30 s
+      blocks: about 25 h). Test chains (other chain ids) apply it from the uncle activation.
+    - services/inference-gateway: the close thread snapshotted an "open" ticket, and a request reserved on it while
+      SubmitResult and the evaluator ran was served but never posted (stranded on a delivered ticket). The close now
+      marks the ticket "closing" in the same ledger step as its re-check. Also served rows are dropped at
+      tip == deadline (a PostSegments lands at tip + 1, which the chain refuses above the deadline).
+    - services/swarm/agents toolbelt: receipts left `pending` as soon as the commit tx was accepted by the node; a
+      commit then dropped or refused left a gap and every later commit failed ("first_seq must equal the agent's
+      next_seq") for good; two flushes at once committed the same batch twice and dropped receipts never committed;
+      a failed commit after a tool call threw away the paid call's result. Now receipts stay until the contract's
+      next_seq passes them (read with `get`), one flush at a time, a resend from next_seq after 10 min, forced
+      flushes wait up to 90 s for the last batch, and commit failures are logged and kept pending (TOOLBELT.md 5).
+    Checked and fine: the sunset refuses the same kinds in blocks, in sendTx prechecks (tip + 1) and as contract
+    native calls; ReclaimMessage stays valid; getParams reports 12000 on all three devnet nodes; nothing differs
+    below 12000; strategies/swarms/toolbelt contracts have admin zero on devnet (Migrate/SetContractAdmin refuse);
+    toolbelt code 19b68730... rebuilds byte for byte from this tree; strategies a4665db8... and swarms 247ecc72...
+    do not (same size, identical strings, function order differs: the wasm build is path/workspace sensitive).
+    Rollout of the non-consensus fixes: box 0 cadre-gateway and cadre-agents restart after sync. Details and the
+    theoretical findings: TEST-REPORT "Correctness audit 2026-10-23".
 
 ## M1 components (SPEC v2, all DONE)
 

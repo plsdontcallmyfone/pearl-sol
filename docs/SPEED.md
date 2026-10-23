@@ -224,6 +224,13 @@ A block B at height H on branch b may carry uncles U, each valid when:
    share the required target), and `U.timestamp_ms` > median time past of U's parent;
 6. the job record `U.job_id` exists in B's parent state with `created_height < U.height`, and
    `pearl_job::pow::verify_block(U, job, proof)` passes at U's own target.
+7. from `uncle_job_rule_height` (devnet 10,000, every other chain from the uncle activation):
+   the job was mineable at `U.height` by the canonical job-block rule (`executor::check_mineable`
+   on B's parent state: live status, `U.height <= deadline_height`, `blocks_mined < max_blocks`,
+   cap left, not a ticket). Audit 2026-10-23: without it an uncle could name a Completed or
+   Expired job with cap left, or one whose `max_blocks` its sibling used up, and be paid from the
+   pool. A stale block that loses the last block of a job, or whose job completes before the
+   uncle is included, earns nothing.
 
 U's txs, state_root and withdraw_root are not checked and not executed (as in Ethereum): an uncle
 pays for its work, nothing else. Fork choice is unchanged: the heaviest chain by the work of its

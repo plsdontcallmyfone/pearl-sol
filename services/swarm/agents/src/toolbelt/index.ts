@@ -33,12 +33,20 @@ export interface ToolHost {
   verifyTopup(signature: string, lamports: bigint): Promise<boolean>;
   /** commit a batch root on Cadre (contracts/toolbelt `commit`, or a receipt post when no contract is configured) */
   commitBatch(b: ToolBatch, blob: { uri: string; id: string }): Promise<{ tx: string; via: string }>;
+  /** the agent's next_seq in contracts/toolbelt at the tip (null = no contract, or not readable now) */
+  committedSeq?(): Promise<number | null>;
   note(kind: string, text: string, x?: Record<string, unknown>): void;
   /** the agent's Cx address (SPEC 2.1), named in its commits */
   cx: string;
   /** ed25519 signature by the agent's own key, hex */
   sign(msg: Uint8Array): string;
 }
+
+/** How long a sent receipts commit may stay unseen on the chain before it is sent again (ms). */
+export const INFLIGHT_WAIT_MS = 10 * 60_000;
+/** A forced flush polls the chain this many times, this far apart, for the last batch (3 s x 30 = 90 s, three 30 s blocks). */
+export const FORCE_WAIT_POLLS = 30;
+export const FORCE_WAIT_POLL_MS = 3_000;
 
 export interface ToolbeltDeps {
   keys: ProviderKeys;
@@ -104,6 +112,10 @@ export class Toolbelt {
   taskCache = new Map<string, { at: number; query: string; thought: string; pages: any[]; receipts: number[] }>();
   inbox: string | null = null;
   private topping = false;
+  /** a flush running now (one at a time) */
+  private flushing: Promise<unknown> | null = null;
+  /** the last batch sent and not yet seen on the chain (its receipts stay pending until then) */
+  inflight: { first_seq: number; n: number; tx: string; t_ms: number } | null = null;
 
   constructor(spec: ToolbeltSpec, host: ToolHost, deps: ToolbeltDeps, saved?: any) {
     this.spec = spec; this.h = host; this.d = deps;
@@ -205,12 +217,12 @@ export class Toolbelt {
       const usd = prep.usdOnError?.() ?? 0;
       const lam = this.meter.commit(res, lamportsFor(usd, this.price), usd, {});
       const rec = this.receipt(cap, tool, args, { error: String((e as Error).message).slice(0, 300) }, false, String((e as Error).message).slice(0, 300), usd, prep.basis, lam, ctx, [], started);
-      await this.maybeFlush();
+      await this.flushKept();
       return { ok: false, tool, data: { error: rec.error }, receipt: rec };
     }
     const lam = this.meter.commit(res, lamportsFor(out.usd, this.price), out.usd, out.units ?? prep.units);
     const rec = this.receipt(cap, tool, args, out.outputs, true, null, out.usd, out.basis, lam, ctx, out.artifacts ?? [], started);
-    await this.maybeFlush();
+    await this.flushKept();
     return { ok: true, tool, data: out.data, receipt: rec };
   }
 
@@ -227,14 +239,58 @@ export class Toolbelt {
     return r;
   }
 
+  /** A batch commit after a call: a failure keeps the receipts pending (next flush) and never
+   *  turns the call, already paid and receipted, into an error (audit 2026-10-23). */
+  private async flushKept() {
+    try {
+      await this.maybeFlush();
+    } catch (e) {
+      this.h.note("tool_batch", `receipts commit failed, kept pending: ${String((e as Error).message).slice(0, 200)}`, { ok: false });
+    }
+  }
+
   async maybeFlush(force = false): Promise<{ tx: string; root: string; blob: string } | null> {
+    // one flush at a time: two at once committed the same first_seq twice (the second fails on
+    // chain) and then dropped twice as many receipts as were committed (audit 2026-10-23)
+    while (this.flushing) await this.flushing.catch(() => {});
+    const p = this.flushOnce(force);
+    this.flushing = p;
+    try {
+      return await p;
+    } finally {
+      this.flushing = null;
+    }
+  }
+
+  private async flushOnce(force: boolean): Promise<{ tx: string; root: string; blob: string } | null> {
+    // With the contract, pending receipts leave only once the chain's next_seq passes them: a
+    // commit that was accepted by the node and then dropped or refused used to leave a gap that
+    // made every later commit fail ("first_seq must equal the agent's next_seq") for good.
+    const read = () => (this.h.committedSeq ? this.h.committedSeq().catch(() => null) : Promise.resolve(null));
+    let onChain = await read();
+    // a forced flush (a delivery names its batch) waits a few blocks for the last batch to land
+    for (let i = 0; force && onChain !== null && this.inflight && onChain < this.inflight.first_seq + this.inflight.n && i < FORCE_WAIT_POLLS; i++) {
+      await new Promise((ok) => setTimeout(ok, FORCE_WAIT_POLL_MS));
+      onChain = (await read()) ?? onChain;
+    }
+    if (onChain !== null) {
+      if (this.pending.length && this.pending[0].seq < onChain) this.pending = this.pending.filter((r) => r.seq >= onChain!);
+      if (this.inflight && onChain >= this.inflight.first_seq + this.inflight.n) this.inflight = null;
+      if (this.inflight && this.h.now() - this.inflight.t_ms < INFLIGHT_WAIT_MS) return null; // the last batch may still land
+      this.inflight = null;
+      if (this.pending.length && this.pending[0].seq !== onChain) {
+        this.h.note("tool_batch", `cannot commit receipts from ${this.pending[0].seq}: the chain expects ${onChain} next (receipts ${onChain}..${this.pending[0].seq - 1} are not held here)`, { ok: false });
+        return null;
+      }
+    }
     if (!this.pending.length) return null;
     if (!force && this.pending.length < this.spec.batch_every) return null;
     const take = this.pending.slice(0, 256);
     const b = makeBatch(this.h.agent, take);
     const blob = await this.h.putBlob(Buffer.from(canonical(b), "utf8"));
     const c = await this.h.commitBatch(b, blob);
-    this.pending = this.pending.slice(take.length);
+    if (onChain !== null) this.inflight = { first_seq: b.first_seq, n: b.n, tx: c.tx, t_ms: this.h.now() };
+    else this.pending = this.pending.slice(take.length);
     const rec = { first_seq: b.first_seq, n: b.n, root: b.root, blob: blob.uri, tx: c.tx, via: c.via, price_lamports: b.price_lamports, t_ms: this.h.now() };
     this.batches.push(rec);
     this.h.note("tool_batch", `committed receipts ${b.first_seq}..${b.first_seq + b.n - 1} (root ${b.root.slice(0, 16)}..., ${b.price_lamports} lamports) on Cadre`, { tx: c.tx, ok: true });

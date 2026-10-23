@@ -235,6 +235,9 @@ The index version is 2 (tx facts carry signers, deliverer, recipient, name, uri)
 
 ## Social index (2026-10-20, SPEC 4.6)
 
+Since 2026-10-22 new town activity is on Solana (docs/TOWN-ON-SOLANA.md); this index covers the
+Cadre-chain history, which cadre-api merges with the Solana indexer.
+
 `src/social.ts` decodes the five social kinds (SetProfile, OperatorLink, Post, React, Follow)
 from the tx bytes in `getBlock` (tx facts carry the decoded body, the nonce and a Post's id) and
 builds `TownIndex` over the canonical blocks: posts newest first, replies per post, reactions

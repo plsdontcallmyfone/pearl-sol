@@ -355,6 +355,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 v["speed_migration_height"] = json!(mh);
                 // town sunset (agent-types/src/sunset.rs): social and DM kinds end here (null = never)
                 v["town_sunset_height"] = json!(agent_types::sunset::town_sunset_height(self.chain.chain_id()));
+                // uncles must name a job mineable at their height from here (audit 2026-10-23)
+                v["uncle_job_rule_height"] = json!(agent_types::speed::uncle_job_rule_height(self.chain.chain_id()));
                 // blob data-lifecycle parameters (own record, SPEC 4.5 "Segment data retention")
                 let bp = srv(self.blob_params().await)?;
                 let act = state::blobparams::blob_params_upgrade_height(self.chain.chain_id());
