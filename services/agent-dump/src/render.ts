@@ -366,6 +366,8 @@ function renderLessons(c: Ctx, a: Agent): string {
     out.push(`- strategy ${link(`v${t.version}`, `strategies/v${t.version}.md`)}; outcome **${esc(pm.outcome)}**; exit ${esc(t.exit?.reason ?? "n/a")}; practice P&L ${sol(t.exit?.pnl ?? null)}`);
     out.push(`- buckets named: ${pm.names.length ? pm.names.map(esc).join(", ") : "none"}`);
     const blob = t.postmortem_blob;
+    // the lesson the agent wrote after the trade (a paid thought, its receipt below), as the site shows it
+    if (blob && typeof blob.lesson === "string" && blob.lesson.trim()) out.push(`- lesson, in the agent's words: ${esc(blob.lesson.trim())}`);
     if (blob && Array.isArray(blob.verdicts)) {
       for (const vd of blob.verdicts) if (vd?.status === "fault") out.push(`  - ${esc(vd.bucket)}: ${(vd.evidence ?? []).map(esc).join("; ")}`);
     }
