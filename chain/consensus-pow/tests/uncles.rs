@@ -94,7 +94,7 @@ fn job_body() -> PostJob {
 }
 
 /// Fund the poster and the pool, post a job (heights 1-2). Returns (job id, tip, now).
-async fn setup(c: &mut C<MockVerifier>) -> (Hash, Hash, u64) {
+async fn setup<V: PowVerifier>(c: &mut C<V>) -> (Hash, Hash, u64) {
     let g = c.genesis_hash();
     let mut now = T0 + 1000;
     let txs = [unlock(0, 1, pk(2), 1_000_000_000), unlock(1, 2, pool_address(), 1_000_000)];
@@ -412,4 +412,105 @@ fn an_uncle_on_a_job_that_was_not_mineable_is_refused() {
             other => panic!("{other:?}"),
         }
     });
+}
+
+/// A verifier that, like a Pearl GEMM with two tiles under the target, admits two proofs for
+/// one header: the mock proof and `b"mock2" || pow_digest`.
+#[derive(Clone, Copy, Debug, Default)]
+struct TwoProofs;
+
+fn second_proof(mut b: Block) -> Block {
+    b.header.proof_hash = [0; 32];
+    let mut p = b"mock2".to_vec();
+    p.extend_from_slice(&b.header.pow_digest());
+    b.header.proof_hash = block::proof_hash(&p);
+    b.proof = p;
+    b
+}
+
+impl PowVerifier for TwoProofs {
+    fn verify(&self, header: &Header, job: Option<&pearl_job::Job>, proof: &[u8], f: &pearl_job::pow::FallbackParams) -> Result<(), String> {
+        let mut alt = b"mock2".to_vec();
+        alt.extend_from_slice(&header.pow_digest());
+        if proof == alt.as_slice() {
+            return if block::proof_hash(proof) == header.proof_hash { Ok(()) } else { Err("proof_hash does not match the proof bytes".into()) };
+        }
+        MockVerifier.verify(header, job, proof, f)
+    }
+    fn verify_at(&self, header: &Header, job: Option<&pearl_job::Job>, proof: &[u8], f: &pearl_job::pow::FallbackParams, _t: u32) -> Result<(), String> {
+        self.verify(header, job, proof, f)
+    }
+}
+
+/// Audit follow-up 2026-10-23 (SPEED.md 3.3 rule 8): an uncle was told apart from its branch
+/// sibling only by header hash, and the hash covers proof_hash. With two valid proofs for one
+/// header a miner could re-publish its own canonical block as an uncle, credit one stale block
+/// twice in one body, or credit it again one block later with the other proof. From
+/// `uncle_digest_rule_height` (devnet 13,000; this test chain: always) all three are refused by
+/// pow_digest. On the old code the templates below carry the second proofs.
+#[test]
+fn a_second_proof_of_a_block_is_not_paid_as_an_uncle() {
+    assert_eq!(agent_types::speed::uncle_digest_rule_height(agent_types::speed::DEVNET_CHAIN_ID), 13_000);
+    assert_eq!(agent_types::speed::uncle_digest_rule_height(CHAIN), 0);
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(CHAIN, 10), TwoProofs).await.unwrap();
+        let (job, p2, mut now) = setup(&mut c).await;
+        now += 1000;
+        let expect = |r: Result<_, ChainError>, want: &str| match r {
+            Err(ChainError::Invalid(m)) => assert!(m.contains(want), "{m} (wanted {want})"),
+            other => panic!("wanted Invalid({want}), got {other:?}"),
+        };
+        // A wins height 3; A2 is A with its second proof (same pow_digest, other hash)
+        let a = seal(&tmpl(&c, p2, 3, JobChoice::Job(job), now).await);
+        let a2 = second_proof(a.clone());
+        assert_ne!(a.hash(), a2.hash());
+        assert_eq!(a.header.pow_digest(), a2.header.pow_digest());
+        assert_eq!(add(&mut c, a.clone(), now).await, Accept::Added { tip: true });
+        assert_eq!(add(&mut c, a2.clone(), now).await, Accept::Added { tip: false }, "a valid sibling block by itself");
+        // a real stale sibling B and its second proof B2
+        let b = seal(&tmpl(&c, p2, 4, JobChoice::Job(job), now).await);
+        let b2 = second_proof(b.clone());
+        add(&mut c, b.clone(), now).await;
+        add(&mut c, b2.clone(), now).await;
+        now += 1000;
+        // the template on A carries B once: not A2 (A itself) and not B2 (B again)
+        let t = tmpl(&c, a.hash(), 9, JobChoice::Fallback, now).await;
+        let hs: Vec<Hash> = t.uncles.iter().map(|u| u.header.hash()).collect();
+        assert_eq!(t.uncles.len(), 1, "one uncle, got {hs:?}");
+        assert!(hs[0] == b.hash() || hs[0] == b2.hash());
+        // crafted: A2 as an uncle of a child of A
+        let mut blk = seal(&t);
+        blk.uncles = vec![as_uncle_with(a2.header, a2.proof.clone(), 4)];
+        expect(c.insert_block(reseal(blk), now).await.map(|_| ()), "same pow_digest as the branch block");
+        // crafted: B and B2 in one body
+        let mut blk = seal(&t);
+        blk.uncles = vec![as_uncle_with(b.header, b.proof.clone(), 4), as_uncle_with(b2.header, b2.proof.clone(), 4)];
+        expect(c.insert_block(reseal(blk), now).await.map(|_| ()), "two proofs of one block");
+        // X4 credits one of them; one block later the other is refused
+        let x4 = seal(&t);
+        assert_eq!(add(&mut c, x4.clone(), now).await, Accept::Added { tip: true });
+        now += 1000;
+        let t5 = tmpl(&c, x4.hash(), 9, JobChoice::Fallback, now).await;
+        assert!(t5.uncles.is_empty(), "the other proof of the credited uncle is not offered at depth 2");
+        let other = if hs[0] == b.hash() { &b2 } else { &b };
+        let mut blk = seal(&t5);
+        blk.uncles = vec![as_uncle_with(other.header, other.proof.clone(), 5)];
+        expect(c.insert_block(reseal(blk), now).await.map(|_| ()), "already included on this branch");
+        // the honest path still works: a stale block of another miner is paid
+        let e = seal(&tmpl(&c, x4.hash(), 3, JobChoice::Job(job), now).await);
+        let d = seal(&tmpl(&c, x4.hash(), 5, JobChoice::Job(job), now).await);
+        add(&mut c, e.clone(), now).await;
+        add(&mut c, d.clone(), now).await;
+        now += 1000;
+        let t6 = tmpl(&c, e.hash(), 9, JobChoice::Fallback, now).await;
+        assert_eq!(t6.uncles.len(), 1);
+        assert_eq!(t6.uncles[0].header.hash(), d.hash());
+        assert_eq!(add(&mut c, seal(&t6), now).await, Accept::Added { tip: true });
+    });
+}
+
+/// An uncle carrying `proof` as given (the header's proof_hash already binds it).
+fn as_uncle_with(h: Header, proof: Vec<u8>, includer_height: u64) -> Uncle {
+    let record = UncleRecord { height: includer_height, uncle_hash: h.hash(), uncle_height: h.height, miner: h.miner, job_id: h.job_id, ..Default::default() };
+    Uncle { header: h, proof, record }
 }

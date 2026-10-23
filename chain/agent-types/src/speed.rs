@@ -69,6 +69,24 @@ pub fn uncle_job_rule_height(chain_id: u32) -> u64 {
     }
 }
 
+/// Devnet height from which an uncle is told apart from other blocks by its `pow_digest` (the
+/// header without `proof_hash`), not only by its hash (audit follow-up 2026-10-23). A Pearl
+/// proof opens one tile that meets the target; a GEMM with two such tiles gives two valid
+/// proofs for one header, so before this height a miner could re-publish its own canonical
+/// block (or an uncle already credited) with the other proof and be paid again as an uncle.
+/// Proposed at devnet tip 7,080 (04:26 UTC 2026-10-23; 30 s blocks: about 49 h), after the
+/// 10,000 uncle job rule and the 12,000 town sunset already scheduled.
+pub const DEVNET_UNCLE_DIGEST_RULE_HEIGHT: u64 = 13_000;
+
+/// First including-block height at which the uncle pow_digest rule applies: the devnet's own
+/// height, and from the uncle activation on every other chain (the test range included).
+pub fn uncle_digest_rule_height(chain_id: u32) -> u64 {
+    match chain_id {
+        DEVNET_CHAIN_ID => DEVNET_UNCLE_DIGEST_RULE_HEIGHT,
+        c => speed_upgrade_height(c),
+    }
+}
+
 /// Uncle share at depth `d` as (numerator, denominator): 1/2 at depth 1, 1/4 at depth 2.
 pub fn uncle_share(depth: u64) -> Option<(u64, u64)> {
     match depth {
@@ -211,5 +229,8 @@ mod tests {
         assert_eq!(uncle_reward(1000, 2), Some((250, 7)));
         assert_eq!(uncle_reward(1000, 3), None);
         assert_eq!(uncle_reward(1000, 0), None);
+        assert_eq!(uncle_digest_rule_height(DEVNET_CHAIN_ID), 13_000);
+        assert_eq!(uncle_digest_rule_height(TEST_SPEED_CHAIN_BASE + 12), 12);
+        assert_eq!(uncle_digest_rule_height(1), 0);
     }
 }

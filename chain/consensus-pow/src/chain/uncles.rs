@@ -12,10 +12,14 @@
 //!    U.timestamp_ms > the median time past of U's parent;
 //! 6. the job U.job_id exists in B's parent state with created_height < U.height, and U's
 //!    proof verifies against it at U's own target.
+//! 7. (from uncle_job_rule_height) the job was mineable at U.height.
+//! 8. (from uncle_digest_rule_height) U.pow_digest differs from the branch block's at U.height,
+//!    from the other uncles in B, and from the uncles of b's blocks above U.height: a header
+//!    with a second valid proof (another tile under the target) is the same block, not a sibling.
 //! Rewards are computed by the executor (executor/src/uncles.rs); the body's records must equal
 //! the ones execution produced.
 
-use agent_types::speed::{speed_upgrade_height, uncle_share, Uncle, MAX_UNCLES, MAX_UNCLE_DEPTH};
+use agent_types::speed::{speed_upgrade_height, uncle_digest_rule_height, uncle_share, Uncle, MAX_UNCLES, MAX_UNCLE_DEPTH};
 use agent_types::{Hash, Header, HEADER_VERSION};
 use commonware_runtime::Spawner;
 use executor::UncleInput;
@@ -73,7 +77,34 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         Some(ts[ts.len() / 2])
     }
 
-    /// Rules 1-6 for one uncle of a child of `parent` (a live block) at `height`, against the
+    /// Header of a branch block (live, else from the archive).
+    async fn branch_header(&self, h: &Hash) -> Result<Option<Header>, ChainError> {
+        if let Some(n) = self.live.get(h) {
+            return Ok(Some(n.header));
+        }
+        Ok(self.get_block(h).await?.map(|b| b.header))
+    }
+
+    /// Rule 8 against the branch: `u`'s pow_digest is not the branch block's at `u.height` and
+    /// not an uncle's of a branch block between `u.height + 1` and `height - 1` (so a second
+    /// proof of a block, or of an uncle credited earlier, is not paid again).
+    async fn check_uncle_digest(&self, parent: &Hash, height: u64, u: &Header, sib: &Hash) -> Result<(), ChainError> {
+        let d = u.pow_digest();
+        let Some(sh) = self.branch_header(sib).await? else { return Err(ChainError::Internal("branch block missing".into())) };
+        if sh.pow_digest() == d {
+            return invalid("uncle has the same pow_digest as the branch block at its height (a second proof of that block)");
+        }
+        for h in u.height + 1..height {
+            let Some(e) = self.branch_at(parent, h) else { return invalid("uncle ancestry unavailable") };
+            let Some(b) = self.get_block(&e.hash).await? else { return Err(ChainError::Internal("branch block missing".into())) };
+            if b.uncles.iter().any(|x| x.header.pow_digest() == d) {
+                return invalid("uncle has the same pow_digest as an uncle already included on this branch");
+            }
+        }
+        Ok(())
+    }
+
+    /// Rules 1-8 for one uncle of a child of `parent` (a live block) at `height`, against the
     /// parent's state. Returns the job (for the reward ranking of templates).
     async fn check_uncle(&self, parent: &Hash, snap: &Snapshot, height: u64, u: &Header, proof: &[u8]) -> Result<JobRecord, ChainError> {
         if u.version != HEADER_VERSION {
@@ -99,6 +130,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         }
         if self.store.get(snap, &schema::uncle_key(&u.hash())).await.map_err(|e| ChainError::Internal(e.to_string()))?.is_some() {
             return invalid("uncle already included on this branch");
+        }
+        if height >= uncle_digest_rule_height(self.genesis.chain_id) {
+            self.check_uncle_digest(parent, height, u, &sib.hash).await?;
         }
         if u.target_bits != sib.target_bits {
             return invalid("uncle target_bits differ from its sibling's");
@@ -128,7 +162,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         Ok(job)
     }
 
-    /// Check a block's uncles (rules 1-6) and return them as executor inputs, in body order.
+    /// Check a block's uncles (rules 1-8) and return them as executor inputs, in body order.
     pub(crate) async fn check_block_uncles(&self, b: &agent_types::Block, snap: &Snapshot) -> Result<Vec<UncleInput>, ChainError> {
         if b.uncles.is_empty() {
             return Ok(Vec::new());
@@ -141,10 +175,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if b.uncles.len() > MAX_UNCLES {
             return invalid("too many uncles");
         }
+        let digest_rule = h >= uncle_digest_rule_height(self.genesis.chain_id);
         let mut out = Vec::with_capacity(b.uncles.len());
         for (i, u) in b.uncles.iter().enumerate() {
             if b.uncles[..i].iter().any(|x| x.header.hash() == u.header.hash()) {
                 return invalid("duplicate uncle");
+            }
+            if digest_rule && b.uncles[..i].iter().any(|x| x.header.pow_digest() == u.header.pow_digest()) {
+                return invalid("duplicate uncle (same pow_digest: two proofs of one block)");
             }
             self.check_uncle(&b.header.prev_hash, snap, h, &u.header, &u.proof).await?;
             out.push(UncleInput { hash: u.header.hash(), height: u.header.height, miner: u.header.miner, job_id: u.header.job_id });
@@ -153,7 +191,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
     }
 
     /// Uncles a template on `parent` should carry: live, non-canonical-on-this-branch job blocks
-    /// this node connected that pass rules 1-6, larger expected reward first (shallower depth,
+    /// this node connected that pass rules 1-8, larger expected reward first (shallower depth,
     /// then the job's remaining cap), at most MAX_UNCLES. Proofs come from the archive.
     pub(crate) async fn template_uncles(&self, parent: &Hash) -> Result<Vec<Uncle>, ChainError> {
         let Some(p) = self.live.get(parent) else { return Ok(Vec::new()) };
@@ -183,6 +221,18 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             }
         }
         ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-        Ok(ranked.into_iter().take(MAX_UNCLES).map(|r| r.3).collect())
+        let digest_rule = height >= uncle_digest_rule_height(self.genesis.chain_id);
+        let mut out: Vec<Uncle> = Vec::new();
+        for r in ranked {
+            if out.len() == MAX_UNCLES {
+                break;
+            }
+            // rule 8: two proofs of one block are one uncle (keep the first by rank)
+            if digest_rule && out.iter().any(|x| x.header.pow_digest() == r.3.header.pow_digest()) {
+                continue;
+            }
+            out.push(r.3);
+        }
+        Ok(out)
     }
 }
