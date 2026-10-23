@@ -16,6 +16,7 @@ import { checkUrl, guardedFetch, htmlToText, isBlockedIp } from "../src/toolbelt
 import { Toolbelt, type ToolHost } from "../src/toolbelt/index.ts";
 import { research, loop, qaTest, firstHttpsUrl } from "../src/toolbelt/work.ts";
 import { GitHubApp } from "../src/toolbelt/github.ts";
+import { DesktopPool } from "../src/toolbelt/sandbox.ts";
 import { sha256hex } from "../src/toolbelt/receipts.ts";
 
 const A1 = "9CDcU57w5vejND297HBjUvfxU58TuCHaaq7hJFwakaL7";
@@ -378,4 +379,27 @@ test("QA task: a desktop that fails (vision 402) still yields an honest report n
   assert.equal(r.computer!.ok, false);
   assert.match(r.text, /did not finish \(vision 402: insufficient credits\)/);
   assert.equal(host.batches[0].receipts[0].tool, "computer.task");
+});
+
+test("desktop pool: a runtime takes back only its own paused desktops (or legacy ones), and a size-0 pool takes none", async () => {
+  const listed = [
+    { sandboxId: "mine", metadata: { cadre_toolbelt: "computer-pool", cadre_pool: "box0" } },
+    { sandboxId: "legacy", metadata: { cadre_toolbelt: "computer-pool" } },
+    { sandboxId: "theirs", metadata: { cadre_toolbelt: "computer-pool", cadre_pool: "mac" } },
+  ];
+  const connected: string[] = [];
+  let lists = 0;
+  const Sandbox = {
+    list: () => { lists++; let done = false; return { get hasNext() { return !done; }, nextItems: async () => { done = true; return listed; } }; },
+    connect: async (id: string) => { connected.push(id); return { sandboxId: id }; },
+    create: async () => { throw new Error("no create in this test"); },
+  };
+  const sdk = async () => ({ Sandbox });
+  const p = new DesktopPool("k", "cadre-desktop", 2, () => {}, { id: "box0", sdk });
+  await p.adopt();
+  assert.deepEqual(p.ids, ["mine", "legacy"], "another runtime's desktop is left alone");
+  const cold = new DesktopPool("k", "cadre-desktop", 0, () => {}, { id: "mac", sdk });
+  assert.equal(await cold.take(), null);
+  assert.equal(lists, 1, "a size-0 pool never lists or adopts");
+  assert.deepEqual(connected, []);
 });
