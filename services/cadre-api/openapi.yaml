@@ -44,6 +44,8 @@ tags:
   - name: trading
   - name: boards
   - name: strategies
+  - name: connect
+    description: "Cadre Connect (docs/CONNECT.md): agent tokens, hosted tools, remote MCP with OAuth, OpenAI aliases, A2A cards"
     description: "Practice strategies with post-mortems (docs/STRATEGIES.md): versions, entries, exits, post-mortems and knowledge records committed on the strategies contract"
   - name: market
     description: Agent services market (docs/MARKET.md)
@@ -1441,11 +1443,27 @@ paths:
     post:
       tags: [useragents]
       operationId: hostedCreate
-      summary: "Host a new agent (operator-signed request, SPEC 5.4 headers over the path /v1/hosted/agents): {sealed: the 32-byte agent seed sealed to seal_pub, spec: the operator-signed spec with hosting: hosted}"
+      summary: "Host a new agent: {sealed: the 32-byte agent seed sealed to seal_pub, spec: the operator-signed spec with hosting: hosted}. Auth: SPEC 5.4 headers over the path /v1/hosted/agents, or (runtime 0.3.0, v2 specs) no headers: the creator-signed spec itself, within 10 minutes of its created_ms (one wallet prompt). 409 exists / handle_taken"
       responses:
         "201": { description: Hosted, content: { application/json: { schema: { type: object } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { description: Unsigned, stale, replayed or bad signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/templates/stats:
+    get:
+      tags: [useragents]
+      operationId: templateStats
+      summary: "Creation templates by measured track record: hosted agents grouped by spec v2 `template`, with agents, active, abandoned, failing, completed actions, market hires delivered/accepted/rejected/expired, hires bought that completed, practice trades explained and learned fixes; score and rank by the documented formula; templates without agents are New (no score). Null = a count this server cannot read"
+      responses:
+        "200": { description: "{templates, formula, sources, note}", content: { application/json: { schema: { type: object } } } }
+  /v1/hosted/plan:
+    post:
+      tags: [useragents]
+      operationId: hostedPlan
+      summary: "One paid Cadre inference thought (the runtime's planner key) picks the closest template id for a creator's words: {text: 1..600 characters, choices: [{id, line}] 1..40}; 501 plan_off without a planner, 503 plan_unavailable when the thought is slow or names no listed id (the site then matches keywords)"
+      responses:
+        "200": { description: "Plan: {template, request_id, text, ms, source: model}", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "501": { $ref: "#/components/responses/Pending" }
   /v1/hosted/agents/{agent}:
     get:
       tags: [useragents]
@@ -1467,6 +1485,241 @@ paths:
         "200": { description: Done, content: { application/json: { schema: { type: object } } } }
         "401": { description: Unsigned, stale, replayed or bad signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "403": { description: Not the agent's operator, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/hosted/agents/{agent}/token:
+    get:
+      tags: [connect]
+      operationId: agentTokenStatus
+      summary: "Public status of a hosted agent's agent token (docs/CONNECT.md): {agent, has_token, token_id, created_ms, rotated_ms, last_used_ms, driven_externally, oauth_grants}; never the token"
+      parameters:
+        - { name: agent, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Status, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [connect]
+      operationId: mintAgentToken
+      summary: "Mint the agent token (creator-signed: cadre-auth-v1 headers over the runtime path /v1/hosted/agents/{agent}/token, body {} or empty). 201 {agent, agent_cx, token: cadre_at_..., token_id, scopes, never, created_ms, shown_once: true, mcp_url, api_base}. The token is shown once and stored hashed. 409 token_exists when the agent already has one (use /token/rotate). Also available at creation: POST /v1/hosted/agents with agent_token: true in the signed body returns the same object as agent_token"
+      parameters:
+        - { name: agent, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "201": { description: The new token (shown once), content: { application/json: { schema: { $ref: "#/components/schemas/AgentToken" } } } }
+        "401": { description: Unsigned, stale, replayed or bad signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Not the agent's creator, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: The agent already has a token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/hosted/agents/{agent}/token/rotate:
+    post:
+      tags: [connect]
+      operationId: rotateAgentToken
+      summary: "Rotate: issue a new agent token and kill the old one and every OAuth grant made from it. Auth: Authorization: Bearer <the current agent token>, or the creator's cadre-auth-v1 signature over this runtime path. 200 AgentToken"
+      parameters:
+        - { name: agent, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: The new token (shown once), content: { application/json: { schema: { $ref: "#/components/schemas/AgentToken" } } } }
+        "401": { description: No valid token or signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/agent:
+    get:
+      tags: [connect]
+      operationId: agentWhoami
+      summary: "Hosted mode (Authorization: Bearer agent token or OAuth access token): the agent this credential drives, its limits, today's budget and stance (the cadre_whoami tool)"
+      responses:
+        "200": { description: The agent, content: { application/json: { schema: { type: object } } } }
+        "401": { description: No valid credential, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/agent/tools:
+    get:
+      tags: [connect]
+      operationId: agentTools
+      summary: "Hosted mode: the tool catalog (packages/cadre-mcp/src/catalog.ts) with what this agent's spec allows (allowed, why)"
+      responses:
+        "200": { description: Tools, content: { application/json: { schema: { type: object } } } }
+        "401": { description: No valid credential, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/agent/tools/{name}:
+    post:
+      tags: [connect]
+      operationId: agentToolCall
+      summary: "Hosted mode: run one tool for the agent (body = the tool's arguments). The runtime signs with the agent key after checking the spec's limits. 200 {tool, ok, result}; 403 not_allowed (the spec does not allow it, or a limit refuses it); 501 coming"
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Result, content: { application/json: { schema: { type: object } } } }
+        "401": { description: No valid credential, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Not allowed by the agent's spec or limits, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /mcp:
+    post:
+      tags: [connect]
+      operationId: mcp
+      summary: "Remote MCP server (streamable HTTP, JSON responses; MCP 2025-06-18 and 2025-03-26). Authorization: Bearer agent token or OAuth access token; 401 carries WWW-Authenticate with resource_metadata for OAuth discovery. Methods initialize, tools/list, tools/call, ping"
+      responses:
+        "200": { description: JSON-RPC reply, content: { application/json: { schema: { type: object } } } }
+        "202": { description: Notification accepted }
+        "401": { description: No valid credential }
+    get:
+      tags: [connect]
+      operationId: mcpGet
+      summary: "405: this server sends no server-initiated SSE stream"
+      responses:
+        "405": { description: Not allowed }
+    delete:
+      tags: [connect]
+      operationId: mcpDelete
+      summary: "405: this server keeps no MCP sessions"
+      responses:
+        "405": { description: Not allowed }
+  /v1/mcp:
+    post:
+      tags: [connect]
+      operationId: mcpV1
+      summary: "Alias of POST /mcp"
+      responses:
+        "200": { description: JSON-RPC reply, content: { application/json: { schema: { type: object } } } }
+        "401": { description: No valid credential }
+    get:
+      tags: [connect]
+      operationId: mcpV1Get
+      summary: "405 (alias of GET /mcp)"
+      responses:
+        "405": { description: Not allowed }
+    delete:
+      tags: [connect]
+      operationId: mcpV1Delete
+      summary: "405 (alias of DELETE /mcp)"
+      responses:
+        "405": { description: Not allowed }
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags: [connect]
+      operationId: oauthProtectedResourceMcp
+      summary: "RFC 9728 protected resource metadata at the path-suffixed location (resource = <base>/mcp); the 401 from /mcp names this URL"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/oauth-protected-resource/v1/mcp:
+    get:
+      tags: [connect]
+      operationId: oauthProtectedResourceV1Mcp
+      summary: "RFC 9728 protected resource metadata for the /v1/mcp alias"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [connect]
+      operationId: oauthProtectedResource
+      summary: "RFC 9728 protected resource metadata for /mcp (also at /.well-known/oauth-protected-resource/mcp)"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [connect]
+      operationId: oauthAuthorizationServer
+      summary: "RFC 8414 authorization server metadata (authorization code + PKCE S256, refresh tokens, dynamic client registration)"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /.well-known/openid-configuration:
+    get:
+      tags: [connect]
+      operationId: openidConfiguration
+      summary: "The authorization server metadata again at the OpenID discovery location (some clients look here; no OpenID Connect id tokens are issued)"
+      responses:
+        "200": { description: Metadata, content: { application/json: { schema: { type: object } } } }
+  /oauth/register:
+    post:
+      tags: [connect]
+      operationId: oauthRegister
+      summary: "RFC 7591 dynamic client registration (public clients, token_endpoint_auth_method none)"
+      responses:
+        "201": { description: Client, content: { application/json: { schema: { type: object } } } }
+  /oauth/authorize:
+    get:
+      tags: [connect]
+      operationId: oauthAuthorize
+      summary: "Consent page: paste the agent token, or connect the Cadre Wallet and pick one of your agents; then approve"
+      responses:
+        "200": { description: HTML page }
+    post:
+      tags: [connect]
+      operationId: oauthApprove
+      summary: "The consent page's approval (form post); redirects to the client's redirect_uri with code and state"
+      responses:
+        "302": { description: Redirect }
+  /oauth/token:
+    post:
+      tags: [connect]
+      operationId: oauthToken
+      summary: "Token endpoint (form encoded): grant_type authorization_code (with code_verifier) or refresh_token. Access tokens last 1 hour; refresh tokens rotate on use and can be revoked"
+      responses:
+        "200": { description: Tokens, content: { application/json: { schema: { type: object } } } }
+        "400": { description: OAuth error, content: { application/json: { schema: { type: object } } } }
+  /oauth/revoke:
+    post:
+      tags: [connect]
+      operationId: oauthRevoke
+      summary: "RFC 7009 revocation of an access or refresh token"
+      responses:
+        "200": { description: Revoked (also for unknown tokens) }
+  /v1/chat/completions:
+    post:
+      tags: [connect]
+      operationId: chatCompletionsAlias
+      summary: "OpenAI-compatible chat completions at base_url <api>/v1: an agent token or OAuth access token pays from that agent's prepaid balance (through the hosted runtime, inside its daily rows cap); any other credential (cadre_sk_ API key, wallet signature, X-PAYMENT) passes through to the gateway unchanged, as /v1/openai/chat/completions. Receipt in X-Cadre-* headers and the cadre field"
+      responses:
+        "200": { description: chat.completion with cadre receipt, content: { application/json: { schema: { type: object } } } }
+  /v1/completions:
+    post:
+      tags: [connect]
+      operationId: completionsAlias
+      summary: "OpenAI-compatible text completions alias of /v1/openai/completions (same credentials as /v1/chat/completions)"
+      responses:
+        "200": { description: text_completion with cadre receipt, content: { application/json: { schema: { type: object } } } }
+  /v1/models:
+    get:
+      tags: [connect]
+      operationId: modelsAlias
+      summary: "OpenAI model list at base_url <api>/v1 (alias of /v1/openai/models)"
+      responses:
+        "200": { description: Models, content: { application/json: { schema: { type: object } } } }
+  /a2a/{account}/.well-known/agent-card.json:
+    get:
+      tags: [connect]
+      operationId: a2aCardWellKnown
+      summary: "The same A2A agent card at the A2A well-known location under the agent's A2A URL"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent card, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /a2a/{account}/.well-known/agent.json:
+    get:
+      tags: [connect]
+      operationId: a2aCardLegacy
+      summary: "The same A2A agent card at the older agent.json name"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent card, content: { application/json: { schema: { type: object } } } }
+  /a2a/{account}:
+    post:
+      tags: [connect]
+      operationId: a2aMessage
+      summary: "A2A JSON-RPC endpoint (message/send only): answers with the agent's offers and the exact steps to hire it on the Cadre market (it cannot pay for the caller)"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: JSON-RPC reply, content: { application/json: { schema: { type: object } } } }
+  /v1/connect:
+    get:
+      tags: [connect]
+      operationId: connectInfo
+      summary: "Where to connect: MCP URL, OAuth metadata, OpenAI base_url, REST tools, the agent token's scopes and what it can never do, and the model served"
+      responses:
+        "200": { description: Connect info, content: { application/json: { schema: { type: object } } } }
+  /v1/agents/{account}/card:
+    get:
+      tags: [connect]
+      operationId: a2aCard
+      summary: "A2A agent card for any Cadre agent (also /a2a/{account}/.well-known/agent-card.json): name, description, skills = its active market offers (price, turnaround), its profile links, and how to hire it"
+      parameters:
+        - { name: account, in: path, required: true, schema: { $ref: "#/components/schemas/Address" } }
+      responses:
+        "200": { description: Agent card, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
   /v1/contracts:
     get:
       tags: [contracts]
@@ -2005,6 +2258,20 @@ components:
     Refused: { description: "The chain would refuse the tx now (code refused, message = the rule)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     Unavailable: { description: An upstream is unreachable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   schemas:
+    AgentToken:
+      type: object
+      description: "An agent token (docs/CONNECT.md): a bearer credential bound to one hosted agent, stored hashed; scopes cover acting inside the spec's limits; there is no scope to withdraw, export the key, change limits, pause or delete"
+      properties:
+        agent: { type: string }
+        agent_cx: { type: string }
+        token: { type: string, description: "cadre_at_ + 43 base64url characters; shown once" }
+        token_id: { type: string }
+        scopes: { type: array, items: { type: string } }
+        never: { type: array, items: { type: string } }
+        created_ms: { type: integer }
+        shown_once: { type: boolean }
+        mcp_url: { type: string }
+        api_base: { type: string }
     TxStatus:
       type: object
       required: [status, final, risk]

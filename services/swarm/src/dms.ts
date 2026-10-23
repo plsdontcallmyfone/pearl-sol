@@ -98,7 +98,7 @@ interface DmGlobal {
   day: string;
   agentDms: number;
   nextAgentDmAt?: number;
-  prices: Record<string, { price: string | null; inputs: Record<string, unknown>; at: number }>;
+  prices: Record<string, { price: string | null; unit?: "lamports" | "cadre"; inputs: Record<string, unknown>; at: number }>;
 }
 
 export interface Work { a: Agent; m: InMsg; cls: number; text: string | null; why?: string }
@@ -255,7 +255,7 @@ export class Dms {
   async derivePrices(): Promise<void> {
     const g = this.g;
     if (this.cfg.priceOverride !== undefined) {
-      for (const a of this.sw.agents) g.prices[a.persona.handle] = { price: this.cfg.priceOverride.toString(), inputs: { source: "SWARM_DM_PRICE" }, at: this.now() };
+      for (const a of this.sw.agents) g.prices[a.persona.handle] = { price: this.cfg.priceOverride.toString(), unit: this.priceUnit(), inputs: { source: "SWARM_DM_PRICE" }, at: this.now() };
       this.log("dm_price", { source: "SWARM_DM_PRICE", dm_price: this.cfg.priceOverride.toString() });
       return;
     }
@@ -272,7 +272,7 @@ export class Dms {
         if (isTownSolana(this.sw.d.node)) {
           // DMs on the Solana town are priced in lamports: the price is the cost itself, no CADRE quote
           inputs.unit = "lamports (town on Solana)";
-          g.prices[a.persona.handle] = { price: cost > 0n ? cost.toString() : null, inputs, at: this.now() };
+          g.prices[a.persona.handle] = { price: cost > 0n ? cost.toString() : null, unit: "lamports", inputs, at: this.now() };
           this.log("dm_price", { agent: a.persona.handle, dm_price: cost.toString(), kept_current: false, ...inputs });
           continue;
         }
@@ -289,13 +289,18 @@ export class Dms {
           inputs.why = `pump quote: ${(e as Error).message}`;
         }
       }
-      g.prices[a.persona.handle] = { price, inputs, at: this.now() };
+      g.prices[a.persona.handle] = { price, unit: "cadre", inputs, at: this.now() };
       this.log("dm_price", { agent: a.persona.handle, dm_price: price, kept_current: price === null, ...inputs });
     }
   }
 
   async ensurePrices() {
     // recomputed at start; a failed derivation is retried hourly
+    // a price derived in the other unit (saved before the town moved to Solana) is not a price here
+    for (const a of this.sw.agents) {
+      const pr = this.g.prices[a.persona.handle];
+      if (pr && (pr.unit ?? "cadre") !== this.priceUnit()) delete this.g.prices[a.persona.handle];
+    }
     const missing = this.sw.agents.some((a) => !this.g.prices[a.persona.handle]?.price);
     if (this.pricesAt && !(missing && this.now() - this.pricesAt > 3_600_000)) return;
     this.pricesAt = this.now();
@@ -312,11 +317,23 @@ export class Dms {
     return p;
   }
 
+  /** The unit DM prices are in: lamports with the town on Solana, else CADRE chain units. */
+  priceUnit(): "lamports" | "cadre" {
+    return isTownSolana(this.sw.d.node) ? "lamports" : "cadre";
+  }
+
   wanted(a: Agent, cur: any): { encKey: Uint8Array; dmPolicy: number; dmPrice: bigint; threadFreeBlocks: number } {
     // an agent that does not answer DMs (a user agent whose spec has actions.reply false) still
     // publishes its enc_key, with a closed inbox so nobody pays for a letter it will not answer
     if (!this.sw.dmAllowed(a)) return { encKey: a.wallet.encKey, dmPolicy: 3, dmPrice: 0n, threadFreeBlocks: this.cfg.threadFreeBlocks };
-    const pr = this.g.prices[a.persona.handle]?.price;
+    const rec = this.g.prices[a.persona.handle];
+    // only a price in this town's unit: lamports on Solana, CADRE chain units on the Cadre chain
+    let pr = rec && (rec.unit ?? "cadre") === this.priceUnit() ? rec.price : null;
+    const cap = BigInt(process.env.TOWN_MAX_DM_LAMPORTS ?? "1000000000");
+    if (pr && this.priceUnit() === "lamports" && BigInt(pr) > cap) {
+      this.log("dm_price_refused", { agent: a.persona.handle, dm_price: pr, cap_lamports: cap.toString(), why: "above TOWN_MAX_DM_LAMPORTS (default 1 SOL)" });
+      pr = null;
+    }
     const curPrice = BigInt(cur?.dm_price ?? 0);
     const price = pr ? BigInt(pr) : curPrice;
     // priced cold DMs (D5) when there is a price; without one the inbox keeps its current policy

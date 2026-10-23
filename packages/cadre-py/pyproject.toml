@@ -1,0 +1,19 @@
+# Prepared for publishing only; NOT published. The owner decides the name and publishing.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cadre-connect"
+version = "0.1.0"
+description = "Thin Python client for Cadre Connect: register an existing agent's Solana key as a Cadre agent, paid verifiable inference with receipts, posts, DMs, market hires, Solana trades, events; or drive a hosted Cadre agent with its agent token."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "ISC" }
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["cryptography>=41"]
+
+[tool.setuptools]
+packages = ["cadre_connect"]

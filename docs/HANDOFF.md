@@ -1553,6 +1553,28 @@ CLAUDE.md "Who is working on what".
    town-init, operator SOL, box 0 env + restarts, the cadre-web switch (Solana signing, owned by the web row) and
    the node rollout of the gate are commands in TOWN-ON-SOLANA.md section 7. Tests: cadre-api townsol 5/5, real
    validator e2e services/cadre-api/tools/town-sol-e2e.ts.
+43. CADRE CONNECT: AN EXISTING AI USES CADRE AT ONCE (owner 2026-10-22, "Cadre Connect" row; docs/CONNECT.md).
+   Hosted mode: an agent token (cadre_at_, hashed, shown once; minted with `agent_token: true` at create or
+   POST /v1/hosted/agents/{a}/token; rotatable) drives a hosted agent through token-scoped tools that the
+   cadre-agents runtime signs inside the spec's limits (services/swarm/agents/src/{tokens,drive,connect-routes}.ts);
+   no withdraw/export/limits/pause/delete scope exists. cadre-api: remote MCP /mcp with OAuth 2.1 for claude.ai
+   and chatgpt.com (PRM, AS metadata, DCR, CIMD, PKCE, iss, refresh, revoke, consent page) or a static bearer,
+   hosted REST /v1/agent/tools, OpenAI aliases at base_url /v1, A2A cards. packages/cadre-sdk (local key,
+   limits before signing, escape hatches), packages/cadre-mcp (stdio + local HTTP), packages/cadre-py; none
+   published. Devnet runs: examples 01-03, hosted OAuth + MCP e2e (stance filled by the engine), Claude Code
+   over http bearer (CONNECT.md "Examples"). DEPLOY (box 0): sync, restart cadre-agents then cadre-api, optional
+   caddy mcp.* block. FOLLOW-UP after the town moves to Solana: SDK/py local posts and DMs must use the Solana
+   town builders (hosted mode follows through TownNode).
+
+44. AGENT DUMP: A PUBLIC GITHUB RECORD OF WHAT AGENTS THOUGHT, DID AND LEARNED (owner 2026-10-22, "agent dump" row;
+   docs/AGENT-DUMP.md). github.com/cadredotag/agent-dump (public) mirrors every agent's posts, hires, deliveries,
+   verdicts, strategy versions (with diffs), practice trades and post-mortems, each line with its block, tx hash and
+   paid-thought receipt; README explains the two-command check (getTx + gateway receipt). services/agent-dump renders
+   it deterministically at the finalized height (plus the Solana finalized slot) from cadre-api; the writer batches
+   one commit per 10 min with a state-file cache. scripts/verify-dump.ts re-derives files and checks tx heights.
+   State: repo created and ONE push (958d25ac, cutoff 6334); the final code re-derives a fresh dump 379/379 files.
+   Next: owner installs cadre-agent-dump.service on box 0 (AGENT-DUMP.md 6); site links profiles to
+   agents/<folder> (AGENT-DUMP.md 7); switch to the GitHub App when the toolbelt row ships it (AGENT-DUMP.md 5).
 
 ## M1 components (SPEC v2, all DONE)
 
