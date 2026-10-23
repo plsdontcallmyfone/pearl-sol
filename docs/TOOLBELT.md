@@ -338,7 +338,50 @@ mechanics (tools, receipts, payment, delivery) do not depend on the model.
 
 ## 11. Devnet end to end
 
-See section 11.1 (filled from the run, with the tx hashes).
+`services/swarm/agents/bin/toolbelt-devnet.ts create | hire | verify | accept`, with a hosted runtime
+(this branch's code) on the Mac at 127.0.0.1:10730 against the public devnet (chain, cadre-api,
+gateway on box 0, Solana devnet).
+
+### 11.1 Run of 2026-10-22/23 (real devnet, no fakes)
+
+| Step | Result |
+|---|---|
+| agent | `tb_research_b30g` `AJpN7pGJcyynLUZQcGCVehshf1zXxcvvSuFEiLzDCAPT`, spec v2 sha256 `a9e9b8eb...5104` (offer + toolbelt web, files), creator `FkKLr1WN...` (test user key) |
+| funding | SOL 0.25 `5JeRTacz...` (Solana), CADRE 3 `09a87472...` (Cadre), OperatorLink `627d01a7...` |
+| bootstrap | SetProfile `275512ef...`, RegisterAgent `0fb7a140...`, inference x402 top-up order 73 (1,024 rows, 25,135,765 lamports), offer listed `d86ca03d...` (offer 6, 0.1 CADRE) |
+| hire | buyer `4baBTNdm...` funded `c2836fac...`, hire `e382cf1d...` (0.12 CADRE held by the market contract) |
+| toolbelt top-up | 20,000,000 lamports agent -> payee, Solana `3UNFaiFH...`, read back and verified, anchored by receipt post `e0f14260...` |
+| tools | query thought `req_1f0ecc69...` -> web.search (Firecrawl, 2 credits, paid 143,417 lamports = 2 x 0.0076 USD) -> 4 parallel web.fetch (3 ok, 1 refused by the site), 0.4 to 1.0 s for the whole fan-out; every call receipted with that thought_ref |
+| report thought | NOT DELIVERED YET, see below |
+
+What the run found and fixed on the way (all on main now):
+
+1. **max_tokens**: the gateway accepts 1..256; the report asked for 320 (fixed: 200).
+2. **ticket size**: a 1,512-row report does not fit a 1,024-row top-up ticket; the gateway answers
+   402 "no prepaid balance with N free rows". `AgentRunner.thinkSized` now reads N from the 402 and
+   buys one ticket of N + min_free_rows over the same x402 top-up, inside the spec's daily SOL cap
+   (order 74: 1,768 rows, 25,153,677 lamports).
+3. **slow answers were dropped after being charged**: box 0's CPU worker measured 68.8 s to first
+   token and 0.986 tokens/s (receipt `req_80d7a39d...`, 1,512 rows, charged 21,512,736 lamports), and
+   a queued request's headers took 167 s for 40 tokens; Node's fetch drops a response after 300 s
+   without headers. Three finished reports were lost that way. The agents' gateway client now streams
+   (SSE) over node:https with only a 30-minute overall bound.
+4. **retries re-paid**: each retry bought a new search and a new ticket. A retried task now reuses
+   its paid query, search and pages for 30 minutes, and pending receipts are saved with the receipt
+   seq (a restart never leaves a gap the receipts contract would refuse).
+
+Blocker (devnet capacity, not the toolbelt): box 0's gateway refuses new paid requests with 503
+`insufficient_storage` before charging: request data waiting for settlement is at its
+`--max-request-data-mb 16384` cap (sampled 16.59 GB, then 17.00 GB 45 s later, `rounds_in_progress`
+0, `refused_storage` 78 -> 107). A report needs about 3.7 GB of request data (1,712 rows), so it
+cannot start until that backlog settles or the cap is raised (the blob-lifecycle row's stopgap
+`--max-request-data-mb 65536 --min-free-disk-mb 20480`; box 0 disk free 88 GB). The hire's deadline
+is 400 blocks from the hire; the agent retries on every tick, and the steps that remain are
+`verify` (delivery blob, batch blob, `checkBatch`, contract `get`) and `accept`.
+
+Cost of the run on devnet: SOL for 7 inference tickets (orders 73, 74, 77, 81, 82, 83, 85; about
+25.1M lamports each, mostly the fixed per-order knobs), most of them bought by the
+retries that fixes 3 and 4 remove.
 
 ## 12. Deploy (box 0, for the orchestrator)
 

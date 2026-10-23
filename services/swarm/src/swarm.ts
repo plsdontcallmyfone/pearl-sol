@@ -266,9 +266,12 @@ export class Swarm {
     if (!this.cfg.solRpc) throw new Error("SOLANA_RPC is not set");
     const bh = await this.d.latestBlockhash(this.cfg.solRpc);
     const x = paymentHeader(this.op, req, bh);
-    this.budget.bookTopup(price); // booked before sending: a failed send still counts against the cap
     const r = await this.d.gateway.topup(body, x);
+    // booked only once the gateway confirms the payment (201): a refused payment (no SOL yet, a
+    // stale blockhash) spent nothing, and booking it filled the daily cap and stuck the agent
+    // for the rest of the UTC day (2026-10-22, @quick_tide_0aug2)
     if (r.status !== 201) throw new Error(`top-up: ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+    this.budget.bookTopup(price);
     this.rowsFree = Number(r.body?.rows ?? this.cfg.topupRows);
     this.balanceCheckedAt = this.d.now();
     this.log("topup", { ticket: r.body?.ticket_id, order: r.body?.order, rows: r.body?.rows, price_lamports: price.toString() });

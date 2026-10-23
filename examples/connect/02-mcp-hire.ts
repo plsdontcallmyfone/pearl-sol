@@ -42,6 +42,15 @@ log("whoami", await tool("cadre_whoami"));
 // a spend above the config limit is refused before signing
 try { await tool("cadre_transfer", { to: k.address, amount: "4000000000" }); } catch (e) { log("limit refused (expected)", (e as Error).message.slice(0, 160)); }
 
+// the market's fallback: a hire past its deadline with no delivery is expired and its escrow returns to the buyer
+for (const x of (await tool("cadre_list_hires", { role: "buyer", status: "open" })).hires ?? []) {
+  if (x.blocks_left === 0) {
+    const e = await tool("cadre_expire_hire", { hire: x.id });
+    log("expired overdue hire (escrow back to the buyer)", { id: x.id, total: x.total, tx: e.tx_hash });
+  }
+}
+if (process.env.EXPIRE_ONLY) { server.kill(); process.exit(0); }
+
 // a rerun resumes a hire this agent already bought that is waiting for its verdict (never pays twice)
 let h: any = ((await tool("cadre_list_hires", { role: "buyer", status: "delivered" })).hires ?? [])[0] ?? null;
 if (!h) {
@@ -67,5 +76,8 @@ log("hire status", { id: h.id, status: st, delivery: d.delivery?.text?.slice(0, 
 if (st === "delivered") {
   const v = await tool("cadre_judge", { hire: h.id, accept: !!d.delivery?.text && d.delivery?.hash_ok !== false, reason: "delivered the requested verse" });
   log("judged", { tx: v.tx_hash });
-} else log("no delivery in the wait window; the escrow returns at the deadline (cadre_expire_hire)");
+} else if ((d.hire ?? d).blocks_left === 0) {
+  const e = await tool("cadre_expire_hire", { hire: h.id });
+  log("no delivery by the deadline: expired, escrow back to the buyer", { id: h.id, tx: e.tx_hash });
+} else log("no delivery in the wait window; rerun after the deadline to expire it and get the escrow back");
 server.kill();

@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { b58decode } from "../../src/b58.ts";
 import { verifySig } from "../../src/wallet.ts";
 import { validateToolbelt, type ToolbeltSpec } from "./toolbelt/spec.ts";
+import { checkProof, type SwarmSpecProof } from "./swarmabi.ts";
 
 export const SPEC_FORMAT = "cadre-agent-spec-v1";
 /** v2 (2026-10-21, owner): a sovereign agent. The creator funds it and signs the spec once at
@@ -150,7 +151,10 @@ export interface AgentSpec {
 
 export const isSovereign = (s: AgentSpec) => s.format === SPEC_FORMAT_V2 && s.sovereign === true;
 
-export interface SignedSpec { spec: AgentSpec; sha256: string; sig: string }
+/** `sig` is the creator's signature over specMessage; a swarm member made by POST /v1/hosted/swarms
+ * instead carries `swarm`, the creator's ONE signature over the whole swarm (every member spec is
+ * committed in it, docs/SWARMS.md 3), and `sig` is "". */
+export interface SignedSpec { spec: AgentSpec; sha256: string; sig: string; swarm?: SwarmSpecProof }
 
 /** Proposed defaults (design choices the operator edits in the wizard, not measurements). */
 export function defaultSpec(agent: string, operator: string, over: Partial<AgentSpec> = {}): AgentSpec {
@@ -373,6 +377,11 @@ export function verifySigned(x: SignedSpec): { ok: boolean; problems: string[] }
   if (problems.length) return { ok: false, problems };
   const h = specSha256(x.spec);
   if (x.sha256 !== h) problems.push(`sha256 is ${h}, the document says ${x.sha256}`);
+  if (x.swarm) {
+    if (!isSovereign(x.spec)) problems.push("a swarm-signed spec is a sovereign v2 spec");
+    problems.push(...checkProof(x.swarm, x.spec.agent, x.spec.operator, h, verifySig));
+    return { ok: problems.length === 0, problems };
+  }
   let sigOk = false;
   try {
     sigOk = /^[0-9a-f]{128}$/.test(x.sig) && verifySig(b58decode(x.spec.operator), Buffer.from(specMessage(x.spec, h), "utf8"), Buffer.from(x.sig, "hex"));
@@ -399,6 +408,7 @@ export function profileBlob(x: SignedSpec, self: AgentSelf | null = null): Buffe
     agent_spec: s,
     agent_spec_sha256: x.sha256,
     agent_spec_sig: x.sig,
+    agent_spec_swarm: x.swarm,
   }), "utf8");
 }
 

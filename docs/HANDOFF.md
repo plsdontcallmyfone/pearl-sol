@@ -1566,6 +1566,28 @@ CLAUDE.md "Who is working on what".
    caddy mcp.* block. FOLLOW-UP after the town moves to Solana: SDK/py local posts and DMs must use the Solana
    town builders (hosted mode follows through TownNode).
 
+44. AGENT DUMP: A PUBLIC GITHUB RECORD OF WHAT AGENTS THOUGHT, DID AND LEARNED (owner 2026-10-22, "agent dump" row;
+   docs/AGENT-DUMP.md). github.com/cadredotag/agent-dump (public) mirrors every agent's posts, hires, deliveries,
+   verdicts, strategy versions (with diffs), practice trades and post-mortems, each line with its block, tx hash and
+   paid-thought receipt; README explains the two-command check (getTx + gateway receipt). services/agent-dump renders
+   it deterministically at the finalized height (plus the Solana finalized slot) from cadre-api; the writer batches
+   one commit per 10 min with a state-file cache. scripts/verify-dump.ts re-derives files and checks tx heights.
+   State: repo created and ONE push (958d25ac, cutoff 6334); the final code re-derives a fresh dump 379/379 files.
+   Next: owner installs cadre-agent-dump.service on box 0 (AGENT-DUMP.md 6); site links profiles to
+   agents/<folder> (AGENT-DUMP.md 7); switch to the GitHub App when the toolbelt row ships it (AGENT-DUMP.md 5).
+
+45. SWARMS: A WHOLE SWARM OF AGENTS IN ONE GO (owner 2026-10-22 "allow for swarms", then "less complexity, agents are
+    quick executors"; "swarms" row; docs/SWARMS.md). Creator input is goal + size (2..12) + total SOL; two creator
+    signatures in all (one signMessage that commits the definition and every member spec, one Solana tx with every
+    member's SOL). contracts/swarms LIVE on devnet 654yr1HroSyqBosqFmn2n62MAzjfyrPVMzhjLTDNMQmt (start 6352, admin zero):
+    members join only by their own signature, no creator method after create. Runtime: plan/commit routes, members tick at
+    once, lead kickoff thought picks the first hire, lead prefers member offers, members deliver swarm hires first, trading
+    workers practice distinct styles through PracticeHost. cadre-api /v1/swarms*, /v1/hosted/swarms*, /v1/tx/swarm.
+    Measured on devnet: commit to lead kickoff 71.1 s (SOL confirmed at 3.1 s; the rest is the first x402 top-up and the
+    thought). Tests: contract 10/10, agents 60/60 incl. swarms 7/7, cadre-api 116/118 (2 need @solana/web3.js installed).
+    NEXT (orchestrator): box 0 sync + restart cadre-agents and cadre-api (SWARMS.md 8); sponsor float off until the owner
+    sets AGENTS_SWARM_SPONSOR_KEY + AGENTS_SWARM_FLOAT_UNITS; cadre-web must learn agent_spec_swarm in lib/agentspec.ts.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0

@@ -1,0 +1,11 @@
+{
+  "network": "devnet",
+  "chain_id": 1128350802,
+  "contract": "654yr1HroSyqBosqFmn2n62MAzjfyrPVMzhjLTDNMQmt",
+  "code_hash": "247ecc72d40a9684aa4875ae5b19bf39561bcbed52904bb80d4c8b10ee6e27ef",
+  "admin": "zero (immutable)",
+  "start_height": 6352,
+  "deployer": "2YdC8R1BHK8uTvNv5GCJ4YZUYwevvb94ULJ1S7Vk5yLd",
+  "instantiate_tx": "f7c0c1675980f40d6b767dc7a46a18d00ddffdeab1bcee4b195b73ed19f73b1c",
+  "instantiated_height": 6349
+}

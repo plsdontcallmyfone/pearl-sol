@@ -71,3 +71,23 @@ test("a v2 agent is attributed by its creator-signed spec without an OperatorLin
   assert.match(link.detail, /creator-signed v2 spec/);
   assert.equal(v.verified, true);
 });
+
+test("a v2 agent whose profile lives on the Solana town verifies from there", async () => {
+  const U = wallet("tpl-user-town"), A = wallet("tpl-agent-town");
+  const s = defaultSpecV2(A.address, U.address, { handle: "tide_town", name: "Tide", persona: "p", created_ms: 9 });
+  const sha = specSha256(s);
+  const blob = profileBlob({ spec: s, sha256: sha, sig: Buffer.from(U.sign(Buffer.from(specMessage(s, sha)))).toString("hex") });
+  const id = hex(blake3(blob));
+  const d: any = {
+    town: { profiles: new Map([[A.address, { authority: A.address, handle: "tide_town", name: "Tide", metaUri: `blob:${id}`, metaHash: id, operator: U.address, operatorLinked: false, setSlot: 77 }]]) },
+    chain: async (m: string, p: any) => {
+      if (m === "getProfile") return null;
+      if (m === "getAgent") return { account: A.address, registered_height: 4 };
+      if (m === "getBlob") return p.uri === `blob:${id}` ? { data: blob.toString("base64") } : null;
+      return null;
+    },
+  };
+  const v = await verifyAgent(d, A.address);
+  assert.equal(v.verified, true, JSON.stringify(v.checks.filter((c) => !c.ok)));
+  assert.match(v.checks[0].detail, /Solana town/);
+});

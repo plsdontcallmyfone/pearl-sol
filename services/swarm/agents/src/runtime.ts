@@ -27,6 +27,7 @@ import { KeyStore, open, seal, type Sealed } from "./seal.ts";
 import { isSovereign, type SignedSpec, verifySigned } from "./spec.ts";
 import { HaltWatch } from "./halt.ts";
 import { RouteError, toolbeltRoute } from "./toolbelt/host.ts";
+import { SwarmHost } from "./swarms.ts";
 import { PracticeHost, practiceConfig } from "./practice.ts";
 import { checkChoices, type Planner } from "./plan.ts";
 import { TokenStore } from "./tokens.ts";
@@ -90,6 +91,8 @@ export class Runtime {
   api: ApiClient;
   cfg: RuntimeConfig;
   halt: HaltWatch | undefined;
+  /** Swarms created here (swarms.ts, docs/SWARMS.md). */
+  swarms: SwarmHost;
   practice: PracticeHost | null = null;
   practiceOff = "";
   planner: Planner | null = null;
@@ -135,6 +138,7 @@ export class Runtime {
         try { this.start(a); } catch (err) { console.log(JSON.stringify({ event: "start_failed", agent: a, error: String((err as Error).message) })); }
       }
     }
+    this.swarms = new SwarmHost(this as any, HttpError);
   }
 
   saveRegistry() {
@@ -282,16 +286,27 @@ export class Runtime {
   // ---------------------------------------------------------------- loop
 
   ticking: string | null = null;
+  /** Agents in a tick right now (the loop, or tickNow for a just-created swarm): one tick per agent at a time. */
+  busy = new Set<string>();
+
+  /** One tick of one agent, unless it is already ticking. */
+  async tickAgent(a: string) {
+    const r = this.runners.get(a);
+    if (!r || this.busy.has(a) || this.stopped || existsSync(this.cfg.killFile)) return;
+    if (r.paused || r.state === "withdrawn") return;
+    this.busy.add(a);
+    try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); } finally { this.busy.delete(a); }
+  }
 
   async loopOnce() {
-    for (const [a, r] of this.runners) {
+    for (const a of [...this.runners.keys()]) {
       if (this.stopped || existsSync(this.cfg.killFile)) return;
-      if (r.paused || r.state === "withdrawn") continue;
       // the protocol halt (halt.ts) is checked inside each agent's tick, before it acts
       this.ticking = a;
-      try { await r.tick(); } catch (e) { console.log(JSON.stringify({ event: "tick_error", agent: a, error: String((e as Error).message).slice(0, 200) })); }
+      await this.tickAgent(a);
       this.ticking = null;
     }
+    if (!this.stopped && !existsSync(this.cfg.killFile)) await this.swarms.tick().catch((e) => console.log(JSON.stringify({ event: "swarm_tick_error", error: String((e as Error).message).slice(0, 200) })));
   }
 
   async run() {
@@ -404,6 +419,8 @@ export class Runtime {
         }
       }
     }
+    const sw = await this.swarms.handle(method, path, u, h, body);
+    if (sw) return sw;
     throw new HttpError(404, "not_found", `no route ${method} ${path}`);
   }
 

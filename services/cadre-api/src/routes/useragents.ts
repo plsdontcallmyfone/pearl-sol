@@ -151,10 +151,16 @@ const transferCheckedIx = (src: string, mint: string, dst: string, owner: string
 export interface Check { name: string; ok: boolean; detail: string }
 
 export async function verifyAgent(d: Deps, account: string) {
-  const [prof, reg] = await Promise.all([
+  let [prof, reg] = await Promise.all([
     d.chain<any>("getProfile", { account }).catch((e) => { throw new ApiError(503, "unavailable", `getProfile: ${(e as Error).message.slice(0, 160)}`); }),
     d.chain<any>("getAgent", { account }).catch(() => null),
   ]);
+  // the town moved to Solana (docs/TOWN-ON-SOLANA.md): a profile set there names the same blob
+  // (meta_uri / meta_hash), creator and link; the chain's profile, when present, stays first
+  if (!prof?.has_profile && d.town) {
+    const t = d.town.profiles.get(account);
+    if (t) prof = { account, has_profile: true, handle: t.handle, name: t.name, profile_uri: t.metaUri, profile_hash: t.metaHash, operator: t.operator, operator_linked: t.operatorLinked, set_height: `Solana slot ${t.setSlot}`, on: "solana" };
+  }
   const checks: Check[] = [];
   const c = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
   let blob: any = null;
@@ -164,7 +170,7 @@ export async function verifyAgent(d: Deps, account: string) {
     const b = await d.chain<any>("getBlob", { uri }).catch(() => null);
     if (b?.data) raw = Buffer.from(b.data, "base64");
   }
-  c("profile", !!prof?.has_profile, prof?.has_profile ? `SetProfile at height ${prof.set_height}` : "no profile on the chain");
+  c("profile", !!prof?.has_profile, prof?.has_profile ? (prof.on === "solana" ? `SetProfile on the Solana town at ${prof.set_height}` : `SetProfile at height ${prof.set_height}`) : "no profile on the chain or the Solana town");
   const blobOk = !!raw && hex(blake3(raw)) === uri!.slice(5) && (!prof?.profile_hash || prof.profile_hash === uri!.slice(5));
   c("profile_blob", blobOk, raw ? (blobOk ? "blob bytes hash (blake3) to the profile_hash on the chain" : "blob bytes do not hash to profile_hash") : "the profile blob is not on the node the API reads");
   try { if (raw) blob = JSON.parse(raw.toString("utf8")); } catch { blob = null; }

@@ -261,6 +261,8 @@ export class FakeGateway {
   receipts = new Map<string, any>();
   prompts: string[] = [];
   topups = 0;
+  /** When set, a paid top-up is refused with this message (the payer holds no SOL yet, ...). */
+  refusePayment: string | null = null;
   priceLamports = 3_000_000n;
   payTo = b58encode(randomBytes(32));
   authFailures = 0;
@@ -293,6 +295,7 @@ export class FakeGateway {
       const msg = tx.subarray(1 + 64 * nSig);
       const payer = msg.subarray(4, 36);
       if (!verifySig(payer, msg, tx.subarray(1, 65))) return { status: 402, body: { error: "bad payment signature" } };
+      if (this.refusePayment) return { status: 402, body: { error: this.refusePayment } };
       this.topups++;
       this.rowsFree += Number(b.rows);
       return { status: 201, body: { ticket_id: hex(randomBytes(32)), order: String(this.topups), rows: b.rows, round_secs: b.round_secs ?? null } };

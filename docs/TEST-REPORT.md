@@ -942,3 +942,15 @@ Live, read-only:
 - crates/cadre-cli (was pearl-cli) lib 116/116 after the merge with main.
 - Real validator end to end (services/cadre-api/tools/town-sol-e2e.ts, solana-test-validator 3.1.12 on
   the Mac, ports 10745/10747 + 11760-11790, stopped after): 19/19 PASS, three runs in a row.
+
+## Swarms (2026-10-22/23, swarms row)
+
+- contracts/tests `cargo test --release --test swarms`: 10/10 (signed acceptance, forged and stale acceptances refused,
+  replayed definition refused, create_signed, no creator control, proposals, leave/hand over, fund, start gate, TS/Rust
+  definition vector, gas table 3/12/32 members).
+- services/swarm/agents: 60/60 (swarms 7/7: plan/commit with one signature, refusals, sponsor and lead registration,
+  kickoff then planned hire, swarm-first hiring and delivery).
+- services/cadre-api: 116/118; the 2 failures (client.test.ts, sol.test.ts) need @solana/web3.js, not installed in this
+  worktree; contract.test.ts (every documented route served) passes with the swarm routes.
+- Live devnet 2026-10-23 00:08 UTC: swarm 291775e8... (2 members): commit 18 ms, Solana tx (264 bytes) confirmed 3.1 s,
+  lead kickoff thought done 71.1 s after the commit.

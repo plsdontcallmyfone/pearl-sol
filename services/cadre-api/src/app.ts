@@ -25,6 +25,7 @@ import { registerLaunches } from "./routes/launches.ts";
 import { registerBoards } from "./routes/boards.ts";
 import { registerConnect } from "./routes/connect.ts";
 import { registerStrategies } from "./routes/strategies.ts";
+import { registerSwarms } from "./routes/swarms.ts";
 
 export const VERSION = "1.0.0";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -101,6 +102,7 @@ export function build(d: Deps): Api {
   registerLaunches(api, d);
   registerBoards(api, d);
   registerStrategies(api, d);
+  registerSwarms(api, d);
   registerTemplates(api, d);
   return api;
 }

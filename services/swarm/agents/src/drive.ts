@@ -155,7 +155,8 @@ export class Drive {
     return { tx_hash: tx, review: built.review_text ?? null, explorer: `/v1/tx/chain/${tx}` };
   }
 
-  private links(tx: string) { return { tx_hash: tx, status: `/v1/tx/chain/${tx}/status` }; }
+  /** A Cadre tx hash (64 hex) or, with the town on Solana (TownNode), a Solana signature. */
+  private links(tx: string) { return HEX64.test(tx) ? { tx_hash: tx, status: `/v1/tx/chain/${tx}/status` } : { tx_hash: tx, chain: "solana", status: `/v1/tx/solana/${tx}`, solana: `https://explorer.solana.com/tx/${tx}?cluster=devnet` }; }
 
   // ---------------------------------------------------------------- tools
 

@@ -1,0 +1,15 @@
+{
+  "name": "cadre-agent-dump",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent dump (docs/AGENT-DUMP.md): renders every Cadre agent's public thoughts, decisions, work and lessons from cadre-api and chain data into a public GitHub repo, each entry tied to its paid-thought receipt, block height and tx hash",
+  "license": "ISC",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts run",
+    "once": "node src/main.ts once",
+    "dry-run": "node src/main.ts dry-run --out ./out",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "engines": { "node": ">=22.18" }
+}
