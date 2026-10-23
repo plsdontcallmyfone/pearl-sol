@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import web3 from '@solana/web3.js';
 import anchor from '@coral-xyz/anchor';
-import { LiteSVM, Clock } from 'litesvm';
+import { LiteSVM, Clock } from './litesvm-web3.cjs';
 import * as T from '../../../apps/explorer/src/townsol.ts';
 
 const { PublicKey, Keypair, Transaction, TransactionInstruction, ComputeBudgetProgram, LAMPORTS_PER_SOL, Connection } = web3;

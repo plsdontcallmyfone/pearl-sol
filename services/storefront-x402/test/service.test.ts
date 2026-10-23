@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ed25519Program, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction, ComputeBudgetProgram } from "@solana/web3.js";
-import { Clock, FailedTransactionMetadata, LiteSVM } from "litesvm";
+import { Clock, FailedTransactionMetadata, LiteSVM } from "./litesvm-web3.ts";
 import { LiteSvmChain } from "./litesvm-chain.ts";
 import { orphanDrafts, Service } from "../src/service.ts";
 import type { HttpRes } from "../src/service.ts";

@@ -1,0 +1,13 @@
+{"label": "4cpu-idle", "shape": "p32", "rows": 32, "threads": 2, "ctx": 300, "step_s": 0.8489, "min_s": 0.8024, "rows_per_s": 37.7, "cpus": 8, "loadavg_1m": 0.080078125}
+{"label": "4cpu-idle", "shape": "d1", "rows": 1, "threads": 2, "ctx": 300, "step_s": 0.1609, "min_s": 0.1585, "rows_per_s": 6.22, "cpus": 8, "loadavg_1m": 0.37548828125}
+{"label": "4cpu-idle", "shape": "d4", "rows": 4, "threads": 2, "ctx": 300, "step_s": 0.4491, "min_s": 0.4468, "rows_per_s": 8.91, "cpus": 8, "loadavg_1m": 1.1689453125}
+{"label": "4cpu-burn", "shape": "p32", "rows": 32, "threads": 2, "ctx": 300, "step_s": 10.3656, "min_s": 9.7846, "rows_per_s": 3.09, "cpus": 8, "loadavg_1m": 4.26220703125}
+{"label": "4cpu-burn", "shape": "d1", "rows": 1, "threads": 2, "ctx": 300, "step_s": 1.2968, "min_s": 1.2881, "rows_per_s": 0.77, "cpus": 8, "loadavg_1m": 5.7099609375}
+{"label": "4cpu-burn", "shape": "d4", "rows": 4, "threads": 2, "ctx": 300, "step_s": 3.2211, "min_s": 3.2175, "rows_per_s": 1.24, "cpus": 8, "loadavg_1m": 6.955078125}
+{"label": "4cpu-burn-passive", "shape": "p32", "rows": 32, "threads": 2, "ctx": 300, "step_s": 1.8073, "min_s": 1.7885, "rows_per_s": 17.71, "cpus": 8, "loadavg_1m": 6.96826171875}
+{"label": "4cpu-burn-passive", "shape": "d1", "rows": 1, "threads": 2, "ctx": 300, "step_s": 0.2616, "min_s": 0.2499, "rows_per_s": 3.82, "cpus": 8, "loadavg_1m": 6.91552734375}
+{"label": "4cpu-burn-passive", "shape": "d4", "rows": 4, "threads": 2, "ctx": 300, "step_s": 0.7191, "min_s": 0.7153, "rows_per_s": 5.56, "cpus": 8, "loadavg_1m": 6.9013671875}
+{"label": "4cpu-burn-niced", "shape": "p32", "rows": 32, "threads": 2, "ctx": 300, "step_s": 1.6278, "min_s": 0.8068, "rows_per_s": 19.66, "cpus": 8, "loadavg_1m": 6.9169921875}
+{"label": "4cpu-burn-niced", "shape": "d1", "rows": 1, "threads": 2, "ctx": 300, "step_s": 0.1638, "min_s": 0.1629, "rows_per_s": 6.1, "cpus": 8, "loadavg_1m": 6.94140625}
+{"label": "4cpu-burn-niced", "shape": "d4", "rows": 4, "threads": 2, "ctx": 300, "step_s": 1.2766, "min_s": 0.9557, "rows_per_s": 3.13, "cpus": 8, "loadavg_1m": 6.9853515625}
+DONE

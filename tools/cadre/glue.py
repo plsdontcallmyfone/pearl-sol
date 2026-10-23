@@ -211,17 +211,24 @@ class DetGlue:
         v = torch.clamp(self.rne_clamp(u / s, A_PRE_MAX) + z, -QMAX, QMAX)
         return v.to(torch.int8), s, z
 
-    def lin(self, base, u, sa_scale, cap):
+    def lin(self, base, u, sa_scale, cap, out_rows=None):
         from worker import int_mm
         """y (binary64) = ((C - z colsum) * sw) * (s * sa_scale) through every shard of `base`.
         u: binary64 input rows (already times the group's g); sa_scale: per-row binary64 factor
-        that turns u's units into the real input (inv_rms * 2^-16, 2^-16, or 1)."""
+        that turns u's units into the real input (inv_rms * 2^-16, 2^-16, or 1).
+        out_rows: optional int64 row indices; y is then computed for those rows only (C and A
+        are still computed and captured for every row: they are the segments). Every output
+        element is a function of its own row, so the selected rows are the same bits as rows of
+        the full y; forward_multi uses it for lm_head, whose binary64 logits are only needed for
+        the last row of each request (128,256 columns per row, the widest matrix by 5x).
+        The scale-out runs in place on fresh tensors: the same IEEE operations in the same order
+        ((C - z colsum) to binary64, times sw, then times sa, each rounded), fewer allocations."""
         g, shards = self.groups[base]
         v, s, z = self.quant(u)
         sa = s * sa_scale
-        n_total = sum(ks[0].n for ks, _, _ in shards)
-        y = torch.empty(u.shape[0], n_total, dtype=torch.float64, device=self.dev)
-        off = 0
+        if out_rows is not None:
+            z, sa = z.index_select(0, out_rows), sa.index_select(0, out_rows)
+        ys = []
         for ks, colsum, sw in shards:
             c = None
             for m in ks:
@@ -232,13 +239,16 @@ class DetGlue:
                 elif cap is not None:
                     cap[m.index][0].append(vs)
                     cap[m.index][1].append(part)
-                c = part.to(torch.int64) if c is None else c + part.to(torch.int64)
-            cz = c - z * colsum
-            w = ks[0].n
-            y[:, off:off + w] = (cz.double() * sw) * sa
-            off += w
-            del c, cz
-        return y
+                if out_rows is not None:
+                    part = part.index_select(0, out_rows)
+                c = part.to(torch.int64) if c is None else c.add_(part)  # exact int64 sums
+            c.sub_(z * colsum)                       # C - z colsum, exact int64
+            yv = c.double()
+            yv.mul_(sw)
+            yv.mul_(sa)
+            ys.append(yv)
+            del c
+        return ys[0] if len(ys) == 1 else torch.cat(ys, -1)
 
     def exp2neg(self, t):
         """2^(-t / 2^24) in Q30 for int64 t >= 0: E2[round(frac * 4096)] >> int part."""
@@ -252,8 +262,11 @@ class DetGlue:
         x = self.rne_clamp(g.abs() * 2.0 ** 24, SIG_X_MAX)  # |g| in Q24 nats
         e = self.exp2neg(torch.bitwise_right_shift(x * LOG2E_Q24, 24))
         den = (1 << 30) + e
-        sig = torch.where(g >= 0, torch.div(torch.full_like(e, 1 << 60), den, rounding_mode="floor"),
-                          torch.div(torch.bitwise_left_shift(e, 30), den, rounding_mode="floor"))
+        # one int64 division per element: pick the numerator first (2^60 for g >= 0, e 2^30
+        # otherwise); the same quotients as dividing both and picking after (the old form ran
+        # every division twice, and int64 division has no vector instruction on x86)
+        num = torch.where(g >= 0, torch.full_like(e, 1 << 60), torch.bitwise_left_shift(e, 30))
+        sig = torch.div(num, den, rounding_mode="floor")
         return g * (sig.double() * 2.0 ** -30)
 
     def rope(self, y, c, s):
@@ -346,8 +359,9 @@ class DetGlue:
         jpos = torch.arange(T, device=self.dev)
         mask = jpos[None, :] > pos[:, None]  # r x T, True = not visible
         Qd = q.double().reshape(r, KV, g, hd).permute(1, 2, 0, 3)          # KV x g x r x hd
-        S = torch.matmul(Qd, kv.K[li][:, None, :, :T]).to(torch.int64)    # KV x g x r x T
-        return self._softmax_pv(S, mask, kv.Vhi[li][:, None, :T, :], kv.Vlo[li][:, None, :T, :]).permute(2, 0, 1, 3).reshape(r, H * hd)
+        # .double(): a binary32 CPU cache widened exactly (a no-op on a binary64 cache)
+        S = torch.matmul(Qd, kv.K[li][:, None, :, :T].double()).to(torch.int64)    # KV x g x r x T
+        return self._softmax_pv(S, mask, kv.Vhi[li][:, None, :T, :].double(), kv.Vlo[li][:, None, :T, :].double()).permute(2, 0, 1, 3).reshape(r, H * hd)
 
     def _softmax_pv(self, S, mask, vhi, vlo):
         """Integer softmax weights and P V of attention(), for any leading batch shape."""
@@ -456,15 +470,15 @@ class DetGlue:
             kv.t = s + len(ids)
         inv = self.inv_rms(h)[:, None]
         gf = self.groups["lm_head"][0]
-        logits = self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap)
-        return logits.index_select(0, torch.tensor([b - 1 for _, b in spans], device=dev))
+        return self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap,
+                        out_rows=torch.tensor([b - 1 for _, b in spans], device=dev))
 
 
-def _kv_tensors(L, KV, hd, lead, cap_t, dev):
+def _kv_tensors(L, KV, hd, lead, cap_t, dev, dtype=torch.float64):
     """Zero-filled (finite) K / Vhi / Vlo per layer; zero past a request's length matters: the
     batched decode reads up to the longest request and the mask zeroes those weights, and
     0 x 0 adds an exact 0 (uninitialized memory could hold NaN, and 0 x NaN is NaN)."""
-    f = dict(dtype=torch.float64, device=dev)
+    f = dict(dtype=dtype, device=dev)
     return ([torch.zeros(*lead, KV, hd, cap_t, **f) for _ in range(L)],
             [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)],
             [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)])
@@ -480,21 +494,25 @@ def _kv_write(K, Vhi, Vlo, li, start, k, v, cap_t):
 
 class KVCache:
     """One request's attention cache for forward_multi, preallocated for `cap_t` positions:
-    K as binary64 (KV x hd x T, so a score matmul reads it in place), V split into v >> 12 and
-    v & 4095 as binary64 (KV x T x hd). Every stored value is an integer below 2^24, exact in
-    binary64, so this is the same data as the int64 cache of forward(), only converted once."""
+    K (KV x hd x T), V split into v >> 12 and v & 4095 (KV x T x hd). Every stored value is an
+    integer of magnitude below 2^22 (K: Q12 clamped to 2^22 - 1; v >> 12 and v & 4095: below
+    2^12), exact in binary32 and in binary64, so this is the same data as the int64 cache of
+    forward(). On CPU it is stored as binary32 (half the memory: 98 KB per position on
+    Llama-3.2-1B instead of 196 KB) and widened to binary64 (exact) where attention reads it,
+    so the score and P V matmuls see the same binary64 integers as before; on CUDA binary64."""
 
     def __init__(self, glue_, cap_t):
         m = glue_.m
         self.KV, self.hd, self.cap_t, self.t = m.KV, m.hd, cap_t, 0
-        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (), cap_t, glue_.dev)
+        dt = torch.float32 if glue_.dev.type == "cpu" else torch.float64
+        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (), cap_t, glue_.dev, dt)
 
     def write(self, li, start, k, v):
         """k: n x KV x hd (Q12 int64), v: n x KV x hd (Q16 int64) for positions start.."""
         _kv_write(self.K, self.Vhi, self.Vlo, li, start, k, v, self.cap_t)
 
     def nbytes(self):
-        return sum(t.numel() * 8 for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
+        return sum(t.numel() * t.element_size() for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
 
 
 class KVPool:

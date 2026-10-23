@@ -1838,7 +1838,29 @@ CLAUDE.md "Who is working on what".
       service sweeps orphaned drafts itself every 10 min (test/rpc-bounds.test.ts, 2 new tests in service.test.ts;
       29 pass). The 6 drafts are still open and orphaned; deploy = DEVNET "Storefront draft sweep".
 
-53. JUDGE VERDICTS AND PRACTICE LESSONS WITH THE 1B MODEL (2026-10-23, "judge verdicts with the 1B model" row).
+53. PAID INFERENCE THROUGHPUT ON THE DEVNET CPU WORKER (2026-10-23, "tput" row; box 0 read only). docs/SPEED.md 8,
+    docs/measurements/tput-2026-10-23/. Box 0: worker busy only 28%, 1.59 s per step at 4.5 rows; gateway 13-17k
+    rows/h, no gateway queueing. The time was (a) OpenMP spinning on an oversubscribed 4-core box (attester replay
+    145%, miner 118%, node 73%): a 32-row step 0.85 s -> 10.4 s under a stand-in load, 1.8 s with
+    OMP_WAIT_POLICY=PASSIVE; (b) every decode row padded to a 32-row GEMM (79% of a decode step); (c) prefill glue
+    (binary64 lm_head scale-out for rows nobody reads, two int64 divisions per SiLU element); (d) live rows 2048 +
+    FIFO prefill: short thoughts waited for a report's whole prefill.
+    - tools/cadre (bit-exact: golden.py equal to the old code on all A/C files, tokens and logits; test_batch 28/28
+      with 7 Rust replays; test_replay 19/19): CPU int_mm without padding, lm_head logits for last rows only,
+      in-place scale-out, one SiLU division, binary32 CPU KV cache (exact, half the memory), --prefill-order short
+      (default, 8-step starvation bound), /health prompt_rows + prefix_rows (measures what a prefix cache would
+      save; nothing cached), profile_step.py, bench_mix.py, golden.py. Unit: step rows 32, live rows 4096,
+      OMP passive; attester Nice=10.
+    - Measured on the same trace (box 0-like load, 4 CPUs, 2 threads): thoughts' first token 443.6 s -> 55.0 s mean,
+      rows/s 5.3 -> 15.2; idle 106.6 s -> 24.4 s. Single decode step 0.498 -> 0.159 s; 64-row prefill 25 -> 39 rows/s.
+      Peak RSS 3.12 GB (old, live 2048) vs 3.01 GB (new, live 4096).
+    - Compression of C (item 46): zstd 1 + shuffle 0.569 of raw, about 240 MB/s per core; not implemented (disk
+      drains since d379a0d, CPU is box 0's bottleneck, new C-library crate); numbers in SPEED.md 8.4.
+    - DEPLOY (not done by this row, box 0 only, no build, no gateway change): see SPEED.md 8 and the row's report:
+      sync main, worker drop-in (CADRE_MAX_STEP_ROWS=32 CADRE_MAX_LIVE_ROWS=4096 CADRE_PREFILL_ORDER=short
+      OMP_WAIT_POLICY=PASSIVE), restart cadre-worker when /health active is 0; attester drop-in Nice=10, restart
+      cadre-attester when /v1/stats settle.closing is null.
+54. JUDGE VERDICTS AND PRACTICE LESSONS WITH THE 1B MODEL (2026-10-23, "judge verdicts with the 1B model" row).
     - What the model emitted: hires 76 and 81 got `VERDICT: VERDICT: REJECT\nREASON: ...` (label doubled) under
       prompt v1; the old parser saw no verdict word after the first `VERDICT:` and paid 3 identical thoughts each.
       Proven by replay: `pearl-evaluator --judge-probe` (new, never votes) gave answers whose sha256 equals the

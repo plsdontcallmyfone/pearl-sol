@@ -13,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, Deps } from "../src/deps.ts";
 import { Api } from "../src/http.ts";
-import { registerTrading, walletFill, type TradingConfig } from "../src/routes/trading.ts";
+import { feeBuySigs, realSwapsOn, registerTrading, walletFill, type TradingConfig } from "../src/routes/trading.ts";
+import { BRIDGE_ID } from "../src/sol.ts";
 import { registerUserAgents } from "../src/routes/useragents.ts";
 import { b58decode, b58encode, hex } from "../../../apps/explorer/src/codec.ts";
 import { blake3 } from "../../../apps/explorer/src/blake3.ts";
@@ -38,6 +39,29 @@ const doc = { spec, sha256: sha, sig: Buffer.from(creator.sign(Buffer.from(specM
 const self = { format: "cadre-agent-self-v1" as const, strategy: "sell into strength", persona_notes: null, goals: ["compound"], updated_ms: 2, decided_by: "req_self" };
 const blob = profileBlob(doc, self);
 const uri = `blob:${hex(blake3(blob))}`;
+
+// a practice agent (trade section, real swaps off): its only Solana fill is the runtime's one CADRE buy
+// for Cadre fees, bridged out whole right after (agent.ts selfFundCadre); it is not a real-swap trader
+const fee = walletFromSeed(seed("ut-fee-agent"));
+const feeSpec = defaultSpecV2(fee.address, creator.address, {
+  handle: "quick_fee", name: "Quick Fee", persona: "Practices.", created_ms: 1, skills: ["town", "x402", "trade"],
+  actions: { post: true, reply: true, react: true, follow: true, tip: false, trade: true, memo: false, hire: false, mine: false, browse: false }, trade: defaultTrade(MINT),
+});
+const feeSha = specSha256(feeSpec);
+const feeDoc = { spec: feeSpec, sha256: feeSha, sig: Buffer.from(creator.sign(Buffer.from(specMessage(feeSpec, feeSha), "utf8"))).toString("hex") };
+const feeBlob = profileBlob(feeDoc, self);
+const feeUri = `blob:${hex(blake3(feeBlob))}`;
+const SIG_FEEBUY = "7".repeat(87), SIG_FEEBRIDGE = "8".repeat(87);
+const FEE_BUY = {
+  slot: 590, blockTime: 1_792_617_100,
+  transaction: { message: { accountKeys: [fee.address, key(32), "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"] } },
+  meta: { err: null, fee: 5000, preBalances: [100_000_000, 0, 1], postBalances: [100_000_000 - 20_000_000 - 5_000 - 2_039_280, 2_039_280, 1], preTokenBalances: [], postTokenBalances: [{ accountIndex: 1, mint: MINT, owner: fee.address, uiTokenAmount: { amount: "777000" } }] },
+};
+const FEE_BRIDGE = {
+  slot: 591, blockTime: 1_792_617_110,
+  transaction: { message: { accountKeys: [fee.address, key(32), key(33), BRIDGE_ID] } },
+  meta: { err: null, fee: 5000, preBalances: [77_955_720, 2_039_280, 0, 1], postBalances: [77_950_720, 2_039_280, 0, 1], preTokenBalances: [{ accountIndex: 1, mint: MINT, owner: fee.address, uiTokenAmount: { amount: "777000" } }], postTokenBalances: [{ accountIndex: 1, mint: MINT, owner: fee.address, uiTokenAmount: { amount: "0" } }] },
+};
 
 const le64 = (n: bigint) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(n); return b; };
 function tokenAcct(amount: bigint) { const b = Buffer.alloc(165); le64(amount).copy(b, 64); return b; }
@@ -75,10 +99,12 @@ function rpc(m: string, p: any): any {
     case "listProfiles": return { total: 2, profiles: [
       { account: agent.address, has_profile: true, handle: "tide_trader", trades: true, is_agent: true, house: false, operator: creator.address, operator_linked: true, profile_uri: uri },
       { account: HOUSE, has_profile: true, handle: "house_one", trades: true, is_agent: true, house: true },
+      { account: fee.address, has_profile: true, handle: "quick_fee", trades: true, is_agent: true, house: false, operator: creator.address, operator_linked: true, profile_uri: feeUri },
     ] };
-    case "getProfile": return p.account === agent.address ? { has_profile: true, handle: "tide_trader", name: "Tide Trader", operator: creator.address, operator_linked: true, profile_uri: uri, profile_hash: uri.slice(5), set_height: 5, flags: 9 } : { has_profile: false };
-    case "getAgent": return p.account === agent.address ? { registered_height: 4, name: "Tide Trader", uri: "" } : null;
-    case "getBlob": return p.uri === uri ? { data: blob.toString("base64") } : null;
+    case "getProfile": if (p.account === fee.address) return { has_profile: true, handle: "quick_fee", name: "Quick Fee", operator: creator.address, operator_linked: true, profile_uri: feeUri, profile_hash: feeUri.slice(5), set_height: 5, flags: 9 };
+      return p.account === agent.address ? { has_profile: true, handle: "tide_trader", name: "Tide Trader", operator: creator.address, operator_linked: true, profile_uri: uri, profile_hash: uri.slice(5), set_height: 5, flags: 9 } : { has_profile: false };
+    case "getAgent": return p.account === agent.address || p.account === fee.address ? { registered_height: 4, name: "Tide Trader", uri: "" } : null;
+    case "getBlob": return p.uri === uri ? { data: blob.toString("base64") } : p.uri === feeUri ? { data: feeBlob.toString("base64") } : null;
     case "getAccountTxs": return { txs: [
       { kind: "Post", height: 7, tx_hash: "cc".repeat(32), from: agent.address, tx: receiptTx(`receipt sol:${SIG_BUY} pumpswap buy: 0.01 SOL for 0.4 CADRE; own wallet; stance buy 3 decided by req_buy1`, 3) },
     ] };
@@ -86,8 +112,12 @@ function rpc(m: string, p: any): any {
       { signature: SIG_SELL, slot: 601, err: null, blockTime: 1_792_617_300 },
       { signature: SIG_OTHER, slot: 600, err: null, blockTime: 1_792_617_250 },
       { signature: SIG_BUY, slot: 600, err: null, blockTime: 1_792_617_200 },
+    ] : p[0] === fee.address ? [
+      { signature: SIG_FEEBRIDGE, slot: 591, err: null, blockTime: 1_792_617_110 },
+      { signature: SIG_FEEBUY, slot: 590, err: null, blockTime: 1_792_617_100 },
     ] : [];
-    case "getTransaction": return p[0] === SIG_BUY ? BUY : p[0] === SIG_SELL ? SELL : { slot: 600, blockTime: 1, transaction: { message: { accountKeys: [agent.address, key(31)] } }, meta: { err: null, fee: 5000, preBalances: [1, 0], postBalances: [1, 0], preTokenBalances: [], postTokenBalances: [] } };
+    case "getTransaction": if (p[0] === SIG_FEEBUY) return FEE_BUY; if (p[0] === SIG_FEEBRIDGE) return FEE_BRIDGE;
+      return p[0] === SIG_BUY ? BUY : p[0] === SIG_SELL ? SELL : { slot: 600, blockTime: 1, transaction: { message: { accountKeys: [agent.address, key(31)] } }, meta: { err: null, fee: 5000, preBalances: [1, 0], postBalances: [1, 0], preTokenBalances: [], postTokenBalances: [] } };
     case "getMultipleAccounts": return { value: p[0].map((a: string) => a === POOL ? acct(poolBytes(), 1, "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA") : a === BASEV ? acct(tokenAcct(80_000_000n)) : a === QUOTEV ? acct(tokenAcct(2_000_000_000n)) : null) };
     case "getProgramAccounts": return [];
     case "getChainInfo": return { chain_id: 1, height: 10 };
@@ -172,4 +202,33 @@ test("useragents view says sovereign, custody and the agent's own rewrite", asyn
   assert.match(u.body.custody, /hosted: the Cadre runtime holds the agent key/);
   assert.match(u.body.trust, /nobody can withdraw its funds, export its key, pause, resume, delete it or edit its spec/);
   assert.match(u.body.controls.stop, /kill switch/);
+});
+
+test("a practice agent's one CADRE buy for Cadre fees (bridged out whole) is not a fill: off the real-swaps board, counted as fee_buys", async () => {
+  assert.equal(realSwapsOn(feeSpec), false);
+  assert.equal(realSwapsOn({ ...feeSpec, trade: { ...feeSpec.trade!, real_swaps: true } }), true);
+  const t = await get("/v1/trading/trades?limit=50");
+  assert.equal(t.body.trades.some((x: any) => x.agent === fee.address), false);
+  const l = await get("/v1/trading/leaderboard");
+  assert.deepEqual(l.body.user_agents.map((x: any) => x.handle), ["tide_trader"]);
+  const a = await get(`/v1/trading/agents/${fee.address}`);
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  const w = a.body.positions.solana_wallet[0];
+  assert.equal(w.trades, 0);
+  assert.equal(w.fee_buys, 1);
+  assert.equal(w.real_swaps, false);
+  assert.equal(w.position_spl, "0");
+  assert.equal((await get("/v1/trading")).body.user_agents, 1);
+});
+
+test("feeBuySigs: a buy matches one later bridge deposit of the same amount; other buys stay fills", () => {
+  const f = (amount: bigint) => [{ mint: MINT, side: "buy", amount_out: amount }];
+  const m = new Map<string, any>([
+    ["a", { slot: 1, blockTime: 1, fills: f(100n) }],
+    ["b", { slot: 2, blockTime: 2, fills: f(100n) }],
+    ["c", { slot: 3, blockTime: 3, fills: [], bridged: [{ mint: MINT, amount: 100n }] }],
+    ["d", { slot: 4, blockTime: 4, fills: f(50n) }],
+    ["e", { slot: 0, blockTime: 0, fills: [], bridged: [{ mint: MINT, amount: 50n }] }],
+  ]);
+  assert.deepEqual([...feeBuySigs(m)], ["a"]);
 });
