@@ -1733,6 +1733,23 @@ CLAUDE.md "Who is working on what".
     Rollout of the non-consensus fixes: box 0 cadre-gateway and cadre-agents restart after sync. Details and the
     theoretical findings: TEST-REPORT "Correctness audit 2026-10-23".
 
+49. HOUSE DESKTOPS RESILIENCE: OUT OF CREDIT, SOCIAL MEMORY, DAILY SPEND (2026-10-23, "desktops resilience" row;
+    docs/DESKTOPS-AT-SCALE.md 11, services/swarm/desktop/README.md).
+    - Box 0: the desktops' OpenRouter account ran out at 2026-10-22 22:24 UTC; 571 tasks failed with model 402 in 5 h
+      while all 36 desktops kept running. Now src/credits.ts pauses vision tasks and desktop chain actions on the
+      first credit error (one vision_paused line, /status vision_paused + vision_gate), probes every 5 min (free
+      /key read, then one tiny request with max_tokens 1600), pauses the desktops after 30 min, resumes on the first
+      passing probe (vision_resumed). 402s are no longer retried.
+    - Social memory: 1,301 of 1,307 Social memory warnings in 24 h were on one-desktop agents (1 GiB); the
+      background activity console and uncapped wallet tabs; 1,000 warnings repaired nothing (alert 80 MB, repair
+      60 MB). Console closed when not wanted, 2 tabs on 1 GiB, trim before restart, one threshold, deduped log,
+      desk_health line per tick for the after measurement.
+    - Spend: hourly spend line, spend_day per UTC day with within_cap, /status spend_days.
+    - Tests: desktops 26/26 (test/credits.test.ts 6 on recorded 402 bodies, 5 new in desktops.test.ts).
+    - Deploy (handed to the orchestrator): scripts/devnet-desktops.sh code, then restart cadre-desktops. No env
+      change needed (defaults in README); every desktop's browser host restarts once (desk_host_updated). Then
+      check /status vision_paused and the journal for vision_paused or vision_resumed and desk_health.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
