@@ -8,13 +8,13 @@ import { PracticeAgent } from "../src/agent.ts";
 import { analyze, BIT, binomCdf, type Snapshot, type TradeRecord } from "../src/analyzer.ts";
 import { fisherLower, knowledgeOf, MIN_FORWARD, records } from "../src/knowledge.ts";
 import { mainnetUrl, MAINNET_GENESIS, ReadOnlySolana } from "../src/mainnet.ts";
-import { signals, type Watched } from "../src/market.ts";
+import { Market, signals, type Watched } from "../src/market.ts";
 import { buyOut, decodeFeeConfig, feesFor, sellOut, totalBps } from "../src/pump.ts";
 import { call, decodeTrade, decodeVersion, type TradeRec, type VersionRec } from "../src/records.ts";
 import { exitDue, fillBuy, quote } from "../src/sim.ts";
 import { canonicalJson, conditionsHash, holds, sizeFor, SPEC_FORMAT, specHash, type StrategySpec, validate } from "../src/spec.ts";
 import { BlobStore } from "../src/store.ts";
-import { fixesFor, parseAuthor, parseDecision, parseFix, parseLesson } from "../src/thoughts.ts";
+import { fixesFor, flagsIn, parseAuthor, parseDecision, parseFix, parseLesson } from "../src/thoughts.ts";
 
 const spec = (o: Partial<StrategySpec> = {}): StrategySpec => ({
   format: SPEC_FORMAT, name: "t v1", author: "A", parent: null, venue: "pumpswap", mode: "practice", practice_balance_lamports: 1_000_000_000,
@@ -247,9 +247,16 @@ test("thought parsers: bounded menus, veto only on a clear SKIP, fixes stay insi
   assert.deepEqual([a.stop_bps, a.target_bps, a.max_hold_s, a.win_rate], [800, 2500, 20 * 60, 0.7]);
   assert.equal(a.rationale, "deep pools trend");
   assert.deepEqual(parseAuthor("whatever"), { stop_bps: 800, target_bps: 1500, max_hold_s: 1200, win_rate: 0.4, rationale: "" });
-  assert.equal(parseDecision("SKIP, too hot"), "skip");
-  assert.equal(parseDecision("TAKE. Not a skip"), "take");
-  assert.equal(parseDecision("hmm"), "take");
+  // a veto counts only when it names a red flag the numbers show (box 0: a bare "SKIP" echo, 7 of 7)
+  const hot = { ret_15m: 0.8, vol_15m: 0.01, pool_sol: 100 };
+  assert.equal(parseDecision("SKIP ret_15m, too hot", hot).decision, "skip");
+  assert.deepEqual(parseDecision("SKIP ret_15m, too hot", hot).grounded, ["ret_15m"]);
+  assert.equal(parseDecision("SKIP", hot).decision, "take", "a bare SKIP names nothing");
+  assert.equal(parseDecision("SKIP", hot).said, "skip", "what was said is kept");
+  assert.equal(parseDecision("SKIP vol_15m", hot).decision, "take", "vol_15m 0.01 is not a red flag here");
+  assert.equal(parseDecision("TAKE. Not a skip, ret_15m", hot).decision, "take");
+  assert.equal(parseDecision("hmm", hot).decision, "take");
+  assert.deepEqual(flagsIn({ ret_15m: 0.8, top10_share: 0.2, dev_sold_15m: 1, pool_sol: null }), ["dev_sold_15m", "ret_15m"]);
   assert.equal(parseFix("I pick B because", 3), 1);
   assert.equal(parseFix("C", 2), 0);
   assert.equal(parseLesson("LESSON: widen the stop https://evil.example"), "");
@@ -306,7 +313,7 @@ test("agent: commit before fill, exit in a later block, post-mortem, then a revi
     readPool: async (_a: string, minSlot = 0) => { slot = Math.max(slot + 1, minSlot); order.push(`read:${slot}`); return { slot, base: 1_000_000_000_000_000n, quote: px, t: Date.now() }; },
   };
   const thoughts: string[] = [];
-  const think = async (m: any[], _n: number) => { const sys = m[0].content as string; thoughts.push(sys.slice(0, 20)); return { text: sys.includes("one letter") ? "A" : sys.includes("TAKE or SKIP") ? "TAKE" : sys.includes("LESSON") ? "LESSON: the stop was too tight." : "STOP 5 TARGET 25 HOLD 10 WIN 60 because trend", requestId: `req_${thoughts.length}` }; };
+  const think = async (m: any[], _n: number) => { const sys = m[0].content as string; thoughts.push(sys.slice(0, 20)); return { text: sys.includes("one letter") ? "A" : sys.includes("Red flags") ? "TAKE" : sys.includes("LESSON") ? "LESSON: the stop was too tight." : "STOP 5 TARGET 25 HOLD 10 WIN 60 because trend", requestId: `req_${thoughts.length}` }; };
   const store = new BlobStore({ dir: join(dir, "blobs") });
   const wallet = walletFromSeed(new Uint8Array(32).fill(7));
   const agent = new PracticeAgent({ handle: "t", name: "T", persona: "T", base: { conditions: [{ signal: "pool_sol", op: ">=", value: 60 }, { signal: "ret_15m", op: ">=", value: 0.01 }], size: { equity_fraction_bps: 1000, max_lamports: 100_000_000, max_pool_share_bps: 20 }, max_risk_bps: 100, max_slippage_bps: 150, practice_balance_lamports: 1_000_000_000 } },
@@ -337,4 +344,21 @@ test("agent: commit before fill, exit in a later block, post-mortem, then a revi
     assert.equal(agent.s.spec!.parent, specHash({ ...agent.s.spec!, parent: null } as any) === agent.s.spec_id ? null : agent.s.spec!.parent);
   } else assert.equal(chain.versions.length, 1, "VARIANCE alone never revises");
   assert.ok(thoughts.length >= 3, "author, decision and lesson are paid thoughts");
+});
+
+test("market: discovery evicts rugged and idle pools so the watched set never freezes, but keeps open trades", () => {
+  const m = new Market({} as any);
+  const w = (address: string, obs: { t: number; base: string; quote: string }[]): Watched =>
+    ({ pool: { address } as any, supply: 1n, decimals: 6, tokenProgram: "", devAta: "", obs: obs.map((o) => ({ slot: 1, dev: null, ...o })), trades: 1 });
+  const now = 10_000_000;
+  const moving = (q: string) => Array.from({ length: 100 }, (_, i) => ({ t: now - (99 - i) * 20_000, base: String(1000 + i), quote: q }));
+  const still = Array.from({ length: 100 }, (_, i) => ({ t: now - (99 - i) * 20_000, base: "1000", quote: "90000000000" }));
+  m.pools.set("live", w("live", moving("90000000000")));
+  m.pools.set("rugged", w("rugged", moving("5000000000")));
+  m.pools.set("idle", w("idle", still));
+  m.pools.set("idleOpen", w("idleOpen", still));
+  m.pools.set("young", w("young", still.slice(-10)));
+  const out = m.evict({ minPoolSol: 30, keep: new Set(["idleOpen"]), now });
+  assert.deepEqual(out.sort(), ["idle", "rugged"]);
+  assert.deepEqual([...m.pools.keys()].sort(), ["idleOpen", "live", "young"], "an open trade's pool and a pool watched under 30 min stay");
 });

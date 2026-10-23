@@ -14,7 +14,7 @@ import { call } from "./records.ts";
 import { fillBuy, exitDue, markValue, MODEL, quote, type Quote, REASON_CODE } from "./sim.ts";
 import { blobId, type Condition, conditionsHash, holds, inspected, type Signal, sizeFor, SPEC_FORMAT, type StrategySpec, specHash, validate, type Values } from "./spec.ts";
 import type { BlobStore } from "./store.ts";
-import { authorPrompt, decisionPrompt, fixesFor, fixPrompt, lessonPrompt, parseAuthor, parseDecision, parseFix, parseLesson, type Think } from "./thoughts.ts";
+import { authorPrompt, decisionPrompt, fixesFor, fixPrompt, flagsIn, lessonPrompt, parseAuthor, parseDecision, parseFix, parseLesson, type Think } from "./thoughts.ts";
 
 export interface Base {
   conditions: Condition[];
@@ -203,12 +203,14 @@ export class PracticeAgent {
     const sz0 = sizeFor(spec, equity, big(w.obs.at(-1)!.quote));
     const t = await this.d.think(decisionPrompt(this.cfg.persona, spec, v0, sz0.size), 24);
     const decisionMs = now();
-    if (parseDecision(t.text) === "skip") {
+    const dec = parseDecision(t.text, v0);
+    if (dec.decision === "skip") {
       this.s.skips[w.pool.address] = now() + 10 * 60_000;
       this.save();
-      this.log("skip", { pool: w.pool.address, request: t.requestId, said: t.text.slice(0, 120) });
+      this.log("skip", { pool: w.pool.address, request: t.requestId, said: t.text.slice(0, 120), flags: dec.grounded });
       return;
     }
+    if (dec.said === "skip") this.log("veto_unsupported", { pool: w.pool.address, request: t.requestId, said: t.text.slice(0, 120), named: dec.named, flags_present: flagsIn(v0) });
     // the decision slot: a fresh read after the thought, rules checked again on it
     const r = await this.d.market.readPool(w.pool.address);
     w.obs.push({ slot: r.slot, t: r.t, base: r.base.toString(), quote: r.quote.toString(), dev: w.obs.at(-1)?.dev ?? null });
@@ -245,7 +247,7 @@ export class PracticeAgent {
       tick_ms: this.d.tickMs,
       observations: w.obs.filter((o) => o.t >= r.t - 3600_000),
       thought_inputs: { slot: slot0, values: v0 },
-      decision: { request_id: t.requestId, text: t.text.slice(0, 400) },
+      decision: { request_id: t.requestId, text: t.text.slice(0, 400), said: dec.said, named: dec.named, grounded: dec.grounded, rule: "a SKIP counts only when it names a red flag present in the numbers" },
       equity_lamports: equity.toString(),
       size: { lamports: sz.size.toString(), bound: sz.bound, max_risk_lamports: sz.maxRisk.toString() },
       quote: q,

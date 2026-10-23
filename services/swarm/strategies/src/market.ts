@@ -43,13 +43,41 @@ export class Market {
   pools = new Map<string, Watched>();
   feeCfg: FeeConfig | null = null;
   keepMs: number;
+  /** Pools the last refresh evicted. */
+  evicted: string[] = [];
   constructor(sol: ReadOnlySolana, o: { keepMs?: number } = {}) {
     this.sol = sol;
     this.keepMs = o.keepMs ?? 2 * 3600_000;
   }
 
-  /** Add pools: only canonical pump pools (migrated from the pump curve) quoted in SOL with at least `minPoolSol`. */
-  async refresh(found: Map<string, { mint: string; trades: number }>, o: { minPoolSol?: number; max?: number } = {}): Promise<string[]> {
+  /**
+   * Drop watched pools that no longer qualify, so discovery can replace them: the pool's SOL
+   * fell under `minPoolSol`, or its reserves have not moved for `idleMs` (no trades). Pools in
+   * `keep` (an agent's open trade) always stay. Before 2026-10-23 a pool, once watched, stayed for
+   * the life of the process and the set froze at `max`, rugged and dead pools included.
+   */
+  evict(o: { minPoolSol?: number; idleMs?: number; keep?: Set<string>; now?: number } = {}): string[] {
+    const now = o.now ?? Date.now();
+    const idle = o.idleMs ?? 30 * 60_000;
+    const out: string[] = [];
+    for (const [address, w] of this.pools) {
+      if (o.keep?.has(address)) continue;
+      const last = w.obs.at(-1);
+      if (!last) continue;
+      const low = Number(big(last.quote)) / 1e9 < (o.minPoolSol ?? 10);
+      const first = w.obs[0];
+      const still = first.t <= now - idle && w.obs.filter((x) => x.t >= now - idle).every((x) => x.base === last.base && x.quote === last.quote);
+      if (low || still) {
+        this.pools.delete(address);
+        out.push(address);
+      }
+    }
+    return out;
+  }
+
+  /** Add pools: only canonical pump pools (migrated from the pump curve) quoted in SOL with at least `minPoolSol`; first evict those that no longer qualify (`evict`). */
+  async refresh(found: Map<string, { mint: string; trades: number }>, o: { minPoolSol?: number; max?: number; keep?: Set<string> } = {}): Promise<string[]> {
+    this.evicted = this.evict({ minPoolSol: o.minPoolSol, keep: o.keep });
     const fc = await this.sol.accounts([AMM_FEE_CONFIG]);
     if (fc.values[0]) this.feeCfg = decodeFeeConfig(fc.values[0].data);
     const cand = [...found.entries()].filter(([p, x]) => !this.pools.has(p) && canonicalPool(x.mint) === p).sort((a, b) => b[1].trades - a[1].trades);

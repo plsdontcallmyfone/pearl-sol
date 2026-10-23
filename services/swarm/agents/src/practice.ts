@@ -223,7 +223,8 @@ export class PracticeHost {
     const { discover } = await import("../../strategies/src/market.ts");
     if (Date.now() - this.lastDiscover > 15 * 60_000 || this.market.pools.size === 0) {
       const found = await discover(this.sol, { signatures: 100, txs: 40 });
-      await this.market.refresh(found, { minPoolSol: 30, max: 12 });
+      const keep = new Set([...this.agents.values()].map((a) => a.agent.s.open?.pool).filter((x): x is string => !!x));
+      await this.market.refresh(found, { minPoolSol: 30, max: 12, keep });
       this.lastDiscover = Date.now();
     }
     const t0 = Date.now();
