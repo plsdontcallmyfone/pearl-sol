@@ -562,6 +562,16 @@ impl Drop for InferSlot {
     }
 }
 
+/// A service the gateway depends on (storefront-x402, the chain node's blob store) did not
+/// answer: 503 with Retry-After, never the catch-all 400. A stopped storefront made every top-up
+/// quote a 400 "invalid_request_error" (2026-10-23 04:39-04:59 UTC), which callers read as their
+/// own mistake; the house judge logged "top-up quote: status code 400" and gave up on hire 73.
+fn upstream_down(what: &str, e: anyhow::Error) -> HttpResponse {
+    let mut r = err(503, "upstream_unavailable", format!("{what}: {e:#}"));
+    r.headers.push(("retry-after".into(), "30".into()));
+    r
+}
+
 fn busy(msg: impl std::fmt::Display) -> HttpResponse {
     let mut r = err(503, "overloaded", msg);
     r.headers.push(("retry-after".into(), "2".into()));
@@ -1008,7 +1018,10 @@ impl Gateway {
             }
         };
         let blob = balance_blob(&self.model.model_id, &self.server(), rows);
-        let uri = self.node.put_blob(&blob).context("put the balance descriptor")?;
+        let uri = match self.node.put_blob(&blob) {
+            Ok(u) => u,
+            Err(e) => return Ok(upstream_down("put the balance descriptor", e)),
+        };
         let (max_blocks, max_rounds) = self.ticket_budget(rows, round_secs)?;
         let spec = ticket_spec(&self.model, &self.server(), rows as u32 - 1, 1, &uri, &pearl_job::data::blob_id(&blob), self.cfg.balance_deadline_blocks, max_blocks);
         let mut sf = json!({"spec": spec});
@@ -1016,7 +1029,10 @@ impl Gateway {
             sf["recipient"] = r.clone();
         }
         let xp = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-payment")).map(|(_, v)| v.as_str());
-        let (st, v, xpr) = self.storefront.post_job(&sf, xp)?;
+        let (st, v, xpr) = match self.storefront.post_job(&sf, xp) {
+            Ok(x) => x,
+            Err(e) => return Ok(upstream_down("the storefront did not answer the top-up", e)),
+        };
         if st != 201 {
             let mut v = v;
             if let Some(o) = v.as_object_mut() {
@@ -1133,7 +1149,10 @@ impl Gateway {
                 // per-request x402: one ticket for this request
                 let req_blob = request_blob(&self.model.model_id, &r.ids, r.max_new);
                 let hash = pearl_job::data::blob_id(&req_blob);
-                let uri = self.node.put_blob(&req_blob).context("put the request blob")?;
+                let uri = match self.node.put_blob(&req_blob) {
+                    Ok(u) => u,
+                    Err(e) => return Ok(upstream_down("put the request blob", e)),
+                };
                 let spec = ticket_spec(&self.model, &self.server(), r.ids.len() as u32, r.max_new, &uri, &hash, self.cfg.deadline_blocks,
                     self.model.matrices.len() as u32 * self.cfg.blocks_per_segment.max(1));
                 let xp = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-payment")).map(|(_, v)| v.as_str());
@@ -1141,7 +1160,10 @@ impl Gateway {
                 if let Some(rc) = b.get("recipient").filter(|x| !x.is_null()) {
                     sfb["recipient"] = rc.clone();
                 }
-                let (st, v, _) = self.storefront.post_job(&sfb, xp)?;
+                let (st, v, _) = match self.storefront.post_job(&sfb, xp) {
+                    Ok(x) => x,
+                    Err(e) => return Ok(upstream_down("the storefront did not answer the x402 request", e)),
+                };
                 if st != 201 {
                     let mut v = v;
                     if let Some(o) = v.as_object_mut() {
