@@ -466,7 +466,7 @@ def main():
     ap.add_argument("--max-queue", type=int, default=int(os.environ.get("CADRE_MAX_QUEUE", "64")), help="requests waiting for a slot; more get 503")
     ap.add_argument("--max-step-rows", type=int, default=int(os.environ.get("CADRE_MAX_STEP_ROWS", "256")), help="rows per forward step (decode rows + prefill chunk)")
     ap.add_argument("--max-live-rows", type=int, default=int(os.environ.get("CADRE_MAX_LIVE_ROWS", "8192")),
-                    help="sum of prompt + max_new over active requests (KV cache memory: about 196 KB per row on Llama-3.2-1B)")
+                    help="sum of prompt + max_new over active requests (KV cache memory per row on Llama-3.2-1B: about 98 KB on CPU (binary32), 196 KB on CUDA)")
     ap.add_argument("--flush-rows", type=int, default=int(os.environ.get("CADRE_FLUSH_ROWS", "128")),
                     help="rows of A/C (all requests) held before they go to the segment files (about 2.7 MB per row on Llama-3.2-1B)")
     ap.add_argument("--kv-pool", default=os.environ.get("CADRE_KV_POOL", "auto"), help="on / off / auto (on for cuda): one KV pool of max_batch slots, batched decode attention")

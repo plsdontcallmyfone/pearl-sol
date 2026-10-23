@@ -359,8 +359,9 @@ class DetGlue:
         jpos = torch.arange(T, device=self.dev)
         mask = jpos[None, :] > pos[:, None]  # r x T, True = not visible
         Qd = q.double().reshape(r, KV, g, hd).permute(1, 2, 0, 3)          # KV x g x r x hd
-        S = torch.matmul(Qd, kv.K[li][:, None, :, :T]).to(torch.int64)    # KV x g x r x T
-        return self._softmax_pv(S, mask, kv.Vhi[li][:, None, :T, :], kv.Vlo[li][:, None, :T, :]).permute(2, 0, 1, 3).reshape(r, H * hd)
+        # .double(): a binary32 CPU cache widened exactly (a no-op on a binary64 cache)
+        S = torch.matmul(Qd, kv.K[li][:, None, :, :T].double()).to(torch.int64)    # KV x g x r x T
+        return self._softmax_pv(S, mask, kv.Vhi[li][:, None, :T, :].double(), kv.Vlo[li][:, None, :T, :].double()).permute(2, 0, 1, 3).reshape(r, H * hd)
 
     def _softmax_pv(self, S, mask, vhi, vlo):
         """Integer softmax weights and P V of attention(), for any leading batch shape."""
@@ -473,11 +474,11 @@ class DetGlue:
                         out_rows=torch.tensor([b - 1 for _, b in spans], device=dev))
 
 
-def _kv_tensors(L, KV, hd, lead, cap_t, dev):
+def _kv_tensors(L, KV, hd, lead, cap_t, dev, dtype=torch.float64):
     """Zero-filled (finite) K / Vhi / Vlo per layer; zero past a request's length matters: the
     batched decode reads up to the longest request and the mask zeroes those weights, and
     0 x 0 adds an exact 0 (uninitialized memory could hold NaN, and 0 x NaN is NaN)."""
-    f = dict(dtype=torch.float64, device=dev)
+    f = dict(dtype=dtype, device=dev)
     return ([torch.zeros(*lead, KV, hd, cap_t, **f) for _ in range(L)],
             [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)],
             [torch.zeros(*lead, KV, cap_t, hd, **f) for _ in range(L)])
@@ -493,21 +494,25 @@ def _kv_write(K, Vhi, Vlo, li, start, k, v, cap_t):
 
 class KVCache:
     """One request's attention cache for forward_multi, preallocated for `cap_t` positions:
-    K as binary64 (KV x hd x T, so a score matmul reads it in place), V split into v >> 12 and
-    v & 4095 as binary64 (KV x T x hd). Every stored value is an integer below 2^24, exact in
-    binary64, so this is the same data as the int64 cache of forward(), only converted once."""
+    K (KV x hd x T), V split into v >> 12 and v & 4095 (KV x T x hd). Every stored value is an
+    integer of magnitude below 2^22 (K: Q12 clamped to 2^22 - 1; v >> 12 and v & 4095: below
+    2^12), exact in binary32 and in binary64, so this is the same data as the int64 cache of
+    forward(). On CPU it is stored as binary32 (half the memory: 98 KB per position on
+    Llama-3.2-1B instead of 196 KB) and widened to binary64 (exact) where attention reads it,
+    so the score and P V matmuls see the same binary64 integers as before; on CUDA binary64."""
 
     def __init__(self, glue_, cap_t):
         m = glue_.m
         self.KV, self.hd, self.cap_t, self.t = m.KV, m.hd, cap_t, 0
-        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (), cap_t, glue_.dev)
+        dt = torch.float32 if glue_.dev.type == "cpu" else torch.float64
+        self.K, self.Vhi, self.Vlo = _kv_tensors(m.L, m.KV, m.hd, (), cap_t, glue_.dev, dt)
 
     def write(self, li, start, k, v):
         """k: n x KV x hd (Q12 int64), v: n x KV x hd (Q16 int64) for positions start.."""
         _kv_write(self.K, self.Vhi, self.Vlo, li, start, k, v, self.cap_t)
 
     def nbytes(self):
-        return sum(t.numel() * 8 for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
+        return sum(t.numel() * t.element_size() for ts in (self.K, self.Vhi, self.Vlo) for t in ts)
 
 
 class KVPool:
