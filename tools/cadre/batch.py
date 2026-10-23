@@ -137,7 +137,9 @@ class Batcher(threading.Thread):
         self.shapes = {m.index: (m.k, m.n) for m in model.mats}
         self.retained = []        # steps whose A/C are not flushed: (spans [(job, lo, hi)], {index: (A, C)}, rows)
         self.retained_rows = 0
-        self.stats = {"steps": 0, "rows": 0, "tokens": 0, "served": 0, "refused_busy": 0, "errors": 0, "busy_s": 0.0, "max_active": 0, "flushes": 0}
+        self.stats = {"steps": 0, "rows": 0, "tokens": 0, "served": 0, "refused_busy": 0, "errors": 0, "busy_s": 0.0, "max_active": 0, "flushes": 0,
+                      "prompt_rows": 0, "prefix_rows": 0}
+        self.recent = deque(maxlen=64)  # last prompts, for the prefix_rows measurement
         self.t_start = time.time()
         self.logits_log = None
         for w in self.writers:
@@ -159,6 +161,7 @@ class Batcher(threading.Thread):
         if out_dir is not None:
             os.makedirs(os.path.join(out_dir, "a"), exist_ok=True)
             os.makedirs(os.path.join(out_dir, "c"), exist_ok=True)
+        self.note_prefix(job.ids)
         with self.cv:
             if len(self.waiting) >= self.max_queue:
                 self.stats["refused_busy"] += 1
@@ -166,6 +169,23 @@ class Batcher(threading.Thread):
             self.waiting.append(job)
             self.cv.notify()
         return job
+
+    def note_prefix(self, ids):
+        """Measurement only (nothing is reused): the longest prefix this prompt shares with one of
+        the last 64 prompts. A prefix cache could serve those rows' A, C and KV from the earlier
+        request (they are the same bits: every row depends only on the rows before it), so
+        prefix_rows / prompt_rows in /health is the share of prompt rows such a cache would save."""
+        best = 0
+        for prev in self.recent:
+            n = min(len(prev), len(ids) - 1)  # the last prompt row always runs (its logits pick the first token)
+            i = 0
+            while i < n and prev[i] == ids[i]:
+                i += 1
+            best = max(best, i)
+        with self.cv:
+            self.stats["prompt_rows"] += len(ids)
+            self.stats["prefix_rows"] += best
+            self.recent.append(list(ids))
 
     def cancel(self, job):
         job.cancelled = True
