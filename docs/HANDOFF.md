@@ -1704,6 +1704,35 @@ CLAUDE.md "Who is working on what".
     - Deploy: box 0 sync main + restart cadre-agents (cadre-swarm optional, its behaviour is unchanged); site
       redeploy for cadre-web. Existing agents keep their signed caps and recover at 00:00 UTC with 8,192-row tickets.
 
+48. CORRECTNESS AUDIT OF THE LAST TWO DAYS (2026-10-23, "chain + contracts correctness audit" row). Reviewed the
+    town sunset gate, contracts/strategies, contracts/swarms, contracts/toolbelt and its runtime, the gateway
+    settle/close split (d379a0d), and chain/ + crates/ since 2026-10-21 (uncles, weak blocks, blob lifecycle,
+    repair, job perf, DMs). Fixed (each with a regression test that fails on the old code):
+    - CONSENSUS, chain/consensus-pow/src/chain/uncles.rs + agent-types speed.rs: an uncle could name a job that was
+      not mineable at its height (Completed or Expired with cap left, past its deadline, or past max_blocks) and be
+      paid 1/2 (or 1/4) plus the 1/32 nephew bonus from the pool. From DEVNET_UNCLE_JOB_RULE_HEIGHT 10,000 an uncle
+      must pass executor::check_mineable at U.height (SPEED.md 3.3 rule 7); getParams uncle_job_rule_height. Below
+      10,000 nothing changes, so a node replaying from genesis agrees with today's nodes. ROLLOUT REQUIRED: every
+      devnet node (boxes 1, 2, 0) on this build before height 10,000 (tip was ~7006 at 00:45 UTC 2026-10-23, 30 s
+      blocks: about 25 h). Test chains (other chain ids) apply it from the uncle activation.
+    - services/inference-gateway: the close thread snapshotted an "open" ticket, and a request reserved on it while
+      SubmitResult and the evaluator ran was served but never posted (stranded on a delivered ticket). The close now
+      marks the ticket "closing" in the same ledger step as its re-check. Also served rows are dropped at
+      tip == deadline (a PostSegments lands at tip + 1, which the chain refuses above the deadline).
+    - services/swarm/agents toolbelt: receipts left `pending` as soon as the commit tx was accepted by the node; a
+      commit then dropped or refused left a gap and every later commit failed ("first_seq must equal the agent's
+      next_seq") for good; two flushes at once committed the same batch twice and dropped receipts never committed;
+      a failed commit after a tool call threw away the paid call's result. Now receipts stay until the contract's
+      next_seq passes them (read with `get`), one flush at a time, a resend from next_seq after 10 min, forced
+      flushes wait up to 90 s for the last batch, and commit failures are logged and kept pending (TOOLBELT.md 5).
+    Checked and fine: the sunset refuses the same kinds in blocks, in sendTx prechecks (tip + 1) and as contract
+    native calls; ReclaimMessage stays valid; getParams reports 12000 on all three devnet nodes; nothing differs
+    below 12000; strategies/swarms/toolbelt contracts have admin zero on devnet (Migrate/SetContractAdmin refuse);
+    toolbelt code 19b68730... rebuilds byte for byte from this tree; strategies a4665db8... and swarms 247ecc72...
+    do not (same size, identical strings, function order differs: the wasm build is path/workspace sensitive).
+    Rollout of the non-consensus fixes: box 0 cadre-gateway and cadre-agents restart after sync. Details and the
+    theoretical findings: TEST-REPORT "Correctness audit 2026-10-23".
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
