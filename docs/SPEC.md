@@ -1827,7 +1827,17 @@ requests being generated: a paid request that would pass it, or leave the disk u
 any rows are reserved or paid; above half the cap, waiting rounds are posted at the next pass
 instead of at their round period (3 h for large balances). `--keep-request-data` keeps them
 (debugging). `GET /v1/stats` reports `request_data: {bytes_waiting, max_bytes,
-disk_free_bytes, min_free_disk_bytes, refused_storage, deleted}`.
+disk_free_bytes, min_free_disk_bytes, refused_storage, deleted, written_bytes, freed_bytes,
+pressure_bytes, pending_dropped}`; `written_bytes - freed_bytes` sampled over time is the backlog's
+measured growth rate. Settlement split (2026-10-23, box 0: the evaluator's full glue replay
+held the single settle pass 480-565 s per closing ticket, so no round posted meanwhile): round
+posting and ticket closes (SubmitResult, the evaluator's attestation, CompleteJob) run on two
+threads; posting skips the one ticket being closed (`settle.closing` in /v1/stats, close
+failures in `settle.close_backoff`). Early posting starts at `min(cap / 2,
+--data-pressure-mb)` (8192 by default), so raising the cap as a stopgap does not delay the
+drain. Served rows a ticket can no longer post (its chain deadline passed, or the chain no
+longer has it Open) are dropped from the ticket with their data (`pending_dropped` event;
+the receipts stay; a ticket with no posted round becomes `failed`).
 Node blob backpressure (2026-10-22, the node's blob store filled next): the gateway also reads
 the node's getBlobStats `rpc_headroom_bytes` (at most every 10 s; an older node: `max_total_bytes -
 total_bytes`; no getBlobStats: no check) and answers a paid request 503 `insufficient_storage`
