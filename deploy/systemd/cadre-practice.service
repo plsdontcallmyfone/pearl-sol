@@ -1,0 +1,20 @@
+[Unit]
+Description=Cadre house practice traders (services/swarm/strategies, docs/STRATEGIES.md): tape_lark, floor_wren, still_heron trade pretend balances at real Solana mainnet prices (read only) on the strategies contract
+After=cadre-node.service cadre-gateway.service cadre-api.service network-online.target
+
+[Service]
+User=lode
+EnvironmentFile=/etc/lode/services.env
+# mainnet READ url comes from /etc/lode/solana-rpc-url (Helius devnet key, host swapped to mainnet, never logged)
+Environment=CADRE_RPC=http://127.0.0.1:10630 GATEWAY_URL=http://127.0.0.1:10685/v1/openai CADRE_API=http://127.0.0.1:10685
+WorkingDirectory=/home/lode/pearl-sol/services/swarm/strategies
+ExecStartPre=/bin/mkdir -p /var/lib/lode/practice
+# kill file: /var/lib/lode/practice/STOP
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node bin/practice.ts run --keys /etc/lode/keys/strategies --state /var/lib/lode/practice'
+Restart=on-failure
+RestartSec=60
+MemoryMax=384M
+ReadWritePaths=/var/lib/lode/practice
+
+[Install]
+WantedBy=multi-user.target
