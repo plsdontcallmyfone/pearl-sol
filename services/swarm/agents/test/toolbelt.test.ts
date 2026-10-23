@@ -313,3 +313,78 @@ test("tool loop: CALL/FINAL protocol, results quoted as data, bounded by max_cal
   assert.deepEqual(r.steps.map((s) => [s.tool, s.ok]), [["files.put", true]]);
   assert.equal(host.blobs.size, 1);
 });
+
+// Audit 2026-10-23: receipts commits against contracts/toolbelt. The contract takes a batch only at
+// the agent's next_seq; a commit that the node accepted and then dropped used to leave a gap that
+// refused every later commit, and two flushes at once committed one batch twice and dropped
+// receipts that were never committed.
+function chainHost() {
+  const f = fakeHost() as Fake & { next: number; sent: any[]; land: (k?: number) => void };
+  f.next = 0;
+  f.sent = [];
+  f.commitBatch = async (b) => {
+    await new Promise((ok) => setTimeout(ok, 5));
+    f.sent.push(b);
+    f.batches.push(b);
+    return { tx: `tx${f.sent.length}`, via: "fake contract" };
+  };
+  // the chain executes the k-th sent batch: the contract's rule (first_seq == next_seq, else refused)
+  f.land = (k = f.sent.length - 1) => { const b = f.sent[k]; if (b.first_seq === f.next) f.next += b.n; };
+  f.committedSeq = async () => f.next;
+  return f;
+}
+const rcpts = (from: number, n: number): ToolReceipt[] => Array.from({ length: n }, (_, i) => ({
+  format: "cadre-tool-receipt-v1", agent: A1, seq: from + i, tool: "web.fetch", capability: "web", inputs_sha256: "a".repeat(64), outputs_sha256: "b".repeat(64), ok: true, error: null,
+  cost_usd: "0.000000000", cost_basis: "zero", price_lamports: "1", thought_ref: "req_x", decided: "thought", task: "hire:1", artifacts: [], started_ms: i, ms: 1,
+}));
+
+test("receipts commits: a dropped commit is sent again from the chain's next_seq, never leaving a gap", async () => {
+  const h = chainHost();
+  const tb = new Toolbelt(defaultToolbelt(["web"], { batch_every: 4 }), h, { keys: noKeys, rt: new RuntimeLedger(5), price, meterFile: `${tmp()}/m.json` });
+  tb.pending = rcpts(0, 4);
+  assert.ok(await tb.maybeFlush());
+  assert.equal(h.sent.length, 1);
+  assert.equal(tb.pending.length, 4, "kept until the chain shows the batch");
+  // the node dropped it (never landed); more receipts arrive meanwhile
+  tb.pending = [...tb.pending, ...rcpts(4, 4)];
+  assert.equal(await tb.maybeFlush(), null, "the last batch may still land: wait");
+  h.t += 11 * 60_000;
+  assert.ok(await tb.maybeFlush());
+  assert.equal(h.sent[1].first_seq, 0, "sent again from next_seq 0, not 4");
+  assert.equal(h.sent[1].n, 8);
+  h.land();
+  assert.equal(h.next, 8);
+  tb.pending = [...tb.pending, ...rcpts(8, 4)];
+  assert.ok(await tb.maybeFlush());
+  assert.equal(h.sent[2].first_seq, 8);
+  assert.deepEqual(tb.pending.map((r) => r.seq), [8, 9, 10, 11], "committed receipts left, the new batch waits for its landing");
+  h.land();
+  tb.pending = [...tb.pending, ...rcpts(12, 1)];
+  await tb.maybeFlush(true);
+  assert.equal(h.sent[3].first_seq, 12);
+  h.land();
+  assert.equal(h.next, 13, "every receipt committed exactly once, in order");
+});
+
+test("receipts commits: two flushes at once send one batch", async () => {
+  const h = chainHost();
+  const tb = new Toolbelt(defaultToolbelt(["web"], { batch_every: 4 }), h, { keys: noKeys, rt: new RuntimeLedger(5), price, meterFile: `${tmp()}/m.json` });
+  tb.pending = rcpts(0, 4);
+  await Promise.all([tb.maybeFlush(), tb.maybeFlush()]);
+  assert.equal(h.sent.length, 1, "one commit");
+  h.land();
+  tb.pending = [...tb.pending, ...rcpts(4, 2)];
+  await tb.maybeFlush(true);
+  assert.deepEqual(h.sent.map((b) => [b.first_seq, b.n]), [[0, 4], [4, 2]]);
+});
+
+test("receipts commits: a failed commit after a paid call keeps the receipt and the call's result", async () => {
+  const { s, base } = await serve(() => ({ body: "<html><body><p>hello</p></body></html>" }));
+  const h = fakeHost();
+  h.commitBatch = async () => { throw new Error("receipts commit simulation failed: first_seq must equal the agent's next_seq"); };
+  const tb = new Toolbelt(defaultToolbelt(["web"], { batch_every: 1 }), h, { keys: noKeys, rt: new RuntimeLedger(5), price, meterFile: `${tmp()}/m.json`, loopbackForTests: true });
+  const r = await tb.call("web.fetch", { url: `${base}/x` }, { thought_ref: "req_1", decided: "thought", task: "t" }).finally(() => s.close());
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(tb.pending.length, 1);
+  assert.ok(h.notes.some((n) => /kept pending/.test(n)));
+});

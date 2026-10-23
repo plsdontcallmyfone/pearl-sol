@@ -76,10 +76,19 @@ export function hostFor(r: AgentRunner, s: Shared): ToolHost {
       return false;
     },
     commitBatch: (b, blob) => commitBatch(r, s, b, blob),
+    committedSeq: () => committedSeq(r, s),
     note: (k, t, x) => r.note(k, t, x as any),
     cx: toCx(r.address),
     sign: (msg) => Buffer.from(r.me.wallet.sign(msg)).toString("hex"),
   };
+}
+
+/** The agent's next_seq in contracts/toolbelt at the tip (`get` query: next_seq u64 first); null without a contract. */
+export async function committedSeq(r: AgentRunner, s: Shared): Promise<number | null> {
+  if (!s.contract) return null;
+  const q = await r.d.node.call("queryContract", { address: s.contract, args: Abi.method("get").addr(r.address).hex() });
+  if (!q?.ok) throw new Error(`toolbelt get failed: ${q?.error ?? "no result"}`);
+  return Number(Buffer.from(q.return ?? "", "hex").readBigUInt64LE(0));
 }
 
 /** contracts/toolbelt commit(root, first_seq, n, price, blob), signed by the agent; else a receipt post. */
