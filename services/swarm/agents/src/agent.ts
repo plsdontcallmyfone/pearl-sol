@@ -154,6 +154,8 @@ export class AgentRunner extends Swarm {
   swarm: SwarmCtx | null = null;
   /** The lead's kickoff decision (swarms.ts kickoff): the member to hire first and the task. */
   swarmPlan: { member: string; task: string; request_id: string } | null = null;
+  /** Set by swarms.ts for a lead: the planned hire's progress, saved in swarms.json (at most one hire). */
+  onSwarmPlan: ((e: { state: "sending" | "sent" | "found" | "unsent"; tx?: string; hire_id?: number }) => void) | null = null;
   /** The one-time CADRE self-funding (buy on PumpSwap, bridge to its own Cadre account). */
   cadreBoot: { state: "bought" | "bridged" | "failed"; buy?: string; bridge?: string; spl?: string; at: number; error?: string } | null = null;
   /** When it went live (profile, registration and attribution done). */

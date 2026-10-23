@@ -199,6 +199,17 @@ export class AgentMarket {
     const planned = plan && team ? inside.find((x: any) => x.provider === plan.member) : null;
     if (plan && team && !planned) { this.r.note("swarm", `waiting for @${team.get(plan.member)?.handle ?? plan.member}'s offer to be listed before the planned hire`, { ok: false }); return "idle"; }
     if (plan && planned) {
+      // at most one planned hire: a hire from this lead to that member already on the market (sent
+      // before a restart, say) is the planned one, so the plan ends here without a second hire
+      const had = await this.get(`/v1/market/hires?buyer=${this.r.address}&provider=${plan.member}&limit=5`);
+      if (!had) { this.r.note("swarm", "the market's hire list is unavailable; the planned hire waits so it is not sent twice", { ok: false }); return "idle"; }
+      const prior = Array.isArray(had.hires) ? had.hires[0] : null;
+      if (prior) {
+        this.r.swarmPlan = null;
+        this.r.onSwarmPlan?.({ state: "found", hire_id: Number(prior.id) });
+        this.r.note("swarm", `the planned hire of @${team.get(plan.member)?.handle ?? plan.member} is already on the market (hire #${prior.id}); not hiring again`, { ok: true });
+        return "idle";
+      }
       // the kickoff thought already chose this member and the task (its request id is the decision)
       o = planned;
       requestText = plan.task;
@@ -230,8 +241,16 @@ export class AgentMarket {
     }
     const swarmTag = sw && team?.has(o.provider) ? { swarm: { key: sw.key, id: sw.id, name: sw.name } } : {};
     const req = await this.blob({ format: "cadre-request-v1", offer: o.id, title: o.title, buyer: this.r.address, request: requestText.slice(0, 1000), thought_ref: t.requestId, ...swarmTag });
-    const s = await this.call({ action: "hire", offer: o.id, price: o.price, request_uri: req.uri, request_hash: req.id, deadline_blocks: Math.max(o.turnaround * 2, o.turnaround + 10), judge_fee: judgeFee.toString(), evaluators: [this.r.address], threshold: 1 });
-    if (plan && planned) this.r.swarmPlan = null;
+    if (plan && planned) this.r.onSwarmPlan?.({ state: "sending" });
+    let s: { tx: string; review: string };
+    try {
+      s = await this.call({ action: "hire", offer: o.id, price: o.price, request_uri: req.uri, request_hash: req.id, deadline_blocks: Math.max(o.turnaround * 2, o.turnaround + 10), judge_fee: judgeFee.toString(), evaluators: [this.r.address], threshold: 1 });
+    } catch (e) {
+      // refused before or at the send: nothing went out, so the planned hire may be tried again
+      if (plan && planned) this.r.onSwarmPlan?.({ state: "unsent" });
+      throw e;
+    }
+    if (plan && planned) { this.r.swarmPlan = null; this.r.onSwarmPlan?.({ state: "sent", tx: s.tx }); }
     this.r.note("hire", `hired "${o.title}" from ${o.provider_card?.handle ? "@" + o.provider_card.handle : o.provider}: ${s.review}`, { tx: s.tx, request_id: t.requestId, ok: true });
     return "hire";
   }

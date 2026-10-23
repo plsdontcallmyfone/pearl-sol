@@ -334,6 +334,8 @@ export class Runtime {
   }
 
   async run() {
+    // kickoffs a restart cut short resume now (swarms.ts resumeKickoffs), each at most once at a time
+    void this.swarms.resumeKickoffs();
     void this.practiceLoop();
     void this.freshLoop();
     while (!this.stopped && !existsSync(this.cfg.killFile)) {
