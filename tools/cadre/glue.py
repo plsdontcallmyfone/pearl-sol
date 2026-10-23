@@ -211,17 +211,24 @@ class DetGlue:
         v = torch.clamp(self.rne_clamp(u / s, A_PRE_MAX) + z, -QMAX, QMAX)
         return v.to(torch.int8), s, z
 
-    def lin(self, base, u, sa_scale, cap):
+    def lin(self, base, u, sa_scale, cap, out_rows=None):
         from worker import int_mm
         """y (binary64) = ((C - z colsum) * sw) * (s * sa_scale) through every shard of `base`.
         u: binary64 input rows (already times the group's g); sa_scale: per-row binary64 factor
-        that turns u's units into the real input (inv_rms * 2^-16, 2^-16, or 1)."""
+        that turns u's units into the real input (inv_rms * 2^-16, 2^-16, or 1).
+        out_rows: optional int64 row indices; y is then computed for those rows only (C and A
+        are still computed and captured for every row: they are the segments). Every output
+        element is a function of its own row, so the selected rows are the same bits as rows of
+        the full y; forward_multi uses it for lm_head, whose binary64 logits are only needed for
+        the last row of each request (128,256 columns per row, the widest matrix by 5x).
+        The scale-out runs in place on fresh tensors: the same IEEE operations in the same order
+        ((C - z colsum) to binary64, times sw, then times sa, each rounded), fewer allocations."""
         g, shards = self.groups[base]
         v, s, z = self.quant(u)
         sa = s * sa_scale
-        n_total = sum(ks[0].n for ks, _, _ in shards)
-        y = torch.empty(u.shape[0], n_total, dtype=torch.float64, device=self.dev)
-        off = 0
+        if out_rows is not None:
+            z, sa = z.index_select(0, out_rows), sa.index_select(0, out_rows)
+        ys = []
         for ks, colsum, sw in shards:
             c = None
             for m in ks:
@@ -232,13 +239,16 @@ class DetGlue:
                 elif cap is not None:
                     cap[m.index][0].append(vs)
                     cap[m.index][1].append(part)
-                c = part.to(torch.int64) if c is None else c + part.to(torch.int64)
-            cz = c - z * colsum
-            w = ks[0].n
-            y[:, off:off + w] = (cz.double() * sw) * sa
-            off += w
-            del c, cz
-        return y
+                if out_rows is not None:
+                    part = part.index_select(0, out_rows)
+                c = part.to(torch.int64) if c is None else c.add_(part)  # exact int64 sums
+            c.sub_(z * colsum)                       # C - z colsum, exact int64
+            yv = c.double()
+            yv.mul_(sw)
+            yv.mul_(sa)
+            ys.append(yv)
+            del c
+        return ys[0] if len(ys) == 1 else torch.cat(ys, -1)
 
     def exp2neg(self, t):
         """2^(-t / 2^24) in Q30 for int64 t >= 0: E2[round(frac * 4096)] >> int part."""
@@ -252,8 +262,11 @@ class DetGlue:
         x = self.rne_clamp(g.abs() * 2.0 ** 24, SIG_X_MAX)  # |g| in Q24 nats
         e = self.exp2neg(torch.bitwise_right_shift(x * LOG2E_Q24, 24))
         den = (1 << 30) + e
-        sig = torch.where(g >= 0, torch.div(torch.full_like(e, 1 << 60), den, rounding_mode="floor"),
-                          torch.div(torch.bitwise_left_shift(e, 30), den, rounding_mode="floor"))
+        # one int64 division per element: pick the numerator first (2^60 for g >= 0, e 2^30
+        # otherwise); the same quotients as dividing both and picking after (the old form ran
+        # every division twice, and int64 division has no vector instruction on x86)
+        num = torch.where(g >= 0, torch.full_like(e, 1 << 60), torch.bitwise_left_shift(e, 30))
+        sig = torch.div(num, den, rounding_mode="floor")
         return g * (sig.double() * 2.0 ** -30)
 
     def rope(self, y, c, s):
@@ -456,8 +469,8 @@ class DetGlue:
             kv.t = s + len(ids)
         inv = self.inv_rms(h)[:, None]
         gf = self.groups["lm_head"][0]
-        logits = self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap)
-        return logits.index_select(0, torch.tensor([b - 1 for _, b in spans], device=dev))
+        return self.lin("lm_head", (h.double() * gf) + 0.0, inv * p16, cap,
+                        out_rows=torch.tensor([b - 1 for _, b in spans], device=dev))
 
 
 def _kv_tensors(L, KV, hd, lead, cap_t, dev):

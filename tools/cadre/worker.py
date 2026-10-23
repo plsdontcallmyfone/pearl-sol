@@ -72,9 +72,18 @@ class Matrix:
 
 
 def int_mm(v, qw):
-    """Exact int32 C = v @ qw^T (v: r x k int8, qw: n x k int8, same device). _int_mm wants
-    > 16 rows (and on CUDA k, n multiples of 8, which every registered matrix is)."""
+    """Exact int32 C = v @ qw^T (v: r x k int8, qw: n x k int8, same device). On CUDA _int_mm
+    wants > 16 rows and k, n multiples of 8 (every registered matrix is), so rows are padded.
+    On CPU it takes any row count, and padding costs: one row runs a GEMV about 9x faster than
+    the 32-row GEMM the padding made of it (measured on the devnet Xeon Gold 6142, 2 threads:
+    n 8192 0.58 ms vs 5.21 ms, lm_head 15.1 ms vs 86.9 ms; docs/measurements/tput-2026-10-23),
+    and 2-3 rows run fastest one row at a time. C is exact integer arithmetic either way (int8
+    products, int32 accumulation, |C| <= 64 * 64 * 2048), so every path gives the same bits."""
     r = v.shape[0]
+    if v.device.type == "cpu":
+        if 1 < r <= 3:
+            return torch.cat([torch._int_mm(v[i:i + 1], qw.t()) for i in range(r)])
+        return torch._int_mm(v, qw.t())
     pad = max(32, -(-r // 8) * 8)
     if pad == r:
         return torch._int_mm(v, qw.t())
@@ -461,6 +470,8 @@ def main():
     ap.add_argument("--flush-rows", type=int, default=int(os.environ.get("CADRE_FLUSH_ROWS", "128")),
                     help="rows of A/C (all requests) held before they go to the segment files (about 2.7 MB per row on Llama-3.2-1B)")
     ap.add_argument("--kv-pool", default=os.environ.get("CADRE_KV_POOL", "auto"), help="on / off / auto (on for cuda): one KV pool of max_batch slots, batched decode attention")
+    ap.add_argument("--prefill-order", default=os.environ.get("CADRE_PREFILL_ORDER", "short"),
+                    help="short (default: fewest prompt rows left first, with a starvation bound) or fifo")
     ap.add_argument("--pool-positions", type=int, default=int(os.environ.get("CADRE_POOL_POSITIONS", "2048")), help="positions per pool slot (longer requests get their own cache)")
     a = ap.parse_args()
     if a.threads:
@@ -483,7 +494,8 @@ def main():
     if a.max_batch > 1 and model.det is not None:
         model.start_batching(max_batch=a.max_batch, max_queue=a.max_queue, max_step_rows=max(a.max_step_rows, a.max_batch),
                              max_live_rows=a.max_live_rows, flush_rows=a.flush_rows,
-                             kv_pool=None if a.kv_pool == "auto" else a.kv_pool == "on", pool_positions=a.pool_positions)
+                             kv_pool=None if a.kv_pool == "auto" else a.kv_pool == "on", pool_positions=a.pool_positions,
+                             prefill_order=a.prefill_order)
     serve(model, a.host, a.port)
 
 
