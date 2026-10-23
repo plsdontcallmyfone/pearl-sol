@@ -13,6 +13,7 @@
 //   AGENT_RPC                 http://127.0.0.1:10630 (agent-chain node: prices inference tickets by the registered model)
 //   RECONCILE_MS              60000 (refund payments left without an Order by a crash or a failed refund; 0 = off)
 //   RECONCILE_AFTER_MS        120000 (only payments at least this old)
+//   DRAFT_SWEEP_MS            600000 (cancel orphaned OrderDrafts, rent back to the wallet; 0 = off; first sweep 30 s after start)
 //
 // Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads),
 // GET /payments/unserved (payments taken without an Order or a confirmed refund).
@@ -67,6 +68,22 @@ const reconcile = () =>
 if (reconcileMs > 0) {
   reconcile();
   setInterval(reconcile, reconcileMs).unref();
+}
+// Orphaned OrderDrafts (left by crashes before v 2 records) are cancelled by the running service, so
+// nobody has to stop it for src/reconcile.ts --cancel-drafts (that stop took top-ups down on devnet).
+const sweepMs = Number(env.DRAFT_SWEEP_MS ?? 600_000);
+let sweeping = false;
+const sweep = () => {
+  if (sweeping) return;
+  sweeping = true;
+  service.sweepDrafts().then(
+    (r) => r.length && console.log(JSON.stringify({ msg: "draft sweep", done: r }, (_k, x) => (typeof x === "bigint" ? x.toString() : x))),
+    (e) => console.error(JSON.stringify({ msg: "draft sweep failed", error: (e as Error).message.slice(0, 300) })),
+  ).finally(() => (sweeping = false));
+};
+if (sweepMs > 0) {
+  setTimeout(sweep, 30_000).unref();
+  setInterval(sweep, sweepMs).unref();
 }
 
 const server = createServer((req, res) => {

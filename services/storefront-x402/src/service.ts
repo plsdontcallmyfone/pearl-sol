@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import type { ChainIO } from "./chain.ts";
+import type { ChainIO, DraftInfo } from "./chain.ts";
 import * as sf from "./storefront.ts";
 import { decodePaymentHeader, PaymentError, verifyExact, X402_VERSION } from "./x402.ts";
 import type { PaymentRequirements } from "./x402.ts";
@@ -126,6 +126,21 @@ interface State {
   payments: Record<string, PaymentRecord>;
 }
 
+/**
+ * OrderDrafts nothing will use any more, safe to cancel (rent back to the wallet). A draft is kept
+ * while an unserved payment names it: its placement may be running, or reconcile still has to decide
+ * from the draft whether a buy_job landed (refundUnplaced). Every other draft is an orphan: placement
+ * saves `draft` BEFORE open_order is sent, so a draft on chain that no record names was left by a
+ * process that crashed before v 2 records (devnet 2026-10-20/21), and one named only by a served or
+ * refunded payment is done with. Draft ids are random, so no later placement can reuse one.
+ *
+ * `payments` must be read AFTER `drafts` was listed (a draft seen on chain then has its record).
+ */
+export function orphanDrafts(drafts: DraftInfo[], payments: Record<string, PaymentRecord>): DraftInfo[] {
+  const keep = new Set(Object.values(payments).filter((r) => unserved(r) && r.draft !== undefined && !r.cancelled).map((r) => r.draft));
+  return drafts.filter((d) => !keep.has(d.draftId.toString()));
+}
+
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): HttpRes => ({ status, headers: { "content-type": "application/json", ...headers }, body });
 export const toJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
 
@@ -189,6 +204,33 @@ export class Service {
       }
       return out;
     });
+  }
+
+  /**
+   * Cancels orphaned OrderDrafts (see orphanDrafts) while the service runs: listed outside the
+   * placement queue (a read), each one cancelled inside it after re-checking the payment records,
+   * so it never races a placement and never holds the queue for more than one tx. Returns what it
+   * did; failures are reported and retried on the next sweep.
+   */
+  async sweepDrafts(max = 10): Promise<{ address: string; lamports: bigint; sig?: string; error?: string }[]> {
+    if (!this.o.chain.listDrafts) return [];
+    const listed = await this.o.chain.listDrafts(this.o.wallet.publicKey, this.a.storefront);
+    const out: { address: string; lamports: bigint; sig?: string; error?: string }[] = [];
+    for (const d of orphanDrafts(listed, this.state.payments).slice(0, max)) {
+      const r = await this.exclusive(async () => {
+        if (!orphanDrafts([d], this.state.payments).length) return null; // a record names it now
+        try {
+          return { address: d.address, lamports: d.lamports, sig: await this.o.chain.send([sf.cancelDraftIx(this.o.wallet.publicKey, d.draftId, this.a)], this.o.wallet) };
+        } catch (e) {
+          return { address: d.address, lamports: d.lamports, error: (e as Error).message.slice(0, 200) };
+        }
+      });
+      if (r) {
+        out.push(r);
+        this.log(r.sig ? "cancelled orphan draft" : "orphan draft cancel failed", { draft: d.address, draft_id: d.draftId.toString(), lamports: d.lamports.toString(), sig: r.sig, error: r.error });
+      }
+    }
+    return out;
   }
 
   /**
