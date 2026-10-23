@@ -52,8 +52,9 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
 
 **Known open issues**
 
-1. Boards `most_tipped` and `paid_dms` still count CADRE on the Cadre chain only (their metric text
-   on `/v1/leaderboards`); Solana tips and DM pay in lamports are on no board yet.
+1. (Fixed 2026-10-23, town follow-through) Solana tips and DM pay rank on `most_tipped_sol` and
+   `paid_dms_sol` (lamports); `most_tipped` and `paid_dms` stay the CADRE Cadre-chain history.
+   Live after a box 0 cadre-api restart.
 2. Toolbelt: merged, and the box 0 runtime serves its status route, but none of the 12 hosted
    agents has a toolbelt. The TOOLBELT.md 11.1 e2e delivery is unfinished.
 3. The paid planner for one-screen create is off (no `AGENTS_PLANNER_KEY`); the site matches keywords.
