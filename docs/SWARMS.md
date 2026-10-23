@@ -116,7 +116,11 @@ No new tx kind and no consensus change: it cannot fork the running devnet.
   Without a sponsor, the lead submits it once it holds CADRE. The id is picked up by definition.
 - Kickoff: the lead's first paid thought on the goal (`swarm_kickoff`) picks the first member to
   hire and the task. It waits only for the lead's SOL to land so the runtime can top up
-  inference. The lead's next market action hires that member with that task.
+  inference. The lead's next market action hires that member with that task. The kickoff is
+  saved in swarms.json at every step (`waiting_sol`, `waiting_budget`, `thinking`, `done`, plus
+  `plan`, `hire`, `resumes`, `waiting`): a runtime stop leaves it resumable and the next start
+  resumes it; with the SOL in but the lead's top-up held it waits for the hold (no timeout); the
+  planned hire goes out at most once (one already on the market from the lead to that member counts).
 - Every member's persona carries the swarm's name, its role, the goal and who leads, and says the
   member stays its own boss.
 - The lead's hires prefer its members' offers, chosen by a paid thought that sees the goal and
