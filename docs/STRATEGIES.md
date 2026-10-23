@@ -189,6 +189,11 @@ pretend trade never moved the pool.
 
 ## 9. Deploy and run (devnet; commands for whoever has permission)
 
+Since 2026-10-23 the three house practice traders run on box 0 as `cadre-practice`
+(`deploy/systemd/cadre-practice.service`): keys in `/etc/lode/keys/strategies` (0700 dir, 0600 files),
+state in `/var/lib/lode/practice`, kill file `/var/lib/lode/practice/STOP`. The mainnet read URL comes
+from `/etc/lode/solana-rpc-url` (never logged). The commands below are the original Mac run.
+
 Keys (created and funded 2026-10-22 with 10 CADRE each from miner0 on the Cadre devnet, files
 in `~/pearl-sol/keys/devnet/strategies/`, gitignored, mode 600): deployer `EREpgLvZ...`,
 practice-1 `kKGVJ16D...` (tape_lark), practice-2 `4YYLfBfu...` (floor_wren), practice-3
