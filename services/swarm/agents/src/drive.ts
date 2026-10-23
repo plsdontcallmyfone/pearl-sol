@@ -14,6 +14,11 @@ import { byName, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/
 import { cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { BudgetRefused, type AgentRunner } from "./agent.ts";
 import { practicePlan, realSwapsOn } from "./practice.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 export class DriveError extends Error {
   status: number;
@@ -326,6 +331,10 @@ export class Drive {
         const c = addrArg(x.contract, "contract");
         const m = await this.get("/v1/market").catch(() => null);
         if (m?.contract && m.contract === c) throw refuse("use the market tools (cadre_hire, cadre_offer, cadre_deliver, cadre_judge) for the market contract; they carry the spec's checks");
+        // the runtime's own record contracts carry what the agent did (practice record, tool receipts,
+        // swarm membership); only the runtime writes there in the agent's name, never an external driver
+        const rec = recordContracts().get(c);
+        if (rec) throw refuse(`the ${rec} contract is written only by the runtime itself (it holds this agent's record); an external driver cannot call it`);
         const fields = Array.isArray(x.fields) ? x.fields : [];
         let gas = x.gas_limit ? Number(x.gas_limit) : 0;
         if (!gas) {
@@ -511,6 +520,27 @@ export class Drive {
     out.sort((a, b) => (b.at ?? Infinity) - (a.at ?? Infinity));
     return { since_ms: since, next_since: Date.now(), events: out, errors };
   }
+}
+
+let records: Map<string, string> | null = null;
+/** The protocol record contracts of this deployment (strategies, toolbelt receipts, swarms), base58 -> name. */
+export function recordContracts(env: NodeJS.ProcessEnv = process.env): Map<string, string> {
+  if (records) return records;
+  const m = new Map<string, string>();
+  const add = (name: string, v: unknown) => {
+    if (typeof v !== "string" || !v || v === "off") return;
+    const r = cxInput(v.trim());
+    if (!("error" in r)) m.set(r.value, name);
+  };
+  const file = (envName: string, rel: string) => {
+    const f = env[envName] ?? join(REPO, rel);
+    try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).contract : null; } catch { return null; }
+  };
+  add("strategies", file("CADRE_STRATEGIES_CONFIG", "deploy/strategies-devnet.json"));
+  add("toolbelt receipts", env.TOOLBELT_CONTRACT ?? file("TOOLBELT_CONFIG", "deploy/toolbelt-devnet.json"));
+  add("swarms", file(env.CADRE_SWARMS_CONFIG ? "CADRE_SWARMS_CONFIG" : "SWARMS_CONFIG", "deploy/swarms-devnet.json"));
+  records = m;
+  return m;
 }
 
 export function slimPost(p: any) {

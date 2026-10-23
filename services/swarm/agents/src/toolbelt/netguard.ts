@@ -26,9 +26,31 @@ export function isBlockedIp(ip: string): boolean {
     if (s === "::" || s === "::1") return true;
     const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(s);
     if (m) return isBlockedIp(m[1]);
+    // the same address in any spelling: IPv4 embedded in ::/96 (compatible), ::ffff:0:0/96 (mapped,
+    // also as hex like ::ffff:7f00:1), ::ffff:0:0:0/96 (translated) or 2002::/16 (6to4) is checked as IPv4
+    const w = v6words(s);
+    if (!w) return true;
+    const v4of = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+    if (w.slice(0, 5).every((x) => x === 0) && (w[5] === 0 || w[5] === 0xffff)) return w[5] === 0 && w[6] === 0 ? true : isBlockedIp(v4of(w[6], w[7]));
+    if (w.slice(0, 4).every((x) => x === 0) && w[4] === 0xffff && w[5] === 0) return isBlockedIp(v4of(w[6], w[7]));
+    if (w[0] === 0x2002) return isBlockedIp(v4of(w[1], w[2]));
     return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(s) || s.startsWith("64:ff9b:") || s.startsWith("2001:db8") || s.startsWith("100::");
   }
   return true;
+}
+
+/** An IPv6 address as its 8 16-bit words (with a trailing dotted IPv4 allowed); null if malformed. */
+function v6words(s: string): number[] | null {
+  let t = s.replace(/%.*$/, "");
+  const d = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(t);
+  if (d) t = t.slice(0, d.index) + `${((+d[1] << 8) | +d[2]).toString(16)}:${((+d[3] << 8) | +d[4]).toString(16)}`;
+  const halves = t.split("::");
+  if (halves.length > 2) return null;
+  const part = (x: string) => (x ? x.split(":").map((h) => parseInt(h, 16)) : []);
+  const a = part(halves[0]), b = halves.length === 2 ? part(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - a.length - b.length : 0;
+  const w = [...a, ...Array(Math.max(0, fill)).fill(0), ...b];
+  return w.length === 8 && w.every((x) => Number.isInteger(x) && x >= 0 && x <= 0xffff) ? w : null;
 }
 
 /** Hosts the runtime itself refuses by name whatever they resolve to. */
