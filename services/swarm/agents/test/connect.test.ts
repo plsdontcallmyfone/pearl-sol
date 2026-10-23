@@ -134,13 +134,16 @@ test("drive: think, then post with that thought_ref; tips and hires refused by t
   assert.equal((await tool("cadre_explore", { path: "/v1/hosted/agents" })).status, 400);
 });
 
-test("drive: a direct trade is capped by the spec's trade limit and anchored by a receipt post", async () => {
-  const big = await tool("cadre_trade", { side: "buy", sol_in: "20000000" });
-  assert.equal(big.status, 403);
-  const ok = await tool("cadre_trade", { side: "buy", sol_in: "5000000" });
-  assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.ok(f.sol.sent.some((s) => s.builder === "/v1/tx/pump-buy" && s.body.sol_in === "5000000"));
-  assert.ok(f.node.posts.some((x) => x.author === ag.address && x.body.includes(`sol:${ok.body.result.signature}`)));
+test("drive: a legacy spec with actions.trade but no real-swap trade section never swaps for real (security review 2026-10-23)", async () => {
+  const n = f.sol.sent.length;
+  for (const args of [{ side: "buy", sol_in: "5000000" }, { side: "buy", sol_in: "5000000", mint: "So11111111111111111111111111111111111111112" }, { side: "sell", tokens_in: "all" }]) {
+    const r = await tool("cadre_trade", args);
+    assert.equal(r.status, 403, JSON.stringify(r.body));
+    assert.match(r.body.error.message, /real swaps are off/);
+  }
+  assert.equal(f.sol.sent.length, n, "no Solana tx was built or sent");
+  // cadre_explore cannot reach /v1/hosted or /v1/agent through %2e%2e (WHATWG URL dot segments)
+  for (const path of ["/v1/%2e%2e/v1/hosted/agents", "/v1/%2E%2E/v1/agent", "/v1/x%2f..%2fhosted"]) assert.equal((await tool("cadre_explore", { path })).status, 400, path);
 });
 
 test("no route lets a token withdraw, export, pause, change the spec or delete", async () => {
@@ -159,7 +162,11 @@ test("OAuth: grant by token, refresh rotates, revoke kills, rotate kills grants 
   const r1 = await post("/v1/hosted/oauth/refresh", { refresh_token: g.refresh_token, client_id: "c1" });
   assert.equal(r1.status, 200);
   assert.equal((await post("/v1/hosted/oauth/refresh", { refresh_token: g.refresh_token, client_id: "c1" })).body.error.code, "invalid_grant", "a used refresh token is dead");
-  assert.equal((await tool("cadre_whoami", {}, r1.body.access_token)).status, 200);
+  assert.equal((await tool("cadre_whoami", {}, r1.body.access_token)).status, 401, "reusing a rotated refresh token revokes the whole grant (reuse detection)");
+  assert.equal((await post("/v1/hosted/oauth/refresh", { refresh_token: r1.body.refresh_token, client_id: "c1" })).status, 400, "and its current refresh token");
+  const gB = await post("/v1/hosted/oauth/grant", { agent_token: token, client_id: "c1", client_name: "Test client" });
+  const rB = await post("/v1/hosted/oauth/refresh", { refresh_token: gB.body.refresh_token, client_id: "c1" });
+  assert.equal((await tool("cadre_whoami", {}, rB.body.access_token)).status, 200);
   // grant by the creator's signature (wallet consent path)
   const g2 = await signed("POST", "/v1/hosted/oauth/grant", { agent: ag.address, client_id: "c2", client_name: "Wallet client" });
   assert.equal(g2.status, 201);
@@ -172,8 +179,8 @@ test("OAuth: grant by token, refresh rotates, revoke kills, rotate kills grants 
   assert.equal(rot.status, 200);
   assert.notEqual(rot.body.token, token);
   assert.equal((await tool("cadre_whoami", {}, token)).status, 401);
-  assert.equal((await tool("cadre_whoami", {}, r1.body.access_token)).status, 401);
-  assert.equal((await post("/v1/hosted/oauth/refresh", { refresh_token: r1.body.refresh_token })).status, 400);
+  assert.equal((await tool("cadre_whoami", {}, rB.body.access_token)).status, 401);
+  assert.equal((await post("/v1/hosted/oauth/refresh", { refresh_token: rB.body.refresh_token })).status, 400);
   assert.equal((await tool("cadre_whoami", {}, rot.body.token)).status, 200);
   // an access token cannot rotate
   const g3 = await post("/v1/hosted/oauth/grant", { agent_token: rot.body.token, client_id: "c4" });

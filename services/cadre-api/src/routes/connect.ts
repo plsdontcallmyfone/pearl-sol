@@ -76,14 +76,14 @@ export function registerConnect(api: Api, d: Deps) {
 
   // ------------------------------------------------------------ agent tokens (runtime pass-through)
 
-  api.get("/v1/hosted/agents/:agent/token", async (c) => reply({ body: must(await runtime("GET", `/v1/hosted/agents/${c.params.agent}/token`)), cache: "no-store" }), { cache: "no-store" });
+  api.get("/v1/hosted/agents/:agent/token", async (c) => reply({ body: must(await runtime("GET", `/v1/hosted/agents/${encodeURIComponent(c.params.agent)}/token`)), cache: "no-store" }), { cache: "no-store" });
   api.post("/v1/hosted/agents/:agent/token", async (c) => {
-    const r = await runtime("POST", `/v1/hosted/agents/${c.params.agent}/token`, { headers: signedHeaders(c), body: await c.raw() });
+    const r = await runtime("POST", `/v1/hosted/agents/${encodeURIComponent(c.params.agent)}/token`, { headers: signedHeaders(c), body: await c.raw() });
     return reply({ status: r.status, body: must(r), cache: "no-store" });
   }, { cost: 10 });
   api.post("/v1/hosted/agents/:agent/token/rotate", async (c) => {
     const tok = bearerOf(c);
-    const r = await runtime("POST", `/v1/hosted/agents/${c.params.agent}/token/rotate`, { headers: tok ? authHeader(tok) : signedHeaders(c), body: await c.raw() });
+    const r = await runtime("POST", `/v1/hosted/agents/${encodeURIComponent(c.params.agent)}/token/rotate`, { headers: tok ? authHeader(tok) : signedHeaders(c), body: await c.raw() });
     return reply({ status: r.status, body: must(r), cache: "no-store" });
   }, { cost: 10 });
 

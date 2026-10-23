@@ -11,7 +11,8 @@
 //
 // OAuth grants (for remote MCP clients that cannot send a static header: claude.ai, chatgpt.com):
 // an access token (cadre_oa_..., 1 hour) and a refresh token (cadre_or_..., 30 days, rotated on every
-// use), both hashed, both bound to the agent and the token generation. Revoking either revokes the grant.
+// use), both hashed, both bound to the agent and the token generation. Revoking either revokes the grant, and so does
+// presenting a refresh token that was already rotated (reuse detection).
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
@@ -24,7 +25,7 @@ const fresh = (p: string) => p + randomBytes(32).toString("base64url");
 const eqHex = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 
 interface TokenRec { agent: string; token_id: string; hash: string; gen: number; created_ms: number; rotated_ms: number | null; last_used_ms: number | null; by: string }
-interface GrantRec { grant_id: string; agent: string; gen: number; client_id: string; client_name: string; access_hash: string; access_exp: number; refresh_hash: string; refresh_exp: number; created_ms: number; last_used_ms: number | null; revoked: boolean }
+interface GrantRec { grant_id: string; agent: string; gen: number; client_id: string; client_name: string; access_hash: string; access_exp: number; refresh_hash: string; prev_refresh_hash?: string; refresh_exp: number; created_ms: number; last_used_ms: number | null; revoked: boolean }
 interface File { tokens: Record<string, TokenRec>; grants: GrantRec[] }
 
 export interface Resolved { agent: string; kind: "agent_token" | "oauth"; token_id: string; grant_id?: string }
@@ -117,6 +118,10 @@ export class TokenStore {
   refresh(refreshToken: string, client_id?: string) {
     if (typeof refreshToken !== "string" || !refreshToken.startsWith(PREFIX.refresh)) return null;
     const h = sha(refreshToken);
+    // reuse detection (OAuth 2.1 4.3.1): a refresh token that was already rotated away means two
+    // parties hold the grant's refresh chain; the whole grant is revoked
+    const reused = this.f.grants.find((x) => x.prev_refresh_hash && eqHex(x.prev_refresh_hash, h));
+    if (reused) { reused.revoked = true; this.save(); return null; }
     const g = this.f.grants.find((x) => eqHex(x.refresh_hash, h));
     if (!g || g.revoked || g.refresh_exp <= this.now()) return null;
     if (client_id && g.client_id && client_id !== g.client_id) return null;
@@ -126,6 +131,7 @@ export class TokenStore {
     const refresh = fresh(PREFIX.refresh);
     g.access_hash = sha(access);
     g.access_exp = this.now() + ACCESS_TTL_MS;
+    g.prev_refresh_hash = g.refresh_hash;
     g.refresh_hash = sha(refresh);
     g.refresh_exp = this.now() + REFRESH_TTL_MS;
     this.save();

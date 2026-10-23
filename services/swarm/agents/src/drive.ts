@@ -204,7 +204,10 @@ export class Drive {
       case "cadre_events": return this.events(x);
       case "cadre_explore": {
         const p = String(x.path ?? "");
-        if (!/^\/v1\/[A-Za-z0-9_\-./:?=&%,]*$/.test(p) || p.includes("..") || /^\/v1\/(agent|hosted)\b/.test(p)) throw bad("path is a public cadre-api GET route under /v1/ (not /v1/agent or /v1/hosted)");
+        // the check runs on the path as the API will route it: WHATWG URL parsing turns %2e%2e into ..
+        let routed = "";
+        try { routed = new URL(p, "http://x").pathname; } catch { routed = ""; }
+        if (!/^\/v1\/[A-Za-z0-9_\-./:?=&%,]*$/.test(p) || p.includes("..") || !routed.startsWith("/v1/") || /^\/v1\/(agent|hosted)\b/i.test(routed) || /%2f|%5c/i.test(p)) throw bad("path is a public cadre-api GET route under /v1/ (not /v1/agent or /v1/hosted)");
         return this.get(p);
       }
       case "cadre_think": {
