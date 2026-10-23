@@ -17,7 +17,7 @@ import { W, decodeHire, decodeOffer, eventTopicHex, exclusion, feeOf, marketArgs
 
 const PORTS = { rpc: 10752, api: 10753 };
 const key = (i: number) => b58encode(Uint8Array.from({ length: 32 }, (_, j) => (j === 0 ? i : 9)));
-const MARKET = key(1), ADMIN = key(2), PROV = key(3), BUYER = key(4), JUDGE = key(5), HOUSEB = key(6), PROV2 = key(7);
+const MARKET = key(1), ADMIN = key(2), PROV = key(3), BUYER = key(4), JUDGE = key(5), HOUSEB = key(6), PROV2 = key(7), POOR = key(9);
 const C = 1_000_000_000n;
 
 const blobs = new Map<string, Buffer>();
@@ -57,11 +57,11 @@ function rpc(m: string, p: any): any {
   switch (m) {
     case "getChainInfo": return { chain_id: 7, genesis_hash: "ab".repeat(32), height: 140, finalized_height: 100, finality_k: 30 };
     case "getParams": return { min_fee: "1000", contract_base_fee: "1000", contract_byte_fee: "10", gas_price: "10000", gas_price_unit: "1000000", tx_gas_limit: "50000000" };
-    case "getAccount": return { balance: (100n * C).toString(), nonce: 3 };
+    case "getAccount": return { balance: p.account === POOR ? "0" : (100n * C).toString(), nonce: 3 };
     case "getBlock": return null;
     case "listJobs": return { total: 0, jobs: [] };
     case "getBridgeEvents": return { withdrawals: [] };
-    case "simulateCall": return simulateOk ? { ok: true, gas_used: 700_000 } : { ok: false, error: Buffer.from("a provider cannot hire its own offer").toString("hex") };
+    case "simulateCall": if (p.from === POOR) throw new Error(`simulateCall: insufficient balance: have 0, need ${p.value}`); return simulateOk ? { ok: true, gas_used: 700_000 } : { ok: false, error: Buffer.from("a provider cannot hire its own offer").toString("hex") };
     case "getBlob": { const id = String(p.blob_id).replace(/^blob:/, ""); const b = blobs.get(id); return b ? { blob_id: id, data: b.toString("base64") } : null; }
     case "getContractEvents": return { total: EVENTS.length, events: EVENTS.slice(p.offset ?? 0, (p.offset ?? 0) + (p.limit ?? 50)) };
     case "queryContract": {
@@ -206,6 +206,11 @@ test("unsigned hire: plain-words review, exact value, refusals", async () => {
   simulateOk = true;
   assert.equal(f.status, 409);
   assert.match(JSON.stringify(f.body), /would refuse this/);
+  // a buyer short of the value hears it in CADRE, before the node's simulateCall throws its raw "insufficient balance"
+  const poor = await post("/v1/tx/market", { from: POOR, action: "hire", offer: 1, request_hash: REQ.id, evaluators: [JUDGE] });
+  assert.equal(poor.status, 422);
+  assert.equal(poor.body.error.code, "insufficient_funds");
+  assert.match(poor.body.error.message, /balance 0 CADRE < .* CADRE needed/);
   // verdict only by a named evaluator on a delivered hire
   assert.equal((await post("/v1/tx/market", { from: BUYER, action: "verdict", hire: 0, accept: true })).status, 400);
   assert.equal((await post("/v1/tx/market", { from: BUYER, action: "nope" })).status, 400);

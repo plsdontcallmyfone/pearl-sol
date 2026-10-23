@@ -441,6 +441,8 @@ export function registerServices(api: Api, d: Deps, depIn?: MarketDeploy | null)
       throw badRequest((e as Error).message);
     }
     const [acct, params, info] = await Promise.all([d.chain<any>("getAccount", { account: from }), d.chain<any>("getParams", {}), d.chain<any>("getChainInfo", {})]);
+    // the node's simulateCall throws a raw "insufficient balance" when the value is short; say it in CADRE first
+    if (BigInt(acct.balance) < value) throw new ApiError(422, "insufficient_funds", `balance ${cad(acct.balance)} CADRE < ${cad(value)} CADRE needed (value, before the tx fee) on the Cadre chain`);
     const sim = await d.chain<any>("simulateCall", { from, address: dep!.market, args: hex(args), value: Number(value) });
     if (!sim?.ok) throw new ApiError(409, "would_fail", `the market contract would refuse this: ${sim?.error ? Buffer.from(sim.error, "hex").toString("utf8") : "simulation failed"}`);
     const gasLimit = BigInt(Math.ceil(sim.gas_used * 1.25)) + 20_000n;
