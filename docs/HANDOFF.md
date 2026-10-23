@@ -81,6 +81,10 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
     by itself. Its lead's inference is held by its daily SOL cap until 00:00 UTC and its wallet held
     0.0165 SOL against a 0.0251 SOL quote for its usual ticket on 2026-10-23, so the kickoff may
     then wait on a wallet hold until someone sends the lead SOL.
+12. (Fixed 2026-10-23, qa2, NOT DEPLOYED) Light client stalled at 7497 since 07:50 UTC on an equal-work fork:
+    lightclient program upgrade, then header-relay on boxes 0-2 (item 56).
+13. (Fixed 2026-10-23, qa2, NOT DEPLOYED) Hosted agents' profile blobs are pruned by the node (their SetProfile is on
+    Solana): the runtime puts them back; a lasting pin is open (item 56).
 
 ## Goal (owner, 2026-10-16, ongoing)
 
@@ -1913,6 +1917,37 @@ CLAUDE.md "Who is working on what".
       box 0 `blobs.max_total_bytes` 40e9 -> 60e9 (backup node.json, restart cadre-node only); about 19.7 GB more RPC room (5% reserve), about 8 h at the
       12 h rate. Option B (policy decision): box 0 `keep_replay` false like boxes 1-2, frees the A of every live ticket
       outside the mining rule; costs fraud-proof localization data for live tickets (honest replays read no A).
+
+56. SECOND QA PASS OF THE DEVNET PRODUCT (2026-10-23, "qa2" row; headless Chromium, throwaway keys; box 0 read only).
+    Found and fixed (each with a test that fails on the old code), NOT DEPLOYED:
+    - LIGHT CLIENT STALLED AT 7497 since 07:50 UTC (all three relay lanes idle, lag growing, settle and storefront
+      orders waiting): two blocks at 7497 with equal work; the light client kept b3af..., the node 5232..., and
+      7498-7502 mine jobs posted in 5232. begin_verify_job wanted the posting block final or canonical and reorg wants
+      strictly more work, so the node's branch could never verify. token/programs/lightclient: a Verified posting block
+      on the job block's own branch is accepted (its parent, or through at most 16 Verified ancestors passed as
+      remaining accounts, each linked by prev hash); client::begin_verify_job_via; header-relay bind_for passes them.
+      LiteSVM equal_work_fork_at_the_tip_does_not_stall_job_blocks; lightclient suites and header-relay catchup green.
+      DEPLOY ORDER: upgrade the devnet lightclient program 47mavKip... first (devnet deployer), then header-relay on
+      boxes 0, 1, 2. Once 7498 verifies, the relay's existing reorg step moves the tip to the heavier branch.
+    - PROFILE BLOBS PRUNED: 16 of 18 hosted agents showed profile_blob false (no verified spec, no practice label on
+      the profile Trading tab, no persona). A node pins only the profile blobs its own state references (SPEC 4.6);
+      SetProfile is a Solana tx since the town moved, so the node prunes the blob after its grace. The runtime now
+      puts the same bytes back (same URI) when the node lacks them, checked every 10 min (agent.ts keepProfileBlob).
+      Deploy: box 0 sync + restart cadre-agents. Lasting fix (open): pin Solana-town profile blobs (cadre-api's town
+      index could hold them in its durable blob store, or the node could take a pin list).
+    - Trading board "User agents with real swaps" listed practice agents: a buy whose exact CADRE is bridged out
+      later (the runtime's fee self-funding) is no fill (fee_buys); an agent is listed with real swaps on or real fills
+      on record (cadre-api trading.ts). Deploy: cadre-api restart.
+    - Swarm plans took 1 lamport per member through the API; a QA swarm of 0.03 SOL per member is held for good
+      (fee CADRE + a 0.0251 SOL ticket pass its cap and wallet). The plan now refuses a share below fee CADRE + one
+      ticket at the newest quote + reserve + fees. Deploy: cadre-agents restart.
+    - Site (cadre-web 1674685, fcdf647): town and DM signing waits for the town's chain instead of "Still loading";
+      the follow button waits for the follow state (it said Follow while loading and sent a refused follow); the
+      focus post refreshes; long notes wrap on a phone. Deploy: site release.
+    Passed: every sidebar page desktop and phone, dark and light (console, overflow, em dash, monospace, raw JSON);
+    practice agent live in 2.3 min, first practice entry at 37 min; toolbelt web researcher 8/8; paid hire #86 with
+    the rebuilt judge (ACCEPT, completed in 11 blocks); Connect OAuth + MCP (22 tools) with cadre_trade refused for a
+    practice agent; agent dump fresh with lessons. Health WARN/FAIL read in the row's report.
 
 ## M1 components (SPEC v2, all DONE)
 

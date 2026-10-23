@@ -145,6 +145,10 @@ struct Bind {
     block: [u8; 32],
     tx: Vec<u8>,
     path: Vec<u8>,
+    /// A posting block on the job block's own branch that is not canonical on the light
+    /// client: the Verified ancestors from the job block's parent down to just above it
+    /// (empty otherwise, and when the posting block is the parent).
+    via: Vec<[u8; 32]>,
 }
 
 /// Lag and throughput, for the log line and the tests.
@@ -578,7 +582,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
                 (Stage::Begin, true) => match &f.bind {
                     // the job proven inline: the tx carries the posting tx, no first chunk
                     Some(b) => {
-                        let ix = client::begin_verify_job(pk, w, &hash, &b.block, f.hd.proof.len() as u32, b.tx.clone(), b.path.clone());
+                        let ix = client::begin_verify_job_via(pk, w, &hash, &b.block, &b.via, f.hd.proof.len() as u32, b.tx.clone(), b.path.clone());
                         (Stage::Begin, vec![Tx::new(vec![ix], self.cu(CU_BEGIN_JOB))])
                     }
                     None => {
@@ -1004,8 +1008,29 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             }
         };
         let canonical = ph <= cfg.tip_height && cfg.tip_height - ph < CANON_LEN as u64 && canon[(ph as usize) % CANON_LEN] == phash;
-        if rec.0 != lightclient::STATUS_VERIFIED || !(rec.1 || canonical) {
+        if rec.0 != lightclient::STATUS_VERIFIED {
             return Ok(None);
+        }
+        // Not final, not canonical: still bindable when it is on the job block's own branch
+        // (the node's chain, which both come from) and every block between them is Verified.
+        // An equal-work fork at the light-client tip otherwise stalls for good (devnet 7497,
+        // 2026-10-23): the node's branch mines jobs posted in its own fork block, and reorg
+        // needs strictly more work than the tip.
+        let mut via = vec![];
+        if !(rec.1 || canonical) {
+            if job_height - ph - 1 > lightclient::MAX_BRANCH_WALK as u64 {
+                return Ok(None);
+            }
+            for h in (ph + 1..job_height).rev() {
+                let Some(x) = self.node_hash(h)? else { return Ok(None) };
+                via.push(x);
+            }
+            if !via.is_empty() {
+                let st = self.ledger.accounts(&via.iter().map(client::header_addr).collect::<Vec<_>>())?;
+                if !st.iter().all(|d| matches!(d.as_deref().and_then(rec_of), Some((lightclient::STATUS_VERIFIED, ..)))) {
+                    return Ok(None);
+                }
+            }
         }
         let body = self.body(&phash)?;
         let (txs, paths) = (&body.0, &body.1);
@@ -1028,7 +1053,7 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
             }
             return Ok(None);
         }
-        Ok(Some((Bind { block: phash, tx: txs[i].clone(), path: paths[i].clone() }, jc.config)))
+        Ok(Some((Bind { block: phash, tx: txs[i].clone(), path: paths[i].clone(), via }, jc.config)))
     }
 
     /// Whether the indexed posting tx of `job_id` is too large for `begin_verify_job`.
