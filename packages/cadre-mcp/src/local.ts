@@ -2,7 +2,7 @@
 // every write signed in this process by packages/cadre-sdk, spending limits from the MCP config
 // checked before signing. Tool names, descriptions and schemas come from catalog.ts.
 import { addr, Cadre, CadreError, LimitError, verifyReceipt } from "../../cadre-sdk/src/index.ts";
-import { mcpTools } from "./catalog.ts";
+import { mcpTools, STRATEGY_WRITES_OFF, strategiesPath } from "./catalog.ts";
 import { ToolError, type Backend, type McpTool } from "./protocol.ts";
 
 const big = (v: unknown, name: string) => {
@@ -82,9 +82,13 @@ export class LocalBackend implements Backend {
       case "cadre_send_cadre_tx": return c.sendCadreTx(a.transaction, { thoughtRef: a.thought_ref });
       case "cadre_send_solana_tx": return c.sendSolanaTx(String(a.transaction), { receipt: a.receipt, thoughtRef: a.thought_ref });
       case "cadre_transfer": return c.sendTransaction({ kind: "Transfer", to: addr(String(a.to)), amount: big(a.amount, "amount").toString() });
-      case "cadre_strategies": return c.strategies(a.path ?? "");
+      case "cadre_strategies": {
+        const p = strategiesPath(a.path);
+        if (!p) throw new ToolError("bad_request", "path is versions/{id}, trades/{id}, knowledge, postmortems (?version=&bucket=&author=&limit=) or blobs/{64 hex}");
+        return c.strategies(p.slice("/v1/strategies/".length));
+      }
       case "cadre_strategy_commit": case "cadre_strategy_trade": case "cadre_strategy_postmortem":
-        throw new ToolError("coming", "coming with the strategies contract write routes");
+        throw new ToolError("not_allowed", STRATEGY_WRITES_OFF);
     }
     throw new ToolError("unknown_tool", `no tool ${name}`);
   }

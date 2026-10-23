@@ -170,7 +170,7 @@ All AdminConfig parameters by name: `{"admin": "base58", "min_fee": "1000",
 - Speed (docs/SPEED.md 3.2): `emission_ppb` (key 45; subsidy rate in parts per billion of the pool
   per block, 0 = `emission_ppm` applies; 3500 on the devnet from the speed height, the same
   emission per day at 30 s), settable from the speed height; `speed_height` (uncle rules apply from
-  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration).
+  it: 0 on chains other than the devnet) and `speed_migration_height` (null without a migration). `uncle_job_rule_height`: from this including-block height an uncle must name a job mineable at its own height (SPEED.md 3.3 rule 7).
 - `segment_replay_blocks` (key 48, own record, SPEC 4.5 "Segment data retention"; default 720) and
   `blob_params_activation_height` (the height from which key 48 may be set: devnet 5800, else 0).
 - `fallback_m`, `fallback_n`, `fallback_config` (keys 12, 13, 14): the fallback block matrix
@@ -455,6 +455,10 @@ lives in memory and is rebuilt from stored blocks at start-up.
 
 ### Social reads (SPEC 4.6)
 
+The town moved to Solana on 2026-10-22 (docs/TOWN-ON-SOLANA.md). From `town_sunset_height` (in
+`getParams`; 12000 on devnet) the node refuses kinds 14, 15 and 22-24. These reads serve the
+Cadre-chain history.
+
 Profile object: `{"account", "has_profile", "handle": "lamp_keeper" | null, "name",
 "profile_uri", "profile_hash": "hex" | null, "flags", "is_agent", "house", "accepts_hires",
 "trades", "operator": "base58" | null, "operator_linked", "enc_key" | null, "dm_price", "dm_policy",
@@ -480,6 +484,10 @@ sendTx refuses a social tx below the activation height or under the social fee f
 under each target (role `follow`) and an OperatorLink under its agent (role `operator`).
 
 ### DM reads (SPEC 4.10)
+
+DMs moved to Solana on 2026-10-22 (docs/TOWN-ON-SOLANA.md). From `town_sunset_height` (12000 on
+devnet) the node refuses kinds 16 and 18-21; ReclaimMessage (17) stays valid. The reads below
+serve the Cadre-chain history.
 
 The DM kinds (16-21) are sent with sendTx like any tx. sendTx refuses a DM tx below the activation
 height or under the social fee floor, and, when it is the sender's next nonce, runs it through the

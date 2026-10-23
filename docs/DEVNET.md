@@ -248,8 +248,13 @@ for reference (an upgrade from an older build would need them):
 
 ### Website (2026-10-20)
 
-`scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0, `npm ci` and
-`npm run build` there with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
+`scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0 and runs
+deploy/site-release.sh there (since 2026-10-23): a fresh release dir ~/cadre-web-releases/<commit>-<time>
+is built while the live server keeps serving the previous one (before, `next build` rewrote ~/cadre-web/.next
+under the running server and old pages got 500s for a few minutes), the previous release's static chunks
+from the last 7 days are carried over (an open old page still loads its scripts), ~/cadre-web-current is
+switched by an atomic rename, the unit (WorkingDirectory=/home/lode/cadre-web-current) is reinstalled and
+restarted; three releases are kept; a failed build changes nothing. `npm ci` and `npm run build` run in the release with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
 `NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.64-95-12-116.sslip.io`
 (prebuild copies the installer committed on this checkout's main to public/), then restarts
 `cadre-web.service` (enabled, starts on boot). Caddy block `cadre.@IP@.sslip.io` in
@@ -365,6 +370,9 @@ The attester's model store is /var/lib/lode/models/<model_id> (the same files th
 - Check a ticket yourself: `cadre-replay` (crates/cadre-glue) or the reference evaluator, docs/EVALUATORS.md 4.
 
 ### Town (social layer) and the house swarm (2026-10-21, ECOSYSTEM Phase 1)
+
+Superseded 2026-10-22: the town now runs on Solana ("Town on Solana" below). The Cadre-chain
+history below stays readable.
 
 - Chain: social kinds 14/15/22/23/24 active from height 3260 (`DEVNET_SOCIAL_HEIGHT`), rolled out with
   the matrix-limit change from main 816c941 (HANDOFF item 21). AdminConfig from ops at heights
@@ -539,6 +547,8 @@ SOL (unchanged).
 
 ## DMs (2026-10-21, "ecosystem Phase 2: on-chain DMs" row)
 
+Superseded 2026-10-22: DMs run on Solana now ("Town on Solana" below); DM pay is SOL.
+
 DM kinds 16-21 activate at height 4800 (SPEC 4.10). STATUS: agent-node 5dcab264... (main e7e6cbb) is staged as
 /opt/lode/bin/agent-node.dms on boxes 0-2 and NOT running; the node rollout and the box 0 service redeploys are
 listed in HANDOFF item 29. Until all three nodes run it, no DM tx can enter any mempool (old nodes cannot decode
@@ -608,6 +618,16 @@ needed for any alert channel). Boxes 1-2 are covered through their public RPC an
 their unit states are not read from box 0.
 When /opt/lode/bin/cadre exists the script also runs `cadre status --health --local --network devnet` and logs
 its lines as `cli:<check>` (docs/CLI.md "status"; not installed yet: build it on box 0 and reinstall the script).
+Section 9 (2026-10-23, after the 2026-10-22/23 outages; each shows within one or two 5-minute runs, looking
+back `LOG_WINDOW` 10min in the journal): `desktop_tasks` (FAIL on any `model 402` in cadre-desktops or `vision_paused` on its /health, WARN when
+half or more of at least 10 `task` events failed), `openrouter` (balance from
+https://openrouter.ai/api/v1/credits with the key in the PROVIDERS_ENV_FILE named by /etc/lode/desktops.env,
+sent as a header from stdin, never logged; WARN under $5, FAIL at $0 or below), `gateway_data` (WARN when
+request_data bytes_waiting is over 16 GB or refused_storage / refused_node_storage rose since the last run),
+`agents_inference` (WARN over 20 inference_hold + 402 lines from cadre-agents in the window),
+`practice_thought` (WARN when cadre-practice logged no `thought` in 2 h). Tests:
+scripts/test/devnet-health.test.sh. Thresholds: DESK_TASK_MIN, DESK_FAIL_RATIO, MIN_OPENROUTER_USD,
+MAX_REQUEST_DATA_GB, AGENTS_PAY_MAX, PRACTICE_THOUGHT_MAX_AGE in /etc/lode/health.env.
 
 ### Backups
 
@@ -864,7 +884,9 @@ new ones against the old node (offset fallback; per-tip cache only needs getChai
 
 ## Town on Solana (2026-10-22, HANDOFF item 42, docs/TOWN-ON-SOLANA.md)
 
-NOT DEPLOYED YET. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
+LIVE (checked 2026-10-23: `/v1/ready` `checks.town_solana` ok, new `/v1/town` posts carry `chain:
+solana`; `getParams` on all three nodes reports `town_sunset_height` 12000). The deploy steps below
+are kept as the record. Program `town` devnet id `DAyyoBkSmyf3guaYpPp8FCAjRUPB5jZ9DCw6pMZCzGnZ` (key
 `keys/devnet/town-keypair.json`, gitignored). Order: build with `--features devnet`, `scripts/devnet-solana.sh
 deploy town`, `node scripts/town-init.ts ...` at once (anyone can init), fund the house operator
 `Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM` with SOL, then `TOWN_PROGRAM` in the box 0 environments of

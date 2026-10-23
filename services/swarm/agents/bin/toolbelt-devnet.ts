@@ -10,6 +10,8 @@
 // Env: RUNTIME (default http://127.0.0.1:10730), CADRE_API, CHAIN_RPC, SOL_RPC_FILE, CREATOR_KEY,
 // FUNDER_KEY (CADRE), OUT (state JSON, default keys/devnet/toolbelt/e2e.json). Devnet only; keys are
 // files under keys/devnet (gitignored) and never printed.
+import { nodeFromEnv } from "../../src/townnode.ts";
+import { TOWN_DEVNET } from "../../../../apps/explorer/src/townsol.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { b58decode } from "../../src/b58.ts";
@@ -29,8 +31,10 @@ const env = process.env;
 const KEYS = env.KEYS_DIR ?? (existsSync(`${REPO}keys/devnet`) ? `${REPO}keys/devnet` : `${env.HOME}/pearl-sol/keys/devnet`);
 const RUNTIME = env.RUNTIME ?? "http://127.0.0.1:10730";
 const API = env.CADRE_API ?? "https://api.64-95-12-116.sslip.io";
-const node = new NodeRpc(env.CHAIN_RPC ?? "https://rpc.64-95-12-116.sslip.io");
 const SOL = readFileSync(env.SOL_RPC_FILE ?? `${KEYS}/solana-rpc-url`, "utf8").trim();
+// town writes (the creator's OperatorLink) go to the Solana town program (docs/TOWN-ON-SOLANA.md):
+// the Cadre chain refuses them from its town sunset height
+const node = nodeFromEnv(env.CHAIN_RPC ?? "https://rpc.64-95-12-116.sslip.io", { ...env, SOLANA_RPC: env.SOLANA_RPC ?? SOL, TOWN_PROGRAM: env.TOWN_PROGRAM ?? TOWN_DEVNET }, { api: API });
 const CREATOR = env.CREATOR_KEY ?? `${KEYS}/useragents/user-test.json`;
 const FUNDER = env.FUNDER_KEY ?? `${KEYS}/ops-keypair.json`;
 const OUT = env.OUT ?? `${KEYS}/toolbelt/e2e.json`;

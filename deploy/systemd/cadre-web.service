@@ -1,12 +1,15 @@
 [Unit]
-Description=Cadre devnet website (~/cadre-web, Next.js production server; built by scripts/devnet-deploy.sh site)
+Description=Cadre devnet website (~/cadre-web-current -> a release in ~/cadre-web-releases; built and switched by scripts/devnet-deploy.sh site)
 After=network-online.target
 
 [Service]
 User=lode
-WorkingDirectory=/home/lode/cadre-web
+# a symlink, resolved when the unit starts: a deploy switches it, then restarts this unit
+WorkingDirectory=/home/lode/cadre-web-current
 Environment=NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 ExecStart=/home/lode/.local/node/bin/node node_modules/next/dist/bin/next start --port 10710 --hostname 127.0.0.1
+# SIGTERM on a restart is a clean stop, not a failure
+SuccessExitStatus=143
 Restart=always
 RestartSec=5
 

@@ -3,7 +3,8 @@
 # cadre-health.timer every 5 minutes; also fine to run by hand. Writes only local files:
 #   $LOG_DIR/health.log   one line per check per run (OK / WARN / FAIL), trimmed to the last 20000 lines
 #   $LOG_DIR/status       one line: the time, the overall result, the failing checks
-# No external messaging. Reads public endpoints only (chain RPC over https, cadre-api, Solana RPC).
+# No external messaging. Reads public endpoints (chain RPC over https, cadre-api, Solana RPC), this box's
+# journal and local endpoints, and the OpenRouter credits endpoint (section 9).
 # Optional overrides in /etc/lode/health.env (NODES, API, RELAY_PAYERS, SITES, thresholds).
 set -uo pipefail
 LOG_DIR="${LOGS_DIRECTORY:-${LOG_DIR:-/var/log/cadre-health}}"
@@ -29,6 +30,8 @@ emit() { # level check message
 }
 rpc() { curl -s -m 10 -X POST "$1" -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$2\",\"params\":${3:-{\}}}"; }
 
+# HEALTH_SECTIONS=logs runs only section 9 (scripts/test/devnet-health.test.sh); default all
+if [[ ${HEALTH_SECTIONS:-all} == all ]]; then
 # 1. node heights: every node answers, heights agree, the tip moved since the last run
 heights=()
 for u in $NODES; do
@@ -112,6 +115,111 @@ else:
     for u in bad[:40]: print("WARN|desk:%s/%s|%s" % (u["agent"], u["role"], "; ".join(u["issues"])[:200]))
 ' "$dh" 2>/dev/null || echo "WARN|desktops|health answer unreadable")
   fi
+fi
+
+fi # sections 1-8
+
+# 9. outages the checks above missed on 2026-10-22/23, each within about 10 minutes (one 5-minute
+#    timer run looks back LOG_WINDOW): house desktops failing their tasks or out of model credit,
+#    the OpenRouter balance, the gateway's request data backlog, hosted agents stuck on inference
+#    payments, and the practice traders thinking. Reads this box's journal as lode (the units run as
+#    lode) and local endpoints; the OpenRouter key is read from the desktops' providers file and
+#    sent in a header from stdin, never logged and never on a command line.
+JOURNAL="${JOURNAL:-journalctl}"
+LOG_WINDOW="${LOG_WINDOW:-10min}"
+unit_on() { "${SYSTEMCTL:-systemctl}" is-enabled --quiet "$1" 2>/dev/null; }
+jlog() { "$JOURNAL" -u "$1" --since "-$2" --no-pager -o cat 2>/dev/null; }
+DESK_TASK_MIN="${DESK_TASK_MIN:-10}"                # tasks in the window before a ratio means anything
+DESK_FAIL_RATIO="${DESK_FAIL_RATIO:-0.5}"           # WARN at or above this share of failed tasks
+MIN_OPENROUTER_USD="${MIN_OPENROUTER_USD:-5}"
+OPENROUTER_CREDITS_URL="${OPENROUTER_CREDITS_URL:-https://openrouter.ai/api/v1/credits}"
+DESKTOPS_ENV="${DESKTOPS_ENV:-/etc/lode/desktops.env}"
+GATEWAY_STATS_URL="${GATEWAY_STATS_URL:-http://127.0.0.1:10664/v1/stats}"
+MAX_REQUEST_DATA_GB="${MAX_REQUEST_DATA_GB:-16}"
+AGENTS_PAY_MAX="${AGENTS_PAY_MAX:-20}"              # inference_hold + 402 lines per window before WARN
+PRACTICE_THOUGHT_MAX_AGE="${PRACTICE_THOUGHT_MAX_AGE:-2h}"
+
+# 9a. desktops: failed task share and model 402 (out of OpenRouter credit)
+if unit_on cadre-desktops; then
+  r="$(jlog cadre-desktops "$LOG_WINDOW" | python3 -c '
+import json, sys
+n = bad = m402 = 0
+for line in sys.stdin:
+    try: e = json.loads(line)
+    except Exception:
+        m402 += "model 402" in line; continue
+    if e.get("event") != "task": continue
+    n += 1; bad += e.get("ok") is False
+    m402 += "model 402" in str(e.get("error", ""))
+print(n, bad, m402)' 2>/dev/null)"
+  read -r n bad m402 <<<"${r:-0 0 0}"
+  # since the desktops resilience change (HANDOFF 49) the controller pauses vision on the first 402
+  # and logs it once, so the paused flag on /health is the signal, not a stream of 402 task lines
+  vp="$(curl -s -m 10 "${DESKTOPS_URL:-http://127.0.0.1:10720}/health" | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("vision_paused") else 0)' 2>/dev/null)"
+  lvl=OK
+  (( m402 > 0 )) && lvl=FAIL
+  [[ $vp == 1 ]] && { lvl=FAIL; m402="$m402 (vision paused: out of model credit)"; }
+  if [[ $lvl == OK ]] && (( n >= DESK_TASK_MIN )) && python3 -c "import sys; sys.exit(0 if $bad / $n >= $DESK_FAIL_RATIO else 1)"; then lvl=WARN; fi
+  emit "$lvl" desktop_tasks "$bad of $n tasks failed in $LOG_WINDOW, $m402 model 402 (out of model credit)"
+fi
+
+# 9b. OpenRouter balance (the desktops' model provider)
+pf="$(sed -n 's/^PROVIDERS_ENV_FILE=//p' "$DESKTOPS_ENV" 2>/dev/null | tail -1 | tr -d "\"'")"
+if [[ -n $pf ]]; then
+  key="$(sed -n 's/^OPENROUTER_API_KEY=//p' "$pf" 2>/dev/null | tail -1 | tr -d "\"'")"
+  if [[ -z $key ]]; then emit WARN openrouter "no OPENROUTER_API_KEY readable in the providers file"; else
+    left="$(printf 'Authorization: Bearer %s\n' "$key" | curl -s -m 15 -H @- "$OPENROUTER_CREDITS_URL" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)["data"]
+print("%.2f" % (float(d["total_credits"]) - float(d["total_usage"])))' 2>/dev/null)"
+    if [[ -z $left ]]; then emit WARN openrouter "credits endpoint did not answer"; else
+      lvl=OK; python3 -c "import sys; sys.exit(0 if $left >= $MIN_OPENROUTER_USD else 1)" || lvl=WARN
+      python3 -c "import sys; sys.exit(0 if $left > 0 else 1)" || lvl=FAIL
+      emit "$lvl" openrouter "\$$left left (warn under \$$MIN_OPENROUTER_USD)"
+    fi
+  fi
+  unset key
+fi
+
+# 9c. gateway request data: backlog over MAX_REQUEST_DATA_GB, or refused_storage rising since the last run
+if unit_on cadre-gateway; then
+  gs="$(curl -s -m 10 "$GATEWAY_STATS_URL" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["request_data"]
+print(int(r["bytes_waiting"]), int(r.get("refused_storage", 0)), int(r.get("refused_node_storage", 0)))' 2>/dev/null)"
+  if [[ -z $gs ]]; then emit WARN gateway_data "gateway stats did not answer"; else
+    read -r waiting refused refused_node <<<"$gs"
+    prev="$(cat "$STATE_DIR/gateway_refused" 2>/dev/null || echo "$refused $refused_node")"; read -r p1 p2 <<<"$prev"
+    echo "$refused $refused_node" > "$STATE_DIR/gateway_refused"
+    lvl=OK; (( waiting > MAX_REQUEST_DATA_GB * 1024 * 1024 * 1024 )) && lvl=WARN
+    (( refused > p1 || refused_node > p2 )) && lvl=WARN
+    emit "$lvl" gateway_data "$(python3 -c "print(f'{$waiting/2**30:.1f}')") GB waiting (max $MAX_REQUEST_DATA_GB), refused_storage $refused (was $p1), refused_node_storage $refused_node (was $p2)"
+  fi
+fi
+
+# 9d. hosted agents: repeated inference holds and 402s (paid inference refused)
+if unit_on cadre-agents; then
+  r="$(jlog cadre-agents "$LOG_WINDOW" | python3 -c '
+import json, sys
+hold = p402 = 0; agents = set()
+for line in sys.stdin:
+    try: e = json.loads(line)
+    except Exception: e = {}
+    h = e.get("event") == "inference_hold"
+    p = " 402" in line or "402:" in line
+    if h or p: agents.add(e.get("agent", "?"))
+    hold += h; p402 += p and not h
+print(hold, p402, len(agents))' 2>/dev/null)"
+  read -r hold p402 who <<<"${r:-0 0 0}"
+  lvl=OK; (( hold + p402 > AGENTS_PAY_MAX )) && lvl=WARN
+  emit "$lvl" agents_inference "$hold inference_hold + $p402 402 lines in $LOG_WINDOW from $who agents (max $AGENTS_PAY_MAX)"
+fi
+
+# 9e. practice traders: at least one paid thought in PRACTICE_THOUGHT_MAX_AGE
+if unit_on cadre-practice; then
+  n="$(jlog cadre-practice "$PRACTICE_THOUGHT_MAX_AGE" | grep -c '"event":"thought"')"
+  lvl=OK; (( n == 0 )) && lvl=WARN
+  emit "$lvl" practice_thought "$n thoughts in the last $PRACTICE_THOUGHT_MAX_AGE"
 fi
 
 overall=OK; for f in "${fails[@]:-}"; do [[ $f == *:FAIL ]] && overall=FAIL; [[ $f == *:WARN && $overall == OK ]] && overall=WARN; done

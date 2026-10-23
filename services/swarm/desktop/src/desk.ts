@@ -54,6 +54,11 @@ export interface DeskHealth {
   mem_total_mb: number | null;
   mem_avail_mb: number | null;
   load1: number | null;
+  /** open browser tabs (the browser host's last state.json), null when unknown */
+  tabs?: number | null;
+  /** resident memory of all Chromium processes and of the encoder, MB (null when unknown) */
+  chrome_mb?: number | null;
+  ffmpeg_mb?: number | null;
 }
 
 export async function sdkApi(apiKey: string): Promise<DesktopHost> {
@@ -111,6 +116,11 @@ export class Desk {
   /** last time a vision step or chain action ran on this desktop (ms), 0 = none since the controller started */
   lastActionAt = 0;
   health: DeskHealth | null = null;
+  /** health log dedupe (controller): the last problem set and when it was logged */
+  issueKey = "";
+  issueLoggedAt = 0;
+  /** when the browser host was last asked to trim its tabs for memory (0: not since the last restart) */
+  trimAt = 0;
   /** After setting `busy`: waits (up to 6 s) until the browser host reports a working tab in front,
    * so the vision model never types while the host is switching away from the activity console. */
   async waitWorkFront(): Promise<boolean> {
@@ -310,13 +320,15 @@ export class Desk {
       `now=$(date +%s); t=$(stat -c %Y /tmp/stream/thumb.jpg 2>/dev/null || echo -1); s=$(stat -c %Y ${HOME}/state.json 2>/dev/null || echo -1); ` +
         `e=$(pgrep -x ffmpeg >/dev/null && echo 1 || echo 0); hp=$(pgrep -o -f "[d]eskhost.mjs"); h=$([ -n "$hp" ] && ps -o etimes= -p $hp | tr -d " " || echo -1); ` +
         `m=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print int(t/1024), int(a/1024)}' /proc/meminfo); l=$(cut -d' ' -f1 /proc/loadavg); ` +
-        `echo "$now $t $s $e $h $m $l"`,
+        // RSS of Chromium (every process: browser, renderers, GPU, extension) and of the encoder, MB
+        `c=$(ps -eo rss=,args= | awk '/[c]hrome-linux\/chrome/{s+=$1}END{print int(s/1024)}'); f=$(ps -C ffmpeg -o rss= | awk '{s+=$1}END{print int(s/1024)}'); ` +
+        `echo "$now $t $s $e $h $m $l $c $f"`,
       15_000,
     );
     const f = r.stdout.trim().split(/\s+/).map(Number);
     if (f.length < 8 || !Number.isFinite(f[0]!)) return null;
     // host: the browser host's age in seconds (-1: not running)
-    const [now, thumb, st, enc, host, total, avail, load] = f as [number, number, number, number, number, number, number, number];
+    const [now, thumb, st, enc, host, total, avail, load, chrome, ffm] = f as [number, number, number, number, number, number, number, number, number?, number?];
     const age = thumb > 0 ? Math.max(0, now - thumb) : null;
     const extState = host >= 0 ? await this.hostState().catch(() => null) : null;
     if (extState?.ext) this.extId = String(extState.ext);
@@ -331,21 +343,40 @@ export class Desk {
       mem_total_mb: total || null,
       mem_avail_mb: Number.isFinite(avail) ? avail : null,
       load1: Number.isFinite(load) ? load : null,
+      tabs: Array.isArray(extState?.tabs) ? extState.tabs.length : null,
+      chrome_mb: Number.isFinite(chrome) ? chrome! : null,
+      ffmpeg_mb: Number.isFinite(ffm) ? ffm! : null,
     };
     return this.health;
   }
 
   /** Repairs what health found: a dead or frozen stream (restart the encoder), a dead or stuck browser
-   * host, or memory under 60 MB (restart the browser host, same profile). The browser is never
-   * restarted while the desktop is busy with a task (`busy`). */
-  async heal(busy = false): Promise<string[]> {
+   * host (restart it), or memory under `memLowMb`: first the browser host is asked to close every tab
+   * but the working one (cheap, the page and the wallet stay), and only if the next check is still low
+   * is the browser restarted (same profile). Before 2026-10-23 the alert fired under 80 MB but the
+   * repair only under 60 MB, so desktops between the two were flagged every 5 min and never repaired
+   * (1,000 of 1,307 memory lines on box 0 in 24 h). Nothing in the browser is touched while the
+   * desktop is busy with a task (`busy`). */
+  async heal(busy = false, memLowMb = 80): Promise<string[]> {
     const h = this.health;
     if (!h || !this.sbx) return [];
     const done: string[] = [];
     if (!h.encoder || !h.stream_alive) { await this.restartEncoder(); done.push("encoder restarted"); }
-    if (!busy && (!h.browser_host || (h.mem_avail_mb !== null && h.mem_avail_mb < 60))) {
+    if (busy) return done;
+    if (!h.browser_host) {
       await this.restartHost();
-      done.push(h.browser_host ? "browser restarted (memory)" : "browser host restarted");
+      this.trimAt = 0;
+      done.push("browser host restarted");
+    } else if (h.mem_avail_mb !== null && h.mem_avail_mb < memLowMb) {
+      if (!this.trimAt || Date.now() - this.trimAt > 30 * 60_000) {
+        await this.sh(`touch ${HOME}/trim`, 10_000);
+        this.trimAt = Date.now();
+        done.push("tabs trimmed (memory)");
+      } else {
+        await this.restartHost();
+        this.trimAt = 0;
+        done.push("browser restarted (memory)");
+      }
     }
     return done;
   }

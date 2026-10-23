@@ -241,3 +241,63 @@ controller (`POST 127.0.0.1:10720/activity`, kinds trade, tx, thought, note, ord
 agent's fast executor (direct RPC, no clicks) should post each trade there; its trades then appear on
 the agent's Work desktop and on /live within a second of the controller receiving them, plus the
 stream delay above. The vision model still does the browsing and the wallet-signed social actions.
+
+## 11. Resilience (2026-10-23): out of credit, Social memory, daily spend
+
+### 11.1 Vision model out of credit
+
+Measured on box 0 (journal of cadre-desktops): the OpenRouter account the desktops use ran out at
+2026-10-22 22:24:00 UTC. From then to 03:24 UTC (the last line read) **571 tasks failed** with
+`model 402`: 569 "requires more credits, or fewer max_tokens. You requested up to 400 tokens, but can
+only afford 137" (564 at 137, 5 at 301), 2 "Prompt tokens limit exceeded: 3993 > 3602". 28
+`desk_failed` events in the last 30 h. The controller kept starting a task on every due desktop and
+kept all 36 desktops running: E2B at list rate for 30 desktops of 1 GiB and 6 of 1.5 GiB is
+30 x 0.0666 + 6 x 0.0747 = about 2.45 USD/h (section 2 rates), about 12.2 USD over those 5 hours with no
+useful work (status at 03:25 UTC: 8.50 USD E2B, 0 vision, for the day so far).
+
+Now (src/credits.ts, README "Vision credit gate"): the first credit error pauses vision tasks and the
+swarm's desktop actions with one `vision_paused` line and `vision_paused` / `vision_gate` in `/status`;
+a free `/key` read and a tiny probe run every 5 min; after 30 min the desktops are paused too (one
+pause), and the first passing probe resumes everything (one `vision_resumed` line). An outage like this
+one costs about 30 min of running desktops (about 1.2 USD) instead of its full length. The probe asks
+for 1,600 max_tokens, so it passes only when a real step is affordable (`afford 137` would not).
+Not verified against a live empty account: the tests use the recorded 402 bodies (the journal cut each
+at 200 characters; test/fixtures/openrouter-credit.json says so).
+
+### 11.2 Social desktops low on memory
+
+Measured, box 0 journal, the 24 h to 2026-10-23 03:25 UTC: 1,417 `desk_unhealthy`, of which memory on
+Social desktops **1,301 on one-desktop agents and 6 on the six two-desktop agents' Social desktops**
+(Work desktops, 1.5 GiB: 16). Every one-desktop agent runs on the 1 GiB `cadre-desktop` template (976 MB
+total); `DESK_WORK_MEM_MB=1536` only sizes the two-desktop agents' Work desktops. 1,000 of the lines
+repaired nothing: the alert fired under 80 MB but the repair (browser restart) only under 60 MB, and
+most readings were 50-79 MB. 285 browser restarts for memory (plus 28 with an encoder restart); after a
+restart the next low reading came after 56 min median (p10 37, p90 157, n 289). The lows did not follow
+the mode (720 in Social mode, 581 in Work mode) and kept coming after 22:24 UTC, when no vision task ran
+(111 in the 02:00 hour), so it is the standing browser footprint, not task load. Snapshot at 03:25 UTC
+(`/status`): one-desktop agents 55-263 MB available, two-desktop Social 151-234, Work 193-392.
+
+Cause (from the code, consistent with the split above; tab counts were not logged before): a two-desktop
+Social desktop has one tab (the town) and never opens the activity console. A one-desktop agent opens
+the console in every Work slot and kept it open in the background in Social mode, refreshing every
+second; wallet tasks open the wallet in the working tab, and extension tabs were exempt from the tab cap,
+so tabs piled up to 3 plus the console on 976 MB.
+
+Changes (sandbox/deskhost.mjs, src/desk.ts, src/controller.ts): the console tab is closed when not
+wanted; 2 tabs plus the console on a 1 GiB desktop (3 on larger); one wallet tab at most; the browser host
+closes every tab but the working one under 120 MB or when asked; the controller's repair under
+`DESK_MEM_LOW_MB` (80) is "trim tabs" first and a browser restart only if the next check is still low
+(alert and repair now share one threshold); the same problem is logged at most every 30 min; one
+`desk_health` line per tick records MB available, tabs, Chromium RSS and encoder RSS per kind, so the
+after numbers come from the journal: compare `desk_health.one_desktop.avail_p50` and `.low`, and the
+count of `browser restarted (memory)`, with the figures above.
+
+Not changed: the template size. Moving the 24 one-desktop agents to 1.5 GiB would add
+24 x 0.5 GiB x 0.0000045 USD/s x 86,400 = about 4.67 USD/day, over the 64 USD cap at the section 9
+estimate of 63.3; an owner decision if the tab changes do not hold the lows.
+
+### 11.3 Daily spend
+
+The ledger already enforced `DESK_USD_PER_DAY` on E2B + vision. The journal now shows it: an hourly
+`spend` line and a `spend_day` line per finished UTC day (E2B, vision, probes, total, cap, `within_cap`,
+vision tasks, credit failures), and `/status` `spend_days` for today and 14 days back.

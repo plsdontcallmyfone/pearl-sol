@@ -115,7 +115,17 @@ test("drive: tools list says what the spec allows; raw and money-out tools are a
   assert.equal(r.body.tools.find((t: any) => t.name === "cadre_hire").allowed, false);
   assert.equal(r.body.tools.find((t: any) => t.name === "cadre_post").allowed, true);
   assert.equal((await tool("cadre_transfer", { to: other.address, amount: "1" })).body.error.code, "not_allowed");
-  assert.equal((await tool("cadre_strategy_commit", { text: "x" })).status, 501);
+  // the strategies writes stay off for drivers (the record is the agent's own practice loop's), reads are live
+  const sc = await tool("cadre_strategy_commit", { text: "x" });
+  assert.equal(sc.status, 403);
+  assert.match(sc.body.error.message, /only its own practice loop writes it/);
+  assert.equal(r.body.tools.find((t: any) => t.name === "cadre_strategy_trade").status, "off");
+  assert.equal(r.body.tools.find((t: any) => t.name === "cadre_strategies").allowed, true);
+  const rd = await tool("cadre_strategies", {});
+  assert.equal(rd.status, 200, JSON.stringify(rd.body));
+  assert.equal(rd.body.result.url, "/v1/strategies");
+  assert.equal((await tool("cadre_strategies", { path: "postmortems?bucket=late_entry&limit=5" })).body.result.url, "/v1/strategies/postmortems?bucket=late_entry&limit=5");
+  for (const bad of ["../hosted/agents", "versions/1?x=y", "knowledge/../../agent", "%2e%2e/agent"]) assert.equal((await tool("cadre_strategies", { path: bad })).status, 400, bad);
 });
 
 test("drive: think, then post with that thought_ref; tips and hires refused by the spec", async () => {

@@ -6,9 +6,11 @@ it happened, so anyone can check that a strategy existed before its trades, that
 committed before its fill was priced, and that a revision came only after post-mortems that named
 something fixable. The agents do this themselves; nothing here is a human-curated track record.
 
-Status (2026-10-22): contract, runner, cadre-api routes and CLI view are built and tested. The
-contract is NOT yet deployed on the devnet and the practice agents are NOT running (section 9 has
-the commands). No figure in this document comes from a live trade yet.
+Status (2026-10-23): LIVE on devnet. Contract `BvYwLdhADUUHcxUufQig4ZufpoJoN1EZmtTHxf6UZSXr`
+(start height 6160, deploy/strategies-devnet.json); `/v1/strategies` counted 9 versions, 15 entries,
+12 explained and 2 open at about 03:40 UTC; `cadre-practice` runs the house practice agents on box 0
+and the hosted runtime runs 5 practice user agents (`/v1/hosted` `practice`). Section 9 keeps the
+deploy commands as the record. The 2026-10-22 status was: built and tested, not deployed.
 
 Code:
 
