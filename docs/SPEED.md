@@ -407,3 +407,138 @@ CU per header after the schedule change: submit_header 31,746 -> 31,818, complet
 640,831 -> 640,893 (about +130 CU of about 10.2M; every tx under 1.4M; tx count unchanged).
 Refundable rent: +167,040 lamports once (schedule bytes) and about +0.125 SOL locked while K = 60
 keeps 30 more header records (4,176,000 lamports each).
+
+## 8. Paid inference throughput on the devnet CPU worker (2026-10-23)
+
+"tput" row. Everything below is measured; raw lines and scripts are in
+docs/measurements/tput-2026-10-23/ (README there). No consensus change, no change to any bit the
+worker computes: every change was checked with tools/cadre/golden.py against the code before it
+(all A files, C files, tokens and logits rows of 8 requests, alone and batched: equal),
+tools/cadre/test_batch.py (28/28, including 7 Rust evaluator replays of batched requests) and
+tools/cadre/test_replay.py (19/19: honest replay, cheater and token fraud proofs).
+
+### 8.1 Where the time went on box 0
+
+Box 0 (4 vCPU Xeon Gold 6142, 7.9 GB, 2 GB swap in use, load 6.4-7.7) runs the worker at 2
+threads next to pearl-attester (145% CPU while replaying a ticket close, nice 0), pearl-miner (118%,
+nice 10), a node service (73%) and the gateway (27%). Worker /health over 428 s at 05:00 UTC: busy
+28% of the time, 1.59 s per step at 4.47 rows per step. Gateway: 13,271-17,053 rows/h served in each
+hour from 00:00 to 05:00 UTC, median time to first token 14.4-41.3 s, median decode 0.36-0.92
+tokens/s; refused_busy 0 and at_worker 0, so the gateway does not queue; the time is inside the worker.
+
+The same CPU model on the idle test box, 2 threads, one forward step (tools/cadre/profile_step.py):
+
+| step | before | after | what the time was |
+|---|---|---|---|
+| decode, 1 request | 0.498 s | 0.159 s | `_int_mm` 79%: every decode row padded to a 32-row GEMM (a CUDA requirement; on CPU 1 row runs a GEMV 9x faster: 0.58 vs 5.21 ms at n 8192, 15.1 vs 86.9 ms for lm_head) |
+| decode, 4 requests | 0.631 s | 0.455 s | same |
+| decode, 8 requests | 0.813 s | 0.618 s | same, plus per-request attention |
+| prefill chunk, 64 rows | 2.526 s (25.3 rows/s) | 1.647 s (38.9 rows/s) | glue in binary64/int64 torch ops 75% (the 64 x 128,256 lm_head scale-out for rows whose logits nobody reads, SiLU's two int64 divisions per element), `_int_mm` 25% |
+| prefill chunk, 32 rows | | 0.771 s (41.5 rows/s) | `_int_mm` 45%, glue 55% |
+| 7 decode rows + 64-row chunk | 1.885 s | 1.549 s | every decode row waits for the chunk |
+
+Threads (after, idle): 32-row chunk 23.3 / 41.5 / 42.6 / 57.6 rows/s at 1 / 2 / 3 / 4 threads; one decode
+row 0.246 / 0.159 / 0.135 / 0.120 s. Memory bandwidth is not the limit at 2 threads (the 1.24 GB of
+weights are read in 0.4 s by the padded GEMMs, 3 GB/s, and in 0.12 s by the unpadded ones).
+
+**Contention is the largest factor.** The test box with the worker confined to 4 CPUs and five
+busy loops standing in for box 0's other services (3 at nice 0, 2 at nice 10), 2 threads:
+
+| | 32-row chunk | 1 decode row | 4 decode rows |
+|---|---|---|---|
+| no load | 0.849 s | 0.161 s | 0.449 s |
+| loaded, default OpenMP (spinning) | 10.37 s | 1.297 s | 3.221 s |
+| loaded, `OMP_WAIT_POLICY=PASSIVE` | 1.807 s | 0.262 s | 0.719 s |
+| loaded, other loops at nice 10 / 15 | 1.628 s | 0.164 s | 1.277 s |
+
+OpenMP threads that spin at each barrier while the cores are taken by other processes make a step
+up to 12x slower; that matches box 0's 1.59 s steps for 4.5 rows. Passive waiting, or lowering the
+competing processes' priority, gives back most of it.
+
+Batching was already on (continuous, 8 slots), but `--max-live-rows 2048` admitted a long report
+(prompt + max_new about 1,460) with at most one short thought beside it, and prefill was FIFO, so
+short thoughts waited for a report's whole prefill. Prefix caching of system prompts is allowed by
+the design (identical prompt prefixes give identical A, C and KV rows, and the rows are still posted
+and paid), but its value depends on how much prompts share: the worker now reports
+`prompt_rows` and `prefix_rows` in /health (the longest prefix each prompt shares with one of the
+last 64), to measure that on box 0 before building a cache.
+
+### 8.2 Changes (tools/cadre, all bit-exact)
+
+1. `int_mm` on CPU: no row padding; 2-3 rows one row at a time. Same integers on every path.
+2. lm_head binary64 logits only for the last row of each request in a batched step (A and C are
+   still computed and captured for every row: they are the segments).
+3. `lin` scale-out in place (same IEEE operations in the same order, fewer allocations).
+4. SiLU: one int64 division per element (pick the numerator, then divide) instead of two.
+5. CPU KV cache stored as binary32 (every cached value is an integer below 2^22, exact), widened to
+   binary64 where attention reads it: half the memory per live row (98 KB instead of 196 KB).
+6. `--prefill-order short` (default; `CADRE_PREFILL_ORDER=fifo` is the old order): fewest prompt rows
+   left first, with an 8-step starvation bound.
+7. Unit (deploy/systemd/cadre-worker.service): `CADRE_MAX_STEP_ROWS=32` (as fast per row as 64, half
+   the wait for decode rows sharing the step), `CADRE_MAX_LIVE_ROWS=4096` (peak RSS 3.01 GB on an
+   8-request trace vs 3.12 GB for 2048 before, because of 5), `OMP_WAIT_POLICY=PASSIVE`;
+   cadre-attester.service `Nice=10` (its ticket-close replays are not latency bound; the miner is
+   already at 10).
+
+### 8.3 Before and after, the same requests
+
+Open-loop trace (tools/cadre/bench_mix.py): a 1,400-token report at 0 s and six 300-token thoughts
+at 1, 6, 11, 16, 21, 26 s (64 and 40 new tokens), 3,497 rows, segment files written; worker on 4 CPUs
+of the test box at 2 threads; every run produced the same tokens and rows for every request.
+
+| worker | load | wall | rows/s | thought ttft mean / max | thought decode tok/s | report ttft / total |
+|---|---|---|---|---|---|---|
+| before (box 0 settings) | none | 175.9 s | 19.9 | 106.6 / 123.0 s | 1.14 | 59.9 / 116.6 s |
+| new code, box 0 settings | none | 140.8 s | 24.9 | 76.4 / 97.1 s | 1.56 | 59.7 / 96.3 s |
+| new code + unit settings | none | 130.7 s | 26.8 | **24.4 / 36.9 s** | 0.97 | 108.7 / 129.4 s |
+| same, `--prefill-order fifo` | none | 132.8 s | 26.3 | 74.6 / 93.2 s | 1.40 | 49.6 / 119.3 s |
+| before (box 0 settings) | box 0-like | 659.8 s | 5.3 | 443.6 / 562.9 s | 0.31 | 189.7 / 439.0 s |
+| new code + unit, OMP passive | box 0-like | 250.8 s | 13.9 | 63.5 / 93.7 s | 0.50 | 211.1 / 250.0 s |
+| same, competitors niced (attester Nice=10) | box 0-like | 229.8 s | 15.2 | **55.0 / 81.6 s** | 0.55 | 192.8 / 229.0 s |
+
+Under box 0-like load: 2.9x the rows per second and 8x shorter time to first token for thoughts.
+Trade-offs, measured: the report's own first token comes later (short prompts go first), and a
+thought's decode rate is lower when more thoughts are admitted at once (they share steps with
+prefill chunks). The load stand-in is five busy loops, not box 0's real mix; confirm on box 0 with
+`/v1/stats` (`ttft_s_mean`, `decode_tokens_per_s_mean`) and worker /health after the deploy.
+
+### 8.4 Request-data compression (HANDOFF 46)
+
+C of one real 394-row request (951 MB raw, 2,413,568 bytes per row): zstd level 1 with a 4-byte
+shuffle 0.569 of raw (0.567 at level 3; box 0's files measured 0.553), zstd 1 without shuffle 0.667,
+zlib 1 with shuffle 0.585 at 50 MB/s. zstd 1: about 240 MB/s compress and 305 MB/s decompress on one
+core including file I/O. At box 0's 13-17k rows/h that is 31-41 GB/h of C, so 130-170 s of one core
+per hour to compress plus as much to decompress at round time, on the box whose CPU is the
+bottleneck. Not implemented: since the settle split (d379a0d) the waiting data drains (4.76 GB at
+04:58 UTC, 80 GB free), the gain is disk only, and it needs a C library crate (zstd 0.13.3 /
+zstd-sys, already in chain/Cargo.lock, new to crates/) plus either a Python zstd package in the
+worker venv or a second gateway pass over every C file. Worth doing if bytes_waiting stays near the
+8 GB pressure line again; the gateway would compress a request's C right after it is served.
+
+### 8.5 What would move the needle
+
+Demand now is 13-17k rows/h and the worker is idle 72% of the time, so the pain is latency per
+request (each request's first token waits for its own prefill on a contended CPU), not capacity.
+In order of measured effect per cost:
+
+1. Deploy 8.2 (no cost): on the box 0 stand-in, thoughts' first token 444 s -> 55 s mean on the trace.
+2. Take the attester's replays off box 0's cores. A ticket close replay takes 480-565 s at about 1.5
+   cores (HANDOFF 46): on box 0 it competes with the worker for half the machine. `Nice=10` (8.2)
+   is the free version; running pearl-attester elsewhere is the real one (boxes 1-2 are 2 vCPU /
+   2 GB and hold a miner; the BitLaunch account is at its 5-server limit, DEVNET.md).
+3. More CPU for the worker: 4 threads give 57.6 rows/s per 32-row chunk and 0.120 s per decode row on
+   an idle 4-CPU slice (vs 41.5 and 0.159 at 2), but only if the cores are its own; box 0 today is
+   $104/month for 4 vCPU (DEVNET.md). No price for a larger box is in the repo.
+4. A GPU worker. One A40 at $0.59/hr on demand (RunPod, $14.16/day, about $425 per 30 days)
+   measured 140 tok/s summed at 32 concurrent requests with segment files written, first token
+   1.16 s, $0.59 per 1M chain rows, i.e. about 1M rows/h of capacity (MAINNET.md 7). Today's
+   13-17k rows/h would use under 2% of it ($35-45 per 1M rows served at today's demand, all idle
+   time counted); its value now is latency (first token about 1 s instead of tens of seconds), and
+   it is the only path for the 8B (8.0-8.6 tok/s per A40 worker). Constraint: a worker writes
+   2.7 MB of A/C files per row for the gateway; the measured ssh shim spent 5.4 s copying them for
+   a 32-token chat, so the gateway (with its request data, and the attester for replays) must run
+   on the GPU host, or the hand-off must change (in-memory, or C kept only as its hash: without
+   the files the A40 did 318-321 tok/s).
+5. Native glue. After 8.2 a 32-row prefill step is 55% glue in torch eager ops (binary64/int64);
+   a fused implementation would cut that, but the existing Rust glue (crates/cadre-glue, the
+   attester's replay) is not faster today (about 3 rows/s per replay on box 0), so this is new work.
