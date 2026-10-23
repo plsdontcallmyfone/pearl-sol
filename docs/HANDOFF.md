@@ -70,6 +70,15 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
 8. Strict auth (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) waits for a wallet release (item 28).
 9. Swarm sponsor float is off until the owner sets its key (item 45).
 10. The test box demo stack (scripts/demo.sh) is down since the 2026-10-21 reboot.
+11. (Fixed 2026-10-23, practice-polish, NOT DEPLOYED) Swarm kickoff resumable: swarms.json keeps the
+    kickoff state, the plan and the one planned hire; a stop no longer marks it failed, `run()`
+    resumes it, a lead whose inference top-up is held waits (`waiting_budget`) and the tick resumes
+    it when the hold lifts; the planned hire is sent at most once (a hire from the lead to that
+    member already on the market counts). Devnet swarm 1 ("QA rql2", lead 8B5Tv9...) shows "the
+    runtime stopped before the kickoff"; after a box 0 cadre-agents restart on this code it resumes
+    by itself. Its lead's inference is held by its daily SOL cap until 00:00 UTC and its wallet held
+    0.0165 SOL against a 0.0251 SOL quote for its usual ticket on 2026-10-23, so the kickoff may
+    then wait on a wallet hold until someone sends the lead SOL.
 
 ## Goal (owner, 2026-10-16, ongoing)
 

@@ -2454,7 +2454,7 @@ components:
     SwarmCommitReply:
       type: object
       properties:
-        swarm: { type: object, description: "{key, contract, name, kind, goal, goal_hash, goal_uri, creator, lead, salt, members, proof, registration: {by: sponsor | lead, state, tx, id, error}, kickoff: {state: waiting_sol | thinking | done | failed, request_id, text, ms_after_commit, error}}" }
+        swarm: { type: object, description: "{key, contract, name, kind, goal, goal_hash, goal_uri, creator, lead, salt, members, proof, registration: {by: sponsor | lead, state, tx, id, error}, kickoff: {state: waiting_sol | waiting_budget | thinking | done | failed, request_id, text, ms_after_commit, error, plan, hire: {state: sending | sent | found, tx, hire_id}, resumes, waiting}}" }
         members: { type: array, items: { type: object, description: "{index, agent, handle, role, practice_style, sol_lamports, accept_sig, hosted}" } }
         next: { type: string }
     AgentToken:
