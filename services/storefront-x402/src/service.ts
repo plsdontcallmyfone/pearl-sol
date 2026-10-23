@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import type { ChainIO } from "./chain.ts";
+import type { ChainIO, DraftInfo } from "./chain.ts";
 import * as sf from "./storefront.ts";
 import { decodePaymentHeader, PaymentError, verifyExact, X402_VERSION } from "./x402.ts";
 import type { PaymentRequirements } from "./x402.ts";
@@ -65,6 +65,10 @@ export interface ServiceOptions {
   getModel?: (modelIdHex: string) => Promise<any>;
   /** getParams override (tests). */
   getParams?: () => Promise<any>;
+  /** A payment left unserved this long (crash, failed refund) is reconciled; default 120 s. */
+  reconcileAfterMs?: number;
+  now?: () => number;
+  log?: (msg: string, data?: Record<string, unknown>) => void;
 }
 
 /** Ticket config magic (SPEC 4.5): a PostJob body whose config starts with it is an inference ticket. */
@@ -88,7 +92,19 @@ export interface HttpRes {
   body: unknown;
 }
 
-interface PaymentRecord {
+/**
+ * One settled x402 payment. Placement writes each step down BEFORE it acts, so after a crash
+ * (or a failure) the record says whether a buy_job can have landed:
+ * - `v: 2` records carry the steps; older records (no `v`) do not and are never refunded
+ *   automatically (src/reconcile.ts lists them for an operator).
+ * - `draft`: the OrderDraft id, saved before open_order is sent.
+ * - `opened`: open_order confirmed. buy_job is only sent after it.
+ * - `buy_sent`: a buy_job was sent (it may land even if its confirmation failed).
+ * - `cancelled`: our cancel_draft confirmed, so no buy_job can land any more.
+ * - `review`: refund withheld because an Order may exist for this payment (buy sent, draft
+ *   gone and not cancelled by us). Check the storefront Orders for the payer, then refund by hand.
+ */
+export interface PaymentRecord {
   payer: string;
   amount: string;
   signature: string;
@@ -96,9 +112,33 @@ interface PaymentRecord {
   nonce?: string;
   refund?: string;
   error?: string;
+  v?: 2;
+  draft?: string;
+  opened?: boolean;
+  buy_sent?: boolean;
+  cancelled?: boolean;
+  review?: string;
 }
+
+/** A payment that was taken but has neither an Order nor a confirmed refund. */
+export const unserved = (r: PaymentRecord) => !r.nonce && !(r.refund && !r.refund.startsWith("FAILED"));
 interface State {
   payments: Record<string, PaymentRecord>;
+}
+
+/**
+ * OrderDrafts nothing will use any more, safe to cancel (rent back to the wallet). A draft is kept
+ * while an unserved payment names it: its placement may be running, or reconcile still has to decide
+ * from the draft whether a buy_job landed (refundUnplaced). Every other draft is an orphan: placement
+ * saves `draft` BEFORE open_order is sent, so a draft on chain that no record names was left by a
+ * process that crashed before v 2 records (devnet 2026-10-20/21), and one named only by a served or
+ * refunded payment is done with. Draft ids are random, so no later placement can reuse one.
+ *
+ * `payments` must be read AFTER `drafts` was listed (a draft seen on chain then has its record).
+ */
+export function orphanDrafts(drafts: DraftInfo[], payments: Record<string, PaymentRecord>): DraftInfo[] {
+  const keep = new Set(Object.values(payments).filter((r) => unserved(r) && r.draft !== undefined && !r.cancelled).map((r) => r.draft));
+  return drafts.filter((d) => !keep.has(d.draftId.toString()));
 }
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): HttpRes => ({ status, headers: { "content-type": "application/json", ...headers }, body });
@@ -135,6 +175,106 @@ export class Service {
     this.state = o.stateFile && existsSync(o.stateFile) ? JSON.parse(readFileSync(o.stateFile, "utf8")) : { payments: {} };
   }
 
+  private now() {
+    return this.o.now ? this.o.now() : Date.now();
+  }
+  private log(msg: string, data: Record<string, unknown> = {}) {
+    (this.o.log ?? ((m, d) => console.log(JSON.stringify({ msg: m, ...d }))))(msg, data);
+  }
+
+  /** Payments taken without an Order or a confirmed refund (GET /payments/unserved). */
+  unservedPayments() {
+    return Object.entries(this.state.payments).filter(([, r]) => unserved(r)).map(([id, r]) => ({ id, ...r }));
+  }
+
+  /**
+   * Refund what a crash or a failed refund left behind: every `v: 2` record without an Order
+   * or a confirmed refund, older than reconcileAfterMs and not under review. Runs in the
+   * placement queue, so it never races a placement. Returns what it did.
+   */
+  async reconcile(): Promise<{ id: string; result: string }[]> {
+    return this.exclusive(async () => {
+      const out: { id: string; result: string }[] = [];
+      const after = this.o.reconcileAfterMs ?? 120_000;
+      for (const [id, r] of Object.entries(this.state.payments)) {
+        if (!unserved(r) || r.review || r.v !== 2 || this.now() - r.at < after) continue;
+        await this.refundUnplaced(r);
+        out.push({ id, result: r.review ? `review: ${r.review}` : r.refund ?? "?" });
+        this.log("reconciled unserved payment", { signature: r.signature, payer: r.payer, amount: r.amount, refund: r.refund, review: r.review });
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Cancels orphaned OrderDrafts (see orphanDrafts) while the service runs: listed outside the
+   * placement queue (a read), each one cancelled inside it after re-checking the payment records,
+   * so it never races a placement and never holds the queue for more than one tx. Returns what it
+   * did; failures are reported and retried on the next sweep.
+   */
+  async sweepDrafts(max = 10): Promise<{ address: string; lamports: bigint; sig?: string; error?: string }[]> {
+    if (!this.o.chain.listDrafts) return [];
+    const listed = await this.o.chain.listDrafts(this.o.wallet.publicKey, this.a.storefront);
+    const out: { address: string; lamports: bigint; sig?: string; error?: string }[] = [];
+    for (const d of orphanDrafts(listed, this.state.payments).slice(0, max)) {
+      const r = await this.exclusive(async () => {
+        if (!orphanDrafts([d], this.state.payments).length) return null; // a record names it now
+        try {
+          return { address: d.address, lamports: d.lamports, sig: await this.o.chain.send([sf.cancelDraftIx(this.o.wallet.publicKey, d.draftId, this.a)], this.o.wallet) };
+        } catch (e) {
+          return { address: d.address, lamports: d.lamports, error: (e as Error).message.slice(0, 200) };
+        }
+      });
+      if (r) {
+        out.push(r);
+        this.log(r.sig ? "cancelled orphan draft" : "orphan draft cancel failed", { draft: d.address, draft_id: d.draftId.toString(), lamports: d.lamports.toString(), sig: r.sig, error: r.error });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Gives a payment back when no Order can exist for it, else marks it for review. Safe when
+   * no buy_job was ever sent, or when our cancel_draft closed the draft (a buy_job needs it).
+   */
+  private async refundUnplaced(rec: PaymentRecord): Promise<void> {
+    const w = this.o.wallet;
+    if (rec.buy_sent && !rec.cancelled && rec.draft !== undefined) {
+      const [d] = await this.o.chain.getAccounts([sf.draftPda(w.publicKey, BigInt(rec.draft), this.a.storefront)]);
+      if (d && d.owner.equals(this.a.storefront)) {
+        try {
+          await this.o.chain.send([sf.cancelDraftIx(w.publicKey, BigInt(rec.draft), this.a)], w);
+          rec.cancelled = true;
+        } catch (e) {
+          rec.refund = `FAILED: cancel_draft before refund: ${(e as Error).message.slice(0, 200)}`;
+          this.save();
+          return; // the next reconcile tries again
+        }
+      } else {
+        rec.review = "buy_job was sent and the draft is gone: an Order may exist for this payment; check before refunding";
+        this.save();
+        return;
+      }
+    } else if (rec.draft !== undefined && !rec.cancelled) {
+      // no buy was sent: the draft only holds rent; close it if it is there
+      try {
+        const [d] = await this.o.chain.getAccounts([sf.draftPda(w.publicKey, BigInt(rec.draft), this.a.storefront)]);
+        if (d && d.owner.equals(this.a.storefront)) {
+          await this.o.chain.send([sf.cancelDraftIx(w.publicKey, BigInt(rec.draft), this.a)], w);
+          rec.cancelled = true;
+        }
+      } catch {
+        /* rent stays in the draft; the refund is still safe */
+      }
+    }
+    try {
+      rec.refund = await this.o.chain.send([SystemProgram.transfer({ fromPubkey: w.publicKey, toPubkey: new PublicKey(rec.payer), lamports: BigInt(rec.amount) })], w);
+    } catch (e) {
+      rec.refund = `FAILED: ${(e as Error).message.slice(0, 200)}`;
+    }
+    this.save();
+  }
+
   private save() {
     const f = this.o.stateFile;
     if (!f) return;
@@ -157,6 +297,7 @@ export class Service {
       if (req.method === "GET" && u.pathname === "/quote") return json(200, await this.quote(Object.fromEntries(u.searchParams)));
       if (req.method === "GET" && u.pathname === "/buyback") return json(200, await this.buyback());
       if (req.method === "GET" && u.pathname === "/evaluators") return json(200, await this.evaluators());
+      if (req.method === "GET" && u.pathname === "/payments/unserved") return json(200, { payments: this.unservedPayments() });
       if (req.method === "POST" && u.pathname === "/jobs") return await this.postJob(req);
       const m = u.pathname.match(/^\/jobs\/([^/]+)$/);
       if (req.method === "GET" && m) return await this.getJob(m[1]);
@@ -414,34 +555,35 @@ export class Service {
       } catch (e) {
         return need(`settlement failed: ${(e as Error).message.slice(0, 300)}`);
       }
-      const rec: PaymentRecord = { payer: paid.payer.toBase58(), amount: paid.amount.toString(), signature, at: Date.now() };
+      const rec: PaymentRecord = { payer: paid.payer.toBase58(), amount: paid.amount.toString(), signature, at: this.now(), v: 2 };
       this.state.payments[paid.id] = rec;
       this.save();
       const xpr = Buffer.from(JSON.stringify({ success: true, transaction: signature, network: this.o.network, payer: rec.payer })).toString("base64");
 
       try {
-        const placed = await this.place(cfg, spec, recipient, solIn);
+        const placed = await this.place(cfg, spec, recipient, solIn, rec);
         rec.nonce = placed.nonce.toString();
         this.save();
         return json(201, { id: rec.nonce, order: placed.order.toBase58(), job_id: placed.jobId, status: "pending", venue: placed.venue, txs: placed.txs, payment: rec, get: `/jobs/${rec.nonce}` }, { "x-payment-response": xpr });
       } catch (e) {
-        // Payment taken but no order: give it back.
+        // Payment taken but no order: give it back (unless an Order may exist after all).
         rec.error = (e as Error).message.slice(0, 500);
-        try {
-          rec.refund = await this.o.chain.send([SystemProgram.transfer({ fromPubkey: this.o.wallet.publicKey, toPubkey: paid.payer, lamports: paid.amount })], this.o.wallet);
-        } catch (e2) {
-          rec.refund = `FAILED: ${(e2 as Error).message.slice(0, 200)}`;
-        }
-        this.save();
-        return json(502, { error: "order failed, payment refunded", payment: rec }, { "x-payment-response": xpr });
+        await this.refundUnplaced(rec);
+        const done = !!rec.refund && !rec.refund.startsWith("FAILED");
+        const error = rec.review ? "order state unknown, payment held for review" : done ? "order failed, payment refunded" : "order failed, refund failed (retried automatically)";
+        return json(502, { error, payment: rec }, { "x-payment-response": xpr });
       }
     });
   }
 
-  private async place(cfg: sf.StoreConfig, spec: sf.JobSpec, recipient: PublicKey, solIn: bigint) {
+  private async place(cfg: sf.StoreConfig, spec: sf.JobSpec, recipient: PublicKey, solIn: bigint, rec: PaymentRecord) {
     const w = this.o.wallet;
     const draftId = randomBytes(8).readBigUInt64LE(0);
+    rec.draft = draftId.toString();
+    this.save();
     const txs: string[] = [await this.o.chain.send([sf.openOrderIx(w.publicKey, draftId, recipient, spec, this.a)], w)];
+    rec.opened = true;
+    this.save();
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const [bc] = await this.o.chain.getAccounts([this.a.bridgeConfig]);
@@ -453,6 +595,10 @@ export class Service {
       const ix = mk.venue === "curve"
         ? sf.buyJobIx(w.publicKey, draftId, nonce, solIn, mk.minOut, mk.accounts, this.a)
         : sf.buyJobAmmIx(w.publicKey, draftId, nonce, solIn, mk.minOut, mk.accounts, this.a);
+      if (!rec.buy_sent) {
+        rec.buy_sent = true;
+        this.save();
+      }
       try {
         txs.push(await this.o.chain.send([ix], w));
         return { nonce, order: sf.orderPda(nonce, this.a.storefront), jobId: sf.orderJobId(nonce).toString("hex"), venue: mk.venue, txs };
@@ -464,8 +610,10 @@ export class Service {
     }
     try {
       await this.o.chain.send([sf.cancelDraftIx(w.publicKey, draftId, this.a)], w);
+      rec.cancelled = true;
+      this.save();
     } catch {
-      /* draft rent stays; harmless */
+      /* draft gone (a buy landed after all?) or RPC down: refundUnplaced decides */
     }
     throw lastErr ?? new Error("buy_job failed");
   }

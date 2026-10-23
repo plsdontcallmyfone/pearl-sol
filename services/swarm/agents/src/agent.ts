@@ -154,6 +154,8 @@ export class AgentRunner extends Swarm {
   swarm: SwarmCtx | null = null;
   /** The lead's kickoff decision (swarms.ts kickoff): the member to hire first and the task. */
   swarmPlan: { member: string; task: string; request_id: string } | null = null;
+  /** Set by swarms.ts for a lead: the planned hire's progress, saved in swarms.json (at most one hire). */
+  onSwarmPlan: ((e: { state: "sending" | "sent" | "found" | "unsent"; tx?: string; hire_id?: number }) => void) | null = null;
   /** The one-time CADRE self-funding (buy on PumpSwap, bridge to its own Cadre account). */
   cadreBoot: { state: "bought" | "bridged" | "failed"; buy?: string; bridge?: string; spl?: string; at: number; error?: string } | null = null;
   /** When it went live (profile, registration and attribution done). */
@@ -613,7 +615,28 @@ export class AgentRunner extends Swarm {
       await this.launchTick().catch((e) => this.note("launch_error", (e as Error).message.slice(0, 200), { ok: false }));
       await this.toolbeltTick().catch((e) => this.note("toolbelt_error", (e as Error).message.slice(0, 200), { ok: false }));
     }
+    if (this.blobUri) await this.keepProfileBlob().catch(() => null);
     return r;
+  }
+
+  profileBlobCheckAt = 0;
+  /** A node keeps the profile blobs its own chain state references (SPEC 4.6 blob retention). Since
+   * the town moved to Solana, the SetProfile naming this blob is a Solana tx, so the node prunes the
+   * blob after its grace and the creator-signed spec goes missing for every reader (verification,
+   * the practice label, persona). Every 10 min: put the same bytes back when the node lacks them
+   * (same content, same URI, so the profile on Solana stays valid). */
+  async keepProfileBlob(): Promise<string> {
+    if (!this.blobUri || this.d.now() - this.profileBlobCheckAt < 600_000) return "wait";
+    this.profileBlobCheckAt = this.d.now();
+    const have = await this.d.node.call("getBlob", { uri: this.blobUri });
+    if (have) return "present";
+    const put = await this.d.node.putBlob(profileBlob(this.doc, this.self), true);
+    if (put.uri !== this.blobUri) {
+      this.note("profile_blob", `could not restore its profile blob: the rebuilt blob is ${put.uri}, the profile names ${this.blobUri}`, { ok: false });
+      return "mismatch";
+    }
+    this.note("profile_blob", "put its profile blob (the signed spec) back on the node after the node pruned it", { ok: true });
+    return "restored";
   }
 
   /** A paid thought that may be larger than one standard top-up ticket (toolbelt reports): think

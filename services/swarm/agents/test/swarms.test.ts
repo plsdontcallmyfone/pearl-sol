@@ -6,7 +6,7 @@
 // distinct practice styles. The definition vector matches contracts/tests/tests/swarms.rs.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -61,8 +61,8 @@ class Node {
   async putBlob(data: Uint8Array) { const id = (await import("../../src/blake3.ts")).blake3(data); const h = Buffer.from(id).toString("hex"); this.blobs.set(h, Buffer.from(data)); return { blob_id: h, uri: `blob:${h}`, size: data.length }; }
 }
 
-function setup(o: { config?: boolean } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "agents-swarm-"));
+function setup(o: { config?: boolean; dir?: string } = {}) {
+  const dir = o.dir ?? mkdtempSync(join(tmpdir(), "agents-swarm-"));
   const cfgFile = join(dir, "swarms.json.deploy");
   if (o.config !== false) writeFileSync(cfgFile, JSON.stringify({ contract: CONTRACT, start_height: 0 }));
   process.env.SWARMS_CONFIG = o.config === false ? join(dir, "missing.json") : cfgFile;
@@ -165,6 +165,20 @@ test("refusals: bad signature, bad input, no contract", async () => {
   assert.equal((await post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 3, total_sol_lamports: "2" })).body.error.code, "bad_swarm");
   const off = setup({ config: false });
   assert.equal((await post(off.rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "2000" })).body.error.code, "swarms_not_deployed");
+});
+
+// QA 2026-10-23: a 0.06 SOL swarm of 2 was accepted through the API; each member bought its CADRE for
+// fees, then a ticket would pass its cap and its wallet: held for good, it never thought
+test("a member share below fee CADRE + one ticket at the newest quote + fees is refused", async () => {
+  const { rt } = setup();
+  const plan = (t: string) => post(rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: t });
+  assert.equal((await plan("60000000")).status, 200, "no quote seen yet: no floor");
+  rt.runners.set("quoted", { inf: { quote: { rows: 8192, price: "25308335", at: Date.now() } } } as any);
+  const low = await plan("60000000");
+  assert.equal(low.body.error.code, "bad_swarm");
+  assert.match(low.body.error.message, /at least 34308335 lamports/);
+  assert.equal((await plan("68616670")).status, 200);
+  rt.runners.delete("quoted");
 });
 
 // security review 2026-10-23: plans need no signature, so a flood of them (random creators) used to
@@ -307,4 +321,162 @@ test("the lead hires its members first, through a paid thought that sees the goa
   m1.market.call = async (b: any) => { delivered.push(b); return { tx: "t2", review: "ok" }; };
   assert.equal(await m1.market.work(m1.me), "deliver");
   assert.equal(delivered[0].hire, 20, "the swarm hire first");
+});
+
+/** Stubs on AgentRunner.prototype for the kickoff (SOL, balance, the kickoff thought); returns undo. */
+async function stubLead(o: { sol: () => boolean; balance?: () => boolean; text?: string; thoughts?: { n: number } }) {
+  const { AgentRunner } = await import("../src/agent.ts");
+  const P = AgentRunner.prototype as any;
+  const orig = { lamports: P.lamports, ensureBalance: P.ensureBalance, think: P.think };
+  P.lamports = async function () { return o.sol() ? 1n : 0n; };
+  P.ensureBalance = async function () { return (o.balance ?? o.sol)(); };
+  P.think = async function () { if (o.thoughts) o.thoughts.n++; return { text: o.text ?? "HIRE 1\nTASK List the ships seen on Monday.", requestId: "req_kick", rows: 1, receipt: null }; };
+  return () => Object.assign(P, orig);
+}
+
+/** A lead whose market lists each member's offer, with a hire list and a recorded send. */
+function marketFor(lead: any, members: any[], hires: any[] = []) {
+  const offers = members.map((m: any, i: number) => ({ id: 10 + i, provider: m.agent, title: "t", price: "1000000", fee: "200000", policy: "buyer_names", turnaround: 20 }));
+  lead.api = { must: async (_m: string, p: string) => (p === "/v1/market" ? { ok: true } : p.startsWith("/v1/market/hires?") ? { hires } : { offers }) };
+  lead.d = { ...lead.d, node: { putBlob: async () => ({ uri: "blob:" + "00".repeat(32) }) } };
+  const calls: any[] = [];
+  lead.market.call = async (b: any) => { calls.push(b); return { tx: "t_hire", review: "ok" }; };
+  return calls;
+}
+
+test("kickoff survives a restart during the SOL wait: saved as waiting, resumed on the next run, the planned hire sent once", async () => {
+  const s1 = setup();
+  let sol = false;
+  const thoughts = { n: 0 };
+  const undo = await stubLead({ sol: () => sol, thoughts });
+  try {
+    process.env.AGENTS_SWARM_KICKOFF_WAIT_MS = "5000";
+    const { plan } = await planAndCommit(s1.rt, 3);
+    const key = plan.plan_id;
+    await new Promise((res) => setTimeout(res, 60));
+    // the runtime stops (SIGTERM) while the kickoff waits for the lead's SOL
+    s1.rt.stopped = true;
+    await s1.rt.swarms.kickoffRun;
+    await settle(s1.rt);
+    const saved = JSON.parse(readFileSync(join(s1.dir, "swarms.json"), "utf8")).swarms[0];
+    assert.equal(saved.kickoff.state, "waiting_sol", "a stop leaves the kickoff resumable, not failed");
+    assert.equal(saved.kickoff.error, null);
+    assert.equal(thoughts.n, 0);
+    // restart: a new runtime on the same state dir; the SOL has landed meanwhile
+    sol = true;
+    const s2 = setup({ dir: s1.dir });
+    await s2.rt.swarms.resumeKickoffs();
+    const rec = s2.rt.swarms.swarms.get(key)!;
+    assert.equal(rec.kickoff.state, "done");
+    assert.equal(rec.kickoff.resumes, 1);
+    assert.equal(thoughts.n, 1);
+    assert.deepEqual(rec.kickoff.plan, { member: plan.members[1].agent, task: "List the ships seen on Monday.", request_id: "req_kick" });
+    const lead = s2.rt.runners.get(plan.swarm.lead)! as any;
+    assert.equal(lead.swarmPlan.member, plan.members[1].agent);
+    const calls = marketFor(lead, plan.members.slice(1));
+    assert.equal(await lead.market.hire(lead.me), "hire");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].offer, 10);
+    assert.equal(rec.kickoff.hire!.state, "sent");
+    assert.equal(rec.kickoff.hire!.tx, "t_hire");
+    s2.rt.stopped = true;
+    // a third start: the kickoff is done and its hire went out, so nothing runs again
+    const s3 = setup({ dir: s1.dir });
+    await s3.rt.swarms.resumeKickoffs();
+    const lead3 = s3.rt.runners.get(plan.swarm.lead)! as any;
+    assert.equal(lead3.swarmPlan, null, "no second planned hire after the hire was sent");
+    assert.equal(thoughts.n, 1, "no second kickoff thought");
+    assert.equal(s3.rt.swarms.swarms.get(key)!.kickoff.hire!.state, "sent");
+    s3.rt.stopped = true;
+  } finally { undo(); }
+});
+
+test("kickoff: a record the old runtime marked failed by a stop resumes; a crash mid-send checks the market and never hires twice", async () => {
+  const s1 = setup();
+  let sol = false;
+  const undo = await stubLead({ sol: () => sol });
+  try {
+    process.env.AGENTS_SWARM_KICKOFF_WAIT_MS = "300";
+    const { plan } = await planAndCommit(s1.rt, 3);
+    const key = plan.plan_id;
+    s1.rt.stopped = true;
+    await s1.rt.swarms.kickoffRun;
+    await settle(s1.rt);
+    // the old code's record (devnet swarm 1): failed with the stop text
+    const file = join(s1.dir, "swarms.json");
+    const j = JSON.parse(readFileSync(file, "utf8"));
+    j.swarms[0].kickoff = { state: "failed", request_id: null, text: null, ms_after_commit: null, error: "the runtime stopped before the kickoff" };
+    writeFileSync(file, JSON.stringify(j));
+    sol = true;
+    const s2 = setup({ dir: s1.dir });
+    await s2.rt.swarms.resumeKickoffs();
+    const rec = s2.rt.swarms.swarms.get(key)!;
+    assert.equal(rec.kickoff.state, "done");
+    assert.equal(rec.kickoff.resumes, 1);
+    const lead = s2.rt.runners.get(plan.swarm.lead)! as any;
+    // the hire goes out, but the runtime dies before "sent" is saved: the record still says sending
+    lead.onSwarmPlan({ state: "sending" });
+    s2.rt.stopped = true;
+    const s3 = setup({ dir: s1.dir });
+    await s3.rt.swarms.resumeKickoffs();
+    const lead3 = s3.rt.runners.get(plan.swarm.lead)! as any;
+    assert.ok(lead3.swarmPlan, "a sending hire is not known to be out, so the plan comes back");
+    // the market already lists that hire: the plan ends without a second hire
+    const calls = marketFor(lead3, plan.members.slice(1), [{ id: 77, buyer: plan.swarm.lead, provider: plan.members[1].agent }]);
+    assert.equal(await lead3.market.hire(lead3.me), "idle");
+    assert.equal(calls.length, 0);
+    assert.equal(lead3.swarmPlan, null);
+    const k = s3.rt.swarms.swarms.get(key)!.kickoff;
+    assert.equal(k.hire!.state, "found");
+    assert.equal(k.hire!.hire_id, 77);
+    // a refused send leaves the plan to try again (nothing went out)
+    lead3.swarmPlan = { ...k.plan! };
+    k.hire = null;
+    marketFor(lead3, plan.members.slice(1));
+    lead3.market.call = async () => { throw new Error("simulate: refused"); };
+    await assert.rejects(lead3.market.hire(lead3.me), /refused/);
+    assert.equal(k.hire, null);
+    assert.ok(lead3.swarmPlan);
+    s3.rt.stopped = true;
+  } finally { undo(); }
+});
+
+test("kickoff: SOL in the wallet but the lead's top-up held waits (not failed) and resumes on the tick once the hold lifts", async () => {
+  const s1 = setup();
+  let balance = false;
+  const undo = await stubLead({ sol: () => true, balance: () => balance });
+  try {
+    process.env.AGENTS_SWARM_KICKOFF_WAIT_MS = "300";
+    const plan = await post(s1.rt, "/v1/hosted/swarms/plan", { creator: op.address, goal: GOAL, size: 2, total_sol_lamports: "3000" });
+    const lead0 = () => s1.rt.runners.get(plan.body.swarm.lead)! as any;
+    // the lead's inference is held by its daily SOL cap before the commit's kickoff runs
+    const { AgentRunner } = await import("../src/agent.ts");
+    const P = AgentRunner.prototype as any;
+    const origHeld = P.held;
+    P.held = async function (this: any) { return !!this.inf.hold; };
+    try {
+      const sig = Buffer.from(op.sign(Buffer.from(plan.body.creator_message, "utf8"))).toString("hex");
+      const origStart = s1.rt.swarms.startKickoff.bind(s1.rt.swarms);
+      (s1.rt.swarms as any).startKickoff = (rec: any) => { lead0().inf.hold = { reason: "sol_cap", since: 0, until: Date.now() + 3_600_000, need: 0, price: "25117275" }; return origStart(rec); };
+      const c = await post(s1.rt, "/v1/hosted/swarms", { plan_id: plan.body.plan_id, creator_sig: sig });
+      assert.equal(c.status, 201);
+      (s1.rt.swarms as any).startKickoff = origStart;
+      await s1.rt.swarms.kickoffRun;
+      await settle(s1.rt);
+      const rec = s1.rt.swarms.swarms.get(plan.body.plan_id)!;
+      assert.equal(rec.kickoff.state, "waiting_budget");
+      assert.match(rec.kickoff.waiting!, /daily SOL cap to reset at 00:00 UTC/);
+      await new Promise((res) => setTimeout(res, 400));
+      await s1.rt.swarms.tick();
+      assert.equal(rec.kickoff.state, "waiting_budget", "still held: the tick does not retry");
+      // the UTC day rolls over: the hold lifts and the next tick runs the kickoff
+      lead0().inf.hold = null;
+      balance = true;
+      await s1.rt.swarms.tick();
+      await s1.rt.swarms.kickoffRun;
+      assert.equal(rec.kickoff.state, "done");
+      assert.equal(lead0().swarmPlan.member, plan.body.members[1].agent);
+      s1.rt.stopped = true;
+    } finally { P.held = origHeld; }
+  } finally { undo(); }
 });

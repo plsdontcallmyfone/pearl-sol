@@ -948,6 +948,10 @@ each of 9 mixed requests and every logits row; the Rust replay accepts each). Ru
   after their last token. At most `--max-batch` (16) active, `--max-queue` (64) waiting (one more
   answers 503 with Retry-After), `--max-live-rows` (8192) prompt + max_new summed over active
   requests (KV memory), `--flush-rows` (128) rows of A/C held before they go to the files.
+- Among active requests still in prefill, `--prefill-order short` (default since 2026-10-23)
+  gives the step's prompt rows to the fewest-rows-left request first, except that one which got
+  no prompt rows for 8 steps goes first; `fifo` is admission order. Which rows share a step never
+  changes a request's bits (above), so this is worker policy, not protocol (docs/SPEED.md 8).
 - The fp32 glue is not batch-invariant, so `--glue fp32` (and `--max-batch 1`) serves one
   request at a time as before.
 

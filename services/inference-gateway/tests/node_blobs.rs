@@ -5,9 +5,10 @@
 //! "blob store nearly full" refuses new paid work at once; an older node without the field
 //! falls back to max_total_bytes - total_bytes; a node without getBlobStats never blocks.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -27,10 +28,15 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 fn model() -> ModelInfo {
+    model_of(vec![(2048, 16), (2048, 8)])
+}
+
+fn model_of(matrices: Vec<(u32, u32)>) -> ModelInfo {
+    let macs = matrices.iter().map(|(k, n)| *k as u64 * *n as u64).sum();
     let mut md = ModelInfo { model_id: standing::model_id(&[1; 32], b"m"), name: "test-model".into(), base: MiningConfig::localnet_default(),
-        matrices: vec![(2048, 16), (2048, 8)], hash_b: vec![], macs_per_row: 2048 * 24 };
+        matrices, hash_b: vec![], macs_per_row: macs };
     let b = bts(&md);
-    md.hash_b = (0..2).map(|i| standing::commit_bt(&md.job_key(i as u16), &b[i])).collect();
+    md.hash_b = (0..md.matrices.len()).map(|i| standing::commit_bt(&md.job_key(i as u16), &b[i])).collect();
     md
 }
 
@@ -52,8 +58,10 @@ impl Storefront for FakeSf {
     }
 }
 
-/// Writes real A and C = A B, like the worker with pad false; counts calls.
-struct FakeWorker(ModelInfo, Vec<Vec<i8>>, Arc<AtomicUsize>);
+/// Writes real A and C = A B, like the worker with pad false; counts calls. Matrices with the
+/// same input group (the 4th field, one per matrix) get byte-identical A, like Llama's gate and
+/// up projections or the lm_head column shards.
+struct FakeWorker(ModelInfo, Vec<Vec<i8>>, Arc<AtomicUsize>, Vec<u64>);
 impl Worker for FakeWorker {
     fn tokenize(&self, _t: &str) -> Result<Vec<u32>> {
         Ok(vec![1, 2, 3])
@@ -67,7 +75,7 @@ impl Worker for FakeWorker {
         std::fs::create_dir_all(out.join("a"))?;
         std::fs::create_dir_all(out.join("c"))?;
         for (i, (k, n)) in self.0.matrices.iter().enumerate() {
-            let (a, _) = data::random_matrices(rows as usize, 1, *k as usize, Some(rows as u64 * 100 + i as u64));
+            let (a, _) = data::random_matrices(rows as usize, 1, *k as usize, Some(rows as u64 * 100 + self.3[i]));
             let c = pearl_job::freivalds::matmul_bt(&a, &self.1[i], rows as usize, *n as usize, *k as usize);
             std::fs::write(out.join(format!("a/{i}.i8")), pearl_job::job::as_u8(&a))?;
             std::fs::write(out.join(format!("c/{i}.i32")), pearl_job::freivalds::c_to_bytes(&c))?;
@@ -86,7 +94,8 @@ impl Evaluator for NoEval {
 
 /// MockNode plus the reads settlement makes, and a blob store with `headroom` bytes of RPC room
 /// (u64::MAX: no getBlobStats at all, like an older node API; `legacy`: the old fields only).
-struct ChainNode(MockNode, Arc<AtomicU64>, bool);
+/// Content-addressed like the node's: a blob it already holds costs no room again.
+struct ChainNode(MockNode, Arc<AtomicU64>, bool, Mutex<HashSet<[u8; 32]>>);
 impl pearl_node::NodeApi for ChainNode {
     fn block_template(&self, payout: &[u8; 32]) -> Result<pearl_node::Template> {
         self.0.block_template(payout)
@@ -108,9 +117,10 @@ impl pearl_node::NodeApi for ChainNode {
     }
     fn put_blob(&self, d: &[u8]) -> Result<String> {
         let h = self.1.load(Ordering::SeqCst);
-        if h != u64::MAX {
+        if h != u64::MAX && !self.3.lock().unwrap().contains(&data::blob_id(d)) {
             anyhow::ensure!(d.len() as u64 <= h, "putBlob: blob store nearly full (1 of 2 bytes used; RPC puts stop at 2 so the rest stays for blobs the chain references); retry after the prune pass frees room");
             self.1.store(h - d.len() as u64, Ordering::SeqCst);
+            self.3.lock().unwrap().insert(data::blob_id(d));
         }
         self.0.put_blob(d)
     }
@@ -135,13 +145,16 @@ impl pearl_node::NodeApi for ChainNode {
 }
 
 fn gateway(tag: &str, headroom: u64, legacy: bool, cfg: impl FnOnce(&mut Config)) -> (Arc<Gateway>, Arc<AtomicUsize>, Arc<AtomicU64>) {
+    gateway_with(tag, model(), vec![0, 1], headroom, legacy, cfg)
+}
+
+fn gateway_with(tag: &str, md: ModelInfo, groups: Vec<u64>, headroom: u64, legacy: bool, cfg: impl FnOnce(&mut Config)) -> (Arc<Gateway>, Arc<AtomicUsize>, Arc<AtomicU64>) {
     let room = Arc::new(AtomicU64::new(headroom));
-    let md = model();
     let calls = Arc::new(AtomicUsize::new(0));
     let mut c = Config { work_dir: tmp(tag), ticket_wait: Duration::from_secs(60), poll: Duration::from_millis(10), balance_rows: 1024, max_new_tokens: 32,
         min_free_disk_bytes: 0, ..Config::default() };
     cfg(&mut c);
-    let gw = Arc::new(Gateway::new(Box::new(ChainNode(MockNode::new(1, 0x207fffff), room.clone(), legacy)), Box::new(FakeSf), Box::new(FakeWorker(md.clone(), bts(&md), calls.clone())),
+    let gw = Arc::new(Gateway::new(Box::new(ChainNode(MockNode::new(1, 0x207fffff), room.clone(), legacy, Mutex::new(HashSet::new()))), Box::new(FakeSf), Box::new(FakeWorker(md.clone(), bts(&md), calls.clone(), groups)),
         Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, c, Box::new(|_| {})));
     (gw, calls, room)
 }
@@ -176,7 +189,8 @@ fn complete(gw: &Arc<Gateway>, i: u32) -> (u16, Value, Option<String>) {
 
 #[test]
 fn a_nearly_full_node_blob_store_is_a_503_before_anything_is_reserved() {
-    // a request is 6 rows; A is 2 x 2048 bytes per row = 24,576 bytes
+    // a request is 6 rows, posted padded to the row period 4: m 8, two A blobs of 12 + 8 x 2048
+    // bytes = 32,792 bytes
     let (gw, calls, room) = gateway("full", 20_000, false, |c| c.round_every = Duration::from_secs(3600));
     assert_eq!(gw.a_bytes_per_row(), 4096);
     let ticket = topup(&gw);
@@ -191,11 +205,12 @@ fn a_nearly_full_node_blob_store_is_a_503_before_anything_is_reserved() {
     let h = gw.stats_json()["request_data"]["node_blob_headroom_bytes"].as_u64().unwrap();
     assert!(h < 20_000 && h > 19_000, "{h}");
     // the node prunes: room for one request (the read is cached for NODE_BLOB_TTL, so start over)
-    room.store(30_000, Ordering::SeqCst);
-    let (gw, calls, _room) = gateway("full2", 30_000, false, |c| c.round_every = Duration::from_secs(3600));
+    room.store(40_000, Ordering::SeqCst);
+    let (gw, calls, _room) = gateway("full2", 40_000, false, |c| c.round_every = Duration::from_secs(3600));
     topup(&gw);
     assert_eq!(complete(&gw, 1).0, 200);
-    // the waiting round's rows count: a second request would need 12 rows of A = 49,152 bytes
+    assert_eq!(gw.node_blob_need(0), 32_792);
+    // the waiting round counts: with a second request it would be 32,792 + 32,792 = 65,584 bytes
     let (st, v, _) = complete(&gw, 2);
     assert_eq!(st, 503, "{v}");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -203,8 +218,8 @@ fn a_nearly_full_node_blob_store_is_a_503_before_anything_is_reserved() {
 
 #[test]
 fn a_settle_refused_for_space_blocks_new_paid_work_at_once() {
-    // room for the first request's check (24,576) but not for its round's A blobs on the node
-    let (gw, _, room) = gateway("settle", 25_000, false, |c| c.round_every = Duration::from_millis(0));
+    // room for the first request's check (32,792) but not for its round's A blobs on the node
+    let (gw, _, room) = gateway("settle", 35_000, false, |c| c.round_every = Duration::from_millis(0));
     let ticket = topup(&gw);
     assert_eq!(complete(&gw, 1).0, 200);
     room.store(100, Ordering::SeqCst); // the node filled up meanwhile (the cached read still says 25,000)
@@ -226,4 +241,120 @@ fn an_older_node_uses_quota_minus_total_and_no_blob_stats_never_blocks() {
     assert_eq!(gw.node_blob_headroom(), None);
     topup(&gw);
     assert_eq!(complete(&gw, 1).0, 200);
+}
+
+/// Model with shared inputs: matrices 0 and 1 read the same activations (gate/up), matrix 2 a
+/// narrower one. Per row: upper bound 2048 + 2048 + 1024 = 5,120 bytes, real blobs 2048 + 1024.
+fn shared() -> (ModelInfo, Vec<u64>) {
+    (model_of(vec![(2048, 16), (2048, 8), (1024, 8)]), vec![0, 0, 2])
+}
+
+#[test]
+fn the_estimate_is_the_bytes_the_round_puts_on_the_node() {
+    let (md, g) = shared();
+    let (gw, _, room) = gateway_with("exact", md, g, 10_000_000, false, |c| {
+        c.round_every = Duration::from_secs(3600);
+        c.settle_backoff = Duration::ZERO;
+    });
+    assert_eq!(gw.a_bytes_per_row(), 5_120, "layout unknown: one row per matrix");
+    let ticket = topup(&gw);
+    assert_eq!(complete(&gw, 1).0, 200);
+    assert_eq!(complete(&gw, 2).0, 200);
+    // learned from the served request's A files: two distinct blobs
+    assert_eq!(gw.a_bytes_per_row(), 3_072);
+    assert_eq!(gw.stats_json()["request_data"]["a_blobs_per_round"], 2);
+    // 12 rows in one round, m 12: 2 x 12 header + 12 x 3,072 = 36,888 (the old per-matrix
+    // estimate: 12 x 5,120 = 61,440)
+    let before = gw.node_blob_need(0);
+    assert_eq!(before, 36_888);
+    assert_eq!(gw.stats_json()["request_data"]["node_blob_need_bytes"], 36_888);
+    // what the node's store actually grows by when the round posts
+    let r0 = room.load(Ordering::SeqCst);
+    gw.ledger.lock().unwrap().tickets.get_mut(&ticket).unwrap().round_secs = Some(0);
+    gw.post_pass();
+    let t = gw.ledger.lock().unwrap().tickets[&ticket].clone();
+    assert_eq!(t.rounds.len(), 1, "{t:?}");
+    assert_eq!(t.rounds[0].m, 12);
+    assert_eq!(r0 - room.load(Ordering::SeqCst), before, "estimate == bytes put");
+    assert_eq!(gw.node_blob_need(0), 0, "a posted round needs nothing more");
+}
+
+#[test]
+fn a_half_posted_round_counts_only_the_blobs_still_to_put() {
+    let (md, g) = shared();
+    // before any request is served the layout is unknown: the check takes the per-matrix bound
+    // (3 blobs, 40,996 bytes for m 8)
+    let (gw, _, room) = gateway_with("half", md, g, 50_000, false, |c| {
+        c.round_every = Duration::from_millis(0);
+        c.settle_backoff = Duration::ZERO;
+    });
+    let ticket = topup(&gw);
+    // 6 rows, m 8: blob of matrix 0/1 12 + 8 x 2048 = 16,396, blob of matrix 2 12 + 8 x 1024 = 8,204
+    assert_eq!(complete(&gw, 1).0, 200);
+    assert_eq!(gw.node_blob_need(0), 24_600);
+    // the node takes the first blob, then is full
+    room.store(20_000, Ordering::SeqCst);
+    gw.post_pass();
+    let t = gw.ledger.lock().unwrap().tickets[&ticket].clone();
+    assert!(t.rounds.is_empty() && t.posting.is_some(), "{t:?}");
+    assert_eq!(room.load(Ordering::SeqCst), 20_000 - 16_396);
+    // the blob already on the node is not counted again while the round's rows are pending
+    assert_eq!(gw.node_blob_need(0), 8_204);
+    room.store(1_000_000, Ordering::SeqCst);
+    gw.post_pass();
+    let t = gw.ledger.lock().unwrap().tickets[&ticket].clone();
+    assert_eq!(t.rounds.len(), 1, "{t:?}");
+    assert_eq!(1_000_000 - room.load(Ordering::SeqCst), 8_204, "the resume put only the missing blob");
+    assert_eq!(gw.node_blob_need(0), 0);
+}
+
+fn served(id: &str, ticket: &str, rows: u32) -> Served {
+    serde_json::from_value(json!({"request_id": id, "wallet": "w", "ticket_id": ticket, "dir": "/nonexistent", "rows": rows, "prompt_tokens": 1,
+        "completion_tokens": 1, "body_sha256": "", "output_sha256": "", "charged_lamports": null, "at_ms": 0, "round": null, "row_offset": null,
+        "ttft_s": 0.0, "decode_tokens_per_s": null})).unwrap()
+}
+
+fn ticket(id: &str, pending: &[&str]) -> TicketState {
+    serde_json::from_value(json!({"ticket_id": id, "order": null, "wallet": "w", "rows": 8192, "lamports_per_row": null, "reserved": 0,
+        "pending": pending, "rounds": [], "state": "open", "single": false, "created_ms": 0})).unwrap()
+}
+
+/// Recorded on devnet box 0, 2026-10-23 ~10:40 UTC (gateway ledger.json, read only): the
+/// pending rows of the three open tickets with served rows waiting ([355], [411] and
+/// [346, 278, 286, 325, 396]); every request dir there has 144 A files of which 113 are
+/// distinct (md5), k 2048 each; posted rounds are padded to the row period 4 (pad 0-3 rows over
+/// 337 rounds); round cap (4 MiB - 12) / 2048 rounded down to 4 = 2044 rows. getBlobStats
+/// segment_a 35,349,877,236 bytes in 27,007 blobs = 27,007 x 12 + 2048 x 17,260,524 exactly,
+/// the `12 + m x k` layout.
+#[test]
+fn box0_recorded_backlog() {
+    let ks = vec![2048u32; 113];
+    assert_eq!(ks.iter().map(|k| *k as u64).sum::<u64>(), 231_424);
+    assert_eq!(a_round_bytes(&ks, 236), 113 * (12 + 236 * 2048));
+    assert_eq!(27_007u64 * 12 + 2048 * 17_260_524, 35_349_877_236);
+    let mut l = Ledger::default();
+    let rows: [(&str, &[u32]); 3] = [("09c7", &[355]), ("1c92", &[411]), ("a069", &[346, 278, 286, 325, 396])];
+    for (t, rs) in rows {
+        let ids: Vec<String> = (0..rs.len()).map(|i| format!("{t}-{i}")).collect();
+        for (i, r) in rs.iter().enumerate() {
+            l.requests.insert(ids[i].clone(), served(&ids[i], t, *r));
+        }
+        l.tickets.insert(t.into(), ticket(t, &ids.iter().map(|s| s.as_str()).collect::<Vec<_>>()));
+    }
+    let waiting = waiting_a_bytes(&l, &ks, 4, 2044, &BTreeMap::new());
+    // rounds m 356, 412, 1632 (1,631 rows fit one round): 3 x 113 x 12 + 2,400 x 231,424
+    assert_eq!(waiting, 3 * 113 * 12 + 2_400 * 231_424);
+    assert_eq!(waiting, 555_421_668);
+    // the old estimate: 2,397 rows x 144 x 2048
+    assert_eq!(2_397u64 * 294_912, 706_904_064);
+    // a round half put (as the posting thread leaves it): only the rest counts
+    let mut posting = ticket("a069", &["a069-0", "a069-1", "a069-2", "a069-3", "a069-4"]);
+    posting.posting = Some(PostingRound { round: 3, m: 1632, requests: posting.pending.clone() });
+    l.tickets.insert("a069".into(), posting);
+    let mut put = BTreeMap::new();
+    put.insert("a069".to_string(), (3u16, 60 * (12 + 1632 * 2048)));
+    assert_eq!(waiting_a_bytes(&l, &ks, 4, 2044, &put), waiting - 60 * (12 + 1632 * 2048));
+    // a stale entry for another round counts nothing off
+    put.insert("a069".to_string(), (2u16, 1 << 30));
+    assert_eq!(waiting_a_bytes(&l, &ks, 4, 2044, &put), waiting);
 }

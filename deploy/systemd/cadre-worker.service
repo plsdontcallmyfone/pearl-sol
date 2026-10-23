@@ -10,7 +10,14 @@ Environment=HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONUNBUFFERED=1
 # chunks of 64 rows, 2048 live rows; measured peak 3.0 GB RSS at 8 concurrent 256-token prompts (the
 # one-at-a-time worker peaked at 3.37 GB on the same prompts; docs/measurements/batching-2026-10-21).
 # CADRE_MAX_BATCH=1 is the old one-at-a-time worker (rollback without a code change).
-Environment=CADRE_MAX_BATCH=8 CADRE_MAX_STEP_ROWS=64 CADRE_MAX_LIVE_ROWS=2048 CADRE_FLUSH_ROWS=32 CADRE_MAX_QUEUE=64
+# 2026-10-23 (docs/SPEED.md 8, docs/measurements/tput-2026-10-23): prefill chunks of 32 rows (as fast per
+# row as 64 on this CPU, half the wait for the decode rows that share the step), 4096 live rows (the CPU KV
+# cache is binary32 now: 3.01 GB peak on the 8-request trace vs 3.12 GB for 2048 rows before), short prompts
+# prefilled first (CADRE_PREFILL_ORDER=fifo is the old order). OMP_WAIT_POLICY=PASSIVE: on a box whose 4
+# cores are oversubscribed (attester, miner, node, api), spinning OpenMP threads made a 32-row step 12x slower
+# (0.85 s -> 10.4 s); passive waiting gave 1.81 s under the same load. No change to any computed bit.
+Environment=CADRE_MAX_BATCH=8 CADRE_MAX_STEP_ROWS=32 CADRE_MAX_LIVE_ROWS=4096 CADRE_FLUSH_ROWS=32 CADRE_MAX_QUEUE=64 CADRE_PREFILL_ORDER=short
+Environment=OMP_WAIT_POLICY=PASSIVE
 WorkingDirectory=/var/lib/lode
 ExecStart=/bin/sh -c 'exec /home/lode/cadre-venv/bin/python /home/lode/pearl-sol/tools/cadre/worker.py --model $CADRE_MODEL_DIR --port 10665 --threads $WORKER_THREADS'
 # measured peak 2.3 GB RSS for 64 tokens (docs/HANDOFF.md item 17); the cap keeps an outlier off the node

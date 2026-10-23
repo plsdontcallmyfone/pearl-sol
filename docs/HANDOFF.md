@@ -36,7 +36,7 @@ Checked 2026-10-23 ~03:40 UTC against the live devnet, read only: cadre-api (`/v
 | 0, lode-devnet-0, 64.95.12.116 (checkout main 8821e75) | cadre-node, cadre-miner, cadre-attester, cadre-relayer, cadre-settle, cadre-header-relay, cadre-storefront, cadre-crank, cadre-explorer, cadre-api, cadre-web, cadre-gateway, cadre-worker, cadre-agents (hosted runtime, 12 agents), cadre-swarm, cadre-desktops (30 agents, 36 desktops), cadre-practice, cadre-agent-dump, caddy, cadre-health.timer. Not running: cadre-trading, cadre-feed-bot |
 | 1, lode-devnet-1, 64.95.13.213 | cadre-node, cadre-miner, cadre-header-relay, caddy |
 | 2, lode-devnet-2, 64.95.12.22 | cadre-node, cadre-miner, cadre-header-relay, caddy |
-| test box, 64.95.13.106 | cadre-api (test), caddy, x-agents (not Cadre); row leftovers by PID: house traders `~/trading`, market desk and judge `~/market-build`, self-hosted agent `~/usertrade` (agent1.pid) |
+| test box, 64.95.13.106 | cadre-api (test-localnet, idle), caddy, x-agents (not Cadre); by PID (run-*.sh, *.pid): house traders `~/trading` and market desk + judge `~/market-build` on main c286391 with `TOWN_PROGRAM` + `SOLANA_RPC` (Solana town, 2026-10-23); self-hosted agent `~/usertrade` (agent1.pid) still on its 2026-10-21 code with no TownNode, so its posts stop at 12000 (open issue 7) |
 
 Solana devnet programs (DEVNET.md): reserve `8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi`, bridge
 `3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN`, storefront `9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu`,
@@ -59,15 +59,32 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
    agents has a toolbelt. The TOOLBELT.md 11.1 e2e delivery is unfinished.
 3. The paid planner for one-screen create is off (no `AGENTS_PLANNER_KEY`); the site matches keywords.
 4. Gateway request data: 8.59 GB waiting at the 8 GB pressure line; the 64 GB cap is item 37's
-   stopgap, to revert after the drain. Storefront: 64 of 93 orders pending (`/v1/summary`).
+   stopgap, to revert after the drain. Storefront: 64 of 93 orders pending (`/v1/summary`): all paid and on the chain; 9 wait on
+   the light client, stuck at 6300 since 2026-10-22 21:39 UTC until the header-relay uncle fix is deployed;
+   7 payments (0.1769 SOL) were taken without an Order and need the refunds in DEVNET.md (item 51).
 5. Desktops: one unhealthy (campion66 Social, "browser host down"); model 402 pauses are the
    desktops resilience row's work.
 6. Connect SDK and py: local posts and DMs still need the Solana town builders (item 43).
 7. The self-hosted agent on the test box (`~/usertrade`, tide_ledger, item 33) was set up on
    2026-10-21 as a real-swap trader, before the practice-only rule. Stop it or move it to practice.
+   Its code predates the town move; main would run its trade section as practice (no `trade.real_swaps` in
+   its signed spec), so it was not updated: town posts from it fail from height 12000 until the owner decides.
 8. Strict auth (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) waits for a wallet release (item 28).
 9. Swarm sponsor float is off until the owner sets its key (item 45).
 10. The test box demo stack (scripts/demo.sh) is down since the 2026-10-21 reboot.
+11. (Fixed 2026-10-23, practice-polish, NOT DEPLOYED) Swarm kickoff resumable: swarms.json keeps the
+    kickoff state, the plan and the one planned hire; a stop no longer marks it failed, `run()`
+    resumes it, a lead whose inference top-up is held waits (`waiting_budget`) and the tick resumes
+    it when the hold lifts; the planned hire is sent at most once (a hire from the lead to that
+    member already on the market counts). Devnet swarm 1 ("QA rql2", lead 8B5Tv9...) shows "the
+    runtime stopped before the kickoff"; after a box 0 cadre-agents restart on this code it resumes
+    by itself. Its lead's inference is held by its daily SOL cap until 00:00 UTC and its wallet held
+    0.0165 SOL against a 0.0251 SOL quote for its usual ticket on 2026-10-23, so the kickoff may
+    then wait on a wallet hold until someone sends the lead SOL.
+12. (Fixed 2026-10-23, qa2, NOT DEPLOYED) Light client stalled at 7497 since 07:50 UTC on an equal-work fork:
+    lightclient program upgrade, then header-relay on boxes 0-2 (item 56).
+13. (Fixed 2026-10-23, qa2, NOT DEPLOYED) Hosted agents' profile blobs are pruned by the node (their SetProfile is on
+    Solana): the runtime puts them back; a lasting pin is open (item 56).
 
 ## Goal (owner, 2026-10-16, ongoing)
 
@@ -1776,7 +1793,173 @@ CLAUDE.md "Who is working on what".
       (frame-ancestors refuses auth.privy.io on every page; email login cannot work there): add it in the Privy
       dashboard.
 
-51. AUDIT FOLLOW-UPS: UNCLE REPLAY, DELETE ON FINAL, DEPARTED LEAD, ATTESTER HEALTH, LIGHT CLIENT LAG (2026-10-23,
+51. STOREFRONT PENDING ORDERS: LIGHT CLIENT STUCK AT 6300, 7 PAID PAYMENTS WITHOUT AN ORDER (2026-10-23, "storefront
+    pending orders" row; box 0 read only). At 03:50 UTC: 93 Orders (23 finalized, 6 refunded, 64 pending), 102 x402
+    payments in /var/lib/lode/storefront-state.json.
+    - What "pending" means: an Order exists only after the x402 payment settled AND buy_job ran, so every Pending
+      Order is paid. All 64 have their job on the chain (relayer unlocked them; rows credited): 54 open tickets
+      (live prepaid balances, close when used up or expire at posted + 10,000 blocks), 1 delivered, 9 completed
+      but not settled because the light client is behind. Nothing pending is a stale quote; quotes create nothing.
+    - The light client has been stuck at final 6239 / tip 6299 since 2026-10-22 21:39 UTC: every job posted in
+      block 6299 failed begin_verify_job with TxPath (6016), resent forever (failed_txs about 9,970 at 5,000
+      lamports each from ops). Cause: header-relay rebuilt tx_root paths from txs + contracts record + coinbase,
+      but the chain puts the UNCLE records (SPEED.md 3.3, leaf 0x03) between them; 6299 credits an uncle (66 txs,
+      coinbase leaf_index 67). Fix: chain::block_body_of appends uncle records and refuses a body whose rebuilt
+      root differs from header_fields.tx_root (no more doomed sends); regression on the real block
+      (services/header-relay/tests/block_body.rs + fixtures/devnet-block-6299-uncle.json: node paths equal ours).
+      settle (CompleteJob paths) used the same body, so it is fixed too.
+    - The explorer showed on_chain_job false for 55 of them: listJobs is a 10,000-job window that segment jobs fill
+      in hours. Order jobs outside it are now read by getJob and kept (apps/explorer indexer fillOrderJobs);
+      /v1/summary storefront.pending_by_stage.
+    - Paid without an Order: 7 payments, 176,900,335 lamports, all legacy records. 6 are crashes of
+      storefront-x402 (an uncaught web3.js 429 exits node right after the payment was taken: 10-20 18:03, 10-21
+      16:41, 16:42, 16:43, 17:00, 17:01 UTC), 1 is a refund that failed on a 429 (10-21 16:06). Six OrderDrafts
+      (4,109,720 lamports each) are left open by them. Fix: main.ts survives the 429 throw/rejection; records are
+      v 2 with placement steps (draft, opened, buy_sent, cancelled); reconcile() every 60 s refunds v 2 payments
+      without an Order once no buy_job can land, retries failed refunds, and holds for review when a buy may have
+      landed; GET /payments/unserved; src/reconcile.ts for the legacy ones (list, --check, --refund, --cancel-drafts,
+      refuses while the service runs). Tests: storefront-x402 20, header-relay 1 + 3 + 8 catchup, explorer 68.
+    - Deploy and the refund steps: DEVNET.md "Storefront pending orders (2026-10-23)".
+
+52. JUDGE TOP-UP 400 AND THE STOREFRONT DRAFTS (2026-10-23, "judge top-up + storefront drafts" row).
+    - Cause: cadre-storefront was stopped 04:39:20-04:59:48 UTC to run reconcile.ts --cancel-drafts (the tool did its
+      refunds, then hung). Meanwhile the gateway's top-up called the storefront, got "connection refused", and its
+      catch-all turned that into 400 invalid_request_error, so the judge logged "top-up quote: status code 400".
+      Nothing in the judge's request was wrong (ureq sends the same POST {"rows":2048} as curl; it got 402 again from
+      05:00). Hire 73 then used its 3 tries on gateway 402s and the judge skipped it from then on; it expired at
+      7180 unjudged (buyer refunds from the hire page).
+    - Fixes on main: gateway topup and per-request x402 answer 503 upstream_unavailable + Retry-After 30 when the
+      storefront or the blob store does not answer (tests/upstream_down.rs). Judge (judge.rs): failures before a paid
+      answer (gateway 402/408/429/5xx or transport, failed top-up, node reads, blobs not served yet) are free retries
+      with a 20 s doubling backoff (10 min cap) and do not use the 3 tries, which now count only answers that cost a
+      thought; the top-up error logs the gateway's body.
+    - Test box judge rebuilt (~/market-build, judge.rs from 3143f7e) and restarted 05:42 UTC, pid 1132393: topped up
+      2048 rows; verdicts REJECT 77 (107dc1b6...), REJECT 78 (414e59be...), ACCEPT 79 (c5cd8027...).
+    - Not fixed: hires 76 and 81 got "no VERDICT line" 3 times each. Decoding is greedy, so the 3 tries give the same
+      answer and cost 3 thoughts; the 1B model's format is the problem (judge prompt / parse_answer).
+    - storefront-x402: bounded RPC (30 s requests, polled confirmation <= 90 s, no websocket), reconcile.ts always
+      exits (watchdog), --cancel-drafts runs with the service up and skips drafts an unserved payment names, and the
+      service sweeps orphaned drafts itself every 10 min (test/rpc-bounds.test.ts, 2 new tests in service.test.ts;
+      29 pass). The 6 drafts are still open and orphaned; deploy = DEVNET "Storefront draft sweep".
+
+53. PAID INFERENCE THROUGHPUT ON THE DEVNET CPU WORKER (2026-10-23, "tput" row; box 0 read only). docs/SPEED.md 8,
+    docs/measurements/tput-2026-10-23/. Box 0: worker busy only 28%, 1.59 s per step at 4.5 rows; gateway 13-17k
+    rows/h, no gateway queueing. The time was (a) OpenMP spinning on an oversubscribed 4-core box (attester replay
+    145%, miner 118%, node 73%): a 32-row step 0.85 s -> 10.4 s under a stand-in load, 1.8 s with
+    OMP_WAIT_POLICY=PASSIVE; (b) every decode row padded to a 32-row GEMM (79% of a decode step); (c) prefill glue
+    (binary64 lm_head scale-out for rows nobody reads, two int64 divisions per SiLU element); (d) live rows 2048 +
+    FIFO prefill: short thoughts waited for a report's whole prefill.
+    - tools/cadre (bit-exact: golden.py equal to the old code on all A/C files, tokens and logits; test_batch 28/28
+      with 7 Rust replays; test_replay 19/19): CPU int_mm without padding, lm_head logits for last rows only,
+      in-place scale-out, one SiLU division, binary32 CPU KV cache (exact, half the memory), --prefill-order short
+      (default, 8-step starvation bound), /health prompt_rows + prefix_rows (measures what a prefix cache would
+      save; nothing cached), profile_step.py, bench_mix.py, golden.py. Unit: step rows 32, live rows 4096,
+      OMP passive; attester Nice=10.
+    - Measured on the same trace (box 0-like load, 4 CPUs, 2 threads): thoughts' first token 443.6 s -> 55.0 s mean,
+      rows/s 5.3 -> 15.2; idle 106.6 s -> 24.4 s. Single decode step 0.498 -> 0.159 s; 64-row prefill 25 -> 39 rows/s.
+      Peak RSS 3.12 GB (old, live 2048) vs 3.01 GB (new, live 4096).
+    - Compression of C (item 46): zstd 1 + shuffle 0.569 of raw, about 240 MB/s per core; not implemented (disk
+      drains since d379a0d, CPU is box 0's bottleneck, new C-library crate); numbers in SPEED.md 8.4.
+    - DEPLOY (not done by this row, box 0 only, no build, no gateway change): see SPEED.md 8 and the row's report:
+      sync main, worker drop-in (CADRE_MAX_STEP_ROWS=32 CADRE_MAX_LIVE_ROWS=4096 CADRE_PREFILL_ORDER=short
+      OMP_WAIT_POLICY=PASSIVE), restart cadre-worker when /health active is 0; attester drop-in Nice=10, restart
+      cadre-attester when /v1/stats settle.closing is null.
+54. JUDGE VERDICTS AND PRACTICE LESSONS WITH THE 1B MODEL (2026-10-23, "judge verdicts with the 1B model" row).
+    - What the model emitted: hires 76 and 81 got `VERDICT: VERDICT: REJECT\nREASON: ...` (label doubled) under
+      prompt v1; the old parser saw no verdict word after the first `VERDICT:` and paid 3 identical thoughts each.
+      Proven by replay: `pearl-evaluator --judge-probe` (new, never votes) gave answers whose sha256 equals the
+      text_sha256 of the original receipts (req_3ede2c2b..., req_c2779eca..., req_8c9bc163..., req_72f26401...,
+      req_09d1b8f4...). The offer spec blobs were already pruned, so the judge saw no promise at all.
+    - Judge (services/attester/src/judge.rs, prompt cadre-judge-prompt-v2): `/v1/completions` with the chat
+      template written out and the assistant turn begun with `VERDICT:`; first word must be ACCEPT(ED) or
+      REJECT(ED) (markdown, case, a doubled label tolerated; `NOT ACCEPT`, `ACCEPTABLE` refused). One paid
+      thought per hire, then ABSTAIN (no vote, buyer refunded at the deadline, MARKET 5); a failed verdict tx is
+      resent from the kept answer. A shorter one-word retry form was measured and dropped: ACCEPT on all 11 it
+      answered, junk included. New mechanical rejects without a thought: refusal, copy of the request, link,
+      delivery that writes a verdict or tells the judge to ignore the rubric. Missing spec: the promise line is
+      left out (a placeholder there was quoted back by the model). Gateway 400 "worker Connection refused" is a
+      free retry (the gateway reports a down worker as 400; seen 07:4x UTC; gateway-side 503 is still to do).
+    - Measured on 12 recorded cases (6 real hires, 6 synthetic bad deliveries): verdict word 12/12, matches the
+      reviewer's reading 8/12 by the model alone, 10/12 with the mechanical checks; still wrong: hire 78 (five
+      fine names rejected) and "two names for five" accepted. Fixtures: services/attester/tests/fixtures/
+      judge-answers.json; tests 10 judge unit (attester 25 total).
+    - Lessons (services/swarm/strategies thoughts.ts, agent.ts): the lesson now starts with the analyzer's facts
+      written by code (`lessonFacts`), the model gives one answer-first `FIX:`/`KEEP:` line for the analyzer's
+      bucket, and `lessonContradiction` drops it if it contradicts the facts (no-fill or flat called a gain or
+      loss, win/loss swapped, wrong SOL amount, a bucket not found, a reply to "your review"). On the 26 real
+      devnet post-mortems the guard drops 8 old lessons (trade 9, a no-fill called "a significant loss"); the
+      new prompt on 6 of them gave 6 answer-first lines, all passing the guard. Blob adds lesson_facts,
+      lesson_model, lesson_guard. Fixtures: test/fixtures/lessons.json; strategies 18/18, agents practice 12/12.
+    - Deploy: test box judge rebuilt + restarted (see the row); box 0: sync main, restart cadre-practice and
+      cadre-agents (DEVNET steps in the row's report).
+55. BOX 0 NODE BLOB STORE FULL AGAIN; PAID INFERENCE REFUSED (2026-10-23, "node blob store full" row; box 0 read only).
+    - Measured 10:07-10:27 UTC: gateway /v1/stats request_data node_blob_headroom_bytes 685,020,117 then 630,431,438,
+      refused_node_storage 372 then 468 (rising). Node getBlobStats: total 37,314,979,883 of max_total_bytes
+      40,000,000,000 (node.json `blobs`, node-local), rpc_put_limit 38 GB (rpc_reserve 2 GB), segment_a 35.43 GB in
+      27,120 blobs, ALL kept, 0 prunable; model 1.78 GB pinned. Disk 145 GB, 77 used, 68 free; node-blobs dir 35 GB.
+    - What limits it: the node-local quota only (not disk, not a consensus param). What frees A: SPEC 4.5 retention,
+      node prune pass (getBlobStats last_prune_height follows the tip). keep_replay is true on box 0, so a live ticket's
+      segment A is kept until the ticket's deadline + W (720 blocks); 73 of the 100 tickets in the gateway journal are
+      Open, deadlines 14,737 to 17,582 at tip 7,824 (about 6,900 to 9,760 blocks ahead, 2.5 to 3.5 days at the measured
+      30.8 s a block, 7783 -> 7824 in 21 min). So almost nothing is prunable until those tickets close.
+    - Why now: the 2026-10-22 sizing (SPEC 4.5) assumed 20 live balances and about 2,200 rows an hour. Posted rows from
+      the gateway journal: 126,348 rows in 222 rounds over 12 h (about 10,500 rows an hour, about 2.4 GB of A an hour at
+      231,424 bytes per row), 172,384 rows over 24 h; the last hour 4,724 rows (throttled by the refusals). Item 47
+      (top-ups buy the largest ticket first, up to 8192 rows) and item 53 (worker throughput) raised both the number of
+      live tickets and the rows. Not a code bug: retention works as specified; the live-ticket replay hold no longer fits
+      the 40 GB quota at this traffic.
+    - Gateway refusal: node_storage_refusal compares (waiting rows + request rows) x a_bytes_per_row (144 x 2048 =
+      294,912, an upper bound; real blobs are 231,424 per row plus padding to the round period) with the headroom, so at
+      5.0 GB waiting it refuses nearly every paid request while rounds keep posting.
+    - Health: scripts/devnet-health.sh 9c now emits `node_blobs` (WARN under MIN_NODE_BLOB_HEADROOM_GB, default 2, or
+      when refused_node_storage rose since the last run, or when the gateway cannot read getBlobStats).
+    - Proposed fixes (NOT applied; headroom was above the 300 MB apply threshold): see the row's report. Option A: raise
+      box 0 `blobs.max_total_bytes` 40e9 -> 60e9 (backup node.json, restart cadre-node only); about 19.7 GB more RPC room (5% reserve), about 8 h at the
+      12 h rate. Option B (policy decision): box 0 `keep_replay` false like boxes 1-2, frees the A of every live ticket
+      outside the mining rule; costs fraud-proof localization data for live tickets (honest replays read no A).
+    - FIXED in the gateway (2026-10-23, "gateway node blob estimate" row; not deployed): node_storage_refusal now sizes
+      the A the waiting rounds will put with the blob encoder's layout, `12 + m x k` per DISTINCT A blob (matrices with
+      byte-identical A share one content-addressed blob; learned from a request's a/*.i8 files or a posted round's
+      segments, 113 of 144 on box 0), each round padded to the row period and packed like round_take; a round half put
+      by the posting thread counts only the blobs still to put (that was a double count: its rows stayed pending after
+      their blobs were already in the node's total). Box 0 backlog at 10:40 UTC: old 706,904,064 bytes, new 555,421,668.
+      Of 467 refusals logged by gateway clients 07:54-10:35 UTC, 453 would have been admitted (old need x 231,424 /
+      294,912 + 10 MB of padding still under the headroom). /v1/stats request_data adds node_blob_need_bytes,
+      a_bytes_per_row, a_blobs_per_round. Tests: tests/node_blobs.rs (estimate == bytes put, half-posted round,
+      box 0 recorded backlog).
+
+56. SECOND QA PASS OF THE DEVNET PRODUCT (2026-10-23, "qa2" row; headless Chromium, throwaway keys; box 0 read only).
+    Found and fixed (each with a test that fails on the old code), NOT DEPLOYED:
+    - LIGHT CLIENT STALLED AT 7497 since 07:50 UTC (all three relay lanes idle, lag growing, settle and storefront
+      orders waiting): two blocks at 7497 with equal work; the light client kept b3af..., the node 5232..., and
+      7498-7502 mine jobs posted in 5232. begin_verify_job wanted the posting block final or canonical and reorg wants
+      strictly more work, so the node's branch could never verify. token/programs/lightclient: a Verified posting block
+      on the job block's own branch is accepted (its parent, or through at most 16 Verified ancestors passed as
+      remaining accounts, each linked by prev hash); client::begin_verify_job_via; header-relay bind_for passes them.
+      LiteSVM equal_work_fork_at_the_tip_does_not_stall_job_blocks; lightclient suites and header-relay catchup green.
+      DEPLOY ORDER: upgrade the devnet lightclient program 47mavKip... first (devnet deployer), then header-relay on
+      boxes 0, 1, 2. Once 7498 verifies, the relay's existing reorg step moves the tip to the heavier branch.
+    - PROFILE BLOBS PRUNED: 16 of 18 hosted agents showed profile_blob false (no verified spec, no practice label on
+      the profile Trading tab, no persona). A node pins only the profile blobs its own state references (SPEC 4.6);
+      SetProfile is a Solana tx since the town moved, so the node prunes the blob after its grace. The runtime now
+      puts the same bytes back (same URI) when the node lacks them, checked every 10 min (agent.ts keepProfileBlob).
+      Deploy: box 0 sync + restart cadre-agents. Lasting fix (open): pin Solana-town profile blobs (cadre-api's town
+      index could hold them in its durable blob store, or the node could take a pin list).
+    - Trading board "User agents with real swaps" listed practice agents: a buy whose exact CADRE is bridged out
+      later (the runtime's fee self-funding) is no fill (fee_buys); an agent is listed with real swaps on or real fills
+      on record (cadre-api trading.ts). Deploy: cadre-api restart.
+    - Swarm plans took 1 lamport per member through the API; a QA swarm of 0.03 SOL per member is held for good
+      (fee CADRE + a 0.0251 SOL ticket pass its cap and wallet). The plan now refuses a share below fee CADRE + one
+      ticket at the newest quote + reserve + fees. Deploy: cadre-agents restart.
+    - Site (cadre-web 1674685, fcdf647): town and DM signing waits for the town's chain instead of "Still loading";
+      the follow button waits for the follow state (it said Follow while loading and sent a refused follow); the
+      focus post refreshes; long notes wrap on a phone. Deploy: site release.
+    Passed: every sidebar page desktop and phone, dark and light (console, overflow, em dash, monospace, raw JSON);
+    practice agent live in 2.3 min, first practice entry at 37 min; toolbelt web researcher 8/8; paid hire #86 with
+    the rebuilt judge (ACCEPT, completed in 11 blocks); Connect OAuth + MCP (22 tools) with cadre_trade refused for a
+    practice agent; agent dump fresh with lessons. Health WARN/FAIL read in the row's report.
+
+57. AUDIT FOLLOW-UPS: UNCLE REPLAY, DELETE ON FINAL, DEPARTED LEAD, ATTESTER HEALTH, LIGHT CLIENT LAG (2026-10-23,
     "audit follow-ups" row; TEST-REPORT "Audit follow-ups 2026-10-23").
     - CONSENSUS, uncle replay closed by pow_digest (SPEED.md 3.3 rule 8): a Pearl proof opens one tile under the
       target, so a nonce whose GEMM has two such tiles has two valid proofs for one header; the hash covers
@@ -1794,25 +1977,25 @@ CLAUDE.md "Who is working on what".
       final = 60 blocks = about 31 min (6100-7000: 31.1 s per block), at 9.98 GB/h about 5.2 GB more on disk
       (5.9 GB at 35.3 s blocks); counted in the 64 GB cap, not in the 8 GB pressure line. --delete-on-post rolls
       back. Also send_many now accepts a tx already "final" (it waited for "included" only). Tests retention 6/6,
-      gateway 42 passed (2 ignored on macOS).
+      gateway 48 passed after the merge (2 ignored on macOS).
     - Swarms: a departed lead's proposals stay acceptable on the deployed contract (admin zero). The hosted runtime
       declines them for invitees it hosts, cadre-api builds no accept for them (409 stale_proposal) and labels
-      standing; a future contract version closes them on leave / hand_lead (SWARMS.md 3). Tests agents 93/93,
-      swarm 45/45, cadre-api 127 passed (10 skipped), typecheck clean.
+      standing; a future contract version closes them on leave / hand_lead (SWARMS.md 3). Tests agents 101/101,
+      swarm 45/45, cadre-api 129 passed (10 skipped), typecheck clean (after the merge).
     - Attester: the FAIL "cli:local_attester timed out reading response" (box 0, 07:33-08:47 UTC) was real
       blocking, not a short timeout: one tiny_http loop served /health and /result, so a health check waited for the
       whole glue replay (journal: five queued GET /health answered in the second POST /result finished, 07:51:46).
       Now /health is answered on the accept thread, /result and /share on --workers threads (default 1: replays stay
       one at a time, as the gateway's close thread sends them), /health carries busy {running, queued, done,
       oldest_running_s}, and the CLI line shows a replay in progress. Settlement did not stall beyond that (only the
-      gateway's close thread calls /result, one ticket at a time). Tests attester 22 (serve.rs new), cadre-cli 121.
+      gateway's close thread calls /result, one ticket at a time). Tests attester 26 (serve.rs new), cadre-cli 121.
     - Light client lag: not the Solana rate limit. Boxes 1 and 2 already run the header relay on the Helius
       devnet RPC (/etc/lode/solana-rpc-url on all three boxes since 2026-10-21 21:26 UTC; the relay processes'
       command lines name devnet.helius-rpc.com; zero 429s in today's journals). The light client sat at 7,497 from
       07:53 to 16:03 UTC (relay errors 6027 / 6023 / Custom(0) around a node reorg at 7,496-7,498, then idle) and
       moved again after the 16:02-16:04 restarts ("reorg to 1fbdad8f... at 7498"): 7,498 -> 7,543 in 8.2 min
-      (5.5 headers/min) against 1.7 blocks/min, lag ~970. The stall belongs to the storefront-pending row's
-      header-relay fix. Box 0 also runs a manually started cadre-header-relay (unit disabled, no with-rpc, public
+      (5.5 headers/min) against 1.7 blocks/min, lag ~970. The stall is HANDOFF 56's equal-work fork at 7,497
+      (qa2 row: lightclient + header-relay fix, which the 16:02-16:04 restarts match). Box 0 also runs a manually started cadre-header-relay (unit disabled, no with-rpc, public
       RPC, ops payer, no --lane) that relays the same heights as the two lanes (failed_txs 202). Steps in the
       TEST-REPORT section; no box config changed by this row.
     - Rollout (owner; nothing deployed by this row): node build to boxes 1, 2, 0 before 13,000 (one at a time, check

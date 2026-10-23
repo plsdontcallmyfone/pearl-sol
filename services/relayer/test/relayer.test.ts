@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { blake3 } from "@noble/hashes/blake3";
 import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { LiteSVM } from "litesvm";
+import { LiteSVM } from "./litesvm-web3.ts";
 import { KIND, bridgeLockBody, signTx } from "../src/agent-tx.ts";
 import { RpcChain } from "../src/chain.ts";
 import {

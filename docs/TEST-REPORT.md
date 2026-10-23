@@ -994,7 +994,7 @@ auth, discover green; gateway backpressure/budget/gateway/server_limits failed o
 (insufficient_storage: 5.9 GB free under the default 8 GB min_free_disk), unrelated to the change; swarm/agents
 91/91; swarm 45/45.
 
-## Audit follow-ups 2026-10-23 (HANDOFF item 51)
+## Audit follow-ups 2026-10-23 (HANDOFF item 57)
 
 Follow-ups of "Correctness audit 2026-10-23". Tests on the Mac, one CARGO_TARGET_DIR in the
 session scratchpad, debuginfo off.
@@ -1002,9 +1002,9 @@ session scratchpad, debuginfo off.
 | Item | Change | Tests |
 |---|---|---|
 | Uncle replay (consensus) | SPEED.md 3.3 rule 8 from devnet 13,000: an uncle's pow_digest must differ from the branch block's at its height, the other uncles' in the block and the uncles of branch blocks above it; templates dedupe by pow_digest; getParams `uncle_digest_rule_height` | consensus-pow 41/41 (uncles 7/7; the new test fails on the old code with two uncles in the template), agent-types 30/30 |
-| Gateway delete on final | data kept until the round's last PostSegments is final; reorg-dropped round re-posted from it; cap counts it, pressure does not; `--delete-on-post`; send_many accepts `final` | gateway 42 passed, 2 ignored (macOS SO_RCVTIMEO); retention 6/6 (3 new) |
-| Swarms departed lead | proposalStanding; hosted invitees decline stale proposals; cadre-api 409 stale_proposal + standing | agents 93/93 (swarm-stale 2 new), swarm 45/45, cadre-api 127 passed 10 skipped (swarms-stale 2 new), typecheck clean |
-| Attester health | /health off the work thread, `--workers` (1), busy counters; CLI shows a replay | attester 22 (serve.rs new), cadre-cli 121 |
+| Gateway delete on final | data kept until the round's last PostSegments is final; reorg-dropped round re-posted from it; cap counts it, pressure does not; `--delete-on-post`; send_many accepts `final` | gateway 48 passed after merging main, 2 ignored (macOS SO_RCVTIMEO); retention 6/6 (3 new) |
+| Swarms departed lead | proposalStanding; hosted invitees decline stale proposals; cadre-api 409 stale_proposal + standing | agents 101/101 (swarm-stale 2 new), swarm 45/45, cadre-api 129 passed 10 skipped (swarms-stale 2 new), typecheck clean |
+| Attester health | /health off the work thread, `--workers` (1), busy counters; CLI shows a replay | attester 26 (serve.rs new), cadre-cli 121 |
 
 Uncle replay, why pow_digest closes it: `block_hash = blake3(header)` covers `proof_hash`, and
 `pow_digest = blake3(header with proof_hash zeroed)` is what the proof binds (pearl-job
@@ -1040,15 +1040,16 @@ Light client lag, measured 2026-10-23 16:04-16:13 UTC (read only on boxes 0-2):
   then nothing in flight), then "reorg to 1fbdad8f... at 7498 (fork at 7496)" at 16:03:56 and
   restarts of every relay at 16:02-16:04. After that 7,498 (16:04:42) -> 7,543 (16:12:52): 5.5
   headers/min while the chain made 1.7 blocks/min; lag ~970. At that rate about 4.3 h to catch up
-  if nothing stalls again. The stall is in the storefront-pending row's scope (header-relay).
+  if nothing stalls again. The stall is HANDOFF 56's equal-work fork at 7,497 (qa2 row: lightclient
+  program + header-relay fix; the 16:02-16:04 restarts match its deploy order).
 - Box 0 runs cadre-header-relay too (unit disabled, started by hand 2026-10-22 19:36 and restarted
   04:36 and 16:02): `run --settle` with the ops payer, the public RPC (no with-rpc in its unit) and
   no `--lane`, so it verifies the same heights as lanes 0/2 and 1/2 (box 0 failed_txs 202 vs 26 on
   box 1). cadre-settle on box 0 already settles (`--no-relay`, Helius).
 
 Steps for the owner (nothing changed by this row):
-1. Leave the relay fix to the storefront-pending row; check `journalctl -u cadre-header-relay` on
-   boxes 1 and 2 for `lc_tip` moving and no `reorg failed`.
+1. Confirm HANDOFF 56's fix holds: `journalctl -u cadre-header-relay` on boxes 1 and 2 shows `lc_tip`
+   moving and no `reorg failed`.
 2. Box 0: `systemctl stop cadre-header-relay` (it is disabled already; cadre-settle keeps settling),
    so only the two lanes spend relay SOL and RPC calls. Or, to keep a third lane, give it
    `/opt/lode/bin/with-rpc` in ExecStart, `--lane 2/3`, and set HR_LANE=0/3 and 1/3 on boxes 1 and 2.

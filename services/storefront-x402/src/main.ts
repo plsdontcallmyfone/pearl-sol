@@ -11,8 +11,12 @@
 //   OVERHEAD_LAMPORTS         14000000   (Order + Deposit + buyback ShareRecord rent, tx fees; the record rent comes back at settle_share)
 //   STATE_FILE                .data/state.json (used payments, for replay protection)
 //   AGENT_RPC                 http://127.0.0.1:10630 (agent-chain node: prices inference tickets by the registered model)
+//   RECONCILE_MS              60000 (refund payments left without an Order by a crash or a failed refund; 0 = off)
+//   RECONCILE_AFTER_MS        120000 (only payments at least this old)
+//   DRAFT_SWEEP_MS            600000 (cancel orphaned OrderDrafts, rent back to the wallet; 0 = off; first sweep 30 s after start)
 //
-// Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads).
+// Routes: GET /health, GET /quote, POST /jobs (x402), GET /jobs/:id, GET /buyback (vault + totals, chain reads),
+// GET /payments/unserved (payments taken without an Order or a confirmed refund).
 
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
@@ -40,7 +44,47 @@ const service = new Service({
   },
   stateFile: env.STATE_FILE ?? resolve(here, "../.data/state.json"),
   agentRpc: env.AGENT_RPC ?? "http://127.0.0.1:10630",
+  reconcileAfterMs: Number(env.RECONCILE_AFTER_MS ?? 120_000),
 });
+
+// @solana/web3.js can reject outside any awaited promise (a 429 from the public RPC inside
+// its confirmation polling). Unhandled, node exits, and a payment already taken was left with
+// no Order and no refund (devnet 2026-10-20/21: 6 such exits, each right after a payment).
+// Log and keep serving; reconcile() below settles anything a real crash leaves behind.
+process.on("unhandledRejection", (e) => console.error(JSON.stringify({ msg: "unhandled rejection (kept running)", error: String((e as Error)?.message ?? e).slice(0, 300) })));
+// The same 429 can surface as a throw from web3.js's RPC client callback; only that one is survived.
+process.on("uncaughtException", (e) => {
+  if (/429|Too Many Requests|rate limit/i.test(String(e?.message))) {
+    console.error(JSON.stringify({ msg: "uncaught RPC 429 (kept running)", error: e.message.slice(0, 300) }));
+    return;
+  }
+  console.error(e);
+  process.exit(1);
+});
+
+const reconcileMs = Number(env.RECONCILE_MS ?? 60_000);
+const reconcile = () =>
+  service.reconcile().then((r) => r.length && console.log(JSON.stringify({ msg: "reconcile", done: r })), (e) => console.error(JSON.stringify({ msg: "reconcile failed", error: (e as Error).message.slice(0, 300) })));
+if (reconcileMs > 0) {
+  reconcile();
+  setInterval(reconcile, reconcileMs).unref();
+}
+// Orphaned OrderDrafts (left by crashes before v 2 records) are cancelled by the running service, so
+// nobody has to stop it for src/reconcile.ts --cancel-drafts (that stop took top-ups down on devnet).
+const sweepMs = Number(env.DRAFT_SWEEP_MS ?? 600_000);
+let sweeping = false;
+const sweep = () => {
+  if (sweeping) return;
+  sweeping = true;
+  service.sweepDrafts().then(
+    (r) => r.length && console.log(JSON.stringify({ msg: "draft sweep", done: r }, (_k, x) => (typeof x === "bigint" ? x.toString() : x))),
+    (e) => console.error(JSON.stringify({ msg: "draft sweep failed", error: (e as Error).message.slice(0, 300) })),
+  ).finally(() => (sweeping = false));
+};
+if (sweepMs > 0) {
+  setTimeout(sweep, 30_000).unref();
+  setInterval(sweep, sweepMs).unref();
+}
 
 const server = createServer((req, res) => {
   const chunks: Buffer[] = [];

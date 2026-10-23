@@ -1,7 +1,7 @@
 // ChainIO over an in-process LiteSVM instance, for tests (no validator, no ports).
 
 import { ComputeBudgetProgram, Keypair, PublicKey, Transaction, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
-import { FailedTransactionMetadata, LiteSVM } from "litesvm";
+import { FailedTransactionMetadata, LiteSVM } from "./litesvm-web3.ts";
 import type { ChainIO, RawAccount } from "../src/chain.ts";
 
 export class LiteSvmChain implements ChainIO {

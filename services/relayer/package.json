@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "22.15.3",
-    "litesvm": "0.3.3",
+    "litesvm": "1.4.0",
     "typescript": "5.7.3"
   }
 }

@@ -21,7 +21,7 @@ import { eventTopic } from "../../../../apps/explorer/src/contracts.ts";
 import { verifyAgent } from "./useragents.ts";
 import { decodeSocialTx } from "../../../../apps/explorer/src/social.ts";
 import { isSovereign } from "../../../swarm/agents/src/spec.ts";
-import { bondingCurvePda, curveCreator, decodePoolKeys } from "../sol.ts";
+import { BRIDGE_ID, bondingCurvePda, curveCreator, decodePoolKeys } from "../sol.ts";
 import { shared } from "../shared.ts";
 import { ata, canonicalPool, compileLegacy, computeUnitLimit, createAtaIdempotent, type Ix, SYSTEM, TOKEN, TOKEN_2022, unsignedTx, AMM, ATA_PROGRAM } from "../sol.ts";
 
@@ -138,7 +138,22 @@ interface Trade {
 export const OWN_TOKEN_FLAG = "own token: launched by this agent";
 
 /** A user agent with the v2 trade skill, read from the chain (profile, spec in the profile blob). */
-export interface UserTrader { account: string; handle: string | null; name: string | null; creator: string; hosting: string; sovereign: boolean; mints: string[]; verified: boolean }
+export interface UserTrader { account: string; handle: string | null; name: string | null; creator: string; hosting: string; sovereign: boolean; mints: string[]; verified: boolean; real_swaps: boolean }
+
+/** Real swaps on, decided as the runtime does (services/swarm/agents practice.ts realSwapsOn): a
+ * sovereign spec with a trade section setting real_swaps, the trade action and the trade skill. A
+ * trade section without it practices (pretend money), so its agent is not a real-swap trader. */
+export const realSwapsOn = (s: any): boolean => isSovereign(s) && !!s?.trade && s.trade.real_swaps === true && !!s.actions?.trade && Array.isArray(s.skills) && s.skills.includes("trade");
+
+/** What a landed bridge deposit took out of `owner`'s wallet in `mint` (base units), or 0. */
+export function bridgedOut(t: any, owner: string, mint: string): bigint {
+  const keys: string[] = (t?.transaction?.message?.accountKeys ?? []).map((k: any) => (typeof k === "string" ? k : k?.pubkey ?? String(k)));
+  const meta = t?.meta;
+  if (!keys.includes(BRIDGE_ID) || !meta || meta.err) return 0n;
+  const tok = (list: any[]): bigint => (list ?? []).filter((b) => b.mint === mint && b.owner === owner).reduce((s, b) => s + BigInt(b.uiTokenAmount?.amount ?? 0), 0n);
+  const d = tok(meta.preTokenBalances) - tok(meta.postTokenBalances);
+  return d > 0n ? d : 0n;
+}
 
 /**
  * Amounts a landed Solana tx moved for `owner` in `mint` (the agent runtime's wallet-venue.ts
@@ -168,6 +183,28 @@ export function walletFill(t: any, owner: string, mint: string): { side: "buy" |
   return { side: "sell", amount_in: -dTok, amount_out: got > 0n ? got : 0n };
 }
 
+/** Signatures of fee buys: a buy (one fill) whose exact token amount the agent later moved out in a
+ * bridge deposit. The runtime buys CADRE once for its Cadre fees and bridges every unit of it at once
+ * (agent.ts selfFundCadre), so that buy never was a trading position. Each deposit matches one buy. */
+export function feeBuySigs(sigs: Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: string; amount_out: bigint }[]; bridged?: { mint: string; amount: bigint }[] }>): Set<string> {
+  const xs = [...sigs.entries()].sort((a, b) => a[1].slot - b[1].slot);
+  const used = new Set<string>();
+  const out = new Set<string>();
+  for (let i = 0; i < xs.length; i++) {
+    const [sig, v] = xs[i];
+    if (v.fills.length !== 1 || v.fills[0].side !== "buy") continue;
+    const f = v.fills[0];
+    for (let j = i + 1; j < xs.length; j++) {
+      const [bsig, w] = xs[j];
+      if (used.has(bsig) || !w.bridged?.some((b) => b.mint === f.mint && b.amount === f.amount_out)) continue;
+      used.add(bsig);
+      out.add(sig);
+      break;
+    }
+  }
+  return out;
+}
+
 const PUMP_PROGRAMS = new Set(["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]);
 
 class TradingIndex {
@@ -178,7 +215,10 @@ class TradingIndex {
   solScanAt = 0;
   cadre: { at: number; trades: Trade[]; pool: any; mandates: any[] } = { at: 0, trades: [], pool: null, mandates: [] };
   users: { at: number; v: UserTrader[] } = { at: 0, v: [] };
-  userSigs = new Map<string, Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint; self: boolean }[] }>>();
+  userSigs = new Map<string, Map<string, { slot: number; blockTime: number | null; fills: { mint: string; side: "buy" | "sell"; amount_in: bigint; amount_out: bigint; self: boolean }[]; bridged?: { mint: string; amount: bigint }[] }>>();
+  /** Per agent: buys whose CADRE the agent bridged to its own Cadre account for Cadre fees (the runtime's
+   * one-time self-funding, agent.ts selfFundCadre), left out of its fills: not a trade, not a position. */
+  feeBuys = new Map<string, number>();
   creators = new Map<string, { at: number; v: string | null }>(); // mint -> its pump creator (curve, else the canonical pool's coin_creator)
   userScanAt = new Map<string, number>();
   receipts = new Map<string, { post: string; decided_by: string | null }>(); // Solana signature -> the agent's receipt post on Cadre
@@ -197,7 +237,7 @@ class TradingIndex {
         const v = await verifyAgent(this.d, p.account).catch(() => null);
         const s = v?.doc?.spec;
         if (!s?.trade || !Array.isArray(s.trade.mints)) continue;
-        out.push({ account: p.account, handle: p.handle ?? null, name: p.name ?? null, creator: s.operator, hosting: s.hosting, sovereign: isSovereign(s), mints: s.trade.mints.slice(0, 4), verified: !!v?.verified });
+        out.push({ account: p.account, handle: p.handle ?? null, name: p.name ?? null, creator: s.operator, hosting: s.hosting, sovereign: isSovereign(s), mints: s.trade.mints.slice(0, 4), verified: !!v?.verified, real_swaps: realSwapsOn(s) });
       }
       if ((r.profiles ?? []).length < 200) break;
     }
@@ -255,14 +295,19 @@ class TradingIndex {
               fills.push({ mint, ...f, self });
             }
           }
-          seen.set(x.signature, { slot: x.slot, blockTime: x.blockTime, fills });
+          // a bridge deposit of a traded mint: the CADRE left the wallet for the agent's Cadre account
+          const bridged = pump ? [] : u.mints.map((mint) => ({ mint, amount: bridgedOut(t, u.account, mint) })).filter((b) => b.amount > 0n);
+          seen.set(x.signature, { slot: x.slot, blockTime: x.blockTime, fills, ...(bridged.length ? { bridged } : {}) });
         }));
       }
       if (fresh.length) await this.userReceipts(u.account).catch(() => {});
     }
     const out: Trade[] = [];
     for (const u of users) {
+      const fee = feeBuySigs(this.userSigs.get(u.account) ?? new Map());
+      this.feeBuys.set(u.account, fee.size);
       for (const [sig, v] of this.userSigs.get(u.account) ?? []) {
+        if (fee.has(sig)) continue;
         for (const f of v.fills) {
           const rc = this.receipts.get(sig);
           out.push({
@@ -477,7 +522,7 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
         const p = avgCostPnl(fills);
         out.push({
           chain: "solana", venue: "pumpswap", via: "wallet", kind: "user_agent", agent: u.account, handle: u.handle, name: u.name, creator: u.creator, hosting: u.hosting, sovereign: u.sovereign, verified: u.verified, mint,
-          own_token: own.has(mint),
+          own_token: own.has(mint), real_swaps: u.real_swaps, fee_buys: ix.feeBuys.get(u.account) ?? 0,
           position_spl: p.position.toString(), cost_basis_lamports: p.cost_basis.toString(), realized_pnl_lamports: p.realized.toString(),
           marked_at_mid_lamports: pool ? midValue(p.position, pool.base_reserve, pool.quote_reserve).toString() : null,
           trades: fills.length, last_trade_at: fills.length ? fills[fills.length - 1].at : null,
@@ -557,7 +602,7 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
         cadre: cfg.cadre ? { amm_pool: cfg.cadre.amm_pool, token: cfg.cadre.agent_token, mandate_contract: cfg.cadre.mandate_contract, reserves: st?.pool ?? null } : null,
       },
       house_traders: Object.entries(cfg.house).map(([account, handle]) => ({ account, handle })),
-      user_agents: (await need().ix.userTraders().catch(() => [])).length,
+      user_agents: (await need().ix.userTraders().catch(() => [])).filter((u) => u.real_swaps || t.solana.some((x) => x.agent === u.account && x.kind === "user_agent")).length,
       volume: {
         note: "quote-side volume per venue unit; house traders are excluded from organic and shown apart; user agents trading from their own wallets count as organic, except an agent's trades in a token it launched itself (self_trade), which are shown apart and never organic",
         solana_lamports: { organic: vol(t.solana, false).toString(), house: vol(t.solana, true).toString(), self_trade: selfVol(t.solana).toString() },
@@ -600,7 +645,9 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     const { cfg } = need();
     const [sol, cad, w] = await Promise.all([solPositions(() => true), cadrePositions(), walletPositions()]);
     const ownBoard = w.filter((x) => x.own_token);
-    const userBoard = w.filter((x) => !x.own_token).map((x) => ({ ...x })).sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : BigInt(y.realized_pnl_lamports) < BigInt(x.realized_pnl_lamports) ? -1 : 0));
+    // a practice agent (real swaps off) is listed only with real fills on record (legacy runners); its
+    // one CADRE buy for Cadre fees is not a fill (feeBuySigs)
+    const userBoard = w.filter((x) => !x.own_token && (x.real_swaps || x.trades > 0)).map((x) => ({ ...x })).sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : BigInt(y.realized_pnl_lamports) < BigInt(x.realized_pnl_lamports) ? -1 : 0));
     const solBoard = sol.map((m) => ({ agent: m.agent ?? "(revoked)", handle: m.agent ? cfg.house[m.agent] ?? null : null, house: m.house, kind: m.house ? "house" : "mandate", mandate: m.mandate, user: m.user, realized_pnl_lamports: m.realized_pnl_lamports, position_cadre_spl: m.cadre_position_spl, position_marked_at_mid_lamports: m.marked_at_mid_lamports, trades: m.trades, revoked: m.revoked, client_capital: m.user !== m.agent }))
       .sort((x, y) => (BigInt(y.realized_pnl_lamports) > BigInt(x.realized_pnl_lamports) ? 1 : -1));
     const cadBoard = [
@@ -609,7 +656,7 @@ export function registerTrading(api: Api, d: Deps, cfgIn?: TradingConfig | null)
     ].sort((x, y) => (BigInt(y.realized_pnl_cadre) > BigInt(x.realized_pnl_cadre) ? 1 : -1));
     return {
       note: "ranked by realized PnL per venue unit (no conversion between SOL and CADRE). Mandate PnL is realized in SOL or CADRE only: buying moves value into a token position, shown apart at the pool mid and never counted as profit. Revoked and losing agents stay listed; house traders are labelled",
-      user_agents: userBoard, user_agents_note: "user agents (organic): sovereign agents created by users, trading on Solana PumpSwap from their own wallets; realized PnL by average cost over their own fills, read from the landed txs",
+      user_agents: userBoard, user_agents_note: "user agents (organic): sovereign agents created by users, trading on Solana PumpSwap from their own wallets; realized PnL by average cost over their own fills, read from the landed txs. Listed when real swaps are on in the spec, or with real fills on record; a buy of CADRE bridged out whole for Cadre fees (fee_buys) is not a fill, so practice agents are not listed",
       user_agents_own_token: ownBoard,
       user_agents_own_token_note: "user agents trading tokens they launched themselves (the pump creator is the agent): self-trades, labelled and left out of the user_agents ranking and of organic volume; their PnL by the same average-cost rule",
       solana: solBoard, cadre: cadBoard,

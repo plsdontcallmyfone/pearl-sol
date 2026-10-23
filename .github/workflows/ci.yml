@@ -13,8 +13,10 @@ on:
 permissions:
   contents: read
 
+# Several sessions push to main: every push to main gets its own run (grouped by commit);
+# only a superseded pull_request run is cancelled.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -76,14 +78,18 @@ jobs:
             token -> target
             token/tests/bridge-litesvm -> target
             token/tests/lightclient-litesvm -> target
+            services/header-relay -> target
       - name: anchor build (localnet program ids from keys/localnet)
         working-directory: token
         run: |
           solana --version && anchor --version
           mkdir -p target/deploy
           for p in bridge lightclient mandate reserve storefront town; do cp ../keys/localnet/$p-keypair.json target/deploy/; done
-          anchor build
+          set -o pipefail
+          anchor build 2>&1 | tee anchor-build.log
           ls -l target/deploy/*.so target/idl/*.json
+      - name: SBF stack frames (a function flagged over 4096 bytes must not be linked)
+        run: scripts/ci/sbf-stack.sh token/anchor-build.log token/target
       - uses: actions/upload-artifact@v7
         with:
           name: token-programs
@@ -97,7 +103,12 @@ jobs:
       - name: light client LiteSVM
         working-directory: token/tests/lightclient-litesvm
         run: cargo test --locked
+      - name: header-relay (loads token/target/deploy/lightclient.so)
+        working-directory: services/header-relay
+        run: cargo test --locked
 
+  # Linux again since litesvm 1.4.0 (LiteSVM/litesvm#398 clears the x87 state the SBPF JIT left
+  # behind, the cause of 0.3.3's std::bad_alloc / garbage numbers on linux-x64, #171).
   node:
     needs: programs
     runs-on: ubuntu-latest
@@ -144,9 +155,6 @@ jobs:
             run: cargo test --locked
           - name: pearl-verify-sbf
             dir: crates/pearl-verify-sbf
-            run: cargo test --locked
-          - name: header-relay
-            dir: services/header-relay
             run: cargo test --locked
           - name: contracts
             dir: contracts/tests

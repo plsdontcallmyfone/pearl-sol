@@ -896,3 +896,87 @@ deploy town`, `node scripts/town-init.ts ...` at once (anyone can init), fund th
 cadre-api, cadre-desktops, cadre-swarm, cadre-agents and restarts one at a time; the site switch; then the
 node rollout of the sunset gate before `DEVNET_TOWN_SUNSET_HEIGHT` (12000, provisional; tip 6143 at 20:17 UTC
 2026-10-22). Exact commands: TOWN-ON-SOLANA.md section 7.
+
+## Storefront pending orders (2026-10-23, HANDOFF item 51)
+
+Read only diagnosis; nothing below has been run yet. One box at a time, health checks between.
+
+**1. Header relay (unsticks the light client at 6300, then the 9 completed orders settle).** Build from main
+with `--features devnet` (on box 0 as before, or the test box), keep the old binary:
+
+    cd /home/lode/pearl-sol && sudo -u lode git pull --ff-only    # or scripts/devnet-deploy.sh sync from the Mac
+    cd services/header-relay && sudo -u lode cargo build --release --features devnet --bin header-relay -j 2
+    cp -p /opt/lode/bin/header-relay /opt/lode/bin/header-relay.pre-uncle
+    install -m 755 target/release/header-relay /opt/lode/bin/header-relay.new && mv -f /opt/lode/bin/header-relay.new /opt/lode/bin/header-relay
+    systemctl restart cadre-header-relay && journalctl -u cadre-header-relay -f    # expect "verified 6300", lag falling
+    systemctl restart cadre-settle                                                  # same binary, settle side
+
+Prebuilt instead (same source as main 0ef3d50 for header-relay and every crate it uses; Ubuntu 24.04, glibc 2.39
+like the boxes): test box `/home/pearl/header-relay.uncle-fix`, sha256 `09ef7f76...f6ff00`; scp it to each box and
+check the sha before `install`. Then boxes 1 and 2 (same binary, `systemctl restart cadre-header-relay`). Check `curl -s 127.0.0.1:10685/v1/summary`:
+`light_client_lag.final_height` climbing past 6239, then `storefront.by_status.finalized` rising as the 9 closed
+tickets (55, 58, 65, 74, 82, 83, 85, 91, 109) settle. Rollback: copy header-relay.pre-uncle back.
+
+**2. storefront-x402 (no more exits after a payment; automatic reconcile).** After the code is on box 0's checkout:
+`systemctl restart cadre-storefront`. New records are `v: 2`; `curl -s 127.0.0.1:10662/payments/unserved` lists what
+is left. RECONCILE_MS (60000) / RECONCILE_AFTER_MS (120000) tune it.
+
+**3. Refund the 7 legacy payments (176,900,335 lamports) and close the 6 drafts.** Storefront wallet
+9kwgo5KN... held 1.247 SOL at 04:20 UTC. With the new code checked out:
+
+    systemctl stop cadre-storefront
+    cd /home/lode/pearl-sol/services/storefront-x402
+    R() { sudo -u lode sh -c 'set -a; . /etc/lode/services.env; set +a; STOREFRONT_WALLET=/etc/lode/keys/storefront-wallet.json STATE_FILE=/var/lib/lode/storefront-state.json exec /opt/lode/bin/with-rpc /home/lode/.local/node/bin/node src/reconcile.ts "$@"' _ "$@"; }
+    R                                   # lists 7 unserved + 6 drafts
+    R --check '6PnAwZImo2K0qzN/DDlfBOe76w8c6+CTaS2mqZLravo4kSpKoNJweIZzB+MupGMRduKqBHfeT/372QeGd6T/BA==,HkdFg6EMAj+PLhwRsC0BrSaSuRLV+aN5Az2/4yZU03HVOCZOlr2lyxli/NdHipzEFBTBREgfYIuW/7stw7RuBg==,yM+vBZ7tg7r5dP133JCvo/aES968xoImzoc2cQbzdZzcFFxsKqJLjAjpJyrzHEd5zevrmV4E4LNuvVmVBjFPBg==,5ldAq9OTkWIadKJYhT5Q9yQjMHkdk7nuuH7yOYAXlaDYIt3xUiVEwEawCoBzMpzXsrGcy2xaFITnQBi52vfiBQ==,1wDpxfIiuwie8u+lDHCgPFQZ6KBeY+2oQGIYwTWoOSBGmdgYgKvHb2h01xiSAouQedsbhIHW9xEediTiBcQ0Ag==,Lms1M2r/sFuNs1sMlZqDRes/8Xu0bNzI/qj8Ru+Vd3f+L2zZeNwkJos2KvRzj6pk/yYLyCMQj2w+v0XCzjwxBQ==,GxZcBtd0WIia21/KFcqNImQuWQWcgSWAvsV6rG7QhRlSHKDv97bKOzZaMmiqnwB6ejkSgKfl2Q8uhxvylKlUCw=='                      # each must show unattributed_orders []
+    R --refund '6PnAwZImo2K0qzN/DDlfBOe76w8c6+CTaS2mqZLravo4kSpKoNJweIZzB+MupGMRduKqBHfeT/372QeGd6T/BA==,HkdFg6EMAj+PLhwRsC0BrSaSuRLV+aN5Az2/4yZU03HVOCZOlr2lyxli/NdHipzEFBTBREgfYIuW/7stw7RuBg==,yM+vBZ7tg7r5dP133JCvo/aES968xoImzoc2cQbzdZzcFFxsKqJLjAjpJyrzHEd5zevrmV4E4LNuvVmVBjFPBg==,5ldAq9OTkWIadKJYhT5Q9yQjMHkdk7nuuH7yOYAXlaDYIt3xUiVEwEawCoBzMpzXsrGcy2xaFITnQBi52vfiBQ==,1wDpxfIiuwie8u+lDHCgPFQZ6KBeY+2oQGIYwTWoOSBGmdgYgKvHb2h01xiSAouQedsbhIHW9xEediTiBcQ0Ag==,Lms1M2r/sFuNs1sMlZqDRes/8Xu0bNzI/qj8Ru+Vd3f+L2zZeNwkJos2KvRzj6pk/yYLyCMQj2w+v0XCzjwxBQ==,GxZcBtd0WIia21/KFcqNImQuWQWcgSWAvsV6rG7QhRlSHKDv97bKOzZaMmiqnwB6ejkSgKfl2Q8uhxvylKlUCw=='
+    R --cancel-drafts                   # 6 x 4,109,720 lamports back to the wallet
+    systemctl start cadre-storefront
+
+Superseded for the drafts (2026-10-23, HANDOFF 52): the refunds above were run at 04:39 UTC (0 unserved payments in
+the state file at 07:20), the tool then hung and the storefront stayed stopped until 04:59. The 6 drafts are still
+open (listed read only at 07:20: 2zPCKRsE..., 4N7Qz63i..., 6vjuMXLy..., DrDbxpeZ..., Dx5nD1rj..., HVp58ZAE..., 4,109,720
+lamports each) and no payment record names them. Do NOT stop the storefront for them: see "Storefront draft sweep".
+
+| paid (UTC) | payer | lamports | payment signature |
+|---|---|---|---|
+| 10-20 18:03:03 | 2RFcwRKuCHzFtnR7CMrMzmEDknNdqzoHWCMoW8FBzqWo | 25,114,840 | 5Sc7tYwMMcAZ2Tha5RCBdLqGNSaRA3nQFvY6182VhAZbyvkCizpKMB8oGPLyxfNZtSx6Uszh99Cocbb3FL99crsM |
+| 10-21 16:06:29 | 9CDcU57w5vejND297HBjUvfxU58TuCHaaq7hJFwakaL7 | 25,152,550 | 28RkWT328ofNy78mWur5r5NM4pWfWt1z7A45CYrmTfa3hAU9PSKv1pxtArpefrJZChRSRbhy58AjmamcvrdpMN4S |
+| 10-21 16:41:19 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | 5KT3LCfwX4E17454CZwqJ12UQpqgjQCWL6HMaCPrE2zpZNVW7ruurMPGMs4pszGNTqY4H4JRysWnSadgbmUWB9WH |
+| 10-21 16:42:35 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | 4URHJe1UbDYQtd381m8b2X2qrFG77arChcPzwqZFXYYPpLn7kLMGi9iJVQQMbgrR1jrXMVj6sEDXPYfC89DSfnKY |
+| 10-21 16:43:24 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | TZ8v8in3NGkjPhhgaVry5xEuLda4e3yud5XhxgFdJJiRLR4puDjcFgeqeWikLp9jGBnvqUZg2kVNyW8W5YxNLfn |
+| 10-21 17:00:23 | FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge | 25,152,550 | YvLicCEyQPKKVz6hHGK2FwQTrtK7WFBGHqbAKVebmohigdBGSa5b63vvbk3ErmjNKTp8XBtZgPkPskiHjmMYsT5 |
+| 10-21 17:01:34 | FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge | 25,152,550 | 41jYHucfAREVGhG8zcrUCVegQtgv4HTyAniTc1tQKunSarnpHu6Mep2vTf9qwxieeQPA2fQk6oT1vW2rqGwzEJGX |
+
+Each payment tx is confirmed on devnet (payer down by exactly the amount, the wallet up by it less the fee),
+no later wallet-signed transfer pays these payers except Wk3qXjme... (the refund of FiL2yr's third payment,
+recorded), and no Order for these payers is unclaimed by another payment (`--check`, run read only from the Mac).
+
+## Storefront draft sweep and bounded RPC (2026-10-23, HANDOFF 52)
+
+storefront-x402 from main cancels orphaned OrderDrafts itself (an orphan is a draft no unserved payment names; see
+`orphanDrafts` in services/storefront-x402/src/service.ts), 30 s after start and then every DRAFT_SWEEP_MS (600000;
+0 = off). Each cancel takes the placement queue for one tx only. Every RPC request is bounded (30 s) and a
+confirmation polls getSignatureStatuses for at most 90 s (no websocket), so neither the service nor
+src/reconcile.ts can wait forever; reconcile.ts also exits on a watchdog (TOOL_TIMEOUT_MS, 600000, exit 2).
+`reconcile.ts --cancel-drafts` now runs with the service up (it writes no state); `--refund` still needs it stopped.
+
+Deploy on box 0 (one restart, about 2 s of top-ups refused while node starts):
+
+    scripts/devnet-deploy.sh sync          # from the Mac, or: cd /home/lode/pearl-sol && sudo -u lode git pull --ff-only
+    systemctl restart cadre-storefront
+    journalctl -u cadre-storefront -f      # within a minute: "cancelled orphan draft" x 6, then a "draft sweep" line
+    curl -s 127.0.0.1:10662/health         # ok
+
+Check from anywhere (read only): getProgramAccounts on 9XjvGk2x... with the OrderDraft discriminator and buyer
+9kwgo5KN... at offset 8 returns []; the wallet is up by 6 x 4,109,720 lamports less 6 tx fees. If the sweep logs
+"orphan draft cancel failed", it retries on the next sweep. Rollback: the previous checkout and the same restart.
+
+cadre-gateway (services/inference-gateway: a stopped storefront or blob store is now 503 upstream_unavailable with
+Retry-After, not 400; not urgent: the new judge retries a failed top-up either way). deploy/build.sh does not build it:
+
+    sudo -u lode bash -lc 'cd ~/pearl-sol/crates && cargo build --release -p cadre-gateway -j 2'
+    cp -p /opt/lode/bin/cadre-gateway /opt/lode/bin/cadre-gateway.pre-503
+    install -m 755 /home/lode/pearl-sol/crates/target/release/cadre-gateway /opt/lode/bin/cadre-gateway.new && mv -f /opt/lode/bin/cadre-gateway.new /opt/lode/bin/cadre-gateway
+    systemctl restart cadre-gateway && curl -s 127.0.0.1:10664/v1/models | head -c 200
+

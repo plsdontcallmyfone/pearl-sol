@@ -85,18 +85,82 @@ export function parseDecision(text: string, v: Values = {}): Decision {
 
 // ------------------------------------------------------------ the lesson of a post-mortem
 
+// The analyzer is the source of truth: the facts sentence (outcome, PnL, buckets) is written here,
+// and the model only words what to change (or keep) for the bucket the analyzer named, answer
+// first. Its line is checked against the facts and dropped when it contradicts them. Box 0,
+// 2026-10-22/23 (fixtures/lessons.json): the old "one sentence starting with LESSON:" got lessons
+// that called a trade that never filled "a significant loss", opened with "While I appreciate the
+// thoroughness of your review..." and were cut off by the 60-token cap before saying anything.
+
+const solStr = (lamports: string) => {
+  const x = Number(BigInt(lamports)) / 1e9;
+  return `${x > 0 ? "+" : x < 0 ? "-" : ""}${Math.abs(x)} SOL`;
+};
+const FIXABLE_BUCKETS: Bucket[] = ["INFORMATION", "THESIS", "EXECUTION", "SIZING", "RISK_MANAGEMENT"];
+
+/** The bucket the lesson is about: the first fixable one the analyzer found at fault, if any. */
+export function lessonFocus(r: Result): Bucket | null {
+  return r.names.find((b) => FIXABLE_BUCKETS.includes(b)) ?? null;
+}
+
+/** The facts of the post-mortem in plain words, from the analyzer's result only. */
+export function lessonFacts(r: Result): string {
+  const variance = r.names.length === 1 && r.names[0] === "VARIANCE";
+  const at = variance ? "no bucket at fault, the loss fits the stated win rate (VARIANCE)" : r.names.length ? `at fault: ${r.names.join(", ")}` : "no bucket at fault";
+  switch (r.outcome) {
+    case "no_fill": return `No fill: the entry was never filled, so nothing was bought and no SOL was gained or lost; ${at}.`;
+    case "flat": return `Flat: the trade closed even, no SOL gained or lost; ${at}.`;
+    case "win": return `Win: ${solStr(r.pnl_lamports)} on this trade; ${at}.`;
+    default: return `Loss: ${solStr(r.pnl_lamports)} on this trade; ${at}.`;
+  }
+}
+
 export function lessonPrompt(persona: string, r: Result): Msg[] {
-  const lines = r.verdicts.filter((x) => x.status !== "not_applicable").map((x) => `${x.bucket}: ${x.status}. ${x.evidence[0] ?? ""}`).join("\n");
+  const focus = lessonFocus(r);
+  const head = focus ? "FIX:" : "KEEP:";
+  const ev = focus ? r.verdicts.find((x) => x.bucket === focus)?.evidence.slice(0, 2).join("; ") ?? "" : "";
+  const ask = focus ? `the one thing to change next time about ${focus}` : "the one thing to keep doing next time";
   return [
-    { role: "system", content: `You are ${persona}. You review your own practice trade honestly. Write one sentence starting with LESSON:` },
-    { role: "user", content: `Outcome ${r.outcome}, PnL ${Number(r.pnl_lamports) / 1e9} SOL. Buckets at fault: ${r.names.join(", ") || "none"}.\n${lines}` },
+    { role: "system", content: `You are ${persona}. You review your own practice trade. The facts are final: do not restate, judge or change them. Answer first: one line that starts with ${head} and gives, in at most 20 words, ${ask}. No preamble.` },
+    { role: "user", content: `Facts: ${lessonFacts(r)}${focus ? `\nEvidence for ${focus}: ${ev}` : ""}\nReply with one line starting ${head}` },
   ];
 }
 
+/** The model's line: the text after FIX:/KEEP:/LESSON: (or the first line), filtered. */
 export function parseLesson(text: string): string {
-  const m = text.match(/LESSON:?\s*(.{1,280})/i);
-  const s = (m ? m[1] : text).split("\n")[0].trim().slice(0, 280);
+  const m = text.match(/\b(?:LESSON|FIX|KEEP)\b\s*:?\s*(.{1,280})/i);
+  const s = (m ? m[1] : text).split("\n")[0].trim().replace(/^[*_"'\s]+|[*_"\s]+$/g, "").slice(0, 280);
   return checkOutput(s, { maxBytes: 300 }).ok ? s : "";
+}
+
+/**
+ * Why a model line contradicts the analyzer's facts, or null when it does not: a trade that never
+ * filled (or closed flat) called a gain or a loss, a win called a loss or a loss a win, a SOL
+ * amount that is not this trade's PnL, a bucket named that the analyzer did not find, or a line
+ * addressed to the reviewer instead of the trade.
+ */
+export function lessonContradiction(line: string, r: Result): string | null {
+  const t = line.toLowerCase();
+  if (/\b(your review|the review|thoroughness|i must (correct|disagree|admit|express))\b/.test(t)) return "it answers the review instead of naming a change";
+  if ((r.outcome === "no_fill" || r.outcome === "flat") && /\b(loss|losses|lost|losing|lose|profit|profits|profitable|gain|gains|gained|won|win|wins|winning)\b/.test(t))
+    return r.outcome === "no_fill" ? "it speaks of a gain or a loss, but the entry never filled" : "it speaks of a gain or a loss, but the trade closed flat";
+  if (r.outcome === "win" && /\b(lost|losing trade|(a|the|this|significant|substantial|big|large|heavy) loss)\b/.test(t)) return "it calls a win a loss";
+  if (r.outcome === "loss" && /\b(won|winning trade|made a profit|was profitable|(a|the|this) (win|profit|gain))\b/.test(t)) return "it calls a loss a win";
+  const pnl = Math.abs(Number(BigInt(r.pnl_lamports)) / 1e9);
+  for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s*sol\b/g)) if (Math.abs(Number(m[1]) - pnl) > 1e-9) return `it names ${m[1]} SOL, but this trade's PnL is ${pnl} SOL`;
+  for (const b of BUCKETS) if (new RegExp(`\\b${b.replace("_", "[ _]")}\\b`).test(line) && !r.names.includes(b)) return `it names ${b}, which the analyzer did not find`;
+  return null;
+}
+
+export interface Lesson { lesson: string; facts: string; model_line: string; guard: string | null }
+
+/** The committed lesson: the analyzer's facts, then the model's line when it passes the guard. */
+export function composeLesson(text: string, r: Result): Lesson {
+  const facts = lessonFacts(r);
+  const line = parseLesson(text);
+  const guard = line ? lessonContradiction(line, r) : "no usable line";
+  const head = lessonFocus(r) ? "Next time" : "Keep";
+  return { lesson: guard ? facts : `${facts} ${head}: ${line}`, facts, model_line: line, guard };
 }
 
 // ------------------------------------------------------------ choosing a fix
