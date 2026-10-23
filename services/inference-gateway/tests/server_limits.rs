@@ -120,7 +120,10 @@ fn the_listener_outlives_idle_periods_longer_than_the_read_timeout() {
     assert_eq!(code, 200, "{text}");
 }
 
+/// Linux only, like the header case below: the body is read on the accepted socket, whose
+/// SO_RCVTIMEO comes from the listener only on Linux (see server::set_read_timeout).
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "macOS accepted sockets do not inherit SO_RCVTIMEO")]
 fn a_silent_client_is_cut_off_by_the_read_timeout() {
     let limits = Limits { read_timeout: Duration::from_secs(1), ..Limits::default() };
     let (addr, calls) = start(limits, Duration::ZERO);
@@ -129,6 +132,16 @@ fn a_silent_client_is_cut_off_by_the_read_timeout() {
     let (code, _) = raw(&addr, b"POST /v1/x HTTP/1.1\r\nHost: a\r\nContent-Length: 100\r\n\r\n{", Duration::from_secs(10));
     assert!(code == 408 || code == 0, "got {code}");
     assert!(t.elapsed() < Duration::from_secs(5), "took {:?}", t.elapsed());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// Linux only: tiny_http reads headers before our handler runs, and only Linux copies the
+/// listener's SO_RCVTIMEO to accepted sockets (see server::set_read_timeout).
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "macOS accepted sockets do not inherit SO_RCVTIMEO")]
+fn a_client_silent_inside_its_headers_is_cut_off_by_the_read_timeout() {
+    let limits = Limits { read_timeout: Duration::from_secs(1), ..Limits::default() };
+    let (addr, calls) = start(limits, Duration::ZERO);
     // half a request line, then silence (slowloris on the headers): the socket is closed
     let t = Instant::now();
     let (code, _) = raw(&addr, b"GET /v1/x HTT", Duration::from_secs(10));

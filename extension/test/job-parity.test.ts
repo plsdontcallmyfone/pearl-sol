@@ -10,7 +10,9 @@ import { LOCALNET_CONFIG_HEX, commitJob, commitOrder, decodeConfig, jobHeaderPro
 import { orderTermsHash } from "../src/chain/messages";
 
 const FIX = resolve(__dirname, "fixtures/job");
-const CLI = [resolve(__dirname, "../../crates/target/release/pearl-job"), resolve(__dirname, "../../crates/target/debug/pearl-job")].find(existsSync);
+const CLI = [process.env.PEARL_JOB_BIN, resolve(__dirname, "../../crates/target/release/pearl-job"), resolve(__dirname, "../../crates/target/debug/pearl-job")].filter((p): p is string => !!p).find(existsSync);
+// CI builds the CLI and sets PEARL_JOB_BIN, so a missing binary there is a broken pipeline, not a skip.
+if (!CLI && process.env.CI) throw new Error("CI: pearl-job CLI not found (set PEARL_JOB_BIN); the live parity tests would be skipped");
 
 const input = {
   poster: key32("6DDSqnFUxWMu66T4pgQJpaUxEmfYdrJLJdcJmUtL6HW7"),

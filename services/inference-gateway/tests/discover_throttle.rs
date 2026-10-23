@@ -86,7 +86,7 @@ fn anonymous_balance_reads_rescan_at_most_once_per_ttl() {
     let base = MiningConfig::localnet_default();
     let md = ModelInfo { model_id: standing::model_id(&[1; 32], b"m"), name: "test-model".into(), base, matrices: vec![(2048, 16)], hash_b: vec![[0; 32]], macs_per_row: 2048 * 16 };
     let n = Arc::new(AtomicUsize::new(0));
-    let cfg = Config { work_dir: tmp("discover"), ..Config::default() };
+    let cfg = Config { work_dir: tmp("discover"), min_free_disk_bytes: 0, ..Config::default() };
     let gw = Arc::new(Gateway::new(Box::new(CountNode(MockNode::new(1, 0x207fffff), n.clone())), Box::new(NoSf), Box::new(NoWorker), Box::new(NoEval),
         SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})));
     let w = bs58::encode([9u8; 32]).into_string();
