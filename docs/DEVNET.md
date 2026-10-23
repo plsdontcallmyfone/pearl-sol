@@ -930,6 +930,11 @@ is left. RECONCILE_MS (60000) / RECONCILE_AFTER_MS (120000) tune it.
     R --cancel-drafts                   # 6 x 4,109,720 lamports back to the wallet
     systemctl start cadre-storefront
 
+Superseded for the drafts (2026-10-23, HANDOFF 52): the refunds above were run at 04:39 UTC (0 unserved payments in
+the state file at 07:20), the tool then hung and the storefront stayed stopped until 04:59. The 6 drafts are still
+open (listed read only at 07:20: 2zPCKRsE..., 4N7Qz63i..., 6vjuMXLy..., DrDbxpeZ..., Dx5nD1rj..., HVp58ZAE..., 4,109,720
+lamports each) and no payment record names them. Do NOT stop the storefront for them: see "Storefront draft sweep".
+
 | paid (UTC) | payer | lamports | payment signature |
 |---|---|---|---|
 | 10-20 18:03:03 | 2RFcwRKuCHzFtnR7CMrMzmEDknNdqzoHWCMoW8FBzqWo | 25,114,840 | 5Sc7tYwMMcAZ2Tha5RCBdLqGNSaRA3nQFvY6182VhAZbyvkCizpKMB8oGPLyxfNZtSx6Uszh99Cocbb3FL99crsM |
@@ -943,3 +948,32 @@ is left. RECONCILE_MS (60000) / RECONCILE_AFTER_MS (120000) tune it.
 Each payment tx is confirmed on devnet (payer down by exactly the amount, the wallet up by it less the fee),
 no later wallet-signed transfer pays these payers except Wk3qXjme... (the refund of FiL2yr's third payment,
 recorded), and no Order for these payers is unclaimed by another payment (`--check`, run read only from the Mac).
+
+## Storefront draft sweep and bounded RPC (2026-10-23, HANDOFF 52)
+
+storefront-x402 from main cancels orphaned OrderDrafts itself (an orphan is a draft no unserved payment names; see
+`orphanDrafts` in services/storefront-x402/src/service.ts), 30 s after start and then every DRAFT_SWEEP_MS (600000;
+0 = off). Each cancel takes the placement queue for one tx only. Every RPC request is bounded (30 s) and a
+confirmation polls getSignatureStatuses for at most 90 s (no websocket), so neither the service nor
+src/reconcile.ts can wait forever; reconcile.ts also exits on a watchdog (TOOL_TIMEOUT_MS, 600000, exit 2).
+`reconcile.ts --cancel-drafts` now runs with the service up (it writes no state); `--refund` still needs it stopped.
+
+Deploy on box 0 (one restart, about 2 s of top-ups refused while node starts):
+
+    scripts/devnet-deploy.sh sync          # from the Mac, or: cd /home/lode/pearl-sol && sudo -u lode git pull --ff-only
+    systemctl restart cadre-storefront
+    journalctl -u cadre-storefront -f      # within a minute: "cancelled orphan draft" x 6, then a "draft sweep" line
+    curl -s 127.0.0.1:10662/health         # ok
+
+Check from anywhere (read only): getProgramAccounts on 9XjvGk2x... with the OrderDraft discriminator and buyer
+9kwgo5KN... at offset 8 returns []; the wallet is up by 6 x 4,109,720 lamports less 6 tx fees. If the sweep logs
+"orphan draft cancel failed", it retries on the next sweep. Rollback: the previous checkout and the same restart.
+
+cadre-gateway (services/inference-gateway: a stopped storefront or blob store is now 503 upstream_unavailable with
+Retry-After, not 400; not urgent: the new judge retries a failed top-up either way). deploy/build.sh does not build it:
+
+    sudo -u lode bash -lc 'cd ~/pearl-sol/crates && cargo build --release -p cadre-gateway -j 2'
+    cp -p /opt/lode/bin/cadre-gateway /opt/lode/bin/cadre-gateway.pre-503
+    install -m 755 /home/lode/pearl-sol/crates/target/release/cadre-gateway /opt/lode/bin/cadre-gateway.new && mv -f /opt/lode/bin/cadre-gateway.new /opt/lode/bin/cadre-gateway
+    systemctl restart cadre-gateway && curl -s 127.0.0.1:10664/v1/models | head -c 200
+

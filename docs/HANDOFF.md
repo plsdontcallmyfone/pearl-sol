@@ -1817,6 +1817,27 @@ CLAUDE.md "Who is working on what".
       refuses while the service runs). Tests: storefront-x402 20, header-relay 1 + 3 + 8 catchup, explorer 68.
     - Deploy and the refund steps: DEVNET.md "Storefront pending orders (2026-10-23)".
 
+52. JUDGE TOP-UP 400 AND THE STOREFRONT DRAFTS (2026-10-23, "judge top-up + storefront drafts" row).
+    - Cause: cadre-storefront was stopped 04:39:20-04:59:48 UTC to run reconcile.ts --cancel-drafts (the tool did its
+      refunds, then hung). Meanwhile the gateway's top-up called the storefront, got "connection refused", and its
+      catch-all turned that into 400 invalid_request_error, so the judge logged "top-up quote: status code 400".
+      Nothing in the judge's request was wrong (ureq sends the same POST {"rows":2048} as curl; it got 402 again from
+      05:00). Hire 73 then used its 3 tries on gateway 402s and the judge skipped it from then on; it expired at
+      7180 unjudged (buyer refunds from the hire page).
+    - Fixes on main: gateway topup and per-request x402 answer 503 upstream_unavailable + Retry-After 30 when the
+      storefront or the blob store does not answer (tests/upstream_down.rs). Judge (judge.rs): failures before a paid
+      answer (gateway 402/408/429/5xx or transport, failed top-up, node reads, blobs not served yet) are free retries
+      with a 20 s doubling backoff (10 min cap) and do not use the 3 tries, which now count only answers that cost a
+      thought; the top-up error logs the gateway's body.
+    - Test box judge rebuilt (~/market-build, judge.rs from 3143f7e) and restarted 05:42 UTC, pid 1132393: topped up
+      2048 rows; verdicts REJECT 77 (107dc1b6...), REJECT 78 (414e59be...), ACCEPT 79 (c5cd8027...).
+    - Not fixed: hires 76 and 81 got "no VERDICT line" 3 times each. Decoding is greedy, so the 3 tries give the same
+      answer and cost 3 thoughts; the 1B model's format is the problem (judge prompt / parse_answer).
+    - storefront-x402: bounded RPC (30 s requests, polled confirmation <= 90 s, no websocket), reconcile.ts always
+      exits (watchdog), --cancel-drafts runs with the service up and skips drafts an unserved payment names, and the
+      service sweeps orphaned drafts itself every 10 min (test/rpc-bounds.test.ts, 2 new tests in service.test.ts;
+      29 pass). The 6 drafts are still open and orphaned; deploy = DEVNET "Storefront draft sweep".
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
