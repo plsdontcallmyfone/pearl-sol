@@ -58,7 +58,9 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
    agents has a toolbelt. The TOOLBELT.md 11.1 e2e delivery is unfinished.
 3. The paid planner for one-screen create is off (no `AGENTS_PLANNER_KEY`); the site matches keywords.
 4. Gateway request data: 8.59 GB waiting at the 8 GB pressure line; the 64 GB cap is item 37's
-   stopgap, to revert after the drain. Storefront: 64 of 93 orders pending (`/v1/summary`).
+   stopgap, to revert after the drain. Storefront: 64 of 93 orders pending (`/v1/summary`): all paid and on the chain; 9 wait on
+   the light client, stuck at 6300 since 2026-10-22 21:39 UTC until the header-relay uncle fix is deployed;
+   7 payments (0.1769 SOL) were taken without an Order and need the refunds in DEVNET.md (item 48).
 5. Desktops: one unhealthy (campion66 Social, "browser host down"); model 402 pauses are the
    desktops resilience row's work.
 6. Connect SDK and py: local posts and DMs still need the Solana town builders (item 43).
@@ -1703,6 +1705,34 @@ CLAUDE.md "Who is working on what".
       80,000,000 cap = three tickets a day.
     - Deploy: box 0 sync main + restart cadre-agents (cadre-swarm optional, its behaviour is unchanged); site
       redeploy for cadre-web. Existing agents keep their signed caps and recover at 00:00 UTC with 8,192-row tickets.
+
+48. STOREFRONT PENDING ORDERS: LIGHT CLIENT STUCK AT 6300, 7 PAID PAYMENTS WITHOUT AN ORDER (2026-10-23, "storefront
+    pending orders" row; box 0 read only). At 03:50 UTC: 93 Orders (23 finalized, 6 refunded, 64 pending), 102 x402
+    payments in /var/lib/lode/storefront-state.json.
+    - What "pending" means: an Order exists only after the x402 payment settled AND buy_job ran, so every Pending
+      Order is paid. All 64 have their job on the chain (relayer unlocked them; rows credited): 54 open tickets
+      (live prepaid balances, close when used up or expire at posted + 10,000 blocks), 1 delivered, 9 completed
+      but not settled because the light client is behind. Nothing pending is a stale quote; quotes create nothing.
+    - The light client has been stuck at final 6239 / tip 6299 since 2026-10-22 21:39 UTC: every job posted in
+      block 6299 failed begin_verify_job with TxPath (6016), resent forever (failed_txs about 9,970 at 5,000
+      lamports each from ops). Cause: header-relay rebuilt tx_root paths from txs + contracts record + coinbase,
+      but the chain puts the UNCLE records (SPEED.md 3.3, leaf 0x03) between them; 6299 credits an uncle (66 txs,
+      coinbase leaf_index 67). Fix: chain::block_body_of appends uncle records and refuses a body whose rebuilt
+      root differs from header_fields.tx_root (no more doomed sends); regression on the real block
+      (services/header-relay/tests/block_body.rs + fixtures/devnet-block-6299-uncle.json: node paths equal ours).
+      settle (CompleteJob paths) used the same body, so it is fixed too.
+    - The explorer showed on_chain_job false for 55 of them: listJobs is a 10,000-job window that segment jobs fill
+      in hours. Order jobs outside it are now read by getJob and kept (apps/explorer indexer fillOrderJobs);
+      /v1/summary storefront.pending_by_stage.
+    - Paid without an Order: 7 payments, 176,900,335 lamports, all legacy records. 6 are crashes of
+      storefront-x402 (an uncaught web3.js 429 exits node right after the payment was taken: 10-20 18:03, 10-21
+      16:41, 16:42, 16:43, 17:00, 17:01 UTC), 1 is a refund that failed on a 429 (10-21 16:06). Six OrderDrafts
+      (4,109,720 lamports each) are left open by them. Fix: main.ts survives the 429 throw/rejection; records are
+      v 2 with placement steps (draft, opened, buy_sent, cancelled); reconcile() every 60 s refunds v 2 payments
+      without an Order once no buy_job can land, retries failed refunds, and holds for review when a buy may have
+      landed; GET /payments/unserved; src/reconcile.ts for the legacy ones (list, --check, --refund, --cancel-drafts,
+      refuses while the service runs). Tests: storefront-x402 20, header-relay 1 + 3 + 8 catchup, explorer 68.
+    - Deploy and the refund steps: DEVNET.md "Storefront pending orders (2026-10-23)".
 
 ## M1 components (SPEC v2, all DONE)
 

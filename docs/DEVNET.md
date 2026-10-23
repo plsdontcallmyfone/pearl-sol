@@ -893,3 +893,51 @@ deploy town`, `node scripts/town-init.ts ...` at once (anyone can init), fund th
 cadre-api, cadre-desktops, cadre-swarm, cadre-agents and restarts one at a time; the site switch; then the
 node rollout of the sunset gate before `DEVNET_TOWN_SUNSET_HEIGHT` (12000, provisional; tip 6143 at 20:17 UTC
 2026-10-22). Exact commands: TOWN-ON-SOLANA.md section 7.
+
+## Storefront pending orders (2026-10-23, HANDOFF item 48)
+
+Read only diagnosis; nothing below has been run yet. One box at a time, health checks between.
+
+**1. Header relay (unsticks the light client at 6300, then the 9 completed orders settle).** Build from main
+with `--features devnet` (on box 0 as before, or the test box), keep the old binary:
+
+    cd /home/lode/pearl-sol && sudo -u lode git pull --ff-only    # or scripts/devnet-deploy.sh sync from the Mac
+    cd services/header-relay && sudo -u lode cargo build --release --features devnet --bin header-relay -j 2
+    cp -p /opt/lode/bin/header-relay /opt/lode/bin/header-relay.pre-uncle
+    install -m 755 target/release/header-relay /opt/lode/bin/header-relay.new && mv -f /opt/lode/bin/header-relay.new /opt/lode/bin/header-relay
+    systemctl restart cadre-header-relay && journalctl -u cadre-header-relay -f    # expect "verified 6300", lag falling
+    systemctl restart cadre-settle                                                  # same binary, settle side
+
+Then boxes 1 and 2 (same binary, `systemctl restart cadre-header-relay`). Check `curl -s 127.0.0.1:10685/v1/summary`:
+`light_client_lag.final_height` climbing past 6239, then `storefront.by_status.finalized` rising as the 9 closed
+tickets (55, 58, 65, 74, 82, 83, 85, 91, 109) settle. Rollback: copy header-relay.pre-uncle back.
+
+**2. storefront-x402 (no more exits after a payment; automatic reconcile).** After the code is on box 0's checkout:
+`systemctl restart cadre-storefront`. New records are `v: 2`; `curl -s 127.0.0.1:10662/payments/unserved` lists what
+is left. RECONCILE_MS (60000) / RECONCILE_AFTER_MS (120000) tune it.
+
+**3. Refund the 7 legacy payments (176,900,335 lamports) and close the 6 drafts.** Storefront wallet
+9kwgo5KN... held 1.247 SOL at 04:20 UTC. With the new code checked out:
+
+    systemctl stop cadre-storefront
+    cd /home/lode/pearl-sol/services/storefront-x402
+    R() { sudo -u lode sh -c 'set -a; . /etc/lode/services.env; set +a; STOREFRONT_WALLET=/etc/lode/keys/storefront-wallet.json STATE_FILE=/var/lib/lode/storefront-state.json exec /opt/lode/bin/with-rpc /home/lode/.local/node/bin/node src/reconcile.ts "$@"' _ "$@"; }
+    R                                   # lists 7 unserved + 6 drafts
+    R --check '6PnAwZImo2K0qzN/DDlfBOe76w8c6+CTaS2mqZLravo4kSpKoNJweIZzB+MupGMRduKqBHfeT/372QeGd6T/BA==,HkdFg6EMAj+PLhwRsC0BrSaSuRLV+aN5Az2/4yZU03HVOCZOlr2lyxli/NdHipzEFBTBREgfYIuW/7stw7RuBg==,yM+vBZ7tg7r5dP133JCvo/aES968xoImzoc2cQbzdZzcFFxsKqJLjAjpJyrzHEd5zevrmV4E4LNuvVmVBjFPBg==,5ldAq9OTkWIadKJYhT5Q9yQjMHkdk7nuuH7yOYAXlaDYIt3xUiVEwEawCoBzMpzXsrGcy2xaFITnQBi52vfiBQ==,1wDpxfIiuwie8u+lDHCgPFQZ6KBeY+2oQGIYwTWoOSBGmdgYgKvHb2h01xiSAouQedsbhIHW9xEediTiBcQ0Ag==,Lms1M2r/sFuNs1sMlZqDRes/8Xu0bNzI/qj8Ru+Vd3f+L2zZeNwkJos2KvRzj6pk/yYLyCMQj2w+v0XCzjwxBQ==,GxZcBtd0WIia21/KFcqNImQuWQWcgSWAvsV6rG7QhRlSHKDv97bKOzZaMmiqnwB6ejkSgKfl2Q8uhxvylKlUCw=='                      # each must show unattributed_orders []
+    R --refund '6PnAwZImo2K0qzN/DDlfBOe76w8c6+CTaS2mqZLravo4kSpKoNJweIZzB+MupGMRduKqBHfeT/372QeGd6T/BA==,HkdFg6EMAj+PLhwRsC0BrSaSuRLV+aN5Az2/4yZU03HVOCZOlr2lyxli/NdHipzEFBTBREgfYIuW/7stw7RuBg==,yM+vBZ7tg7r5dP133JCvo/aES968xoImzoc2cQbzdZzcFFxsKqJLjAjpJyrzHEd5zevrmV4E4LNuvVmVBjFPBg==,5ldAq9OTkWIadKJYhT5Q9yQjMHkdk7nuuH7yOYAXlaDYIt3xUiVEwEawCoBzMpzXsrGcy2xaFITnQBi52vfiBQ==,1wDpxfIiuwie8u+lDHCgPFQZ6KBeY+2oQGIYwTWoOSBGmdgYgKvHb2h01xiSAouQedsbhIHW9xEediTiBcQ0Ag==,Lms1M2r/sFuNs1sMlZqDRes/8Xu0bNzI/qj8Ru+Vd3f+L2zZeNwkJos2KvRzj6pk/yYLyCMQj2w+v0XCzjwxBQ==,GxZcBtd0WIia21/KFcqNImQuWQWcgSWAvsV6rG7QhRlSHKDv97bKOzZaMmiqnwB6ejkSgKfl2Q8uhxvylKlUCw=='
+    R --cancel-drafts                   # 6 x 4,109,720 lamports back to the wallet
+    systemctl start cadre-storefront
+
+| paid (UTC) | payer | lamports | payment signature |
+|---|---|---|---|
+| 10-20 18:03:03 | 2RFcwRKuCHzFtnR7CMrMzmEDknNdqzoHWCMoW8FBzqWo | 25,114,840 | 5Sc7tYwMMcAZ2Tha5RCBdLqGNSaRA3nQFvY6182VhAZbyvkCizpKMB8oGPLyxfNZtSx6Uszh99Cocbb3FL99crsM |
+| 10-21 16:06:29 | 9CDcU57w5vejND297HBjUvfxU58TuCHaaq7hJFwakaL7 | 25,152,550 | 28RkWT328ofNy78mWur5r5NM4pWfWt1z7A45CYrmTfa3hAU9PSKv1pxtArpefrJZChRSRbhy58AjmamcvrdpMN4S |
+| 10-21 16:41:19 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | 5KT3LCfwX4E17454CZwqJ12UQpqgjQCWL6HMaCPrE2zpZNVW7ruurMPGMs4pszGNTqY4H4JRysWnSadgbmUWB9WH |
+| 10-21 16:42:35 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | 4URHJe1UbDYQtd381m8b2X2qrFG77arChcPzwqZFXYYPpLn7kLMGi9iJVQQMbgrR1jrXMVj6sEDXPYfC89DSfnKY |
+| 10-21 16:43:24 | Cu4bS99S37e2dsCfySse8NLkVr8goaCHmz1sRQPMVkMM | 25,442,615 | TZ8v8in3NGkjPhhgaVry5xEuLda4e3yud5XhxgFdJJiRLR4puDjcFgeqeWikLp9jGBnvqUZg2kVNyW8W5YxNLfn |
+| 10-21 17:00:23 | FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge | 25,152,550 | YvLicCEyQPKKVz6hHGK2FwQTrtK7WFBGHqbAKVebmohigdBGSa5b63vvbk3ErmjNKTp8XBtZgPkPskiHjmMYsT5 |
+| 10-21 17:01:34 | FiL2yraRKYadA9KL8Po7PnP5Lh7tGsGEcr1h5gJgcge | 25,152,550 | 41jYHucfAREVGhG8zcrUCVegQtgv4HTyAniTc1tQKunSarnpHu6Mep2vTf9qwxieeQPA2fQk6oT1vW2rqGwzEJGX |
+
+Each payment tx is confirmed on devnet (payer down by exactly the amount, the wallet up by it less the fee),
+no later wallet-signed transfer pays these payers except Wk3qXjme... (the refund of FiL2yr's third payment,
+recorded), and no Order for these payers is unclaimed by another payment (`--check`, run read only from the Mac).
