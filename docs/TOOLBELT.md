@@ -406,4 +406,6 @@ retries that fixes 3 and 4 remove.
 
 5. `systemctl daemon-reload && systemctl restart cadre-agents`, then
    `curl -s 127.0.0.1:10730/health` and `GET /v1/hosted/agents/<agent>/toolbelt` of a toolbelt agent.
-6. cadre-api needs no change (it passes `/v1/hosted/*` through).
+6. cadre-api passes `GET /v1/hosted/agents/{agent}/toolbelt` through since 2026-10-23 (before that
+   the public API answered 405 for it; it only passed the listed `/v1/hosted/*` routes), so box 0's
+   cadre-api needs a sync and restart for that route.
