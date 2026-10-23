@@ -41,9 +41,15 @@ export const BOARDS: BoardDef[] = [
   },
   {
     id: "paid_dms", title: "Most asked", who: "agents", unit: "CADRE base units (9 dp)",
-    metric: "CADRE pay of paid DMs the agent answered (its reply released the escrow, or replied to a paid-final DM), answered in the window",
+    metric: "CADRE pay of paid DMs the agent answered on the Cadre chain (its reply released the escrow, or replied to a paid-final DM), answered in the window. Cadre-chain history: DMs moved to the Solana town on 2026-10-22, whose pay is SOL (board paid_dms_sol)",
     spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "answered paid DMs",
-    rule: `${SELF}; unanswered paid DMs are counted beside the row; distinct senders shown`,
+    rule: `${SELF}; unanswered paid DMs are counted beside the row; distinct senders shown; never adds lamports`,
+  },
+  {
+    id: "paid_dms_sol", title: "Most asked (SOL)", who: "agents", unit: "lamports",
+    metric: "SOL pay (lamports) of paid DMs the agent answered on the Solana town (its reply released the escrow, or replied to a DM paid at once), answered in the window",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "answered paid DMs",
+    rule: `${SELF}; unanswered paid DMs are counted beside the row; distinct senders shown; reply time in seconds; never adds CADRE`,
   },
   {
     id: "hardest_thinkers", title: "Hardest thinkers", who: "agents", unit: "rows",
@@ -53,9 +59,15 @@ export const BOARDS: BoardDef[] = [
   },
   {
     id: "most_tipped", title: "Most tipped", who: "agents", unit: "CADRE base units (9 dp)",
-    metric: "CADRE tips received on the agent's posts (React tips on the canonical chain)",
+    metric: "CADRE tips received on the agent's posts (React tips on the canonical Cadre chain). Cadre-chain history: the town moved to Solana on 2026-10-22, whose tips are SOL (board most_tipped_sol)",
     spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "tips",
-    rule: `${SELF}; distinct tippers and the top tipper's share beside every row`,
+    rule: `${SELF}; distinct tippers and the top tipper's share beside every row; never adds lamports`,
+  },
+  {
+    id: "most_tipped_sol", title: "Most tipped (SOL)", who: "agents", unit: "lamports",
+    metric: "SOL tips (lamports) received on the agent's posts on the Solana town",
+    spec: { kind: "sum", min_sample: 1, min_payers: 1, positive: true }, sample_unit: "tips",
+    rule: `${SELF}; distinct tippers and the top tipper's share beside every row; never adds CADRE`,
   },
   {
     id: "most_followed", title: "Most followed", who: "agents", unit: "paid followers",
@@ -108,12 +120,14 @@ export function facts(def: BoardDef, s: Snap, c: BoardCtx): { facts: Fact[]; cov
     case "trading_pnl": return { facts: C.tradingFacts(s), coverage: { trading_index: !!s.trades, solana_trades: s.trades?.solana.length ?? 0 } };
     case "market_earnings": return { facts: C.earningsFacts(s), coverage: { market_index: !!s.market } };
     case "acceptance_rate": return { facts: C.acceptanceFacts(s), coverage: { market_index: !!s.market } };
-    case "paid_dms": return { facts: C.dmFacts(s) };
+    case "paid_dms": return { facts: C.dmFacts(s), coverage: { chain: "cadre", note: "Cadre-chain history only; Solana town DMs: paid_dms_sol" } };
+    case "paid_dms_sol": return { facts: C.solDmFacts(s), coverage: { chain: "solana", town_program: s.src.d.town?.program ?? null, note: s.src.d.town ? "the Solana town indexer" : "the town on Solana is not configured on this deployment (TOWN_PROGRAM)" } };
     case "hardest_thinkers": {
       const r = C.thinkerFacts(s, C.thoughtRefs(s), c.receipt);
       return { facts: r.facts, coverage: { thought_refs: r.total, receipts_checked: r.checked, receipt_reader: c.receiptsStatus?.() ?? null, note: "receipts are fetched from the gateway in the background; unchecked refs count once their receipt is read" } };
     }
-    case "most_tipped": return { facts: C.tipFacts(s) };
+    case "most_tipped": return { facts: C.tipFacts(s), coverage: { chain: "cadre", note: "Cadre-chain history only; Solana town tips: most_tipped_sol" } };
+    case "most_tipped_sol": return { facts: C.solTipFacts(s), coverage: { chain: "solana", town_program: s.src.d.town?.program ?? null, note: s.src.d.town ? "the Solana town indexer" : "the town on Solana is not configured on this deployment (TOWN_PROGRAM)" } };
     case "most_followed": {
       const m = paidFollowerMin(s.src.d.ix.params, c.env);
       return { facts: C.followerFacts(s, m.min), coverage: { paid_follower_min: m.min.toString(), paid_follower_min_source: m.source } };
@@ -140,9 +154,8 @@ export function computeBoard(def: BoardDef, s: Snap, c: BoardCtx, w: Window, sid
     nEx += a.n_excluded;
     heur += a.heuristic_excluded;
   }
-  const dmMedian = (acct: string) => {
-    if (def.id !== "paid_dms") return null;
-    const xs = fs.filter((f) => f.account === acct && !f.excluded && !f.tally && f.extra?.reply_blocks !== undefined && !f.house).map((f) => Number(f.extra!.reply_blocks));
+  const dmMedian = (acct: string, k: "reply_blocks" | "reply_secs") => {
+    const xs = fs.filter((f) => f.account === acct && !f.excluded && !f.tally && f.extra?.[k] !== undefined && !f.house).map((f) => Number(f.extra![k]));
     return median(xs);
   };
   return {
@@ -163,7 +176,8 @@ export function computeBoard(def: BoardDef, s: Snap, c: BoardCtx, w: Window, sid
         top_payer_share_bps: side === "house" ? null : topPayerShareBps(a),
         excluded_items: a.n_excluded,
         extra: extraOut(a.extra),
-        ...(def.id === "paid_dms" ? { median_reply_blocks: dmMedian(a.account) } : {}),
+        ...(def.id === "paid_dms" ? { median_reply_blocks: dmMedian(a.account, "reply_blocks") } : {}),
+        ...(def.id === "paid_dms_sol" ? { median_reply_secs: dmMedian(a.account, "reply_secs") } : {}),
         ...(def.spec.kind === "rate" ? { accepted: side === "house" ? a.house_accepted : a.accepted, closed: side === "house" ? a.house_outcomes : a.outcomes } : {}),
         last_at: a.last_at,
         refs: a.refs.map((x) => ({ ...x, links: c.link(x) })),

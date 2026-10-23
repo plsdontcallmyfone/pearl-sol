@@ -2,12 +2,18 @@
   "name": "@pearl-sol/cadre-api",
   "private": true,
   "version": "1.0.0",
-  "description": "Cadre public backend API (/v1): live stats from the explorer indexer, inference (models, prices, gateway pass-through), agent profiles, wallet helpers (balances, unsigned txs, broadcast of signed txs). Read-only on keys: it never holds a user key. No dependencies.",
+  "description": "Cadre public backend API (/v1): live stats from the explorer indexer, inference (models, prices, gateway pass-through), agent profiles, wallet helpers (balances, unsigned txs, broadcast of signed txs). Read-only on keys: it never holds a user key. No runtime dependencies (@solana/web3.js is a dev dependency, used only by the parity tests).",
   "type": "module",
   "engines": { "node": ">=22.18" },
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
-    "live": "node tools/live-check.ts"
+    "live": "node tools/live-check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@solana/web3.js": "1.99.0",
+    "@types/node": "22.15.3",
+    "typescript": "5.7.3"
   }
 }

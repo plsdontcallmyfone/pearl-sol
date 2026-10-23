@@ -112,7 +112,7 @@ fn gateway(tag: &str, matrices: usize, max_ticket_blocks: u32, max_balance_rows:
     let md = model(matrices);
     let params = json!({"max_balance_rows": 65_536, "max_job_blocks": 100_000, "target_block_time_ms": 60_000, "min_fee": 1000});
     let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32,
-        max_ticket_blocks, max_balance_rows, ..Config::default() };
+        max_ticket_blocks, max_balance_rows, min_free_disk_bytes: 0, ..Config::default() };
     Arc::new(Gateway::new(Box::new(ParamsNode(MockNode::new(1, 0x207fffff), params)), Box::new(FakeSf), Box::new(FakeWorker(md.clone())),
         Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})))
 }

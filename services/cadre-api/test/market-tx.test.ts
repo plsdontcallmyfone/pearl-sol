@@ -23,6 +23,8 @@ const CRANK = fileURLToPath(new URL("../../crank/", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const HAVE = existsSync(join(CRANK, "node_modules/@pump-fun/pump-sdk")) && existsSync(join(ROOT, "token/target/idl/storefront.json"));
 const skip = HAVE ? false : "services/crank node_modules or token/target/idl missing";
+// CI provides both (npm ci in services/crank, anchor build in token/), so a skip there is a broken pipeline.
+if (!HAVE && process.env.CI) throw new Error("CI: services/crank node_modules or token/target/idl missing; the parity tests would be skipped");
 
 // crank-side modules (CommonJS builds, one web3.js copy, as services/crank loads them)
 const req = createRequire(join(CRANK, "package.json"));

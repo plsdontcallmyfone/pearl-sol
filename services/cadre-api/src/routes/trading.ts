@@ -151,7 +151,7 @@ export function walletFill(t: any, owner: string, mint: string): { side: "buy" |
   const i = keys.indexOf(owner);
   const meta = t?.meta;
   if (i < 0 || !meta || meta.err) return null;
-  const tok = (list: any[]) => (list ?? []).filter((b) => b.mint === mint && b.owner === owner).reduce((s, b) => s + BigInt(b.uiTokenAmount?.amount ?? 0), 0n);
+  const tok = (list: any[]): bigint => (list ?? []).filter((b) => b.mint === mint && b.owner === owner).reduce((s, b) => s + BigInt(b.uiTokenAmount?.amount ?? 0), 0n);
   const dTok = tok(meta.postTokenBalances) - tok(meta.preTokenBalances);
   if (dTok === 0n) return null;
   const fee = BigInt(meta.fee ?? 0);

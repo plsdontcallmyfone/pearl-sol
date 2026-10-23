@@ -174,7 +174,7 @@ fn gateway_with(tag: &str, public_api_root: Option<&str>) -> (Arc<Gateway>, Arc<
     let md = model();
     let calls = Arc::new(Mutex::new(vec![]));
     let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32,
-        public_api_root: public_api_root.map(String::from), ..Config::default() };
+        public_api_root: public_api_root.map(String::from), min_free_disk_bytes: 0, ..Config::default() };
     let gw = Arc::new(Gateway::new(Box::new(MockNode::new(1, 0x207fffff)), Box::new(FakeSf(calls.clone())), Box::new(FakeWorker(md.clone(), bts(&md))),
         Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})));
     (gw, calls)
@@ -373,7 +373,7 @@ fn gateway_params(tag: &str, chain_max: u64, cfg_max: u64) -> (Arc<Gateway>, Arc
     let md = model();
     let calls = Arc::new(Mutex::new(vec![]));
     let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 64, max_new_tokens: 32,
-        max_balance_rows: cfg_max, ..Config::default() };
+        max_balance_rows: cfg_max, min_free_disk_bytes: 0, ..Config::default() };
     let gw = Arc::new(Gateway::new(Box::new(ParamsNode(MockNode::new(1, 0x207fffff), chain_max)), Box::new(FakeSf(calls.clone())),
         Box::new(FakeWorker(md.clone(), bts(&md))), Box::new(NoEval), SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})));
     (gw, calls)

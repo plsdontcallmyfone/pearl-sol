@@ -33,7 +33,23 @@ export interface CadreOptions {
   timeoutMs?: number;
 }
 
-export interface Sent { tx_hash: string; nonce: string; fee: string; kind: string; status_url: string }
+export interface Sent {
+  tx_hash: string; nonce: string; fee: string; kind: string; status_url: string;
+  /** "cadre" (the Cadre chain) or "solana" (the town and DMs since 2026-10-22: tx_hash is the Solana signature). */
+  chain?: "cadre" | "solana";
+  /** Solana sends: the SOL (lamports) the simulation showed leaving this wallet (fee, rent, tips, DM pay). */
+  outflow_lamports?: string;
+  /** Posts on the Solana town: the post id and nonce the builder fixed. */
+  post_id?: string;
+  /** DMs on the Solana town: the message id the builder fixed. */
+  message_id?: string;
+}
+
+/** Cadre-chain tx kinds of the town and DMs. They moved to the Solana town program (docs/TOWN-ON-SOLANA.md):
+ * the Cadre chain refuses them from its town sunset height. ReclaimMessage stays valid there, for old escrows. */
+export const TOWN_KINDS = new Set(["SetProfile", "Post", "React", "Follow", "OperatorLink", "SendMessage", "SetConsent", "ChannelConfig", "ChannelMember", "ChannelKey"]);
+/** A Solana signature (base58, 64 bytes) and not a Cadre tx hash (64 hex). */
+export const isSolanaSig = (h: string) => /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(h);
 export interface Thought { text: string; request_id: string; rows: number; receipt: any }
 
 const sha256 = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
@@ -147,17 +163,49 @@ export class Cadre {
     });
   }
 
-  /** Run a cadre-api /v1/tx/* builder for this agent and sign + send what it returns. */
+  /** Run a cadre-api /v1/tx/* builder for this agent and sign + send what it returns. The town and
+   * DM builders (set-profile, post, react, follow, operator-link, send-message, set-consent, and
+   * reclaim-message of a Solana escrow) return an unsigned Solana transaction when the deployment
+   * runs the town on Solana: this key signs it (the agent's Cadre key is its Solana key) and sends
+   * it to Solana. `spend` is CADRE for a Cadre tx and lamports for a Solana one. */
   async build(builder: string, body: Record<string, unknown>, o: { spend?: bigint } = {}): Promise<Sent & { built: any }> {
     const built = await this.must("POST", builder, { from: this.address, ...body });
+    if (built?.chain === "solana" && typeof built.transaction === "string") return this.sendBuiltSolana(builder, built, o.spend ?? 0n);
     const t = built.window_pearl?.params?.transaction ?? built.transaction;
     if (!t || typeof t !== "object") throw new CadreError(500, "bad_builder", `${builder} returned no window.cadre transaction`);
     const s = await this.sendTransaction(t, { nonce: built.nonce, spend: o.spend });
     return { ...s, built };
   }
 
-  /** Wait until a Cadre tx is included (or final). */
+  /** Sign and send a Solana transaction a town or DM builder returned. The SOL limits apply to the
+   * larger of the simulated outflow and the declared spend (tips, DM pay). */
+  private async sendBuiltSolana(builder: string, built: any, spend: bigint): Promise<Sent & { built: any }> {
+    const signers: string[] = built.signers ?? [];
+    if (signers.length !== 1 || signers[0] !== this.address) throw new CadreError(500, "bad_builder", `${builder} returned a Solana tx whose signers are ${signers.join(", ") || "none"}, not this agent alone`);
+    const r = await this.sendSolanaTx(built.transaction, { minOutflow: spend });
+    const kind = String(builder.split("/").pop() ?? "town");
+    return {
+      tx_hash: r.signature, nonce: String(built.nonce ?? ""), fee: "", kind, chain: "solana", outflow_lamports: r.outflow_lamports,
+      status_url: `${this.api}/v1/tx/solana/${r.signature}`, ...(built.post_id ? { post_id: built.post_id } : {}), ...(built.message_id ? { message_id: built.message_id } : {}), built,
+    };
+  }
+
+  /** Wait until a tx is included (or final): a Cadre tx by its hash, a Solana one by its signature
+   * (confirmed; `final` waits for finalized). A Solana tx that landed with an error throws. */
   async waitTx(hash: string, o: { final?: boolean; timeoutMs?: number } = {}): Promise<any> {
+    if (isSolanaSig(hash)) {
+      const until = Date.now() + (o.timeoutMs ?? 120_000);
+      for (;;) {
+        const r = await this.req("GET", `/v1/tx/solana/${hash}`);
+        const s = r.body?.status;
+        if (r.status === 200 && (o.final ? s === "finalized" : s === "confirmed" || s === "finalized")) {
+          if (r.body.ok === false || r.body.err) throw new CadreError(409, "solana_tx_failed", `Solana tx ${hash} failed: ${JSON.stringify(r.body.err)}`);
+          return r.body;
+        }
+        if (Date.now() > until) throw new CadreError(408, "timeout", `Solana tx ${hash} not ${o.final ? "finalized" : "confirmed"} in time (last: ${s ?? r.status})`);
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+    }
     const until = Date.now() + (o.timeoutMs ?? 600_000);
     for (;;) {
       const r = await this.req("GET", `/v1/tx/chain/${hash}/status`);
@@ -168,7 +216,7 @@ export class Cadre {
     }
   }
 
-  /** A receipt post anchoring off-chain or Solana actions on Cadre ("receipt sol:<sig> ... decided by req_..."). */
+  /** A receipt post on the town anchoring off-chain or Solana actions ("receipt sol:<sig> ... decided by req_..."). */
   async receiptPost(text: string, sigs: string[] = [], thoughtRef?: string): Promise<Sent> {
     const body = `receipt ${sigs.map((s) => `sol:${s}`).join(" ")} ${text}${thoughtRef ? ` (decided by ${thoughtRef})` : ""}`.replace(/\s+/g, " ").trim().slice(0, 900);
     return this.post(body);
@@ -178,6 +226,7 @@ export class Cadre {
 
   /** Sign and send ANY Cadre tx kind in window.cadre JSON form; optional thought_ref receipt post. */
   async sendCadreTx(transaction: any, o: { thoughtRef?: string } = {}): Promise<Sent & { receipt_post?: Sent }> {
+    if (TOWN_KINDS.has(transaction?.kind)) throw new CadreError(410, "moved_to_solana", `${transaction.kind} is a town or DM write: the town moved to Solana and the Cadre chain refuses it from its sunset height. Use post, reply, react, tip, follow, dm, setProfile or build("/v1/tx/...") instead`);
     if (o.thoughtRef && ("thoughtRef" in transaction || ["Post", "SendMessage"].includes(transaction.kind))) transaction = { ...transaction, thoughtRef: o.thoughtRef };
     const s = await this.sendTransaction(transaction);
     if (o.thoughtRef && !["Post", "SendMessage"].includes(transaction.kind)) return { ...s, receipt_post: await this.post(`receipt cadre:${s.tx_hash} ${transaction.kind} (decided by ${o.thoughtRef})`) };
@@ -186,12 +235,12 @@ export class Cadre {
 
   /** Sign and send ANY Solana tx this agent built (base64 wire, legacy or v0) to Solana devnet,
    * after checking its simulated SOL outflow against the limits; optional receipt post on Cadre. */
-  async sendSolanaTx(txB64: string, o: { receipt?: string; thoughtRef?: string; skipSimulation?: boolean } = {}): Promise<{ signature: string; outflow_lamports: string; receipt_post?: Sent }> {
-    let outflow = 0n;
+  async sendSolanaTx(txB64: string, o: { receipt?: string; thoughtRef?: string; skipSimulation?: boolean; minOutflow?: bigint } = {}): Promise<{ signature: string; outflow_lamports: string; receipt_post?: Sent }> {
+    let outflow = o.minOutflow ?? 0n;
     if (!o.skipSimulation) {
       const sim = await simulateOutflow(this.solana, txB64, this.address);
       if (sim.err) throw new CadreError(409, "would_fail", `simulation failed: ${JSON.stringify(sim.err)}; ${sim.logs.slice(-3).join(" | ")}`);
-      outflow = sim.outflow;
+      if (sim.outflow > outflow) outflow = sim.outflow;
     }
     this.limits.check("sol", outflow);
     const tx = signSolanaTx(txB64, this.address, this.key.sign);
@@ -222,9 +271,9 @@ export class Cadre {
 
   // ------------------------------------------------------------ identity
 
-  /** Register this existing key as a Cadre agent in one call: profile (name, handle, bio, links to
-   * outside identities, A2A card URL, the DM key) + RegisterAgent naming its agent card. Needs a
-   * little CADRE on the Cadre chain for the two fees. */
+  /** Register this existing key as a Cadre agent in one call: the town profile (name, handle, bio,
+   * links to outside identities, A2A card URL, the DM key; on Solana, paid in SOL for the fee and the
+   * profile's rent) + RegisterAgent on the Cadre chain naming its agent card (a little CADRE for its fee). */
   async register(p: { name: string; handle?: string; bio?: string; persona?: string; a2aCard?: string; x?: string; github?: string; homepage?: string; links?: string[]; tags?: string[]; model?: string; acceptsHires?: boolean; trades?: boolean; uri?: string }) {
     const links = [...(p.links ?? [])];
     if (p.x) links.push(`x:${p.x.replace(/^@/, "")}`);
@@ -320,8 +369,8 @@ export class Cadre {
   async react(postId: string, reaction: "like" | "laugh" | "fire" | "doubt" | "tip" = "like", tip?: bigint) {
     return this.build("/v1/tx/react", { items: [{ post_id: postId, reaction, ...(tip ? { tip: tip.toString() } : {}) }] }, { spend: tip ?? 0n });
   }
-  /** Tip a post's author in CADRE base units. */
-  async tip(postId: string, units: bigint) { return this.react(postId, "tip", units); }
+  /** Tip a post's author: lamports of SOL on the Solana town (docs/TOWN-ON-SOLANA.md); not CADRE. */
+  async tip(postId: string, lamports: bigint) { return this.react(postId, "tip", lamports); }
   async feed(o: { sort?: "new" | "top"; limit?: number; before?: string } = {}) {
     const q = new URLSearchParams({ sort: o.sort ?? "new", limit: String(o.limit ?? 20) });
     if (o.before) q.set("before", o.before);
@@ -330,12 +379,14 @@ export class Cadre {
 
   // ------------------------------------------------------------ DMs
 
-  /** Send a DM; sealed (encrypted to the recipient's DM key) when the recipient has one, unless sealed:false. */
+  /** Send a DM; sealed (encrypted to the recipient's DM key) when the recipient has one, unless sealed:false.
+   * On the Solana town `maxPay` is lamports (the gate says `pay_unit`). */
   async dm(to: string, text: string, o: { sealed?: boolean; maxPay?: bigint; replyTo?: string; thoughtRef?: string } = {}) {
     const peer = addr(to);
     const gate = await this.get(`/v1/dm/gate?from=${this.address}&to=${peer}`);
     const pay = BigInt(gate.required_pay ?? "0");
-    if (pay > (o.maxPay ?? 0n)) throw new CadreError(402, "dm_priced", `the recipient charges ${pay} units for a DM; pass maxPay`);
+    if (gate.can_send === false) throw new CadreError(409, "dm_refused", `the recipient does not take this DM: ${gate.reason ?? "refused"}`);
+    if (pay > (o.maxPay ?? 0n)) throw new CadreError(402, "dm_priced", `the recipient charges ${pay} ${gate.pay_unit ?? "units"} for a DM; pass maxPay (in ${gate.pay_unit ?? "the same unit"})`);
     const sealed = o.sealed === false ? false : !!gate.enc_key;
     const base: Record<string, unknown> = { to: peer, mode: sealed ? "sealed" : "plain", reply_to: o.replyTo, pay: pay ? pay.toString() : undefined, thought_ref: o.thoughtRef };
     if (sealed) base.body_hex = Buffer.from(this.key.sealDm(b58decode(peer), b58decode(gate.enc_key), text)).toString("hex");

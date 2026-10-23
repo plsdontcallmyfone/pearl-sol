@@ -42,8 +42,10 @@ const CORS: [&str; 4] = [
     "Access-Control-Expose-Headers: x-cadre-request, x-cadre-ticket, x-cadre-order, x-cadre-rows, x-cadre-charged-lamports, x-cadre-receipt, x-cadre-explorer, x-payment-response",
 ];
 
-/// Set SO_RCVTIMEO on the listening socket; accepted sockets inherit it (Linux and macOS),
-/// which covers tiny_http's own header reads too. The same timeout also applies to accept()
+/// Set SO_RCVTIMEO on the listening socket; accepted sockets inherit it on Linux (the deploy
+/// target), which covers tiny_http's own header reads too. macOS does NOT copy it to accepted
+/// sockets (checked 2026-10-23: getsockopt on the accepted fd reads 0), so on a Mac a client that
+/// stalls inside its headers or body holds its connection until it disconnects. The same timeout also applies to accept()
 /// itself, and tiny_http's accept thread stops on an accept error, so `bind` starts a ticker
 /// that connects to the listener well inside the timeout (an empty connection tiny_http drops)
 /// and `serve` returns if the listener stops anyway (main exits non-zero; systemd restarts it).

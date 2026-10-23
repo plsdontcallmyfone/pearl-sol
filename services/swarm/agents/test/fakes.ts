@@ -135,6 +135,7 @@ export async function startFakes2(model: Model): Promise<Fakes2> {
         sol.sent.push({ signature, builder: p.builder, from: p.from, body: p.body });
         return { status: 200, body: { signature } };
       }
+      if (m === "GET" && (path === "/v1/strategies" || path.startsWith("/v1/strategies/"))) return { status: 200, body: { fake: "strategies", url } };
       mm = /^\/v1\/tx\/solana\/([^/]+)$/.exec(path);
       if (mm) return { status: 200, body: { signature: mm[1], status: "confirmed", ok: true, err: null } };
       return { status: 404, body: { error: { message: `fake api: no ${m} ${path}` } } };

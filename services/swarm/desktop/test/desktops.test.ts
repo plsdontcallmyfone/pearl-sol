@@ -9,7 +9,7 @@ import { createKeyFile, loadWallet } from "../../src/wallet.ts";
 import { key32 } from "../../src/b58.ts";
 import { REACTION } from "../../src/chaintx.ts";
 import { Desk, type E2BApi, type E2BInfo, type SandboxLike } from "../src/desk.ts";
-import { Ledger } from "../src/spend.ts";
+import { daySummary, Ledger } from "../src/spend.ts";
 import { chainTask, workTask, browseTask } from "../src/tasks.ts";
 import { runTask, type Chat } from "../src/vision.ts";
 import { checkStreamToken, mintStreamToken } from "../src/token.ts";
@@ -470,4 +470,208 @@ test("Work desktops at their own size: an old 1 GiB Work desktop is replaced, So
   await again.ensureAll();
   assert.equal(created.length, 1, "no further replacement");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------------ resilience (2026-10-23): credit gate, memory, daily spend
+
+const CREDIT = JSON.parse(readFileSync(new URL("./fixtures/openrouter-credit.json", import.meta.url), "utf8"));
+
+test("controller credit gate: a recorded 402 pauses every vision task and chain action, the desktops are paused once, a passing probe resumes them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-credit-"));
+  const keys = join(dir, "keys");
+  createKeyFile(join(keys, "operator.json"));
+  const op = loadWallet(join(keys, "operator.json"));
+  const handles = ["speedwell41", "nigella71"];
+  for (const h of handles) createKeyFile(join(keys, `agent-${h}.json`));
+  let empty = true;
+  const calls: any[] = [];
+  const base = scriptedChat([]);
+  const chat: Chat = async (b: any) => {
+    calls.push(b);
+    if (empty) return structuredClone(CREDIT.afford_137);
+    if (b.messages.length === 1) return { status: 200, json: { choices: [{ message: { content: "ok" } }], usage: { cost: 0.00002 } } };
+    return base(b);
+  };
+  const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles, siteUrl: SITE, explorerUrl: `${SITE}/explorer` };
+  const e2b = new FakeE2B();
+  const lines: any[] = [];
+  const orig = console.log;
+  console.log = (s: string) => { try { lines.push(JSON.parse(s)); } catch { /* not ours */ } };
+  try {
+    const ctl = new Controller(cfg, swarmCfg(dir), { node: { call: async () => null } as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, chat,
+      { roles: ["social", "work"], agentsN: 2, parallel: 4, browseGapS: 600, workGapS: 600, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw",
+        credit: { probeS: 0, holdDesksS: 0, remindS: 3600 } });
+    await ctl.ensureAll();
+    assert.equal(ctl.runningDesks().length, 4);
+    await ctl.background();
+    while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ctl.credits.paused, true);
+    assert.equal(lines.filter((l) => l.event === "vision_paused").length, 1, "one clear line, however many tasks failed");
+    const st: any = ctl.status();
+    assert.equal(st.vision_paused, true);
+    assert.equal(st.vision_gate.afford_tokens, 137);
+    // nothing new starts: no model call, no chain action
+    const n = calls.length;
+    for (const a of ctl.agents) a.lastTaskAt = { social: 0, work: 0 } as any;
+    await ctl.background();
+    assert.equal(calls.length, n, "no task started while paused");
+    assert.equal(await ctl.swarm.act({ persona: ctl.agents[0]!.persona, wallet: ctl.agents[0]!.wallet } as any, []), "vision_paused");
+    await assert.rejects(ctl.viaDesktop(ctl.agents[0]!, { kind: "Post", postKind: 0, body: "x", thoughtRef: "r" } as any), /vision model paused/);
+    // the minute loop: probe (still empty), then hold: every desktop paused once
+    await ctl.creditTick();
+    assert.equal(calls.length, n + 1, "one probe");
+    assert.equal(calls[calls.length - 1].max_tokens, 1600);
+    assert.equal(ctl.credits.desksHeld, true);
+    assert.equal(ctl.runningDesks().length, 0);
+    assert.equal(e2b.log.filter((x) => x.startsWith("pause")).length, 4);
+    assert.equal(ctl.holdDesks(), true);
+    await ctl.ensureAll();
+    assert.equal(ctl.runningDesks().length, 0, "held desktops are not started again while paused");
+    await ctl.creditTick();
+    assert.equal(e2b.log.filter((x) => x.startsWith("pause")).length, 4, "no churn: paused once");
+    assert.equal(ctl.healthSummary().unhealthy.length, 0, "held desktops are not reported as problems");
+    // the owner tops up: next probe passes, desktops resume, tasks run
+    empty = false;
+    await ctl.creditTick();
+    assert.equal(ctl.credits.paused, false);
+    assert.equal(ctl.credits.desksHeld, false);
+    assert.equal(lines.filter((l) => l.event === "vision_resumed").length, 1);
+    await ctl.ensureAll();
+    assert.equal(ctl.runningDesks().length, 4);
+    assert.ok(e2b.log.filter((x) => x.startsWith("connect")).length >= 4, "resumed, not recreated");
+    assert.equal(e2b.log.filter((x) => x.startsWith("create")).length, 4);
+    for (const a of ctl.agents) a.lastTaskAt = { social: 0, work: 0 } as any;
+    await ctl.background();
+    while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(ctl.agents.some((a) => a.log.some((l) => l.kind === "task_done" && l.ok)), "tasks succeed again");
+    // the probes' cost is vision spend; the credit failures are counted
+    assert.ok((ctl.ledger.d.probe_usd ?? 0) > 0);
+    assert.ok((ctl.ledger.d.credit_failures ?? 0) >= 1);
+    ctl.stopped = true;
+  } finally {
+    console.log = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ledger: probes are vision spend, a spend_day line closes each UTC day with within_cap, old files without the new fields load", () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-days-"));
+  let now = Date.UTC(2026, 9, 22, 23, 0, 0);
+  const ended: any[] = [];
+  const l = new Ledger(join(dir, "s.json"), 64, () => now, (d) => ended.push(d));
+  l.e2b("a", 3600, 0.0000185);
+  l.vision("a", { usd: 0.25, steps: 3, inTokens: 9000, outTokens: 100 });
+  l.vision("a", { usd: 0.000463, steps: 1, inTokens: 2638, outTokens: 399, credit: { status: 402 } });
+  l.probe(0.00002);
+  assert.ok(Math.abs(l.d.vision_usd - (0.25 + 0.000463 + 0.00002)) < 1e-12);
+  assert.equal(l.d.credit_failures, 1);
+  l.save();
+  now += 3600_000; // 00:00 UTC
+  l.roll();
+  assert.equal(ended.length, 1);
+  const s = daySummary(ended[0], 64);
+  assert.equal(s.day, "2026-10-22");
+  assert.equal(s.within_cap, true);
+  assert.equal(s.vision_tasks, 2);
+  assert.equal(s.credit_failures, 1);
+  assert.equal(s.probe_usd, 0.00002);
+  assert.equal(l.days()[0]!.day, "2026-10-23");
+  assert.equal(l.days()[1]!.day, "2026-10-22");
+  // over the cap is reported as such
+  assert.equal(daySummary({ day: "x", e2b_usd: 60, vision_usd: 5, agents: {} }, 64).within_cap, false);
+  // a spend.json written before 2026-10-23 (no probe_usd / vision_tasks / cap_usd) still loads
+  writeFileSync(join(dir, "old.json"), JSON.stringify({ d: { day: "2026-10-23", e2b_usd: 8.5, vision_usd: 0, agents: { a: { e2b_s: 1, e2b_usd: 8.5, vision_usd: 0, tasks: 3, steps: 0, in_tokens: 0, out_tokens: 0 } } }, history: [] }));
+  const old = new Ledger(join(dir, "old.json"), 64, () => now);
+  assert.equal(old.days()[0]!.vision_tasks, 3);
+  old.probe(0.001);
+  assert.equal(old.d.probe_usd, 0.001);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("memory: under DESK_MEM_LOW_MB the tabs are trimmed first, the browser restarted only if the next check is still low; never while busy", async () => {
+  const e2b = new FakeE2B();
+  const d = new Desk("nigella71", "social", "addr", e2b, deskOpts());
+  await d.ensure(() => "S", () => "pw");
+  const sbx = e2b.boxes.get(d.id!)!.sbx;
+  const n = () => Math.floor(Date.now() / 1000);
+  sbx.healthLine = `${n()} ${n() - 1} ${n() - 3} 1 400 976 70 0.3 610 95`;
+  const h = (await d.checkHealth())!;
+  assert.equal(h.mem_avail_mb, 70);
+  assert.equal(h.chrome_mb, 610);
+  assert.equal(h.ffmpeg_mb, 95);
+  assert.equal(h.tabs, 0);
+  assert.deepEqual(deskIssues(h, Date.now(), 1e9, Date.now(), 0, 80), ["memory low (70 MB free)"]);
+  assert.deepEqual(deskIssues(h, Date.now(), 1e9, Date.now(), 0, 60), [], "threshold is the setting");
+  assert.deepEqual(await d.heal(true, 80), [], "busy: nothing touched");
+  assert.deepEqual(await d.heal(false, 80), ["tabs trimmed (memory)"]);
+  assert.ok(sbx.cmds.some((c) => c.startsWith("touch /home/user/.cadre/trim")));
+  assert.deepEqual(await d.heal(false, 80), ["browser restarted (memory)"], "still low after a trim");
+  assert.equal(d.trimAt, 0);
+  assert.deepEqual(await d.heal(false, 80), ["tabs trimmed (memory)"], "after a restart the cheap repair comes first again");
+  // an older health line (8 fields, before the RSS columns) still parses
+  sbx.healthLine = `${n()} ${n() - 1} ${n() - 3} 1 400 976 300 0.3`;
+  const h2 = (await d.checkHealth())!;
+  assert.equal(h2.mem_avail_mb, 300);
+  assert.equal(h2.chrome_mb, null);
+});
+
+test("health log: the same problem is logged once per 30 min, a desk_health line measures memory by kind every tick", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desk-health-"));
+  const keys = join(dir, "keys");
+  createKeyFile(join(keys, "operator.json"));
+  const op = loadWallet(join(keys, "operator.json"));
+  const handles = ["speedwell41", "nigella71"];
+  for (const h of handles) createKeyFile(join(keys, `agent-${h}.json`));
+  const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles, siteUrl: SITE, explorerUrl: `${SITE}/explorer` };
+  const e2b = new FakeE2B();
+  const lines: any[] = [];
+  const orig = console.log;
+  console.log = (s: string) => { try { lines.push(JSON.parse(s)); } catch { /* not ours */ } };
+  try {
+    const ctl = new Controller(cfg, swarmCfg(dir), { node: {} as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, async () => ({ status: 500, json: null }),
+      { roles: ["social", "work"], agentsN: 2, parallel: 1, browseGapS: 600, workGapS: 600, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw", memLowMb: 80 });
+    await ctl.ensureAll();
+    const solo = ctl.byHandle.get("nigella71")!.desks.social;
+    const n = () => Math.floor(Date.now() / 1000);
+    e2b.boxes.get(solo.id!)!.sbx.healthLine = `${n()} ${n() - 1} ${n() - 3} 1 400 976 66 0.3 640 90`;
+    for (const a of ctl.agents) for (const r of a.roles) a.desks[r].lastActionAt = Date.now();
+    await ctl.healthTick();
+    await ctl.healthTick();
+    await ctl.healthTick();
+    const un = lines.filter((l) => l.event === "desk_unhealthy");
+    // tick 1: low, trimmed (logged); tick 2: still low, restarted (logged, repaired); tick 3: trimmed again (logged)
+    assert.deepEqual(un.map((l) => l.healed[0]), ["tabs trimmed (memory)", "browser restarted (memory)", "tabs trimmed (memory)"]);
+    assert.equal(un[0].layout, "one_desktop");
+    assert.equal(un[0].chrome_mb, 640);
+    const hl = lines.filter((l) => l.event === "desk_health");
+    assert.equal(hl.length, 3);
+    assert.equal(hl[0].one_desktop.desktops, 1);
+    assert.equal(hl[0].one_desktop.low, 1);
+    assert.equal(hl[0].two_social.desktops, 1);
+    assert.equal(hl[0].two_social.low, 0);
+    assert.equal(hl[0].two_work.avail_p50, 300);
+    // an unrepairable problem (busy desktop, nothing healed) repeats only after 30 min
+    ctl.byHandle.get("nigella71")!.busy.social = true;
+    lines.length = 0;
+    await ctl.healthTick();
+    await ctl.healthTick();
+    assert.equal(lines.filter((l) => l.event === "desk_unhealthy").length, 0, "same problem, nothing repaired, logged within 30 min already");
+    solo.issueLoggedAt -= 1800_000;
+    await ctl.healthTick();
+    assert.equal(lines.filter((l) => l.event === "desk_unhealthy").length, 1);
+    assert.ok((ctl.status() as any).memory.one_desktop);
+    ctl.stopped = true;
+  } finally {
+    console.log = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("browser host: closes the console when not wanted, caps tabs at 2 on a 1 GiB desktop, trims on low memory, never while busy", () => {
+  const js = readFileSync(new URL("../sandbox/deskhost.mjs", import.meta.url), "utf8");
+  assert.match(js, /if \(!want\) for \(const p of ctx\.pages\(\)\.filter\(isConsole\)\) await p\.close\(\)/);
+  assert.match(js, /MEM0\.total < 1200 \? 2 : 3/);
+  assert.match(js, /DESK_TRIM_MB \?\? 120/);
+  assert.match(js, /let extra = busy \? 0 :/);
+  assert.match(js, /if \(!busy && \(asked \|\|/);
 });

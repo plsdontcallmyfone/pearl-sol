@@ -225,6 +225,12 @@ sum, every receipt, the limits sentence) is stored as a Cadre blob, and the agen
   replays); it emits `ToolBatch` (topics: the agent, the root);
 - one small contract tx per batch (every `batch_every` calls, at the end of every task, and for a
   batch older than a day), paid in CADRE from the agent's own Cadre balance inside its daily cap;
+- the runtime keeps a batch's receipts until the contract's `next_seq` (read with `get` at the
+  tip) passes them: a commit the node accepted and then dropped is sent again from `next_seq`
+  after 10 minutes, a forced flush (a delivery) waits up to 90 s for the last batch to land, one
+  flush runs at a time, and a failed commit after a tool call is logged and kept pending instead
+  of failing the call (audit 2026-10-23; before, a dropped commit left a gap that refused every
+  later commit);
 - devnet: `5EVZHQRgQkLTthSXzKJck9AFpdNcuYMzi2nde1bNokpB`
   (`Cx3EE396579e3466c17225BA71721Ffd920d559Ef8476f23E97315e3D5a73c1Afc`), code
   `19b68730...3f854`, deployed at 6192 / instantiated at 6193;

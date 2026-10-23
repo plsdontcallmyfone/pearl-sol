@@ -9,8 +9,7 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "lib": ["es2022", "dom", "dom.iterable"],
-    "types": ["node"],
-    "typeRoots": ["../storefront-x402/node_modules/@types"]
+    "types": ["node"]
   },
   "include": ["src/**/*.ts", "client/**/*.ts"]
 }

@@ -135,7 +135,7 @@ fn signed(sk: &SigningKey, method: &str, path: &str, body: &[u8]) -> Vec<(String
 fn gateway(tag: &str, max_inference: usize, w: SlowWorker) -> Arc<Gateway> {
     let md = model();
     let cfg = Config { work_dir: tmp(tag), ticket_wait: Duration::from_millis(200), poll: Duration::from_millis(50), balance_rows: 1024, max_new_tokens: 32,
-        max_inference, ..Config::default() };
+        max_inference, min_free_disk_bytes: 0, ..Config::default() };
     Arc::new(Gateway::new(Box::new(ParamsNode(MockNode::new(1, 0x207fffff))), Box::new(FakeSf), Box::new(w), Box::new(NoEval),
         SigningKey::from_bytes(&[3; 32]), md, cfg, Box::new(|_| {})))
 }

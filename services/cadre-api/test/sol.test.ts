@@ -1,14 +1,13 @@
-// The unsigned-tx layer against @solana/web3.js (borrowed from services/storefront-x402's
-// node_modules, test only): message bytes, PDA / ATA derivation, wire parsing.
+// The unsigned-tx layer against @solana/web3.js (a devDependency of this package, test only):
+// message bytes, PDA / ATA derivation, wire parsing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { b58encode, sha256, utf8 } from "../../../apps/explorer/src/codec.ts";
 import { ata, bridgeDepositIx, compileLegacy, computeUnitLimit, decodeBridgeConfig, parseWireTx, systemTransfer, TOKEN_2022, unsignedTx, depositPda, bridgeConfigPda, BRIDGE_ID } from "../src/sol.ts";
 import { bridgeConfigData, key, MINT, VAULT } from "./fake.ts";
 
-const require = createRequire(new URL("../../storefront-x402/package.json", import.meta.url));
-const web3 = require("@solana/web3.js");
+import web3 from "@solana/web3.js";
 const { PublicKey, Transaction, TransactionInstruction, SystemProgram, ComputeBudgetProgram, VersionedTransaction } = web3;
 
 const toWeb3 = (ix: ReturnType<typeof systemTransfer>) =>
@@ -65,7 +64,12 @@ test("parseWireTx refuses junk and a signature count that does not match the mes
   assert.equal(parseWireTx(w).signers.length, 1);
 });
 
-test("the x402 payment tx, once the payer signs it, passes storefront-x402's own verifyExact", async () => {
+// Imports services/storefront-x402's own source, so that package must be installed (npm ci there).
+const SF_WEB3 = new URL("../../storefront-x402/node_modules/@solana/web3.js/package.json", import.meta.url);
+if (!existsSync(SF_WEB3) && process.env.CI) throw new Error("CI: services/storefront-x402 node_modules missing; the x402 parity test would be skipped");
+const sfSkip = existsSync(SF_WEB3) ? false : "services/storefront-x402 node_modules missing (npm ci there)";
+
+test("the x402 payment tx, once the payer signs it, passes storefront-x402's own verifyExact", { skip: sfSkip }, async () => {
   const { verifyExact } = await import("../../storefront-x402/src/x402.ts");
   const { Keypair } = web3;
   const payer = Keypair.generate(), service = Keypair.generate();

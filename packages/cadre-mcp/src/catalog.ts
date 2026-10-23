@@ -19,9 +19,11 @@ export interface ToolDef {
   hosted: boolean;
   /** Served by the local MCP server (the agent's own key file, config limits). */
   local: boolean;
-  /** "live" works on devnet now; "coming" is listed but answers what it waits for. */
-  status: "live" | "coming";
+  /** "live" works on devnet now; "coming" is listed but answers what it waits for; "off" is listed
+   * so a driver learns why, and is refused on purpose (`off` says why). */
+  status: "live" | "coming" | "off";
   coming?: string;
+  off?: string;
   inputSchema: Record<string, unknown>;
   annotations: { title: string; readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean };
 }
@@ -36,11 +38,14 @@ const UNITS = "CADRE amount in chain base units (9 decimals) as a decimal string
 const LAMPORTS = "SOL amount in lamports as a decimal string; 1 SOL = 1000000000";
 
 type Kind = "read" | "write" | "spend";
-function t(name: string, title: string, scope: Scope, kind: Kind, description: string, inputSchema: Record<string, unknown>, o: Partial<Pick<ToolDef, "hosted" | "local" | "status" | "coming">> & { idempotent?: boolean } = {}): ToolDef {
+/** Why the strategies write tools are off for every driver (see the comment above them). */
+export const STRATEGY_WRITES_OFF = "the strategies contract is the agent's practice record and only its own practice loop writes it (each version from its paid thought, each entry with the real-price snapshot it saw, each post-mortem from the analyzer); a driver can read it with cadre_strategies, never write it";
+
+function t(name: string, title: string, scope: Scope, kind: Kind, description: string, inputSchema: Record<string, unknown>, o: Partial<Pick<ToolDef, "hosted" | "local" | "status" | "coming" | "off">> & { idempotent?: boolean } = {}): ToolDef {
   const ro = kind === "read";
   return {
     name, title, description, scope, inputSchema,
-    hosted: o.hosted ?? true, local: o.local ?? true, status: o.status ?? "live", ...(o.coming ? { coming: o.coming } : {}),
+    hosted: o.hosted ?? true, local: o.local ?? true, status: o.status ?? "live", ...(o.coming ? { coming: o.coming } : {}), ...(o.off ? { off: o.off } : {}),
     annotations: { title, readOnlyHint: ro, destructiveHint: kind === "spend", idempotentHint: o.idempotent ?? ro, openWorldHint: true },
   };
 }
@@ -152,21 +157,26 @@ export const TOOLS: ToolDef[] = [
 
   // ---------------------------------------------------------------- strategies (docs/STRATEGIES.md)
   t("cadre_strategies", "Read practice strategies", "strategy", "read",
-    "Practice strategies with post-mortems: every agent's strategy versions, practice trades, post-mortems and knowledge records.",
-    S({ path: str("optional sub-route: versions/{id}, trades/{id}, knowledge or postmortems") }),
-    { status: "coming", coming: "coming with the strategies contract (cadre-api /v1/strategies, branch strategies)" }),
+    "Practice strategies with post-mortems (docs/STRATEGIES.md), read from the strategies contract on the Cadre chain: every agent's strategy versions, practice trades (pretend money at real Solana mainnet prices), post-mortems and the knowledge record. No path: the overview (agents, versions, open and closed practice trades).",
+    S({ path: str("optional sub-route: versions/{id}, trades/{id}, knowledge, postmortems (with ?version=, ?bucket=, ?author=, ?limit=) or blobs/{64 hex}") })),
+  // The strategies contract holds an agent's practice record. It is written only by the agent's own
+  // practice loop (the runtime's PracticeHost, or the agent's own `cadre-strategies` runner): each
+  // version from the agent's paid thought, each entry with the real-price snapshot it saw, each
+  // post-mortem from the analyzer's buckets. A driver that could dictate entries or post-mortems
+  // could write a record the agent never earned, so the strategies, toolbelt and swarms contracts
+  // are refused to drivers (security fix d79030e) and these three stay off on purpose.
   t("cadre_strategy_commit", "Commit a strategy version", "strategy", "write",
     "Commit a new practice strategy version on the strategies contract.",
     S({ text: str("the strategy in words"), thought_ref: str(THOUGHT) }, ["text"]),
-    { status: "coming", coming: "coming with the strategies contract write routes" }),
+    { status: "off", off: STRATEGY_WRITES_OFF }),
   t("cadre_strategy_trade", "Enter or exit a practice trade", "strategy", "write",
     "Commit a practice entry or exit at a real mainnet price (no mainnet tx).",
     S({ action: str("enter or exit", { enum: ["enter", "exit"] }), version: str("strategy version id"), mint: str("token mint"), thought_ref: str(THOUGHT) }, ["action", "version"]),
-    { status: "coming", coming: "coming with the strategies contract write routes" }),
+    { status: "off", off: STRATEGY_WRITES_OFF }),
   t("cadre_strategy_postmortem", "Write a post-mortem", "strategy", "write",
     "Commit a post-mortem for a closed practice trade.",
     S({ trade: str("practice trade id"), text: str("what went right or wrong"), thought_ref: str(THOUGHT) }, ["trade", "text"]),
-    { status: "coming", coming: "coming with the strategies contract write routes" }),
+    { status: "off", off: STRATEGY_WRITES_OFF }),
 
   // ---------------------------------------------------------------- raw (local key only: never in hosted mode)
   t("cadre_send_cadre_tx", "Sign and send any Cadre tx", "raw", "spend",
@@ -182,12 +192,21 @@ export const TOOLS: ToolDef[] = [
 
 export const byName = new Map(TOOLS.map((x) => [x.name, x]));
 
+/** A `cadre_strategies` path as the cadre-api route under /v1/strategies, or null when it is not one. */
+export function strategiesPath(p: unknown): string | null {
+  const s = String(p ?? "").replace(/^\/+/, "");
+  if (s === "") return "/v1/strategies";
+  const m = /^(versions\/\d{1,10}|trades\/\d{1,10}|knowledge|blobs\/[0-9a-f]{64}|postmortems)(\?(?:(?:version|bucket|author|limit)=[A-Za-z0-9_\-]{1,64})(?:&(?:version|bucket|author|limit)=[A-Za-z0-9_\-]{1,64})*)?$/.exec(s);
+  if (!m || (m[2] && m[1] !== "postmortems")) return null;
+  return `/v1/strategies/${s}`;
+}
+
 /** MCP tools/list entries for a mode ("hosted" or "local"). Coming tools are listed with their status in the description and answer an error when called. */
 export function mcpTools(mode: "hosted" | "local") {
   return TOOLS.filter((x) => (mode === "hosted" ? x.hosted : x.local)).map((x) => ({
     name: x.name,
     title: x.title,
-    description: x.status === "coming" ? `[${x.coming}] ${x.description}` : x.description,
+    description: x.status === "coming" ? `[${x.coming}] ${x.description}` : x.status === "off" ? `[off: ${x.off}] ${x.description}` : x.description,
     inputSchema: x.inputSchema,
     annotations: x.annotations,
   }));

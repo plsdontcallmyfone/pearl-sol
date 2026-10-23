@@ -1784,7 +1784,8 @@ impl Gateway {
         if !t.pending.is_empty() {
             // the chain takes segments only while the ticket is Open and before its deadline
             let open = chain.get("status").map_or(true, |s| s == "open");
-            if !open || tip > deadline {
+            // a PostSegments lands at tip + 1 at the earliest, and the chain refuses it above the deadline
+            if !open || tip >= deadline {
                 let why = if !open { format!("the chain has closed the ticket (status {})", chain["status"]) } else { format!("the ticket's deadline {deadline} passed (tip {tip})") };
                 self.drop_pending(id, &why);
                 return Ok(());
@@ -1823,10 +1824,20 @@ impl Gateway {
         let tid: [u8; 32] = hex::decode(id)?.try_into().map_err(|_| anyhow!("ticket id"))?;
         let chain = self.node.call("getTicket", json!({"ticket_id": id}))?;
         ensure!(!chain.is_null(), "ticket {id} is not on the chain");
-        let t = self.ledger.lock().unwrap().tickets.get(id).cloned().ok_or_else(|| anyhow!("unknown ticket"))?;
-        if t.state != "delivered" && (!t.pending.is_empty() || t.reserved != 0 || t.posting.is_some()) {
-            return Ok(()); // a request was served since the close was chosen: post its round first
-        }
+        // check and mark in one ledger step: an "open" ticket becomes "closing", so no request is
+        // reserved on it while its result is built and delivered (such a request would be served
+        // but never posted: the result names only the rounds already posted)
+        let t = self.with_ledger(|l| {
+            let t = l.tickets.get_mut(id).ok_or_else(|| anyhow!("unknown ticket"))?;
+            if t.state != "delivered" && (!t.pending.is_empty() || t.reserved != 0 || t.posting.is_some()) {
+                return Ok(None); // a request was served since the close was chosen: post its round first
+            }
+            if t.state == "open" {
+                t.state = "closing".into();
+            }
+            Ok::<_, anyhow::Error>(Some(t.clone()))
+        })?;
+        let Some(t) = t else { return Ok(()) };
         self.close_ticket(&tid, id, &t, &chain)
     }
 
