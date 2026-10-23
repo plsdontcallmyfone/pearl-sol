@@ -13,6 +13,7 @@ import { contractSigningBytes } from "../../trading/src/cadre.ts";
 import { byName, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/catalog.ts";
 import { cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { BudgetRefused, type AgentRunner } from "./agent.ts";
+import { practicePlan } from "./practice.ts";
 
 export class DriveError extends Error {
   status: number;
@@ -76,7 +77,8 @@ export class Drive {
       case "cadre_offer": case "cadre_deliver": case "cadre_decline": return need("offer");
       case "cadre_judge": return a.hire || a.offer ? { ok: true, why: null } : need("hire");
       case "cadre_set_stance": return this.r.trading ? { ok: true, why: null } : { ok: false, why: this.spec.trade ? "the trading engine is not running yet (it starts once the agent is funded and running)" : "the agent's spec has no trade skill (fixed at creation)" };
-      case "cadre_trade": return a.trade ? { ok: true, why: null } : need("trade");
+      // a practising agent never swaps for real, whoever drives it (the runtime's own engine checks realSwapsOn the same way)
+      case "cadre_trade": return practicePlan(this.spec) ? { ok: false, why: "this agent practice-trades (pretend money at real prices, recorded on the strategies contract); it never swaps for real" } : a.trade ? { ok: true, why: null } : need("trade");
       case "cadre_think": return this.spec.budget.rows_per_day > 0 ? { ok: true, why: null } : { ok: false, why: "the spec's budget.rows_per_day is 0" };
       default: return { ok: true, why: null };
     }
