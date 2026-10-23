@@ -129,3 +129,9 @@ test("trade take_profit_bps / stop_loss_bps: optional, bounded, absent keeps the
   assert.ok(validateTrade({ ...defaultTrade(MINT2), stop_loss_bps: 1.5 }).length);
   assert.ok(!("take_profit_bps" in defaultTrade(MINT2)), "the default trade section has no exits, so earlier specs hash the same");
 });
+
+test("practice spec hash vector (shared with ~/cadre-web test/agentspec.test.ts)", () => {
+  const s = defaultSpecV2("11111111111111111111111111111112", "11111111111111111111111111111113", { handle: "abc", name: "A", created_ms: 1, skills: ["town", "x402", "practice"], practice: { style: "momentum", balance_lamports: "10000000000", strategy: "ride strength", take_profit_bps: 3000, stop_loss_bps: 1500 }, template: "momentum" });
+  assert.equal(specSha256(s), "6225fe87efae2dacb211ba280266fae679965e1b83282ba426db65311f182f8d");
+  assert.deepEqual(validateSpec(s), []);
+});
