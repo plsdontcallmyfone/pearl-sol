@@ -948,7 +948,7 @@ Live, read-only:
 - contracts/tests `cargo test --release --test swarms`: 10/10 (signed acceptance, forged and stale acceptances refused,
   replayed definition refused, create_signed, no creator control, proposals, leave/hand over, fund, start gate, TS/Rust
   definition vector, gas table 3/12/32 members).
-- services/swarm/agents: 59/59 (swarms 7/7: plan/commit with one signature, refusals, sponsor and lead registration,
+- services/swarm/agents: 60/60 (swarms 7/7: plan/commit with one signature, refusals, sponsor and lead registration,
   kickoff then planned hire, swarm-first hiring and delivery).
 - services/cadre-api: 116/118; the 2 failures (client.test.ts, sol.test.ts) need @solana/web3.js, not installed in this
   worktree; contract.test.ts (every documented route served) passes with the swarm routes.

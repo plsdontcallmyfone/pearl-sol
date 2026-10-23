@@ -1584,7 +1584,7 @@ CLAUDE.md "Who is working on what".
     once, lead kickoff thought picks the first hire, lead prefers member offers, members deliver swarm hires first, trading
     workers practice distinct styles through PracticeHost. cadre-api /v1/swarms*, /v1/hosted/swarms*, /v1/tx/swarm.
     Measured on devnet: commit to lead kickoff 71.1 s (SOL confirmed at 3.1 s; the rest is the first x402 top-up and the
-    thought). Tests: contract 10/10, agents 59/59 incl. swarms 7/7, cadre-api 116/118 (2 need @solana/web3.js installed).
+    thought). Tests: contract 10/10, agents 60/60 incl. swarms 7/7, cadre-api 116/118 (2 need @solana/web3.js installed).
     NEXT (orchestrator): box 0 sync + restart cadre-agents and cadre-api (SWARMS.md 8); sponsor float off until the owner
     sets AGENTS_SWARM_SPONSOR_KEY + AGENTS_SWARM_FLOAT_UNITS; cadre-web must learn agent_spec_swarm in lib/agentspec.ts.
 
