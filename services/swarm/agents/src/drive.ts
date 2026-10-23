@@ -13,7 +13,12 @@ import { contractSigningBytes } from "../../trading/src/cadre.ts";
 import { byName, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/catalog.ts";
 import { cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { BudgetRefused, type AgentRunner } from "./agent.ts";
-import { practicePlan } from "./practice.ts";
+import { practicePlan, realSwapsOn } from "./practice.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 export class DriveError extends Error {
   status: number;
@@ -77,8 +82,11 @@ export class Drive {
       case "cadre_offer": case "cadre_deliver": case "cadre_decline": return need("offer");
       case "cadre_judge": return a.hire || a.offer ? { ok: true, why: null } : need("hire");
       case "cadre_set_stance": return this.r.trading ? { ok: true, why: null } : { ok: false, why: this.spec.trade ? "the trading engine is not running yet (it starts once the agent is funded and running)" : "the agent's spec has no trade skill (fixed at creation)" };
-      // a practising agent never swaps for real, whoever drives it (the runtime's own engine checks realSwapsOn the same way)
-      case "cadre_trade": return practicePlan(this.spec) ? { ok: false, why: "this agent practice-trades (pretend money at real prices, recorded on the strategies contract); it never swaps for real" } : a.trade ? { ok: true, why: null } : need("trade");
+      // a direct order swaps for real, so it is open exactly where the runtime's own engine swaps for
+      // real (realSwapsOn: a v2 spec with actions.trade, the trade skill and trade.real_swaps). A
+      // practising agent, a legacy spec, or a spec with actions.trade but no trade section (no mint
+      // list, no risk numbers) never swaps for real, whoever drives it.
+      case "cadre_trade": return realSwapsOn(this.spec) ? { ok: true, why: null } : practicePlan(this.spec) ? { ok: false, why: "this agent practice-trades (pretend money at real prices, recorded on the strategies contract); it never swaps for real" } : !a.trade ? need("trade") : { ok: false, why: "real swaps are off for this agent (its spec has no trade section with trade.real_swaps; fixed at creation)" };
       case "cadre_think": return this.spec.budget.rows_per_day > 0 ? { ok: true, why: null } : { ok: false, why: "the spec's budget.rows_per_day is 0" };
       default: return { ok: true, why: null };
     }
@@ -201,7 +209,10 @@ export class Drive {
       case "cadre_events": return this.events(x);
       case "cadre_explore": {
         const p = String(x.path ?? "");
-        if (!/^\/v1\/[A-Za-z0-9_\-./:?=&%,]*$/.test(p) || p.includes("..") || /^\/v1\/(agent|hosted)\b/.test(p)) throw bad("path is a public cadre-api GET route under /v1/ (not /v1/agent or /v1/hosted)");
+        // the check runs on the path as the API will route it: WHATWG URL parsing turns %2e%2e into ..
+        let routed = "";
+        try { routed = new URL(p, "http://x").pathname; } catch { routed = ""; }
+        if (!/^\/v1\/[A-Za-z0-9_\-./:?=&%,]*$/.test(p) || p.includes("..") || !routed.startsWith("/v1/") || /^\/v1\/(agent|hosted)\b/i.test(routed) || /%2f|%5c/i.test(p)) throw bad("path is a public cadre-api GET route under /v1/ (not /v1/agent or /v1/hosted)");
         return this.get(p);
       }
       case "cadre_think": {
@@ -320,6 +331,10 @@ export class Drive {
         const c = addrArg(x.contract, "contract");
         const m = await this.get("/v1/market").catch(() => null);
         if (m?.contract && m.contract === c) throw refuse("use the market tools (cadre_hire, cadre_offer, cadre_deliver, cadre_judge) for the market contract; they carry the spec's checks");
+        // the runtime's own record contracts carry what the agent did (practice record, tool receipts,
+        // swarm membership); only the runtime writes there in the agent's name, never an external driver
+        const rec = recordContracts().get(c);
+        if (rec) throw refuse(`the ${rec} contract is written only by the runtime itself (it holds this agent's record); an external driver cannot call it`);
         const fields = Array.isArray(x.fields) ? x.fields : [];
         let gas = x.gas_limit ? Number(x.gas_limit) : 0;
         if (!gas) {
@@ -432,10 +447,11 @@ export class Drive {
   private async trade(x: Record<string, any>) {
     const side = x.side === "sell" ? "sell" : "buy";
     const ts = this.spec.trade;
-    const mint = x.mint ? String(x.mint) : ts?.mints?.[0];
-    if (ts && mint && !ts.mints.includes(mint)) throw refuse(`this agent's spec trades only ${ts.mints.join(", ")}`);
+    if (!ts || !realSwapsOn(this.spec)) throw refuse("real swaps are off for this agent (fixed at creation)");
+    const mint = x.mint ? String(x.mint) : ts.mints[0];
+    if (!mint || !ts.mints.includes(mint)) throw refuse(`this agent's spec trades only ${ts.mints.join(", ")}`);
     const maxOrder = BigInt(ts?.max_order_lamports ?? this.spec.limits.trade_lamports);
-    const slip = Math.min(Number(x.slippage_bps) || ts?.slippage_bps || 300, ts?.slippage_bps ?? 2000);
+    const slip = Math.max(1, Math.min(Math.round(Number(x.slippage_bps)) || ts.slippage_bps || 300, ts.slippage_bps ?? 2000));
     const thought = thoughtArg(x.thought_ref);
     if (side === "buy") {
       const sol = decArg(x.sol_in, "sol_in");
@@ -504,6 +520,27 @@ export class Drive {
     out.sort((a, b) => (b.at ?? Infinity) - (a.at ?? Infinity));
     return { since_ms: since, next_since: Date.now(), events: out, errors };
   }
+}
+
+let records: Map<string, string> | null = null;
+/** The protocol record contracts of this deployment (strategies, toolbelt receipts, swarms), base58 -> name. */
+export function recordContracts(env: NodeJS.ProcessEnv = process.env): Map<string, string> {
+  if (records) return records;
+  const m = new Map<string, string>();
+  const add = (name: string, v: unknown) => {
+    if (typeof v !== "string" || !v || v === "off") return;
+    const r = cxInput(v.trim());
+    if (!("error" in r)) m.set(r.value, name);
+  };
+  const file = (envName: string, rel: string) => {
+    const f = env[envName] ?? join(REPO, rel);
+    try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).contract : null; } catch { return null; }
+  };
+  add("strategies", file("CADRE_STRATEGIES_CONFIG", "deploy/strategies-devnet.json"));
+  add("toolbelt receipts", env.TOOLBELT_CONTRACT ?? file("TOOLBELT_CONFIG", "deploy/toolbelt-devnet.json"));
+  add("swarms", file(env.CADRE_SWARMS_CONFIG ? "CADRE_SWARMS_CONFIG" : "SWARMS_CONFIG", "deploy/swarms-devnet.json"));
+  records = m;
+  return m;
 }
 
 export function slimPost(p: any) {

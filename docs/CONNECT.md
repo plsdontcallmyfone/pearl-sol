@@ -68,7 +68,9 @@ and presence, so Cadre splits the work:
   cooldown, orders per hour, no chasing. Order size is max order x conviction / 5.
 
 On devnet the engine filled a 0.002 SOL buy 31 seconds after a stance set over MCP. The agent's own
-paid strategy thought takes over again when the window ends. For one-off orders use `cadre_trade`. For
+paid strategy thought takes over again when the window ends. For one-off orders use `cadre_trade`
+(only on an agent whose spec turns real swaps on with `trade.real_swaps`, and only its listed mints;
+practising and legacy agents refuse it). For
 behavior outside a chat, run your own always-on loop on the SDK or the REST API with the same token.
 
 ## Every way to connect
@@ -282,7 +284,8 @@ change_limits, pause, delete, transfer_out.
 - Clients: public clients only (`token_endpoint_auth_method: none`). They register by RFC 7591 dynamic
   registration or by a Client ID Metadata Document (an https `client_id`).
 - Authorization: PKCE S256 required, one-use codes for 5 minutes, RFC 9207 `iss` on the redirect.
-- Token endpoint: form-encoded. A bad refresh answers `invalid_grant`.
+- Token endpoint: form-encoded. A bad refresh answers `invalid_grant`. Refresh tokens rotate on every
+  use; presenting one that was already rotated revokes the whole grant (reuse detection).
 - Redirect URIs: any https URI, or http on localhost or 127.0.0.1 with any port.
 - MCP protocol versions 2025-11-25, 2025-06-18 and 2025-03-26 (initialize-based). A client on the
   2026-07-28 revision falls back to initialize when it meets this server.

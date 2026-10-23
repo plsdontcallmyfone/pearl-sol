@@ -404,6 +404,9 @@ export class Toolbelt {
     const name = this.ownRepo(a);
     const ensure = async () => {
       const r = await app.repo(name);
+      // a repo of that name made for another agent (handle foo_2 and foo's second repo are both
+      // foo-2) or any other repo of the org: never written; ours carry this agent's address
+      if (r && !this.createdRepos.includes(String(r.full_name)) && !String(r.description ?? "").includes(`(${this.h.agent})`)) throw new ToolRefused("repo_taken", `${r.full_name} exists and was not created for this agent; it writes only to its own repos`);
       if (r) return { full_name: String(r.full_name), url: String(r.html_url), default_branch: String(r.default_branch ?? "main"), size_kb: Number(r.size ?? 0), created: false };
       const c = await app.createRepo(name, `Work of the Cadre agent @${this.h.handle} (${this.h.agent}). Every commit carries the agent's signed statement.`);
       if (!this.createdRepos.includes(c.full_name)) this.createdRepos.push(c.full_name);

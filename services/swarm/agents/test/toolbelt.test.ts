@@ -128,6 +128,9 @@ test("receipts: Merkle root, per-leaf proofs, and tamper detection", () => {
 test("network guard: private, loopback, metadata and odd ports are refused; allowlists hold", async () => {
   for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "224.0.0.1"]) assert.ok(isBlockedIp(ip), ip);
   for (const ip of ["8.8.8.8", "64.95.12.116", "2606:4700::1111"]) assert.ok(!isBlockedIp(ip), ip);
+  // security review 2026-10-23: IPv4 embedded in IPv6 in other spellings (hex mapped, compatible, translated, 6to4)
+  for (const ip of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::127.0.0.1", "::7f00:1", "::ffff:0:7f00:1", "0:0:0:0:0:ffff:10.0.0.1", "2002:7f00:1::", "2002:a9fe:a9fe::1", "fe80::1%eth0"]) assert.ok(isBlockedIp(ip), ip);
+  for (const ip of ["::ffff:808:808", "2002:808:808::1"]) assert.ok(!isBlockedIp(ip), ip);
   assert.throws(() => checkUrl("http://localhost/x", {}));
   assert.throws(() => checkUrl("http://169.254.169.254/latest", {}));
   assert.throws(() => checkUrl("https://example.com:8443/", {}));
@@ -235,12 +238,13 @@ test("files.put: content-addressed, size capped; code.run: sandbox seconds booke
 test("GitHub provided by Cadre: app tokens scoped to the agent's own repo, signed commit trailers, caps, outside repos refused", async () => {
   const calls: { m: string; url: string; body: string; auth: string }[] = [];
   let repoExists = false;
+  let desc = "";
   const { s, base } = await serve((url, method, body, headers) => {
     calls.push({ m: method, url, body, auth: String(headers.authorization ?? "") });
     const J = (o: unknown, status = 200) => ({ status, type: "application/json", body: JSON.stringify(o) });
     if (url === "/orgs/cadredotag/installation") return J({ id: 77 });
     if (url === "/app/installations/77/access_tokens") { const b = JSON.parse(body); return J({ token: b.repositories ? `ghs_repo_${b.repositories[0]}` : "ghs_admin", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201); }
-    if (url === "/repos/cadredotag/tester" && method === "GET") return repoExists ? J({ full_name: "cadredotag/tester", html_url: "https://github.com/cadredotag/tester", default_branch: "main", size: 10 }) : J({ message: "Not Found" }, 404);
+    if (url === "/repos/cadredotag/tester" && method === "GET") return repoExists ? J({ full_name: "cadredotag/tester", html_url: "https://github.com/cadredotag/tester", default_branch: "main", size: 10, description: desc }) : J({ message: "Not Found" }, 404);
     if (url === "/orgs/cadredotag/repos") { repoExists = true; return J({ full_name: "cadredotag/tester", html_url: "https://github.com/cadredotag/tester", default_branch: "main" }, 201); }
     if (url.includes("/git/ref/heads/feature")) return J({}, 404);
     if (url.includes("/git/ref/heads/main")) return J({ object: { sha: "p1" } });
@@ -282,6 +286,19 @@ test("GitHub provided by Cadre: app tokens scoped to the agent's own repo, signe
   assert.equal(calls.find((c) => c.url === "/orgs/cadredotag/repos")!.auth, "Bearer ghs_admin");
   assert.ok(JSON.parse(calls.find((c) => c.url === "/orgs/cadredotag/repos")!.body).private === false, "agent repos are public");
   assert.ok(calls.filter((c) => c.url.endsWith("/access_tokens")).every((c) => c.auth.split(".").length === 3), "tokens are minted with the app JWT");
+  // security review 2026-10-23: a repo of the same name not made for this agent (another agent's
+  // handle mapping to the same name, or any other repo in the org) is never written
+  const stranger = new Toolbelt(spec, fakeHost("9".repeat(44)), { keys: noKeys, rt: new RuntimeLedger(5), price, meterFile: `${tmp()}/m3.json`, githubApp: app });
+  const writesOf = () => calls.filter((c) => c.m !== "GET" && !c.url.endsWith("/access_tokens")).length;
+  const nWrites = writesOf();
+  const st = await stranger.call("code.github_commit", { branch: "feature", message: "m", files: [{ path: "a", content: "b" }] }, ctx);
+  assert.equal(st.ok, false);
+  assert.match(String(st.data?.error), /was not created for this agent/);
+  assert.equal(writesOf(), nWrites, "no write reached GitHub");
+  // after a restart (no createdRepos) the repo's description, written at creation, still names the owner
+  desc = `Work of the Cadre agent @tester (${host.agent}).`;
+  const again = new Toolbelt(spec, host, { keys: noKeys, rt: new RuntimeLedger(5), price, meterFile: `${tmp()}/m4.json`, githubApp: app });
+  assert.ok((await again.call("code.github_repo", {}, ctx)).ok);
   s.close();
 });
 
