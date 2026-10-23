@@ -248,8 +248,13 @@ for reference (an upgrade from an older build would need them):
 
 ### Website (2026-10-20)
 
-`scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0, `npm ci` and
-`npm run build` there with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
+`scripts/devnet-deploy.sh site` bundles ~/cadre-web `main` (committed only) to box 0 and runs
+deploy/site-release.sh there (since 2026-10-23): a fresh release dir ~/cadre-web-releases/<commit>-<time>
+is built while the live server keeps serving the previous one (before, `next build` rewrote ~/cadre-web/.next
+under the running server and old pages got 500s for a few minutes), the previous release's static chunks
+from the last 7 days are carried over (an open old page still loads its scripts), ~/cadre-web-current is
+switched by an atomic rename, the unit (WorkingDirectory=/home/lode/cadre-web-current) is reinstalled and
+restarted; three releases are kept; a failed build changes nothing. `npm ci` and `npm run build` run in the release with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
 `NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.64-95-12-116.sslip.io`
 (prebuild copies the installer committed on this checkout's main to public/), then restarts
 `cadre-web.service` (enabled, starts on boot). Caddy block `cadre.@IP@.sslip.io` in
@@ -608,6 +613,16 @@ needed for any alert channel). Boxes 1-2 are covered through their public RPC an
 their unit states are not read from box 0.
 When /opt/lode/bin/cadre exists the script also runs `cadre status --health --local --network devnet` and logs
 its lines as `cli:<check>` (docs/CLI.md "status"; not installed yet: build it on box 0 and reinstall the script).
+Section 9 (2026-10-23, after the 2026-10-22/23 outages; each shows within one or two 5-minute runs, looking
+back `LOG_WINDOW` 10min in the journal): `desktop_tasks` (FAIL on any `model 402` in cadre-desktops, WARN when
+half or more of at least 10 `task` events failed), `openrouter` (balance from
+https://openrouter.ai/api/v1/credits with the key in the PROVIDERS_ENV_FILE named by /etc/lode/desktops.env,
+sent as a header from stdin, never logged; WARN under $5, FAIL at $0 or below), `gateway_data` (WARN when
+request_data bytes_waiting is over 16 GB or refused_storage / refused_node_storage rose since the last run),
+`agents_inference` (WARN over 20 inference_hold + 402 lines from cadre-agents in the window),
+`practice_thought` (WARN when cadre-practice logged no `thought` in 2 h). Tests:
+scripts/test/devnet-health.test.sh. Thresholds: DESK_TASK_MIN, DESK_FAIL_RATIO, MIN_OPENROUTER_USD,
+MAX_REQUEST_DATA_GB, AGENTS_PAY_MAX, PRACTICE_THOUGHT_MAX_AGE in /etc/lode/health.env.
 
 ### Backups
 
