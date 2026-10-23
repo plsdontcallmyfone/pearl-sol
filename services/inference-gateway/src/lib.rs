@@ -186,6 +186,66 @@ fn round_up(x: u64, p: u64) -> u64 {
     x.div_ceil(p.max(1)) * p.max(1)
 }
 
+/// Node blob bytes of one round of `m` (padded) rows whose distinct A blobs have these k:
+/// `"PSA1" || m || k` (12 bytes) plus `m x k` int8 each ([`standing::encode_activation_blob`]).
+pub fn a_round_bytes(ks: &[u32], m: u32) -> u64 {
+    ks.iter().map(|k| 12 + m as u64 * *k as u64).sum()
+}
+
+/// Node blob bytes the rounds waiting to post will put: per open (or closing) ticket, the round
+/// being posted (its recorded m, less `put[ticket]` bytes of it already on the node for that
+/// round), then the other pending requests packed oldest first into rounds of at most `cap`
+/// rows as [`round_take`] does, each padded to `period`. Posted rounds count nothing (their A
+/// is in the node's total already).
+pub fn waiting_a_bytes(l: &Ledger, ks: &[u32], period: u64, cap: u64, put: &BTreeMap<String, (u16, u64)>) -> u64 {
+    let round = |rows: u64| if rows == 0 { 0 } else { a_round_bytes(ks, round_up(rows, period) as u32) };
+    let mut sum = 0u64;
+    for t in l.tickets.values().filter(|t| t.state == "open" || t.state == "closing") {
+        let mut skip: &[String] = &[];
+        if let Some(pr) = &t.posting {
+            let done = put.get(&t.ticket_id).filter(|(r, _)| *r == pr.round).map_or(0, |x| x.1);
+            sum += a_round_bytes(ks, pr.m).saturating_sub(done);
+            skip = &pr.requests;
+        }
+        let mut acc = 0u64;
+        for r in t.pending.iter().filter(|r| !skip.contains(r)).filter_map(|r| l.requests.get(r)) {
+            let rows = r.rows as u64;
+            if acc > 0 && round_up(acc + rows, period) > cap {
+                sum += round(acc);
+                acc = 0;
+            }
+            acc += rows;
+        }
+        sum += round(acc);
+    }
+    sum
+}
+
+/// The k of each distinct A blob in a prepared round (content-addressed: equal URIs are one blob).
+pub fn segs_a_layout(segs: &[PreparedSegment]) -> Vec<u32> {
+    let mut seen = std::collections::BTreeSet::new();
+    segs.iter().filter(|s| seen.insert(s.spec.a_uri.clone())).map(|s| s.spec.k).collect()
+}
+
+/// The k of each distinct A blob a round built from this request would put: matrices whose
+/// first `rows` A rows (`a/{i}.i8`) are byte-identical share one blob, as in [`prepare_matrix`].
+pub fn a_layout_of_dir(model: &ModelInfo, dir: &Path, rows: u32) -> Result<Vec<u32>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (i, (k, _)) in model.matrices.iter().enumerate() {
+        let ab = std::fs::read(dir.join(format!("a/{i}.i8"))).with_context(|| format!("read A of matrix {i} in {}", dir.display()))?;
+        let len = rows as usize * *k as usize;
+        ensure!(ab.len() >= len, "A of matrix {i} in {}: {} bytes, need {rows} rows", dir.display(), ab.len());
+        let mut h = blake3::Hasher::new();
+        h.update(&k.to_le_bytes());
+        h.update(&ab[..len]);
+        if seen.insert(*h.finalize().as_bytes()) {
+            out.push(*k);
+        }
+    }
+    Ok(out)
+}
+
 // ------------------------------------------------------------------ ledger
 
 /// One served request: its receipt.
@@ -485,6 +545,15 @@ pub struct Gateway {
     node_blob: Mutex<Option<(Option<u64>, Instant)>>,
     /// Paid requests refused because the node's blob store is nearly full, since start.
     pub refused_node_storage: AtomicUsize,
+    /// The distinct activation blobs one round puts on the node, as the k of each: matrices with
+    /// the same input (Llama gate/up, the lm_head column shards) write byte-identical A, so the
+    /// content-addressed store keeps one blob (1B model: 113 of 144). Learned from a request's A
+    /// files or from a posted round's segments; None until then ([`Gateway::a_blob_ks`]).
+    a_layout: Mutex<Option<Vec<u32>>>,
+    /// Per ticket, the round being posted and the A bytes of it this process has put on the
+    /// node so far: they are in the node's headroom already, so the admission check does not
+    /// count them again while the round's rows are still pending.
+    posting_put: Mutex<BTreeMap<String, (u16, u64)>>,
     /// Server txs that replaced another of the server's pooled txs at the same nonce (a stuck or
     /// stale one), orphans cancelled with a 0 self-transfer, and sends stopped as stalled.
     pub tx_replaced: AtomicUsize,
@@ -662,6 +731,8 @@ impl Gateway {
             pending_dropped: AtomicUsize::new(0),
             node_blob: Mutex::new(None),
             refused_node_storage: AtomicUsize::new(0),
+            a_layout: Mutex::new(None),
+            posting_put: Mutex::new(BTreeMap::new()),
             tx_replaced: AtomicUsize::new(0),
             tx_cancelled: AtomicUsize::new(0),
             tx_stalls: AtomicUsize::new(0),
@@ -887,11 +958,14 @@ impl Gateway {
     pub fn stats_json(&self) -> Value {
         // before any lock below: request_data_bytes takes the ledger lock itself
         let nb = self.node_blob.lock().unwrap().and_then(|(h, _)| h);
+        let nb_need = self.node_blob_need(0);
+        let a_layout = self.a_layout.lock().unwrap().as_ref().map(|v| v.len());
         let data = json!({"bytes_waiting": self.request_data_bytes(), "max_bytes": self.cfg.max_request_data_bytes, "disk_free_bytes": disk_free_bytes(&self.cfg.work_dir),
             "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst),
             "written_bytes": self.data_written_bytes.load(Ordering::SeqCst), "freed_bytes": self.data_freed_bytes.load(Ordering::SeqCst),
             "pressure_bytes": self.pressure_bytes(), "pending_dropped": self.pending_dropped.load(Ordering::SeqCst),
-            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst)});
+            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst),
+            "node_blob_need_bytes": nb_need, "a_bytes_per_row": self.a_bytes_per_row(), "a_blobs_per_round": a_layout});
         let r = self.recent.lock().unwrap();
         let n = r.len();
         let mean = |f: &dyn Fn(&(f64, Option<f64>, u32)) -> Option<f64>| {
@@ -1662,10 +1736,59 @@ impl Gateway {
         None
     }
 
-    /// A bytes per row (one k-byte row per registered matrix): what a posted round adds to the
-    /// node's blob store at most (matrices sharing an input share one blob, so less in practice).
+    /// A bytes one row adds to the node's blob store: the k of each distinct activation blob
+    /// of a round ([`Gateway::a_blob_ks`]; 1B model on devnet box 0: 113 x 2048 = 231,424).
+    /// Before the layout is known, one k-byte row per registered matrix (an upper bound).
     pub fn a_bytes_per_row(&self) -> u64 {
-        self.model.matrices.iter().map(|(k, _)| *k as u64).sum()
+        self.a_blob_ks().iter().map(|k| *k as u64).sum()
+    }
+
+    /// The k of each distinct A blob a round puts: the learned layout, else learned now from
+    /// the first pending request's A files, else every matrix (upper bound, not cached).
+    pub fn a_blob_ks(&self) -> Vec<u32> {
+        if let Some(v) = self.a_layout.lock().unwrap().clone() {
+            return v;
+        }
+        let first = {
+            let l = self.ledger.lock().unwrap();
+            l.tickets.values().flat_map(|t| t.pending.iter()).filter_map(|r| l.requests.get(r)).find(|r| r.rows > 0).map(|r| (r.dir.clone(), r.rows))
+        };
+        if let Some((dir, rows)) = first {
+            if let Ok(v) = a_layout_of_dir(&self.model, &dir, rows) {
+                self.note_a_layout(v.clone());
+                return v;
+            }
+        }
+        self.model.matrices.iter().map(|(k, _)| *k).collect()
+    }
+
+    /// Keep the layout with the most distinct blobs seen (a coincidental match between two
+    /// matrices in one request can only merge blobs, never split a shared one).
+    fn note_a_layout(&self, v: Vec<u32>) {
+        let mut g = self.a_layout.lock().unwrap();
+        if g.as_ref().map_or(true, |o| v.len() > o.len()) {
+            *g = Some(v);
+        }
+    }
+
+    /// Bytes the node's blob store needs for the A of what is waiting to post plus a new
+    /// request of `need_rows` rows. Built like the rounds the posting pass makes: per open
+    /// ticket, the round being posted (its recorded m, less the A this process already put),
+    /// then the other pending requests packed oldest first into rounds of at most
+    /// [`Gateway::round_rows_cap`] rows ([`round_take`]), each padded to the row period; a
+    /// request being generated and the new one as a round of their own each (an upper bound:
+    /// padding a shared round costs no more). A round of m rows puts one blob per distinct
+    /// input, `12 + m x k` bytes each ([`standing::encode_activation_blob`]).
+    pub fn node_blob_need(&self, need_rows: u64) -> u64 {
+        let ks = self.a_blob_ks();
+        let p = self.model.period().max(1) as u64;
+        let cap = self.round_rows_cap().max(1) as u64;
+        let bpr = self.bytes_per_row().max(1);
+        let round = |rows: u64| if rows == 0 { 0 } else { a_round_bytes(&ks, round_up(rows, p) as u32) };
+        let put = self.posting_put.lock().unwrap().clone();
+        let mut need = waiting_a_bytes(&self.ledger.lock().unwrap(), &ks, p, cap, &put);
+        need += self.in_flight.lock().unwrap().values().map(|b| round(b / bpr)).sum::<u64>();
+        need + round(need_rows)
     }
 
     /// Bytes the node's blob store accepts from RPC puts before it refuses them (getBlobStats
@@ -1684,14 +1807,13 @@ impl Gateway {
         h
     }
 
-    /// Node blob backpressure (SPEC 5.4 "Request data retention"): a paid request whose A rows,
-    /// with every row already waiting for a round, would not fit in the node's blob headroom
-    /// waits (503 insufficient_storage) instead of piling up scratch that cannot be posted.
+    /// Node blob backpressure (SPEC 5.4 "Request data retention"): a paid request whose A
+    /// blobs, with those of every round waiting to post ([`Gateway::node_blob_need`]), would not
+    /// fit in the node's blob headroom waits (503 insufficient_storage) instead of piling up
+    /// scratch that cannot be posted.
     pub fn node_storage_refusal(&self, need_rows: u64) -> Option<String> {
         let head = self.node_blob_headroom()?;
-        let bpr = self.bytes_per_row().max(1);
-        let waiting_rows = self.request_data_bytes() / bpr;
-        let need = (waiting_rows + need_rows) * self.a_bytes_per_row();
+        let need = self.node_blob_need(need_rows);
         if need > head {
             return Some(format!(
                 "the chain node's blob store is nearly full: {} MB of room for activation blobs, {} MB needed by the rounds waiting and this request; retry after the node prunes",
@@ -1954,9 +2076,17 @@ impl Gateway {
         });
         let dirs: Vec<(PathBuf, u32)> = reqs.iter().map(|r| (r.dir.clone(), r.rows)).collect();
         let segs = prepare_round(&self.model, &dirs, m, self.cfg.blocks_per_segment)?;
+        self.note_a_layout(segs_a_layout(&segs));
+        self.posting_put.lock().unwrap().insert(id.to_string(), (round, 0));
+        let mut put_uris = std::collections::BTreeSet::new();
         for s in &segs {
             let uri = self.node.put_blob(&s.a_blob)?;
             ensure!(uri == s.spec.a_uri, "node stored A under {uri}, expected {}", s.spec.a_uri);
+            if put_uris.insert(uri) {
+                if let Some(x) = self.posting_put.lock().unwrap().get_mut(id) {
+                    x.1 += s.a_blob.len() as u64;
+                }
+            }
         }
         // one segment per tx: a Solana light client registers each segment job from its posting
         // tx, and a Solana tx (1232 bytes) holds one such chain tx with its tx_root path
@@ -1984,6 +2114,7 @@ impl Gateway {
                 tt.posting = None;
             }
         });
+        self.posting_put.lock().unwrap().remove(id);
         (self.log)(json!({"event": "round_posted", "ticket": id, "round": round, "m": m, "requests": ids.len(), "segments": segs.len(), "txs": txs}));
         // the round is on the chain and in the ledger: A is on the node, C is committed
         for r in &reqs {
