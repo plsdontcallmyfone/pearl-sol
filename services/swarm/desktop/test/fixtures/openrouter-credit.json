@@ -1,0 +1,12 @@
+{
+  "_source": "Recorded from box 0 (journalctl -u cadre-desktops), 2026-10-22 22:24 UTC to 2026-10-23 03:24 UTC: 571 tasks failed with these two shapes (569 afford, 2 prompt limit). The controller cut its log at 200 characters, so the message text after the cut is not recorded; the shapes below keep exactly what the journal shows, with the JSON closed. The /key bodies follow OpenRouter's documented shape (https://openrouter.ai/docs/api-reference/limits, read 2026-10-23), not a recording. The 403, 429, 500 and 401 bodies are synthetic cases for the classifier, not recordings.",
+  "afford_137": { "status": 402, "json": { "error": { "message": "This request requires more credits, or fewer max_tokens. You requested up to 400 tokens, but can only afford 137. To increase, visit https://openrouter.ai/settings/credits and add", "code": 402 } } },
+  "afford_301": { "status": 402, "json": { "error": { "message": "This request requires more credits, or fewer max_tokens. You requested up to 400 tokens, but can only afford 301. To increase, visit https://openrouter.ai/settings/credits and add", "code": 402 } } },
+  "prompt_limit": { "status": 402, "json": { "error": { "message": "Prompt tokens limit exceeded: 3993 > 3602. To increase, visit https://openrouter.ai/settings/credits and add more credits", "code": 402, "metadata": { "limit_source": "openrouter_credit" } } } },
+  "key_limit_403": { "status": 403, "json": { "error": { "message": "Key limit exceeded", "code": 403 } } },
+  "rate_limit_429": { "status": 429, "json": { "error": { "message": "Rate limit exceeded", "code": 429 } } },
+  "server_500": { "status": 500, "json": { "error": { "message": "Internal Server Error", "code": 500 } } },
+  "key_unlimited": { "status": 200, "json": { "data": { "label": "test", "limit": null, "limit_remaining": null, "usage": 12.5, "is_free_tier": false } } },
+  "key_limit_empty": { "status": 200, "json": { "data": { "label": "test", "limit": 10, "limit_remaining": 0, "usage": 10, "is_free_tier": false } } },
+  "key_rejected": { "status": 401, "json": { "error": { "message": "No auth credentials found", "code": 401 } } }
+}

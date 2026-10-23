@@ -35,7 +35,7 @@ export interface CreditError {
 const CREDIT_TEXT = /requires more credits|can only afford|insufficient (credits|balance|funds)|prompt tokens limit exceeded|add more credits|key limit exceeded|out of credits|credit limit/i;
 
 /** Is this model response an out-of-credit refusal? (402 always; 403 or other codes only with a credit
- * message: OpenRouter answers "Key limit exceeded" with 403.) Null when it is any other error. */
+ * message: a per-key limit can answer "Key limit exceeded" with another code.) Null when it is any other error. */
 export function creditError(status: number, json: any): CreditError | null {
   if (status === 200) return null;
   const msg = String(json?.error?.message ?? json?.message ?? (typeof json?.error === "string" ? json.error : "") ?? "");
