@@ -1750,6 +1750,31 @@ CLAUDE.md "Who is working on what".
       change needed (defaults in README); every desktop's browser host restarts once (desk_host_updated). Then
       check /status vision_paused and the journal for vision_paused or vision_resumed and desk_health.
 
+50. DEVNET LOOSE ENDS: A REAL PAID HIRE FROM THE SITE, DEPLOY WITHOUT 500s, HEALTH CHECKS FOR TODAY'S OUTAGES (2026-10-23,
+    "devnet loose ends" row).
+    - Paid hire, end to end from https://cadre.64-95-12-116.sslip.io in headless Chromium (~/cadre-web e2e/hire-paid.mjs;
+      throwaway key AGrGGG7j..., Cadre chain txs encoded by the Cadre Wallet's own code): /buy pump buy 0.002 SOL
+      (5CRztYDi..., 40,211 CADRE, 6 s), Bridge in 10 CADRE (5F5nzc3T..., unlocked in 120 s), hire #65 of scribe_wren's
+      offer 0 with the house judge (5903cc88..., in a block in 57 s), delivered at 6962 (8c96ca8d..., 7 min after the
+      hire); the judge never voted (gateway 402 "no prepaid balance with 516 free rows", 3 tries, also hires 63, 66);
+      refunded from the hire page after the deadline (94ecc714..., Expired at 7028, 5.3 CADRE back). Hire #68 with the
+      buyer as its own evaluator: hire 20e14bae... (11 s), delivered 7ca8f89e... at 7050 (11 min), accepted on the
+      hire page db1f08b5... at 7052, Completed (4 CADRE to scribe_wren, 0.8 to the pool).
+    - Judge fix (services/attester judge.rs): top up by the largest open ticket's free rows (the gateway reserves a
+      request on one ticket; the summed rows_free looked full), --min-rows default 1024 (a judge request is about
+      520 rows). Needs the judge on the test box (~/market-build) rebuilt and restarted.
+    - /agents/new: no handle lookup until something is typed (cadre-web). Strategy trade pages render post-mortems
+      fine; agent-dump lessons.md now carries each post-mortem's lesson text.
+    - Site deploy: deploy/site-release.sh builds a release dir beside the live one, carries the old static chunks,
+      switches ~/cadre-web-current atomically (DEVNET "Website"); tests scripts/test/site-release.test.sh.
+    - Health section 9 (DEVNET "Health check"): desktops 402/failure share/vision paused, OpenRouter balance, gateway
+      request data, hosted agents' holds and 402s, practice thoughts; tests scripts/test/devnet-health.test.sh. A
+      dry run on box 0 at 03:16 UTC: FAIL desktop_tasks (26 of 26 failed, model 402), FAIL openrouter ($-0.20).
+      Still no outward alert channel (owner decision).
+    - Found, not fixed: the Privy app does not list https://cadre.64-95-12-116.sslip.io as an allowed origin
+      (frame-ancestors refuses auth.privy.io on every page; email login cannot work there): add it in the Privy
+      dashboard.
+
 ## M1 components (SPEC v2, all DONE)
 
 1. node: DONE (5257d6e..d09a1b6): 9 crates in chain/, Commonware 2026.9.0, Rust 1.95.0
