@@ -181,6 +181,23 @@ export function decodeProposal(id: number, b: Uint8Array | string): ProposalRec 
   return { id, swarm, agent, proposer, state: PROPOSAL_STATES[st] ?? "open", height, closed_height: closed || null, role: r.str() };
 }
 
+/** Whether a proposal still speaks for its swarm (audit follow-up 2026-10-23). The deployed swarms
+ * contract (admin zero, so it cannot be fixed in place) keeps a proposal open after its proposer
+ * leaves the swarm or hands the lead on: the invited agent can still accept it, and once the swarm
+ * has no lead nobody can cancel it. Members and tools treat only an open proposal made by the
+ * swarm's current lead as an invitation ("valid"); the rest are ignored, and an invited agent may
+ * decline them to close them on the record.
+ *   closed        accepted, cancelled or declined already
+ *   no_lead       the swarm has no lead now (its lead left; leave clears it)
+ *   lead_changed  the swarm has another lead now (the proposer handed the lead on, or left and
+ *                 someone took the lead) */
+export type ProposalStanding = "valid" | "closed" | "no_lead" | "lead_changed";
+export function proposalStanding(p: Pick<ProposalRec, "state" | "proposer" | "swarm">, s: Pick<SwarmRec, "lead">): ProposalStanding {
+  if (p.state !== "open") return "closed";
+  if (!s.lead) return "no_lead";
+  return s.lead === p.proposer ? "valid" : "lead_changed";
+}
+
 export function decodeCounts(b: Uint8Array | string) {
   const r = new R(b);
   return { swarms: Number(r.u64()), proposals: Number(r.u64()), start_height: Number(r.u64()) };

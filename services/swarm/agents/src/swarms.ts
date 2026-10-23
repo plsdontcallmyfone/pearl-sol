@@ -36,7 +36,7 @@ import { Cadre, type ContractBody } from "../../trading/src/cadre.ts";
 import type { AgentRunner } from "./agent.ts";
 import { defaultSpecV2, isSovereign, PRACTICE_DEFAULT_BALANCE, specSha256, type AgentSpec, type SignedSpec } from "./spec.ts";
 import {
-  acceptMessage, checkDefinition, createArgs, decodeU64, hexOf, KINDS, loadSwarmsConfig, MAX_BATCH, proofDefinition, queryArgs,
+  acceptMessage, callArgs, checkDefinition, createArgs, decodeIds, decodeProposal, decodeSwarm, decodeU64, hexOf, KINDS, proposalStanding, loadSwarmsConfig, MAX_BATCH, proofDefinition, queryArgs,
   STYLES, type StyleId, type SwarmKind, type SwarmsConfig, type SwarmSpecProof,
 } from "./swarmabi.ts";
 
@@ -388,6 +388,7 @@ export class SwarmHost {
   async tick() {
     const cfg = this.cfg;
     if (!cfg) return;
+    await this.staleProposalsTick().catch((e) => console.log(JSON.stringify({ event: "swarm_proposals_error", error: String((e as Error).message).slice(0, 200) })));
     for (const s of this.swarms.values()) {
       if (s.registration.state === "registered" || s.registration.state === "failed") continue;
       if (now() - s.registration.checked_ms < 20_000) continue;
@@ -428,6 +429,52 @@ export class SwarmHost {
       } catch (e) {
         s.registration.error = (e as Error).message.slice(0, 300);
         this.save();
+      }
+    }
+  }
+
+  /** Swarm id -> last time its proposals were read (stale-proposal sweep). */
+  proposalsChecked = new Map<number, number>();
+
+  /** Hosted members ignore proposals that no longer speak for their swarm (swarmabi.ts
+   * proposalStanding; audit follow-up 2026-10-23: the deployed contract lets a departed lead's
+   * proposals be accepted and nobody can cancel them). This runtime never accepts a proposal on
+   * its own, so ignoring is the default; this sweep also closes such a proposal on the record
+   * when the invited agent is hosted here: every PROPOSAL_SCAN_MS per registered hosted swarm,
+   * the invitee declines each open proposal whose proposer is not the swarm's current lead. */
+  async staleProposalsTick() {
+    const cfg = this.cfg;
+    if (!cfg) return;
+    const every = Number(process.env.AGENTS_SWARM_PROPOSAL_SCAN_MS ?? 300_000);
+    for (const s of this.swarms.values()) {
+      const id = s.registration.state === "registered" ? s.registration.id : null;
+      if (!id) continue;
+      if (now() - (this.proposalsChecked.get(id) ?? 0) < every) continue;
+      this.proposalsChecked.set(id, now());
+      const reader = this.leadRunner(s) ?? this.rt.runners.get(s.members[0]?.agent ?? "");
+      if (!reader) continue;
+      const q = async (args: Buffer) => {
+        const r = await reader.d.node.call("queryContract", { address: s.contract, args: args.toString("hex") });
+        if (!r?.ok) throw new Error(`query failed: ${r?.error ?? "unknown"}`);
+        return r.return as string;
+      };
+      const rec = decodeSwarm(await q(queryArgs.swarm(id)));
+      if (!rec.proposals) continue;
+      for (let off = 0; off < rec.proposals; off += 32) {
+        const { ids } = decodeIds(await q(queryArgs.proposals(id, off, 32)));
+        for (const pid of ids) {
+          const p = decodeProposal(pid, await q(queryArgs.proposal(pid)));
+          const standing = proposalStanding(p, rec);
+          if (standing === "valid" || standing === "closed") continue;
+          const inv = this.rt.runners.get(p.agent);
+          if (!inv || (inv.state !== "running" && inv.state !== "waiting_link")) continue;
+          try {
+            const tx = await this.sendFromRunner(inv, { kind: "Call", contract: s.contract, value: 0n, gasLimit: 0n, args: callArgs.decline(pid) });
+            inv.note("swarm", `declined proposal #${pid} to join swarm #${id} "${s.name}": ${standing === "no_lead" ? "the lead that made it has left and the swarm has no lead" : "it was made by a lead the swarm no longer has"}`, { tx, ok: true });
+          } catch (e) {
+            inv.note("swarm", `could not decline stale proposal #${pid} of swarm #${id}: ${(e as Error).message.slice(0, 160)}`, { ok: false });
+          }
+        }
       }
     }
   }

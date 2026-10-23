@@ -25,7 +25,7 @@ import { hex } from "../../../../apps/explorer/src/codec.ts";
 import { TX_HDR, TX_SIG, contractFeeFloor, contractSigningBytes, encodeCallBody, framedMessage, isUnknownMethod } from "../../../../apps/explorer/src/contracts.ts";
 import { compileLegacy, systemTransfer, unsignedTx, type Ix } from "../sol.ts";
 import {
-  callArgs, decodeCounts, decodeIds, decodeMembers, decodeProposal, decodeSwarm, decodeU64, goalBlob, KINDS, loadSwarmsConfig, queryArgs, type SwarmKind, type SwarmRec, type SwarmsConfig,
+  callArgs, decodeCounts, decodeIds, decodeMembers, decodeProposal, decodeSwarm, decodeU64, goalBlob, KINDS, loadSwarmsConfig, proposalStanding, queryArgs, type SwarmKind, type SwarmRec, type SwarmsConfig,
 } from "../../../swarm/agents/src/swarmabi.ts";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -254,7 +254,8 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
           hosted: hm?.hosted ?? null, practice_style: hm?.style ?? null, practice: hm?.practice ?? null, offers: offersBy.get(x.agent) ?? [],
         };
       }),
-      proposals_list: proposals.map(({ swarm: _s, ...p }) => p),
+      // standing: only an open proposal of the swarm's current lead is an invitation (proposalStanding)
+      proposals_list: proposals.map(({ swarm: _s, ...p }) => ({ ...p, standing: proposalStanding({ ...p, swarm: id }, s) })),
       spend: {
         source: h ? "hosted runtime budget counters (UTC day) of the hosted members, plus completed hires between members on the market contract" : "only the market contract (this swarm is not hosted here, so no runtime counters)",
         day, members_counted: counted, cadre_units: cadre.toString(), sol_lamports: sol.toString(), rows, internal_hire_units: internalPaid.toString(),
@@ -313,7 +314,19 @@ export function registerSwarms(api: Api, d: Deps, env: NodeJS.ProcessEnv = proce
         break;
       }
       case "cancel": args = callArgs.cancel(n("proposal")); plain = `Withdraw proposal #${b.proposal}`; break;
-      case "accept": args = callArgs.accept(n("proposal")); plain = `Accept proposal #${b.proposal} and join the swarm`; break;
+      case "accept": {
+        // the deployed contract still accepts a proposal whose lead has left or handed the lead on
+        // (audit follow-up 2026-10-23); this API builds no such accept, the agent can decline it
+        const pid = n("proposal");
+        const p = decodeProposal(pid, await query(c, queryArgs.proposal(pid), "no such proposal"));
+        const st = proposalStanding(p, await swarmRec(c, p.swarm));
+        if (st !== "valid") {
+          throw new ApiError(409, "stale_proposal", st === "closed" ? `proposal #${pid} is ${p.state}` : `proposal #${pid} was made by a lead swarm #${p.swarm} ${st === "no_lead" ? "no longer has (the lead left; the swarm has no lead)" : "no longer has (another member leads it now)"}: it is not an invitation any more; decline it to close it`, { standing: st });
+        }
+        args = callArgs.accept(pid);
+        plain = `Accept proposal #${b.proposal} and join the swarm`;
+        break;
+      }
       case "decline": args = callArgs.decline(n("proposal")); plain = `Decline proposal #${b.proposal}`; break;
       case "hand_lead": args = callArgs.handLead(n("swarm"), addr(b.to, "to")); plain = `Name ${b.to} to take the lead of swarm #${b.swarm}`; break;
       case "take_lead": args = callArgs.takeLead(n("swarm")); plain = `Take the lead of swarm #${b.swarm}`; break;
