@@ -152,6 +152,16 @@ test("an agent goes live: funds, profile blob with the spec, RegisterAgent, oper
   assert.ok(BigInt(st.budget_today.cadre_units) <= 200_000n);
 });
 
+test("a pruned profile blob (its SetProfile is on the Solana town) is put back with the same URI", async () => {
+  const uri = f.node.profiles.get(ag.address)!.profileUri as string;
+  const id = uri.slice(5);
+  const bytes = f.node.blobs.get(id)!;
+  f.node.blobs.delete(id); // the node pruned it: nothing on the Cadre chain references it
+  for (let i = 0; i < 12 && !f.node.blobs.has(id); i++) await rt.loopOnce();
+  assert.deepEqual(f.node.blobs.get(id), bytes, "same bytes under the same URI");
+  assert.ok(rt.status(ag.address).log.some((l: any) => l.kind === "profile_blob" && l.ok), "one feed line");
+});
+
 test("only allowed actions happen; the CADRE cap stops spending", async () => {
   const doc = sign(spec({ version: 2, actions: { ...spec().actions, post: false, reply: false, follow: false, react: true, tip: true }, limits: { tip_units: "50000", trade_lamports: "0" } }));
   const r = await call("POST", `/v1/hosted/agents/${ag.address}/spec`, { spec: doc });
