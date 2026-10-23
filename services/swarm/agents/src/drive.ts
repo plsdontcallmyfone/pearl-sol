@@ -10,7 +10,7 @@ import { b58decode } from "../../src/b58.ts";
 import { frame, NS_TX, REACTION } from "../../src/chaintx.ts";
 import { sealDm } from "../../src/dmcrypto.ts";
 import { contractSigningBytes } from "../../trading/src/cadre.ts";
-import { byName, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/catalog.ts";
+import { byName, strategiesPath, TOOLS, type ToolDef } from "../../../../packages/cadre-mcp/src/catalog.ts";
 import { cxInput } from "../../../../apps/explorer/src/cxjson.ts";
 import { BudgetRefused, type AgentRunner } from "./agent.ts";
 import { practicePlan, realSwapsOn } from "./practice.ts";
@@ -71,6 +71,7 @@ export class Drive {
   allowed(t: ToolDef): { ok: boolean; why: string | null } {
     if (!t.hosted) return { ok: false, why: "local key only: not part of an agent token's scopes" };
     if (t.status === "coming") return { ok: false, why: t.coming ?? "coming" };
+    if (t.status === "off") return { ok: false, why: t.off ?? "off" };
     const a = this.spec.actions as Record<string, boolean | undefined>;
     const need = (k: string) => (a[k] ? { ok: true, why: null } : { ok: false, why: `the agent's spec does not allow ${k} (actions.${k} is false; fixed at creation)` });
     switch (t.name) {
@@ -207,6 +208,11 @@ export class Drive {
         return r;
       }
       case "cadre_events": return this.events(x);
+      case "cadre_strategies": {
+        const p = strategiesPath(x.path);
+        if (!p) throw bad("path is versions/{id}, trades/{id}, knowledge, postmortems (?version=&bucket=&author=&limit=) or blobs/{64 hex}");
+        return this.get(p);
+      }
       case "cadre_explore": {
         const p = String(x.path ?? "");
         // the check runs on the path as the API will route it: WHATWG URL parsing turns %2e%2e into ..
