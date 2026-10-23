@@ -87,9 +87,13 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     max_inference: usize,
     /// Cap on request scratch data waiting for its round (MiB); a request past it answers 503
-    /// insufficient_storage, and over half of it rounds are posted early. 0 = no cap.
+    /// insufficient_storage, and over half of it (or --data-pressure-mb) rounds are posted early. 0 = no cap.
     #[arg(long, default_value_t = 16 * 1024)]
     max_request_data_mb: u64,
+    /// Waiting request data (MiB) at which rounds post early, fullest first: early posting
+    /// starts at min(cap / 2, this). 0 = cap / 2 only.
+    #[arg(long, default_value_t = 8 * 1024)]
+    data_pressure_mb: u64,
     /// Free disk the gateway keeps (MiB): a request that would go below it answers 503.
     #[arg(long, default_value_t = 8 * 1024)]
     min_free_disk_mb: u64,
@@ -139,6 +143,7 @@ fn main() -> Result<()> {
         public_api_root: a.public_api_root.clone(),
         max_inference: a.max_inference,
         max_request_data_bytes: a.max_request_data_mb << 20,
+        data_pressure_bytes: a.data_pressure_mb << 20,
         min_free_disk_bytes: a.min_free_disk_mb << 20,
         keep_request_data: a.keep_request_data,
         send_window: a.send_window,

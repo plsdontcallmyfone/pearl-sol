@@ -20,7 +20,7 @@ pub mod transport;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -375,6 +375,11 @@ pub struct Config {
     /// answers 503 `insufficient_storage` before any rows are reserved or paid; above half the
     /// cap the oldest waiting rounds are posted early (SPEC 5.4 "Request data retention").
     pub max_request_data_bytes: u64,
+    /// Waiting request data at which rounds are posted early (fullest first), whatever the cap:
+    /// early posting starts at `min(max_request_data_bytes / 2, data_pressure_bytes)`, so a cap
+    /// raised as a stopgap does not also raise the point where the backlog starts draining
+    /// (box 0, 2026-10-23: a 64 GB cap would otherwise wait until 32 GB). 0 = cap / 2 only.
+    pub data_pressure_bytes: u64,
     pub min_free_disk_bytes: u64,
     /// Keep request scratch data after its round is posted (debugging only).
     pub keep_request_data: bool,
@@ -417,6 +422,7 @@ impl Default for Config {
             public_api_root: None,
             max_inference: 32,
             max_request_data_bytes: 16 << 30,
+            data_pressure_bytes: 8 << 30,
             min_free_disk_bytes: 8 << 30,
             keep_request_data: false,
             send_window: 64,
@@ -441,8 +447,16 @@ pub struct Gateway {
     pub ledger: Mutex<Ledger>,
     /// Txs from the server key go out one at a time (nonces).
     send_lock: Mutex<()>,
-    /// One settlement pass at a time.
+    /// One round-posting pass at a time.
     settle_lock: Mutex<()>,
+    /// One closing pass at a time. Closing a ticket waits for the evaluator, whose full glue
+    /// replay takes minutes (box 0, 2026-10-23: 480-565 s for 1,663-1,732 rows), so closes run
+    /// on their own thread and never hold up round posting (SPEC 5.4 "Request data retention").
+    close_lock: Mutex<()>,
+    /// The ticket being closed now and since when (round posting skips it).
+    closing_now: Mutex<Option<(String, Instant)>>,
+    /// Tickets whose last close failed: (try again at, consecutive failures, last error).
+    close_retry: Mutex<BTreeMap<String, (Instant, u32, String)>>,
     /// Cached `lamports_per_row` of a full balance (price, at).
     price: Mutex<Option<(u64, Instant)>>,
     /// Measured: (ttft_s, decode tokens/s) of recent requests.
@@ -459,6 +473,13 @@ pub struct Gateway {
     pub refused_storage: AtomicUsize,
     /// Request dirs deleted since start.
     pub data_deleted: AtomicUsize,
+    /// Request data bytes written (measured on disk when a request is booked) and deleted, since
+    /// start: their difference over time is the backlog's growth rate.
+    pub data_written_bytes: AtomicU64,
+    pub data_freed_bytes: AtomicU64,
+    /// Served requests whose round can no longer be posted (the ticket's deadline passed or the
+    /// chain closed it): dropped from the ticket and their data deleted, since start.
+    pub pending_dropped: AtomicUsize,
     /// The node's blob headroom (bytes RPC puts may still add) and when it was read; None =
     /// unknown (an older node without the field, or the read failed).
     node_blob: Mutex<Option<(Option<u64>, Instant)>>,
@@ -503,6 +524,18 @@ pub fn is_blob_store_full(msg: &str) -> bool {
 }
 
 /// Free bytes on the filesystem holding `p` (None when unknown).
+/// Bytes of the regular files under `dir` (a request's scratch: `a/*.i8`, `c/*.i32`).
+pub fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_bytes(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
 pub fn disk_free_bytes(p: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
@@ -603,6 +636,9 @@ impl Gateway {
             ledger: Mutex::new(ledger),
             send_lock: Mutex::new(()),
             settle_lock: Mutex::new(()),
+            close_lock: Mutex::new(()),
+            closing_now: Mutex::new(None),
+            close_retry: Mutex::new(BTreeMap::new()),
             price: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
             discovered: Mutex::new(std::collections::HashMap::new()),
@@ -611,6 +647,9 @@ impl Gateway {
             in_flight: Mutex::new(BTreeMap::new()),
             refused_storage: AtomicUsize::new(0),
             data_deleted: AtomicUsize::new(0),
+            data_written_bytes: AtomicU64::new(0),
+            data_freed_bytes: AtomicU64::new(0),
+            pending_dropped: AtomicUsize::new(0),
             node_blob: Mutex::new(None),
             refused_node_storage: AtomicUsize::new(0),
             tx_replaced: AtomicUsize::new(0),
@@ -840,6 +879,8 @@ impl Gateway {
         let nb = self.node_blob.lock().unwrap().and_then(|(h, _)| h);
         let data = json!({"bytes_waiting": self.request_data_bytes(), "max_bytes": self.cfg.max_request_data_bytes, "disk_free_bytes": disk_free_bytes(&self.cfg.work_dir),
             "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst),
+            "written_bytes": self.data_written_bytes.load(Ordering::SeqCst), "freed_bytes": self.data_freed_bytes.load(Ordering::SeqCst),
+            "pressure_bytes": self.pressure_bytes(), "pending_dropped": self.pending_dropped.load(Ordering::SeqCst),
             "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst)});
         let r = self.recent.lock().unwrap();
         let n = r.len();
@@ -856,7 +897,7 @@ impl Gateway {
             "request_data": data,
             "settle": {"tx_replaced": self.tx_replaced.load(Ordering::SeqCst), "tx_cancelled": self.tx_cancelled.load(Ordering::SeqCst),
                 "tx_stalls": self.tx_stalls.load(Ordering::SeqCst), "rounds_in_progress": l.tickets.values().filter(|t| t.posting.is_some()).count(),
-                "backoff": self.settle_backlog_json()},
+                "backoff": self.settle_backlog_json(), "closing": self.closing_json(), "close_backoff": self.close_backlog_json()},
             "note": "measured on this gateway's worker; nothing estimated",
         })
     }
@@ -1236,6 +1277,7 @@ impl Gateway {
             (s, rj)
         });
         self.in_flight.lock().unwrap().remove(id);
+        self.data_written_bytes.fetch_add(dir_bytes(dir), Ordering::SeqCst);
         {
             let mut q = self.recent.lock().unwrap();
             q.push_back((ttft, decode, completion));
@@ -1412,37 +1454,45 @@ impl Gateway {
     }
 
     /// Background loop: one settlement pass every `round_every`.
+    /// The settlement loops: round posting here, ticket closes on a thread of their own.
     pub fn run_rounds(self: Arc<Self>) {
+        let me = Arc::clone(&self);
+        std::thread::spawn(move || loop {
+            me.close_pass();
+            std::thread::sleep(me.loop_sleep());
+        });
         loop {
-            self.settle_pass();
-            std::thread::sleep(self.cfg.round_every.min(Duration::from_secs(5)).max(Duration::from_millis(200)));
+            self.post_pass();
+            std::thread::sleep(self.loop_sleep());
         }
     }
 
-    /// For every ticket: post a round of its served rows when due, and close it when used up,
-    /// near its deadline, closing, or a one-request ticket.
+    fn loop_sleep(&self) -> Duration {
+        self.cfg.round_every.min(Duration::from_secs(5)).max(Duration::from_millis(200))
+    }
+
+    /// One posting pass then one closing pass (the HTTP close handler and the tests; the
+    /// service runs the two passes on separate threads, [`Gateway::run_rounds`]).
     pub fn settle_pass(&self) {
+        self.post_pass();
+        self.close_pass();
+    }
+
+    /// For every ticket: post a round of its served rows when due (SPEC 5.4 "Settle order");
+    /// a ticket whose served rows can no longer be posted drops them. Never waits for a close.
+    pub fn post_pass(&self) {
         let Ok(_g) = self.settle_lock.try_lock() else { return };
         for id in self.settle_order() {
+            if self.closing_now.lock().unwrap().as_ref().is_some_and(|(c, _)| *c == id) {
+                continue; // being closed on the close thread
+            }
             if let Some((at, _, _)) = self.settle_retry.lock().unwrap().get(&id) {
                 if Instant::now() < *at {
                     continue; // failed recently: the other tickets go first
                 }
             }
-            let r = self.settle_ticket(&id);
-            {
-                let mut sr = self.settle_retry.lock().unwrap();
-                match &r {
-                    Ok(()) => {
-                        sr.remove(&id);
-                    }
-                    Err(e) => {
-                        let fails = sr.get(&id).map_or(0, |x| x.1) + 1;
-                        let wait = self.cfg.settle_backoff.saturating_mul(1 << (fails - 1).min(4));
-                        sr.insert(id.clone(), (Instant::now() + wait, fails, format!("{e:#}")));
-                    }
-                }
-            }
+            let r = self.settle_ticket_post(&id);
+            self.note_result(&self.settle_retry, &id, &r);
             if let Err(e) = r {
                 let msg = format!("{e:#}");
                 if is_blob_store_full(&msg) {
@@ -1454,6 +1504,61 @@ impl Gateway {
             }
         }
         self.sweep_request_data();
+    }
+
+    /// For every ticket due to close (used up, near its deadline, closing, a one-request ticket,
+    /// or delivered but not completed): deliver and complete it. The evaluator's replay can take
+    /// minutes; round posting goes on meanwhile.
+    pub fn close_pass(&self) {
+        let Ok(_g) = self.close_lock.try_lock() else { return };
+        let Ok(tip) = self.node.call("getChainInfo", json!({})).map(|v| v["height"].as_u64().unwrap_or(0)) else { return };
+        let ids: Vec<String> = {
+            let l = self.ledger.lock().unwrap();
+            l.tickets.iter().filter(|(_, t)| self.close_due(&l, t, tip)).map(|(k, _)| k.clone()).collect()
+        };
+        for id in ids {
+            if let Some((at, _, _)) = self.close_retry.lock().unwrap().get(&id) {
+                if Instant::now() < *at {
+                    continue;
+                }
+            }
+            *self.closing_now.lock().unwrap() = Some((id.clone(), Instant::now()));
+            let r = self.settle_ticket_close(&id);
+            *self.closing_now.lock().unwrap() = None;
+            self.note_result(&self.close_retry, &id, &r);
+            if let Err(e) = r {
+                (self.log)(json!({"event": "close_error", "ticket": id, "error": format!("{e:#}")}));
+            }
+        }
+    }
+
+    fn note_result(&self, map: &Mutex<BTreeMap<String, (Instant, u32, String)>>, id: &str, r: &Result<()>) {
+        let mut sr = map.lock().unwrap();
+        match r {
+            Ok(()) => {
+                sr.remove(id);
+            }
+            Err(e) => {
+                let fails = sr.get(id).map_or(0, |x| x.1) + 1;
+                let wait = self.cfg.settle_backoff.saturating_mul(1 << (fails - 1).min(4));
+                sr.insert(id.to_string(), (Instant::now() + wait, fails, format!("{e:#}")));
+            }
+        }
+    }
+
+    /// Whether a ticket is due to close at chain height `tip`: delivered (complete it), or
+    /// nothing waits to be posted, it has a round, and it is closing, single, used up, or
+    /// within `close_margin_blocks` of its deadline.
+    fn close_due(&self, l: &Ledger, t: &TicketState, tip: u64) -> bool {
+        if t.state == "delivered" {
+            return true;
+        }
+        if !(t.state == "open" || t.state == "closing") || !t.pending.is_empty() || t.reserved != 0 || t.rounds.is_empty() || t.posting.is_some() {
+            return false;
+        }
+        let free = l.free_in_budget(t, self.model.period() as u64, self.round_rows_cap() as u64);
+        let near = t.deadline_height.is_some_and(|d| d.saturating_sub(tip) <= self.cfg.close_margin_blocks);
+        t.single || t.state == "closing" || free < self.cfg.min_free_rows || near
     }
 
     /// The order a settle pass visits tickets (SPEC 5.4 "Settle order"): a round the chain has
@@ -1479,6 +1584,20 @@ impl Gateway {
 
     /// Tickets now waiting after a failed settlement: (ticket, consecutive failures, seconds
     /// until the next try, last error).
+    /// The ticket the close thread is completing now (the evaluator's replay can take minutes).
+    pub fn closing_json(&self) -> Value {
+        match &*self.closing_now.lock().unwrap() {
+            Some((id, at)) => json!({"ticket": id, "for_s": at.elapsed().as_secs()}),
+            None => Value::Null,
+        }
+    }
+
+    pub fn close_backlog_json(&self) -> Value {
+        let now = Instant::now();
+        let sr = self.close_retry.lock().unwrap();
+        Value::Array(sr.iter().map(|(k, (at, n, e))| json!({"ticket": k, "failures": n, "retry_in_s": at.saturating_duration_since(now).as_secs(), "error": e})).collect())
+    }
+
     pub fn settle_backlog_json(&self) -> Value {
         let now = Instant::now();
         let sr = self.settle_retry.lock().unwrap();
@@ -1563,16 +1682,30 @@ impl Gateway {
     /// Over half the data cap: post rounds early (oldest pending first) instead of waiting for
     /// a ticket's round period (3 h for large balances).
     fn data_pressure(&self) -> bool {
-        self.cfg.max_request_data_bytes > 0 && self.request_data_bytes() * 2 >= self.cfg.max_request_data_bytes
+        let at = self.pressure_bytes();
+        at > 0 && self.request_data_bytes() >= at
+    }
+
+    /// Waiting bytes at which rounds post early: half the cap, or `data_pressure_bytes` if lower
+    /// (0 when neither is set).
+    pub fn pressure_bytes(&self) -> u64 {
+        let half = self.cfg.max_request_data_bytes / 2;
+        match (half, self.cfg.data_pressure_bytes) {
+            (0, p) => p,
+            (h, 0) => h,
+            (h, p) => h.min(p),
+        }
     }
 
     fn remove_request_data(&self, dir: &Path) {
         if self.cfg.keep_request_data {
             return;
         }
+        let bytes = dir_bytes(dir);
         match std::fs::remove_dir_all(dir) {
             Ok(()) => {
                 self.data_deleted.fetch_add(1, Ordering::SeqCst);
+                self.data_freed_bytes.fetch_add(bytes, Ordering::SeqCst);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => (self.log)(json!({"event": "request_data_delete_error", "dir": dir.display().to_string(), "error": e.to_string()})),
@@ -1606,9 +1739,28 @@ impl Gateway {
         gone
     }
 
+    /// Post and close one ticket as one settlement step (both phases; tests and tools).
     pub fn settle_ticket(&self, id: &str) -> Result<()> {
+        self.settle_ticket_post(id)?;
+        let tip = self.node.call("getChainInfo", json!({}))?["height"].as_u64().unwrap_or(0);
+        let due = {
+            let l = self.ledger.lock().unwrap();
+            l.tickets.get(id).is_some_and(|t| self.close_due(&l, t, tip))
+        };
+        if due {
+            self.settle_ticket_close(id)?;
+        }
+        Ok(())
+    }
+
+    /// The posting half of settlement: read the ticket on the chain, record its deadline, drop
+    /// served rows that can no longer be posted, and post a round when one is due.
+    pub fn settle_ticket_post(&self, id: &str) -> Result<()> {
         let tid: [u8; 32] = hex::decode(id)?.try_into().map_err(|_| anyhow!("ticket id"))?;
         let t = self.ledger.lock().unwrap().tickets.get(id).cloned().ok_or_else(|| anyhow!("unknown ticket"))?;
+        if t.state == "delivered" {
+            return Ok(()); // the close thread completes it
+        }
         let chain = self.node.call("getTicket", json!({"ticket_id": id}))?;
         if chain.is_null() {
             ensure!(now_ms().saturating_sub(t.created_ms) < self.cfg.ticket_wait.as_millis() as u64, "ticket not on the chain after {:?}", self.cfg.ticket_wait);
@@ -1629,12 +1781,17 @@ impl Gateway {
             })
         });
         let t = self.ledger.lock().unwrap().tickets.get(id).cloned().ok_or_else(|| anyhow!("unknown ticket"))?;
+        if !t.pending.is_empty() {
+            // the chain takes segments only while the ticket is Open and before its deadline
+            let open = chain.get("status").map_or(true, |s| s == "open");
+            if !open || tip > deadline {
+                let why = if !open { format!("the chain has closed the ticket (status {})", chain["status"]) } else { format!("the ticket's deadline {deadline} passed (tip {tip})") };
+                self.drop_pending(id, &why);
+                return Ok(());
+            }
+        }
         let p = self.model.period() as u64;
         let cap = self.round_rows_cap() as u64;
-        if t.state == "delivered" {
-            // delivered but not completed yet (e.g. the attester was down): retry the completion
-            return self.close_ticket(&tid, id, &t, &chain);
-        }
         let pending_rows: u64 = {
             let l = self.ledger.lock().unwrap();
             t.pending.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum()
@@ -1657,16 +1814,41 @@ impl Gateway {
             let chain_m = resume.then(|| st["round_rows"].as_u64().unwrap_or(0) as u32);
             self.post_round(&tid, id, &t, round, chain_m)?;
         }
-        let t = self.ledger.lock().unwrap().tickets.get(id).cloned().unwrap();
-        let free = self.ledger.lock().unwrap().free_in_budget(&t, p, cap);
-        let close = t.pending.is_empty()
-            && t.reserved == 0
-            && !t.rounds.is_empty()
-            && (t.single || t.state == "closing" || free < self.cfg.min_free_rows || deadline.saturating_sub(tip) <= self.cfg.close_margin_blocks);
-        if close {
-            self.close_ticket(&tid, id, &t, &chain)?;
-        }
         Ok(())
+    }
+
+    /// The closing half: deliver and complete a ticket the ledger says is due
+    /// ([`Gateway::close_due`]), re-checked against the chain's deadline.
+    pub fn settle_ticket_close(&self, id: &str) -> Result<()> {
+        let tid: [u8; 32] = hex::decode(id)?.try_into().map_err(|_| anyhow!("ticket id"))?;
+        let chain = self.node.call("getTicket", json!({"ticket_id": id}))?;
+        ensure!(!chain.is_null(), "ticket {id} is not on the chain");
+        let t = self.ledger.lock().unwrap().tickets.get(id).cloned().ok_or_else(|| anyhow!("unknown ticket"))?;
+        if t.state != "delivered" && (!t.pending.is_empty() || t.reserved != 0 || t.posting.is_some()) {
+            return Ok(()); // a request was served since the close was chosen: post its round first
+        }
+        self.close_ticket(&tid, id, &t, &chain)
+    }
+
+    /// Served requests of a ticket whose round can no longer be posted: dropped from the
+    /// ticket (they stay in the ledger as receipts without a round) and their data deleted.
+    fn drop_pending(&self, id: &str, why: &str) {
+        let (dirs, rows) = self.with_ledger(|l| {
+            let Some(t) = l.tickets.get_mut(id) else { return (vec![], 0u64) };
+            let ids: Vec<String> = std::mem::take(&mut t.pending);
+            t.posting = None;
+            if t.rounds.is_empty() {
+                t.state = "failed".into();
+                t.error = Some(format!("served rows never posted: {why}"));
+            }
+            let rows = ids.iter().filter_map(|r| l.requests.get(r)).map(|r| r.rows as u64).sum();
+            (ids.iter().filter_map(|r| l.requests.get(r)).map(|r| (r.request_id.clone(), r.dir.clone())).collect::<Vec<_>>(), rows)
+        });
+        self.pending_dropped.fetch_add(dirs.len(), Ordering::SeqCst);
+        (self.log)(json!({"event": "pending_dropped", "ticket": id, "requests": dirs.iter().map(|d| d.0.clone()).collect::<Vec<_>>(), "rows": rows, "why": why}));
+        for (_, d) in &dirs {
+            self.remove_request_data(d);
+        }
     }
 
     fn oldest_pending_age(&self, t: &TicketState) -> Duration {
