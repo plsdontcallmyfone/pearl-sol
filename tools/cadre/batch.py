@@ -64,6 +64,7 @@ class Job:
         self.batch_sum = 0
         self.rows_sent = 0       # rows handed to the writer
         self.started_files = set()
+        self.last_fed_step = 0   # batcher step at which this request last got prompt rows
 
     @property
     def rows(self):
@@ -112,13 +113,16 @@ class SegmentWriter(threading.Thread):
 
 
 class Batcher(threading.Thread):
-    def __init__(self, model, max_batch=16, max_queue=64, max_step_rows=256, max_live_rows=8192, flush_rows=128, kv_pool=None, pool_positions=2048, writers=4):
+    def __init__(self, model, max_batch=16, max_queue=64, max_step_rows=256, max_live_rows=8192, flush_rows=128, kv_pool=None, pool_positions=2048, writers=4,
+                 prefill_order="short", starve_steps=8):
         super().__init__(daemon=True, name="cadre-batcher")
         assert model.det is not None, "continuous batching needs cadre-glue-v1 (the fp32 glue is not batch-invariant)"
         assert max_batch >= 1 and max_step_rows >= max_batch, "max_step_rows must cover one decode row per active request"
         self.m = model
         self.max_batch, self.max_queue, self.max_step_rows = max_batch, max_queue, max_step_rows
         self.max_live_rows, self.flush_rows = max_live_rows, flush_rows
+        assert prefill_order in ("short", "fifo"), prefill_order
+        self.order, self.starve_steps = prefill_order, max(1, starve_steps)
         if kv_pool is None:
             kv_pool = model.dev.type == "cuda"
         self.pool = gluemod.KVPool(model.det, max_batch, pool_positions) if kv_pool and max_batch > 1 else None
@@ -133,7 +137,9 @@ class Batcher(threading.Thread):
         self.shapes = {m.index: (m.k, m.n) for m in model.mats}
         self.retained = []        # steps whose A/C are not flushed: (spans [(job, lo, hi)], {index: (A, C)}, rows)
         self.retained_rows = 0
-        self.stats = {"steps": 0, "rows": 0, "tokens": 0, "served": 0, "refused_busy": 0, "errors": 0, "busy_s": 0.0, "max_active": 0, "flushes": 0}
+        self.stats = {"steps": 0, "rows": 0, "tokens": 0, "served": 0, "refused_busy": 0, "errors": 0, "busy_s": 0.0, "max_active": 0, "flushes": 0,
+                      "prompt_rows": 0, "prefix_rows": 0}
+        self.recent = deque(maxlen=64)  # last prompts, for the prefix_rows measurement
         self.t_start = time.time()
         self.logits_log = None
         for w in self.writers:
@@ -155,6 +161,7 @@ class Batcher(threading.Thread):
         if out_dir is not None:
             os.makedirs(os.path.join(out_dir, "a"), exist_ok=True)
             os.makedirs(os.path.join(out_dir, "c"), exist_ok=True)
+        self.note_prefix(job.ids)
         with self.cv:
             if len(self.waiting) >= self.max_queue:
                 self.stats["refused_busy"] += 1
@@ -162,6 +169,23 @@ class Batcher(threading.Thread):
             self.waiting.append(job)
             self.cv.notify()
         return job
+
+    def note_prefix(self, ids):
+        """Measurement only (nothing is reused): the longest prefix this prompt shares with one of
+        the last 64 prompts. A prefix cache could serve those rows' A, C and KV from the earlier
+        request (they are the same bits: every row depends only on the rows before it), so
+        prefix_rows / prompt_rows in /health is the share of prompt rows such a cache would save."""
+        best = 0
+        for prev in self.recent:
+            n = min(len(prev), len(ids) - 1)  # the last prompt row always runs (its logits pick the first token)
+            i = 0
+            while i < n and prev[i] == ids[i]:
+                i += 1
+            best = max(best, i)
+        with self.cv:
+            self.stats["prompt_rows"] += len(ids)
+            self.stats["prefix_rows"] += best
+            self.recent.append(list(ids))
 
     def cancel(self, job):
         job.cancelled = True
@@ -171,6 +195,7 @@ class Batcher(threading.Thread):
             up = max(time.time() - self.t_start, 1e-9)
             return {"mode": "continuous", "max_batch": self.max_batch, "max_queue": self.max_queue, "max_step_rows": self.max_step_rows,
                     "max_live_rows": self.max_live_rows, "flush_rows": self.flush_rows, "kv_pool": self.pool is not None,
+                    "prefill_order": self.order, "threads": torch.get_num_threads(),
                     "active": len(self.active), "waiting": len(self.waiting), "live_rows": self.live_rows, **self.stats,
                     "busy_frac": round(self.stats["busy_s"] / up, 3)}
 
@@ -188,6 +213,7 @@ class Batcher(threading.Thread):
                 break
             self.waiting.popleft()
             j.t_admit = time.time()
+            j.last_fed_step = self.stats["steps"]
             slot = self.pool.take() if self.pool is not None and j.need <= self.pool.cap_t else None
             j.kv = slot if slot is not None else gluemod.KVCache(self.m.det, j.need)
             self.live_rows += j.need
@@ -203,12 +229,30 @@ class Batcher(threading.Thread):
             if j.fed == len(j.ids) and j.out:
                 parts.append((j, [j.out[-1]]))
                 budget -= 1
-        for j in self.active:
-            if j.fed < len(j.ids) and budget > 0:
-                n = min(len(j.ids) - j.fed, budget)
-                parts.append((j, j.ids[j.fed:j.fed + n]))
-                budget -= n
+        for j in self.prefill_order():
+            if budget <= 0:
+                break
+            n = min(len(j.ids) - j.fed, budget)
+            parts.append((j, j.ids[j.fed:j.fed + n]))
+            budget -= n
+            j.last_fed_step = self.stats["steps"]
         return parts
+
+    def prefill_order(self):
+        """Requests still in prefill, in the order they get this step's prompt rows.
+        "fifo": admission order. "short" (default): fewest prompt rows left first, so a short
+        thought admitted next to a long report reaches its first token after its own prefill,
+        not after the report's (shortest remaining work first minimises mean wait); a request
+        that got no prompt rows for `starve_steps` steps goes first, so a long prompt still
+        advances while short ones keep arriving. Order changes which rows share a step, never a
+        request's bits (every row is computed as if alone; test_batch.py, golden.py)."""
+        pre = [j for j in self.active if j.fed < len(j.ids)]
+        if self.order == "fifo" or len(pre) < 2:
+            return pre
+        now = self.stats["steps"]
+        starved = [j for j in pre if now - j.last_fed_step >= self.starve_steps]
+        rest = sorted((j for j in pre if j not in starved), key=lambda j: len(j.ids) - j.fed)
+        return starved + rest
 
     def retire(self, j):
         self.active.remove(j)

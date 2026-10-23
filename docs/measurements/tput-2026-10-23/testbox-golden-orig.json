@@ -1,0 +1,285 @@
+{
+ "solo": [
+  {
+   "ids": [
+    60704,
+    128009
+   ],
+   "rows": 48,
+   "rows_padded": 48,
+   "finish": "stop",
+   "files": "3628934cd779af3e063b33e5dca003c2d087596571656916fe3890a370d60641"
+  },
+  {
+   "ids": [
+    791,
+    13057,
+    506,
+    95519,
+    315,
+    279,
+    18435,
+    11,
+    449,
+    1202,
+    43957,
+    323,
+    57700,
+    8748,
+    311,
+    387,
+    36131,
+    11,
+    9731,
+    311,
+    6563,
+    736,
+    323,
+    31740
+   ],
+   "rows": 65,
+   "rows_padded": 65,
+   "finish": "length",
+   "files": "1564ec004fef02617001bdeb93c283ed1024a6e743feebb7b8a28f5094473374"
+  },
+  {
+   "ids": [
+    40,
+    1053,
+    82504,
+    420,
+    6696,
+    13,
+    720,
+    791,
+    3430,
+    5376,
+    374,
+    5199,
+    11,
+    323,
+    279,
+    220,
+    868,
+    24401,
+    8286,
+    374
+   ],
+   "rows": 109,
+   "rows_padded": 112,
+   "finish": "length",
+   "files": "f235ca1dabd55532c35efc8e71b4ecad5a17cbb39bb7223263f2a2934c34e8fc"
+  },
+  {
+   "ids": [
+    315,
+    279,
+    925,
+    1665,
+    198,
+    197
+   ],
+   "rows": 6,
+   "rows_padded": 6,
+   "finish": "length",
+   "files": "0b22ec405780f338376ee34abbf1a347dd10bb73b13c4ad8e6a2d83244a2d22e"
+  },
+  {
+   "ids": [
+    279,
+    330,
+    2822,
+    1
+   ],
+   "rows": 8,
+   "rows_padded": 8,
+   "finish": "length",
+   "files": "762a1561d8e29c2b9b5b7bd79e5658f8317e5e0cd3b9553a32e685cd4967e6ef"
+  },
+  {
+   "ids": [
+    13,
+    220,
+    16
+   ],
+   "rows": 65,
+   "rows_padded": 65,
+   "finish": "length",
+   "files": "0f9ea7ea556b39d669fc5e210763c44ff67cadf8dc846d041e47dfd0fc811463"
+  },
+  {
+   "ids": [
+    220,
+    220,
+    16,
+    13,
+    15
+   ],
+   "rows": 134,
+   "rows_padded": 136,
+   "finish": "length",
+   "files": "ac356ec3784dd42f8b083d9cc2d1e6167181da6c5e7d9ce3dd56b767b5648aa4"
+  },
+  {
+   "ids": [
+    582,
+    336
+   ],
+   "rows": 301,
+   "rows_padded": 301,
+   "finish": "length",
+   "files": "3796984dbaf8bd3928220ab6a6b2595d7c9ec42902246a96c4c9f4e69a80e1de"
+  }
+ ],
+ "batched": [
+  {
+   "ids": [
+    60704,
+    128009
+   ],
+   "rows": 48,
+   "rows_padded": 48,
+   "finish": "stop",
+   "files": "3628934cd779af3e063b33e5dca003c2d087596571656916fe3890a370d60641",
+   "logits": "9cb42b6ed7fc8feff5edae3381096fb667e906390881c15b3928e639e256e729"
+  },
+  {
+   "ids": [
+    791,
+    13057,
+    506,
+    95519,
+    315,
+    279,
+    18435,
+    11,
+    449,
+    1202,
+    43957,
+    323,
+    57700,
+    8748,
+    311,
+    387,
+    36131,
+    11,
+    9731,
+    311,
+    6563,
+    736,
+    323,
+    31740
+   ],
+   "rows": 65,
+   "rows_padded": 65,
+   "finish": "length",
+   "files": "1564ec004fef02617001bdeb93c283ed1024a6e743feebb7b8a28f5094473374",
+   "logits": "1d4a6c9eceeed2c81e57bf69fdd32134918abb706147f05606d2111a847c2e1c"
+  },
+  {
+   "ids": [
+    40,
+    1053,
+    82504,
+    420,
+    6696,
+    13,
+    720,
+    791,
+    3430,
+    5376,
+    374,
+    5199,
+    11,
+    323,
+    279,
+    220,
+    868,
+    24401,
+    8286,
+    374
+   ],
+   "rows": 109,
+   "rows_padded": 112,
+   "finish": "length",
+   "files": "f235ca1dabd55532c35efc8e71b4ecad5a17cbb39bb7223263f2a2934c34e8fc",
+   "logits": "8e7c6a31add6e729ca12766450394427e84ac316e88be1ed96ca682ed6865fbf"
+  },
+  {
+   "ids": [
+    315,
+    279,
+    925,
+    1665,
+    198,
+    197
+   ],
+   "rows": 6,
+   "rows_padded": 6,
+   "finish": "length",
+   "files": "0b22ec405780f338376ee34abbf1a347dd10bb73b13c4ad8e6a2d83244a2d22e",
+   "logits": "e0b7c70229a255793f9ff891d1299cee33feca34a3127fe8597b6213b8a0a5a9"
+  },
+  {
+   "ids": [
+    279,
+    330,
+    2822,
+    1
+   ],
+   "rows": 8,
+   "rows_padded": 8,
+   "finish": "length",
+   "files": "762a1561d8e29c2b9b5b7bd79e5658f8317e5e0cd3b9553a32e685cd4967e6ef",
+   "logits": "64b057743bfd1813ee28d3b821014242cfe1a1f6a8859900023fa82e9d832886"
+  },
+  {
+   "ids": [
+    13,
+    220,
+    16
+   ],
+   "rows": 65,
+   "rows_padded": 65,
+   "finish": "length",
+   "files": "0f9ea7ea556b39d669fc5e210763c44ff67cadf8dc846d041e47dfd0fc811463",
+   "logits": "ea54f9c86dedbaaa1fd50ba68253af9af705a3e1e37f95bbb858a0a714cd4ec1"
+  },
+  {
+   "ids": [
+    220,
+    220,
+    16,
+    13,
+    15
+   ],
+   "rows": 134,
+   "rows_padded": 136,
+   "finish": "length",
+   "files": "ac356ec3784dd42f8b083d9cc2d1e6167181da6c5e7d9ce3dd56b767b5648aa4",
+   "logits": "8585c555acbee4c488bccf8c107bea8db35385dcacfa575bbfdf529c5a663c9e"
+  },
+  {
+   "ids": [
+    582,
+    336
+   ],
+   "rows": 301,
+   "rows_padded": 301,
+   "finish": "length",
+   "files": "3796984dbaf8bd3928220ab6a6b2595d7c9ec42902246a96c4c9f4e69a80e1de",
+   "logits": "e7f1e96514b0e08e4d6d7d872fc0e8f123becf169582901c28de18da9ff519ac"
+  }
+ ],
+ "texts": [
+  "Paris",
+  "The vast expanse of the ocean, with its depths and mysteries waiting to be explored, continues to captivate and inspire",
+  "I would SKIP this trade. \nThe price increase is significant, and the 15-minute volume is",
+  " of the string object\n\t",
+  " the \"No\"",
+  ". 1",
+  "  1.0",
+  "acem"
+ ],
+ "solo_eq_batched": true
+}
