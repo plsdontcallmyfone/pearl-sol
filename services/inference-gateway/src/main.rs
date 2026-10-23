@@ -100,6 +100,10 @@ struct Args {
     /// Keep request scratch data after its round is posted (debugging only).
     #[arg(long)]
     keep_request_data: bool,
+    /// Delete a round's request data once its PostSegments are included (the old behaviour)
+    /// instead of when they are final (finality_k blocks later, about 31 min on the devnet).
+    #[arg(long)]
+    delete_on_post: bool,
     /// Server-key txs in flight at once (the node's mempool takes 64 nonces ahead).
     #[arg(long, default_value_t = 64)]
     send_window: usize,
@@ -146,6 +150,7 @@ fn main() -> Result<()> {
         data_pressure_bytes: a.data_pressure_mb << 20,
         min_free_disk_bytes: a.min_free_disk_mb << 20,
         keep_request_data: a.keep_request_data,
+        delete_on_post: a.delete_on_post,
         send_window: a.send_window,
         stall_blocks: a.stall_blocks,
         settle_backoff: Duration::from_secs(a.settle_backoff_secs),

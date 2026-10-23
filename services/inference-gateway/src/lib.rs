@@ -234,6 +234,11 @@ pub struct RoundRec {
     pub m: u32,
     pub requests: Vec<String>,
     pub txs: Vec<String>,
+    /// The round's PostSegments are included but not final yet: its requests' scratch data is
+    /// kept so a reorg that drops the txs can be re-posted from it (SPEC 5.4 "Request data
+    /// retention"). Rounds recorded before this field existed read false (already deleted).
+    #[serde(default)]
+    pub awaiting_final: bool,
 }
 
 /// One ticket this gateway serves: a prepaid balance (or a one-request ticket).
@@ -383,6 +388,10 @@ pub struct Config {
     pub min_free_disk_bytes: u64,
     /// Keep request scratch data after its round is posted (debugging only).
     pub keep_request_data: bool,
+    /// Delete a round's request data as soon as its PostSegments are included (the behaviour
+    /// before 2026-10-23) instead of when the last of them is final (finality_k blocks deep).
+    /// A rollback switch; the default waits for finality.
+    pub delete_on_post: bool,
     /// Server-key txs in flight at once: the node's mempool takes nonces up to 64 ahead of the
     /// account's confirmed nonce (chain/mempool `max_ahead`), so a round of 144 segments goes out
     /// in a sliding window of this many instead of batches waited on one by one.
@@ -425,6 +434,7 @@ impl Default for Config {
             data_pressure_bytes: 8 << 30,
             min_free_disk_bytes: 8 << 30,
             keep_request_data: false,
+            delete_on_post: false,
             send_window: 64,
             stall_blocks: 5,
             max_fee_multiple: 64,
@@ -480,6 +490,13 @@ pub struct Gateway {
     /// Served requests whose round can no longer be posted (the ticket's deadline passed or the
     /// chain closed it): dropped from the ticket and their data deleted, since start.
     pub pending_dropped: AtomicUsize,
+    /// Rounds whose PostSegments became final (data deleted then) and rounds a reorg dropped from
+    /// the chain (put back to be posted again from the kept data), since start.
+    pub rounds_final: AtomicUsize,
+    pub rounds_reorged: AtomicUsize,
+    /// (ticket, round) -> consecutive finality checks that found the round's last tx neither in
+    /// a block nor in the node's pool.
+    round_missing: Mutex<BTreeMap<(String, u16), u32>>,
     /// The node's blob headroom (bytes RPC puts may still add) and when it was read; None =
     /// unknown (an older node without the field, or the read failed).
     node_blob: Mutex<Option<(Option<u64>, Instant)>>,
@@ -650,6 +667,9 @@ impl Gateway {
             data_written_bytes: AtomicU64::new(0),
             data_freed_bytes: AtomicU64::new(0),
             pending_dropped: AtomicUsize::new(0),
+            rounds_final: AtomicUsize::new(0),
+            rounds_reorged: AtomicUsize::new(0),
+            round_missing: Mutex::new(BTreeMap::new()),
             node_blob: Mutex::new(None),
             refused_node_storage: AtomicUsize::new(0),
             tx_replaced: AtomicUsize::new(0),
@@ -881,7 +901,10 @@ impl Gateway {
             "min_free_disk_bytes": self.cfg.min_free_disk_bytes, "refused_storage": self.refused_storage.load(Ordering::SeqCst), "deleted": self.data_deleted.load(Ordering::SeqCst),
             "written_bytes": self.data_written_bytes.load(Ordering::SeqCst), "freed_bytes": self.data_freed_bytes.load(Ordering::SeqCst),
             "pressure_bytes": self.pressure_bytes(), "pending_dropped": self.pending_dropped.load(Ordering::SeqCst),
-            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst)});
+            "node_blob_headroom_bytes": nb, "refused_node_storage": self.refused_node_storage.load(Ordering::SeqCst),
+            "bytes_awaiting_final": self.final_wait_bytes(), "rounds_awaiting_final": self.rounds_awaiting_final(),
+            "rounds_final": self.rounds_final.load(Ordering::SeqCst), "rounds_reorged": self.rounds_reorged.load(Ordering::SeqCst),
+            "delete_on": if self.cfg.delete_on_post { "posted" } else { "final" }});
         let r = self.recent.lock().unwrap();
         let n = r.len();
         let mean = |f: &dyn Fn(&(f64, Option<f64>, u32)) -> Option<f64>| {
@@ -1503,6 +1526,7 @@ impl Gateway {
                 (self.log)(json!({"event": "settle_error", "ticket": id, "error": msg}));
             }
         }
+        self.finality_pass();
         self.sweep_request_data();
     }
 
@@ -1623,9 +1647,116 @@ impl Gateway {
         waiting + self.in_flight.lock().unwrap().values().sum::<u64>()
     }
 
+    /// Scratch bytes of posted rounds kept until their PostSegments are final.
+    pub fn final_wait_bytes(&self) -> u64 {
+        let bpr = self.bytes_per_row();
+        let l = self.ledger.lock().unwrap();
+        l.tickets.values().flat_map(|t| t.rounds.iter()).filter(|r| r.awaiting_final)
+            .flat_map(|r| r.requests.iter()).filter_map(|q| l.requests.get(q)).map(|q| q.rows as u64 * bpr).sum()
+    }
+
+    pub fn rounds_awaiting_final(&self) -> usize {
+        self.ledger.lock().unwrap().tickets.values().flat_map(|t| t.rounds.iter()).filter(|r| r.awaiting_final).count()
+    }
+
+    /// Finality checks that find a round's last PostSegments neither in a block nor pooled
+    /// before the round is treated as dropped by a reorg (a tx is reinserted into the pool when
+    /// its block is disconnected, so one miss can be a read between the two).
+    pub const ROUND_MISSING_CHECKS: u32 = 3;
+
+    /// Delete the data of posted rounds whose last PostSegments is final; put back a round a
+    /// reorg dropped from the chain (its last tx neither in a block nor pooled on
+    /// [`Self::ROUND_MISSING_CHECKS`] passes in a row) so it is posted again from the kept data.
+    /// One getTx per round waiting (the txs share one key, so the last nonce final means every
+    /// earlier one is). Runs on the posting thread, before the sweep.
+    pub fn finality_pass(&self) {
+        let waiting: Vec<(String, u16, String)> = {
+            let l = self.ledger.lock().unwrap();
+            l.tickets.iter().flat_map(|(id, t)| t.rounds.iter().filter(|r| r.awaiting_final).map(move |r| (id.clone(), r.round, r.txs.last().cloned().unwrap_or_default()))).collect()
+        };
+        for (id, round, last) in waiting {
+            let st = if last.is_empty() {
+                Some(json!({"final": true})) // every segment was posted by an earlier attempt: nothing of ours to wait for
+            } else {
+                match self.node.call("getTx", json!({"tx_hash": last})) {
+                    Ok(v) => Some(v),
+                    Err(_) => None, // node unreachable: check again next pass
+                }
+            };
+            let Some(v) = st else { continue };
+            if v["final"] == json!(true) || v["status"] == json!("final") {
+                self.round_missing.lock().unwrap().remove(&(id.clone(), round));
+                let dirs = self.with_ledger(|l| {
+                    let mut reqs = vec![];
+                    if let Some(r) = l.tickets.get_mut(&id).and_then(|t| t.rounds.iter_mut().find(|r| r.round == round)) {
+                        r.awaiting_final = false;
+                        reqs = r.requests.clone();
+                    }
+                    reqs.iter().filter_map(|q| l.requests.get(q)).map(|q| q.dir.clone()).collect::<Vec<_>>()
+                });
+                self.rounds_final.fetch_add(1, Ordering::SeqCst);
+                for d in &dirs {
+                    self.remove_request_data(d);
+                }
+                continue;
+            }
+            if !v.is_null() {
+                self.round_missing.lock().unwrap().remove(&(id.clone(), round));
+                continue; // included (not final yet) or pooled again after a reorg
+            }
+            let n = {
+                let mut m = self.round_missing.lock().unwrap();
+                let n = m.entry((id.clone(), round)).or_insert(0);
+                *n += 1;
+                *n
+            };
+            if n >= Self::ROUND_MISSING_CHECKS {
+                self.round_missing.lock().unwrap().remove(&(id.clone(), round));
+                self.rewind_round(&id, round, &last);
+            }
+        }
+    }
+
+    /// A reorg dropped round `round` of ticket `id` (and so every later round of it): those
+    /// rounds leave the ledger, the first becomes the round being posted (same requests, so the
+    /// same m and segments) and every request goes back to pending in order. The next post pass
+    /// posts it again (or resumes it if part of it is still on the chain). A ticket already
+    /// delivered or completed is left alone and logged: its result named the dropped round.
+    fn rewind_round(&self, id: &str, round: u16, last: &str) {
+        let r = self.with_ledger(|l| {
+            let t = l.tickets.get_mut(id)?;
+            if t.state != "open" && t.state != "closing" {
+                return Some(Err(t.state.clone()));
+            }
+            let at = t.rounds.iter().position(|r| r.round == round)?;
+            let gone: Vec<RoundRec> = t.rounds.drain(at..).collect();
+            let mut back: Vec<String> = gone.iter().flat_map(|r| r.requests.iter().cloned()).collect();
+            back.extend(std::mem::take(&mut t.pending));
+            t.pending = back;
+            t.posting = Some(PostingRound { round, m: gone[0].m, requests: gone[0].requests.clone() });
+            for q in gone.iter().flat_map(|r| r.requests.iter()) {
+                if let Some(x) = l.requests.get_mut(q) {
+                    x.round = None;
+                    x.row_offset = None;
+                }
+            }
+            Some(Ok(gone.iter().map(|r| r.round).collect::<Vec<_>>()))
+        });
+        match r {
+            Some(Ok(rounds)) => {
+                self.rounds_reorged.fetch_add(rounds.len(), Ordering::SeqCst);
+                (self.log)(json!({"event": "round_reorged", "ticket": id, "rounds": rounds, "missing_tx": last, "action": "posting again from the kept data"}));
+            }
+            Some(Err(state)) => (self.log)(json!({"event": "round_reorged_after_close", "ticket": id, "round": round, "state": state, "missing_tx": last, "action": "data kept; needs a manual repair"})),
+            None => {}
+        }
+    }
+
     /// Why a new request of `need` scratch bytes must wait (None: it may run).
     pub fn storage_refusal(&self, need: u64) -> Option<String> {
-        let held = self.request_data_bytes();
+        // the cap bounds all scratch on disk: rows waiting for a round and posted rounds kept
+        // until final (posting early frees only the first, so data pressure counts only it)
+        let held = self.request_data_bytes() + self.final_wait_bytes();
         if self.cfg.max_request_data_bytes > 0 && held + need > self.cfg.max_request_data_bytes {
             return Some(format!("request data waiting for settlement is {} MB (+{} MB for this request) above the gateway's cap of {} MB; rounds are being posted, retry shortly",
                 held >> 20, need >> 20, self.cfg.max_request_data_bytes >> 20));
@@ -1724,7 +1855,11 @@ impl Gateway {
             let keep = {
                 let l = self.ledger.lock().unwrap();
                 match l.requests.get(&name) {
-                    Some(r) => r.round.is_none() && l.tickets.get(&r.ticket_id).is_some_and(|t| t.state == "open" || t.state == "closing"),
+                    Some(r) => match r.round {
+                        None => l.tickets.get(&r.ticket_id).is_some_and(|t| t.state == "open" || t.state == "closing"),
+                        // posted: kept until the round's PostSegments are final
+                        Some(n) => l.tickets.get(&r.ticket_id).is_some_and(|t| t.rounds.iter().any(|x| x.round == n && x.awaiting_final)),
+                    },
                     None => {
                         self.in_flight.lock().unwrap().contains_key(&name)
                             || e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(true, |age| age < Duration::from_secs(600))
@@ -1958,14 +2093,18 @@ impl Gateway {
             }
             if let Some(tt) = l.tickets.get_mut(id) {
                 tt.pending.retain(|x| !ids.contains(x));
-                tt.rounds.push(RoundRec { round, m, requests: ids.clone(), txs: txs.clone() });
+                tt.rounds.push(RoundRec { round, m, requests: ids.clone(), txs: txs.clone(), awaiting_final: !self.cfg.delete_on_post });
                 tt.posting = None;
             }
         });
         (self.log)(json!({"event": "round_posted", "ticket": id, "round": round, "m": m, "requests": ids.len(), "segments": segs.len(), "txs": txs}));
-        // the round is on the chain and in the ledger: A is on the node, C is committed
-        for r in &reqs {
-            self.remove_request_data(&r.dir);
+        // the round is on the chain and in the ledger: A is on the node, C is committed. The data
+        // stays until the PostSegments are final (finality_pass), so a reorg that drops them can
+        // be posted again; with delete_on_post it goes now.
+        if self.cfg.delete_on_post {
+            for r in &reqs {
+                self.remove_request_data(&r.dir);
+            }
         }
         Ok(())
     }

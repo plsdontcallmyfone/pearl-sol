@@ -171,7 +171,7 @@ fn the_last_round_takes_only_what_it_can_stack_and_then_the_ticket_is_spent() {
     let cap = gw.round_rows_cap() as u64;
     // 14 of 15 rounds posted (100 rows each): the 15th may stack at most one round of rows
     gw.ledger.lock().unwrap().tickets.get_mut(&ticket).unwrap().rounds =
-        (0..14).map(|i| RoundRec { round: i, m: 100, requests: vec![], txs: vec![] }).collect();
+        (0..14).map(|i| RoundRec { round: i, m: 100, requests: vec![], txs: vec![], awaiting_final: false }).collect();
     let bal = gw.handle("GET", &format!("/v1/balance?wallet={wallet}"), &[], b"");
     assert_eq!(bal.json()["rows_free"].as_u64(), Some(cap.min(4096 - 1400)), "{}", bal.json());
     let l = gw.ledger.lock().unwrap();
@@ -184,7 +184,7 @@ fn the_last_round_takes_only_what_it_can_stack_and_then_the_ticket_is_spent() {
     let r = gw.handle("POST", "/v1/completions", &signed(&buyer, "POST", "/v1/completions", body), body);
     assert_eq!(r.status, 200, "{}", r.json());
     // the 15th round posted: no free rows, a new request is refused with 402 (top up again)
-    gw.ledger.lock().unwrap().tickets.get_mut(&ticket).unwrap().rounds.push(RoundRec { round: 14, m: 8, requests: vec![], txs: vec![] });
+    gw.ledger.lock().unwrap().tickets.get_mut(&ticket).unwrap().rounds.push(RoundRec { round: 14, m: 8, requests: vec![], txs: vec![], awaiting_final: false });
     gw.ledger.lock().unwrap().tickets.get_mut(&ticket).unwrap().pending.clear();
     let bal = gw.handle("GET", &format!("/v1/balance?wallet={wallet}"), &[], b"");
     assert_eq!(bal.json()["rows_free"], 0, "{}", bal.json());
