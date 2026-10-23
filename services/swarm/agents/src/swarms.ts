@@ -119,7 +119,7 @@ interface Plan {
 
 /** The parts of Runtime this module uses (kept narrow so runtime.ts needs only two hook lines). */
 export interface RuntimeLike {
-  cfg: { stateDir: string; maxAgents: number; nodeRpc: string; apiUrl: string; tickMs: number };
+  cfg: { stateDir: string; maxAgents: number; nodeRpc: string; apiUrl: string; tickMs: number; cadreBootLamports?: bigint };
   entries: Map<string, { operator: string; doc: SignedSpec; paused: boolean; created_ms: number; updated_ms: number }>;
   runners: Map<string, AgentRunner>;
   store: { x: any; put(agent: string, seed: Buffer): void };
@@ -197,6 +197,25 @@ export class SwarmHost {
   get offerUnits() { return BigInt(this.env.AGENTS_SWARM_OFFER_UNITS ?? "1000000"); }
   get floatUnits() { return BigInt(this.env.AGENTS_SWARM_FLOAT_UNITS ?? "0"); }
 
+  /** The least SOL a member can work on: its CADRE buy for Cadre fees (agent.ts selfFundCadre,
+   * which waits for that plus 0.02 SOL), then one ticket at the newest top-up quote any hosted
+   * agent saw (inference.ts, bought only with price + 1,000,000 lamports left), plus 3,000,000 for
+   * Solana fees. Below it a member's SOL ends up held forever: the 2026-10-23 QA swarm of
+   * 0.03 SOL per member never thought. null while no agent has a quote yet. */
+  memberFloor(): bigint | null {
+    let price: bigint | null = null;
+    for (const r of this.rt.runners.values()) {
+      const q = (r as any).inf?.quote;
+      const now = (r as any).d?.now?.() ?? Date.now();
+      if (q && now - q.at < 86_400_000 && (price === null || BigInt(q.price) > price)) price = BigInt(q.price);
+    }
+    if (price === null) return null;
+    const boot = this.rt.cfg.cadreBootLamports ?? 5_000_000n;
+    const a = boot + 20_000_000n;
+    const b = boot + price + 1_000_000n + 3_000_000n;
+    return a > b ? a : b;
+  }
+
   plan(b: any) {
     const E = this.Err;
     const cfg = this.cfg;
@@ -227,6 +246,11 @@ export class SwarmHost {
     // SOL: even split, the remainder to the lead; it goes straight to each member's own wallet
     const share = BigInt(total) / BigInt(size);
     const sol = agents.map((_, i) => share + (i === leadIx ? BigInt(total) - share * BigInt(size) : 0n));
+    const least = this.memberFloor();
+    if (least !== null && share < least) {
+      seeds.forEach((x) => x.fill(0));
+      throw new E(400, "bad_swarm", `each member needs at least ${least} lamports (its own CADRE for Cadre fees, one prepaid inference ticket at today's quote, Solana fees and the wallet reserve); ${size} members need ${least * BigInt(size)}, this plan gives each ${share}`);
+    }
     const styles: (StyleId | null)[] = agents.map(() => null);
     if (kind === "trading") { let k = 0; for (let i = 0; i < size; i++) if (i !== leadIx && k < STYLES.length) styles[i] = STYLES[k++].id; }
     const created = now();
