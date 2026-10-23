@@ -357,6 +357,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 v["town_sunset_height"] = json!(agent_types::sunset::town_sunset_height(self.chain.chain_id()));
                 // uncles must name a job mineable at their height from here (audit 2026-10-23)
                 v["uncle_job_rule_height"] = json!(agent_types::speed::uncle_job_rule_height(self.chain.chain_id()));
+                // uncles are told apart by pow_digest, not only hash, from here (audit follow-up 2026-10-23)
+                v["uncle_digest_rule_height"] = json!(agent_types::speed::uncle_digest_rule_height(self.chain.chain_id()));
                 // blob data-lifecycle parameters (own record, SPEC 4.5 "Segment data retention")
                 let bp = srv(self.blob_params().await)?;
                 let act = state::blobparams::blob_params_upgrade_height(self.chain.chain_id());

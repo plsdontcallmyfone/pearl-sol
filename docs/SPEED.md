@@ -231,6 +231,18 @@ A block B at height H on branch b may carry uncles U, each valid when:
    Expired job with cap left, or one whose `max_blocks` its sibling used up, and be paid from the
    pool. A stale block that loses the last block of a job, or whose job completes before the
    uncle is included, earns nothing.
+8. from `uncle_digest_rule_height` (devnet 13,000, every other chain from the uncle activation):
+   `U.pow_digest` (the header with `proof_hash` zeroed, what the proof binds) differs from the
+   pow_digest of b's block at `U.height`, from every other uncle's in B, and from every uncle's
+   in b's blocks above `U.height` (at most one block, since depth <= 2). Audit follow-up
+   2026-10-23: rule 4 compares header hashes, and the hash covers `proof_hash`. A Pearl proof
+   opens one tile of the noised GEMM that meets the target; a nonce whose GEMM has two such tiles
+   has two valid proofs, so before this rule a miner could re-publish its own canonical block
+   with the other proof and be paid as its uncle (1/2 plus the 1/32 nephew bonus if it also
+   mines the includer), credit one stale block twice in one body, or credit it again one block
+   later. Every field but `proof_hash` is inside pow_digest, so equal digests mean the same
+   block; a real sibling (another miner, other txs, another nonce) always differs. Templates
+   offer one uncle per pow_digest.
 
 U's txs, state_root and withdraw_root are not checked and not executed (as in Ethereum): an uncle
 pays for its work, nothing else. Fork choice is unchanged: the heaviest chain by the work of its
