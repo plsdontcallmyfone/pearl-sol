@@ -1606,6 +1606,9 @@ CLAUDE.md "Who is working on what".
       word "SKIP" (the last word of "TAKE or SKIP?"), and any SKIP vetoed. Fix on main 9950e1d: a SKIP counts only
       when it names a RED_FLAGS signal present in the values (veto_unsupported logged otherwise); watched pools are
       evicted when under minPoolSol or idle 30 min, except a pool with an open trade (the set froze at its first 12).
+      Not strictness: a read-only 24 h replay (1-minute vault reads, 9,853 mainnet read calls, 11 pools, 151.7
+      pool-hours) had tape_lark's rules hold 6.11% of pool-minutes (147 episodes), floor_wren 0.88% (46), still_heron
+      21.18% (154; top10_share not replayable, vol_15m from 1-minute returns / sqrt 3). No calibration change made.
       Tests strategies 15/15, agents 74/74. Box 0 restarts: see the diag report (handed to the orchestrator).
 
 ## M1 components (SPEC v2, all DONE)
