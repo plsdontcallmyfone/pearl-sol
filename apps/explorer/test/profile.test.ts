@@ -191,7 +191,7 @@ test("routes: /api/agent, /agent, /agents over a real indexer on a fake node", a
     for (const path of [`/agent/${A.seller}`, `/agent/${A.griefer}`, `/agent/${A.evaluator}`, "/agents", "/agents?all=1"]) {
       const r = await route(ix, "GET", path);
       assert.equal(r.status, 200, path);
-      assert.doesNotMatch(r.body as string, /—/, "no em dashes");
+      assert.doesNotMatch(r.body as string, /\u2014/, "no em dashes");
     }
     assert.equal((await route(ix, "GET", "/api/agent/not-an-address")).status, 400);
     // Cx addresses (SPEC 2.1): the same agent by Cx, lowercase Cx and base58; JSON adds *_cx; a bad casing is 400

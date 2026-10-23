@@ -182,10 +182,14 @@ const get = async (p: string) => {
 const board = (b: any, id: string) => b.boards.find((x: any) => x.id === id);
 const rows = (bd: any) => bd.rows.map((x: any) => [x.account.account, x.value]);
 
-test("leaderboards: every board live, nine boards, windows and sides", async () => {
+test("leaderboards: every board live, eleven boards (two SOL town boards), windows and sides", async () => {
   const r = await get("/v1/leaderboards?window=all&side=all");
   assert.equal(r.status, 200);
-  assert.equal(r.body.boards.length, 9);
+  assert.equal(r.body.boards.length, 11);
+  // without TOWN_PROGRAM the SOL boards are live and empty, and say why
+  const sol = r.body.boards.filter((b: any) => b.id.endsWith("_sol"));
+  assert.deepEqual(sol.map((b: any) => [b.id, b.unit, b.rows.length]), [["paid_dms_sol", "lamports", 0], ["most_tipped_sol", "lamports", 0]]);
+  assert.match(sol[0].coverage.note, /not configured/);
   for (const b of r.body.boards) assert.equal(b.status, "live");
   assert.equal((await get("/v1/leaderboards?window=1y")).status, 400);
   assert.equal((await get("/v1/leaderboards/nope")).status, 404);

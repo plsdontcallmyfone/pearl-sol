@@ -954,3 +954,42 @@ Live, read-only:
   worktree; contract.test.ts (every documented route served) passes with the swarm routes.
 - Live devnet 2026-10-23 00:08 UTC: swarm 291775e8... (2 members): commit 18 ms, Solana tx (264 bytes) confirmed 3.1 s,
   lead kickoff thought done 71.1 s after the commit.
+
+## Correctness audit 2026-10-23 (HANDOFF item 48)
+
+Scope: town sunset gate (aa79458), contracts/strategies, contracts/swarms, contracts/toolbelt + its
+runtime, gateway settle/close split (d379a0d), chain/ and crates/ since 2026-10-21.
+
+Confirmed and fixed (regression tests fail on the old code, pass now):
+
+| Severity | Where | Impact | Fix |
+|---|---|---|---|
+| Medium (consensus) | chain/consensus-pow/src/chain/uncles.rs check_uncle | uncle naming a Completed/Expired/over-max_blocks job with cap left is paid from the pool | executor::check_mineable at U.height from devnet 10,000; test consensus-pow tests/uncles.rs an_uncle_on_a_job_that_was_not_mineable_is_refused |
+| Medium | services/swarm/agents/src/toolbelt/index.ts maybeFlush | a dropped receipts commit leaves a permanent sequence gap; concurrent flushes double-commit and drop receipts; a failed commit fails a paid call | receipts kept until the chain's next_seq passes them, one flush at a time, resend after 10 min; 3 tests in test/toolbelt.test.ts |
+| Low | services/inference-gateway/src/lib.rs settle_ticket_close | a request reserved while its ticket is being closed is served and never posted | close marks the ticket closing in the same ledger step; settle_split no_request_is_reserved_on_a_ticket_while_it_is_being_closed |
+| Low | services/inference-gateway/src/lib.rs settle_ticket_post | at tip == deadline the rows wait one more refused post | drop at tip >= deadline; settle_split served_rows_at_the_deadline_tip_are_dropped |
+| Info | chain/consensus-pow/src/chain/uncles.rs | `u.height - 1` wraps for a height-0 uncle (rejected anyway in release, panics in debug) | explicit refusal, same result |
+
+Theoretical or by design, not changed:
+- Sunset: txs pooled before 12,000 fail at the tip from 12,000 and are evicted after EVICT_AFTER_TIPS (existing
+  mechanism); a preconfirmed one cannot be replaced at its nonce until then. After 12,000 replies cannot release DM
+  escrows, so recipients cannot earn them; senders reclaim after their window (at most dm_reclaim_max 10,080 blocks)
+  and recipients can decline at once. Writers still sending social kinds to the Cadre node after 12,000 (a house
+  swarm not on TownNode) are refused: switch them before the height. The contract native-call refusal has no test.
+- Uncles: an uncle is told apart from its branch sibling only by header hash; if one nonce ever admitted a second
+  valid proof, a miner could re-publish its own block as its uncle (pow_digest equality check would close it).
+- Gateway: request data is deleted when its round's PostSegments are included, not final; a reorg deeper than the
+  mempool's reinsert window could leave a posted round that cannot be rebuilt.
+- Swarms: proposals made by a lead stay acceptable after the lead leaves (nobody can cancel them; the invited agent
+  can decline); the k_po deposit is refunded to whoever closes the proposal. Strategies: no issue found (pnl bounds,
+  ordering, learning rule, stats). Toolbelt contract: commit is only for the caller itself; the root is opaque
+  (verified off chain from the blob, receipts.ts uses 0x00/0x01 leaf/node prefixes, odd node promoted).
+- Contract builds: strategies and swarms deployed code is not reproducible byte for byte from the tree (path and
+  workspace sensitive function order; same size and strings); toolbelt matches.
+
+Tests run (Mac, CARGO_TARGET_DIR in the session scratchpad): contracts/tests 34/34 (halt 3, market 8, pool 6,
+strategies 4, swarms 10, trading 3); chain executor + agent-types green; consensus-pow + state + mempool green
+(uncles 6/6); rpc + agent-node cargo check; gateway settle_split 5/5, stuck_nonce 5/5, retention 3/3, node_blobs,
+auth, discover green; gateway backpressure/budget/gateway/server_limits failed only on this Mac's disk reserve
+(insufficient_storage: 5.9 GB free under the default 8 GB min_free_disk), unrelated to the change; swarm/agents
+91/91; swarm 45/45.

@@ -41,7 +41,7 @@ for (const [scheme, vp, suffix] of [["light", { width: 1366, height: 900 }, ""],
     const bad = await page.evaluate(() => {
       const fonts = new Set();
       for (const el of document.querySelectorAll("body *")) fonts.add(getComputedStyle(el).fontFamily);
-      return { mono: [...fonts].filter((f) => /mono|courier|consolas|menlo/i.test(f)), overflow: document.documentElement.scrollWidth > window.innerWidth + 1, dash: document.body.innerText.includes("—") };
+      return { mono: [...fonts].filter((f) => /mono|courier|consolas|menlo/i.test(f)), overflow: document.documentElement.scrollWidth > window.innerWidth + 1, dash: document.body.innerText.includes("\u2014") };
     });
     if (bad.mono.length || bad.overflow || bad.dash) { problems++; console.log(`${name}${suffix}: ${JSON.stringify(bad)}`); }
     const file = resolve(out, `${name}${suffix}.png`);

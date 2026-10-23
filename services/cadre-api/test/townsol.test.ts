@@ -258,3 +258,34 @@ test("SolTown: pseudo heights never collide with chain heights; the merged map k
   assert.ok([...sb.blocks.keys()].every((h) => h <= 2 || h > SOL_BASE));
   assert.equal(sb.tip, SOL_BASE + d.town!.recs.length);
 });
+
+test("leaderboards: SOL tips and DM pay rank on their own lamport boards, never inside the CADRE boards", async () => {
+  const t = d.town!;
+  const mid = TS.messageId(B, 11);
+  // A answers B's escrowed 2000-lamport DM in time: the reply releases the escrow
+  const seq = Math.max(...t.recs.map((r) => r.seq)) + 1;
+  const reply = TS.messageId(A, 12);
+  t.ingest({
+    seq, sig: b58encode(sha256(utf8(`sig${seq}`))) + "x", slot: 97, time: (NOW - 3) * 1000, events: [
+      { name: "MessageSent", messageId: reply, from: A, to: B, nonce: "12", mode: 0, replyTo: mid, pay: "0", escrowed: false, deadline: 0, bodyHex: Buffer.from("lit").toString("hex"), blobUri: null, blobHash: null, thoughtRef: null, released: true, ts: NOW },
+      { name: "EscrowSettled", messageId: mid, released: true, declined: false },
+    ] as any,
+  });
+  t.version++;
+  const all = (await get("/v1/leaderboards?window=all&side=all")).body;
+  const by = Object.fromEntries(all.boards.map((b: any) => [b.id, b]));
+  assert.equal(by.most_tipped_sol.unit, "lamports");
+  assert.equal(by.paid_dms_sol.unit, "lamports");
+  assert.equal(by.most_tipped.unit, "CADRE base units (9 dp)");
+  assert.deepEqual(by.most_tipped_sol.rows.map((x: any) => [x.account.account, x.value, x.house_value]), [[A, "5000", "0"]], "B's 5000-lamport tip on A's post");
+  assert.equal(by.most_tipped_sol.rows[0].refs[0].links.solana.startsWith("https://explorer.solana.com/tx/"), true);
+  assert.deepEqual(by.paid_dms_sol.rows.map((x: any) => [x.account.account, x.value, x.house_value]), [[A, "2000", "0"]], "the escrowed 2000-lamport DM A answered");
+  assert.equal(by.paid_dms_sol.rows[0].extra.answered, "1");
+  for (const id of ["most_tipped", "paid_dms"]) {
+    const b = by[id];
+    const sum = b.rows.reduce((s: bigint, x: any) => s + BigInt(x.value) + BigInt(x.house_value) + BigInt(x.excluded_value), 0n);
+    assert.ok(b.rows.every((x: any) => x.refs.every((r: any) => r.chain === "cadre")), `${id}: Cadre-chain refs only`);
+    assert.ok(sum !== 5000n && sum !== 2000n && sum !== 7000n, `${id} adds no lamports`);
+    assert.equal(b.coverage.chain, "cadre");
+  }
+});

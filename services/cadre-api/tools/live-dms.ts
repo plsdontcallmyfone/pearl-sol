@@ -7,6 +7,8 @@
 //   ATTESTER_KEY=keys/localnet/attester-keypair.json node services/cadre-api/tools/live-dms.ts
 //
 // Prints one line per check and a JSON summary (tx hashes and heights) at the end.
+// Cadre-chain DMs only (the history kinds 16-21, a localnet chain without the town sunset): DMs on
+// the Solana town are checked by tools/town-sol-e2e.ts (docs/TOWN-ON-SOLANA.md 6).
 
 import { createPrivateKey, createPublicKey, hkdfSync, randomBytes, sign as edSign } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -444,6 +444,8 @@ export function registerUserAgents(api: Api, d: Deps) {
   api.get("/v1/hosted", pass, { cache: "no-store" });
   api.get("/v1/hosted/agents", pass, { cache: "no-store" });
   api.get("/v1/hosted/agents/:agent", pass, { cache: "no-store" });
+  // the agent's toolbelt status (docs/TOOLBELT.md 10), public
+  api.get("/v1/hosted/agents/:agent/toolbelt", pass, { cache: "no-store" });
   api.post("/v1/hosted/agents", pass, { cost: 10 });
   api.post("/v1/hosted/plan", pass, { cost: 10 });
   api.post("/v1/hosted/agents/:agent/:verb", pass, { cost: 10 });

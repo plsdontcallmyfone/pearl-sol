@@ -20,7 +20,7 @@ import { Controller } from "./controller.ts";
 import { type DesktopHost, META_KEY, type Role, sdkApi } from "./desk.ts";
 import { selfHostApi, selfHostOptsFromEnv } from "./selfhost.ts";
 import { checkStreamToken } from "./token.ts";
-import { openRouterChat } from "./vision.ts";
+import { openRouterChat, openRouterKeyInfo } from "./vision.ts";
 
 const env = process.env;
 const num = (k: string, d: number) => (env[k] === undefined || env[k] === "" ? d : Number(env[k]));
@@ -105,6 +105,18 @@ async function main() {
     selfhost: selfhost() ?? undefined,
     selfHostHandles: selfHandles,
     healthS: num("DESK_HEALTH_S", 300),
+    memLowMb: num("DESK_MEM_LOW_MB", 80),
+    // the vision model's credit gate (src/credits.ts): pause on a 402, probe, resume on credit
+    credit: {
+      probeS: num("DESK_CREDIT_PROBE_S", 300),
+      maxProbeS: num("DESK_CREDIT_PROBE_MAX_S", 3600),
+      flapS: num("DESK_CREDIT_FLAP_S", 600),
+      holdDesksS: num("DESK_CREDIT_HOLD_DESKS_S", 1800),
+      remindS: num("DESK_CREDIT_REMIND_S", 1800),
+      minUsd: num("DESK_CREDIT_MIN_USD", 0.01),
+      probeMaxTokens: num("DESK_CREDIT_PROBE_MAX_TOKENS", 1600),
+    },
+    keyInfo: openRouterKeyInfo(sec.openrouterKey),
   });
   const social = env.DESK_SOCIAL !== "0"; // 0 = desktops browse and work but the swarm sends no chain action
 
@@ -122,7 +134,7 @@ async function main() {
     try {
       const u = new URL(req.url ?? "/", "http://x");
       const p = u.pathname.split("/").filter(Boolean);
-      if (u.pathname === "/health") return send(res, 200, { ok: !ctl.killed(), capped: ctl.capped, desktops_running: ctl.runningDesks().length, ...ctl.healthSummary() });
+      if (u.pathname === "/health") return send(res, 200, { ok: !ctl.killed(), capped: ctl.capped, vision_paused: ctl.credits.paused, desktops_held: ctl.credits.desksHeld, desktops_running: ctl.runningDesks().length, ...ctl.healthSummary() });
       if (u.pathname === "/status") return send(res, 200, ctl.status());
       if (u.pathname === "/activity" && req.method === "POST") {
         // runtime events for an agent's log and activity console (the trading executor's trades, its txs);
@@ -198,7 +210,8 @@ async function main() {
       while (!stop) {
         if (ctl.killed()) { await ctl.stopAll(false); break; }
         await ctl.spendTick();
-        if (!ctl.capped) await ctl.ensureAll();
+        await ctl.creditTick().catch((e) => ctl.event({ event: "credit_error", error: String(e?.message ?? e).slice(0, 200) }));
+        if (!ctl.holdDesks()) await ctl.ensureAll();
         await ctl.keepalive();
         for (let i = 0; i < 60 && !stop && !ctl.killed(); i++) await sleep(1000);
       }
@@ -206,7 +219,7 @@ async function main() {
     (async () => { // the swarm's chain actions, carried out on the social desktops
       await sleep(30_000);
       while (!stop && !ctl.killed() && social) {
-        if (!ctl.capped && ctl.runningDesks().length) await ctl.swarm.tick();
+        if (!ctl.holdDesks() && ctl.runningDesks().length) await ctl.swarm.tick();
         await sleep(num("SWARM_TICK_MS", 20_000));
       }
     })(),

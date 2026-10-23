@@ -53,6 +53,22 @@ pub fn speed_migration_height(chain_id: u32) -> Option<u64> {
     }
 }
 
+/// Devnet height from which an uncle must name a job that was mineable at the uncle's height
+/// (live status, deadline, max_blocks, cap: the rule canonical job blocks already follow).
+/// Audit 2026-10-23: before it, an uncle could name a Completed or Expired job that still had
+/// cap left and be paid from the pool for work on a closed job. Proposed at devnet tip ~7006
+/// (30 s blocks: about 25 h for the three-node rollout).
+pub const DEVNET_UNCLE_JOB_RULE_HEIGHT: u64 = 10_000;
+
+/// First including-block height at which the uncle job rule applies: the devnet's own height,
+/// and from the uncle activation on every other chain (the test range included).
+pub fn uncle_job_rule_height(chain_id: u32) -> u64 {
+    match chain_id {
+        DEVNET_CHAIN_ID => DEVNET_UNCLE_JOB_RULE_HEIGHT,
+        c => speed_upgrade_height(c),
+    }
+}
+
 /// Uncle share at depth `d` as (numerator, denominator): 1/2 at depth 1, 1/4 at depth 2.
 pub fn uncle_share(depth: u64) -> Option<(u64, u64)> {
     match depth {

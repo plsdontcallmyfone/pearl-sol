@@ -619,7 +619,7 @@ their unit states are not read from box 0.
 When /opt/lode/bin/cadre exists the script also runs `cadre status --health --local --network devnet` and logs
 its lines as `cli:<check>` (docs/CLI.md "status"; not installed yet: build it on box 0 and reinstall the script).
 Section 9 (2026-10-23, after the 2026-10-22/23 outages; each shows within one or two 5-minute runs, looking
-back `LOG_WINDOW` 10min in the journal): `desktop_tasks` (FAIL on any `model 402` in cadre-desktops, WARN when
+back `LOG_WINDOW` 10min in the journal): `desktop_tasks` (FAIL on any `model 402` in cadre-desktops or `vision_paused` on its /health, WARN when
 half or more of at least 10 `task` events failed), `openrouter` (balance from
 https://openrouter.ai/api/v1/credits with the key in the PROVIDERS_ENV_FILE named by /etc/lode/desktops.env,
 sent as a header from stdin, never logged; WARN under $5, FAIL at $0 or below), `gateway_data` (WARN when
@@ -894,7 +894,7 @@ cadre-api, cadre-desktops, cadre-swarm, cadre-agents and restarts one at a time;
 node rollout of the sunset gate before `DEVNET_TOWN_SUNSET_HEIGHT` (12000, provisional; tip 6143 at 20:17 UTC
 2026-10-22). Exact commands: TOWN-ON-SOLANA.md section 7.
 
-## Storefront pending orders (2026-10-23, HANDOFF item 48)
+## Storefront pending orders (2026-10-23, HANDOFF item 51)
 
 Read only diagnosis; nothing below has been run yet. One box at a time, health checks between.
 

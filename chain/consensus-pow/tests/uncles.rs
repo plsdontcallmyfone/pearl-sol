@@ -372,3 +372,44 @@ fn migration_switches_target_time_and_k_at_s() {
         assert_eq!(c.tip().summary.coinbase.mature_height, c.tip_height() + 2 * k as u64);
     });
 }
+
+/// Audit 2026-10-23: an uncle must name a job that was mineable at its height (the canonical
+/// job-block rule), from `uncle_job_rule_height` (devnet 10,000; this test chain: always). Here
+/// the job allows one block: A mines it, so stale B on the same job is past max_blocks and is
+/// not paid as an uncle (before the rule it was, and so was an uncle on a closed job with cap left).
+#[test]
+fn an_uncle_on_a_job_that_was_not_mineable_is_refused() {
+    assert_eq!(agent_types::speed::uncle_job_rule_height(agent_types::speed::DEVNET_CHAIN_ID), 10_000);
+    assert_eq!(agent_types::speed::uncle_job_rule_height(TEST_SPEED_CHAIN_BASE + 40), 40);
+    assert_eq!(agent_types::speed::uncle_job_rule_height(CHAIN), 0);
+    deterministic::Runner::default().start(|ctx| async move {
+        let mut c = C::open(ctx.child("a"), "n", genesis(CHAIN, 10), MockVerifier).await.unwrap();
+        let g = c.genesis_hash();
+        let mut now = T0 + 1000;
+        let txs = [unlock(0, 1, pk(2), 1_000_000_000), unlock(1, 2, pool_address(), 1_000_000)];
+        let t = c.build_template_at(g, pk(9), JobChoice::Fallback, &txs, now).await.unwrap();
+        add(&mut c, seal(&t), now).await;
+        now += 1000;
+        let one = PostJob { max_blocks: 1, ..job_body() };
+        let post = Tx::signed(&seed(2), CHAIN, 0, 10, TxBody::PostJob(one));
+        let t = c.build_template_at(c.tip().hash, pk(9), JobChoice::Fallback, &[post], now).await.unwrap();
+        add(&mut c, seal(&t), now).await;
+        let (job, p2) = (schema::job_id_for_post(&pk(2), 0), c.tip().hash);
+        now += 1000;
+        let a = seal(&tmpl(&c, p2, 3, JobChoice::Job(job), now).await);
+        let b = seal(&tmpl(&c, p2, 4, JobChoice::Job(job), now).await);
+        assert_eq!(add(&mut c, a.clone(), now).await, Accept::Added { tip: true });
+        add(&mut c, b.clone(), now).await;
+        now += 1000;
+        // templates leave B out
+        let t = tmpl(&c, a.hash(), 9, JobChoice::Fallback, now).await;
+        assert!(t.uncles.is_empty(), "B names a job whose one block A already used");
+        // and a block that includes it anyway is invalid
+        let mut blk = seal(&t);
+        blk.uncles = vec![as_uncle(b.header, 4)];
+        match c.insert_block(reseal(blk), now).await {
+            Err(ChainError::Invalid(m)) => assert!(m.contains("not mineable") && m.contains("max_blocks"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    });
+}

@@ -7,6 +7,7 @@
 // the same E2B template family and the same vision driver (src/vision.ts runTask), with a task
 // prompt that names this agent and says page text is data.
 import { createRequire } from "node:module";
+import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 import { runTask, openRouterChat, type Chat, type TaskResult } from "../../../desktop/src/vision.ts";
 import type { SandboxLike } from "../../../desktop/src/desk.ts";
@@ -94,21 +95,30 @@ export async function waitBrowser(sbx: any, maxMs: number): Promise<number> {
   return Date.now() - t0;
 }
 
+/** This runtime's pool id (TOOLBELT_POOL_ID, default the host name): pool desktops carry it, and a
+ * runtime takes back only its own (or legacy ones made before the id existed), never another
+ * runtime's warm desktops on the same E2B account. */
+export const poolId = (env: Record<string, string | undefined> = process.env) => (env.TOOLBELT_POOL_ID ?? hostname()).slice(0, 64);
+
 export class DesktopPool {
   ids: string[] = [];
   filling = 0;
   apiKey: string;
   template: string;
   size: number;
+  id: string;
   log: (e: Record<string, unknown>) => void;
+  private sdk: () => Promise<any>;
   private adopting: Promise<void> | null = null;
-  constructor(apiKey: string, template: string, size: number, log: (e: Record<string, unknown>) => void = () => {}) { this.apiKey = apiKey; this.template = template; this.size = size; this.log = log; }
+  constructor(apiKey: string, template: string, size: number, log: (e: Record<string, unknown>) => void = () => {}, o: { id?: string; sdk?: () => Promise<any> } = {}) {
+    this.apiKey = apiKey; this.template = template; this.size = size; this.log = log; this.id = o.id ?? poolId(); this.sdk = o.sdk ?? e2bDesktop;
+  }
   /** one clean desktop with the browser already open on about:blank, then paused (processes kept) */
   private async one() {
     try {
-      const { Sandbox } = await e2bDesktop();
+      const { Sandbox } = await this.sdk();
       const t0 = Date.now();
-      const s = await Sandbox.create(this.template, { apiKey: this.apiKey, timeoutMs: 600_000, resolution: [1280, 800], metadata: { cadre_toolbelt: "computer-pool" } });
+      const s = await Sandbox.create(this.template, { apiKey: this.apiKey, timeoutMs: 600_000, resolution: [1280, 800], metadata: { cadre_toolbelt: "computer-pool", cadre_pool: this.id } });
       await s.commands.run(BROWSER_CMD(1280, 800, "about:blank"), { timeoutMs: 15_000, background: true }).catch(() => {});
       const waited = await waitBrowser(s, 30_000);
       await Sandbox.pause(s.sandboxId, { apiKey: this.apiKey });
@@ -118,13 +128,20 @@ export class DesktopPool {
       this.log({ event: "toolbelt_pool_error", error: String((e as Error).message).slice(0, 200) });
     } finally { this.filling--; }
   }
-  /** after a restart: take back this pool's paused desktops instead of making new ones (once) */
+  /** after a restart: take back this pool's own paused desktops instead of making new ones (once).
+   * A pool of size 0 never adopts (it would take another runtime's desktops for nothing). */
   adopt(): Promise<void> {
+    if (!this.size) return Promise.resolve();
     this.adopting ??= (async () => {
       try {
-        const { Sandbox } = await e2bDesktop();
+        const { Sandbox } = await this.sdk();
         const p = Sandbox.list({ apiKey: this.apiKey, query: { metadata: { cadre_toolbelt: "computer-pool" }, state: ["paused"] } });
-        while (p.hasNext) for (const i of await p.nextItems()) if (!this.ids.includes(i.sandboxId)) this.ids.push(i.sandboxId);
+        while (p.hasNext) {
+          for (const i of await p.nextItems()) {
+            const owner = i.metadata?.cadre_pool;
+            if ((owner === undefined || owner === this.id) && !this.ids.includes(i.sandboxId)) this.ids.push(i.sandboxId);
+          }
+        }
       } catch { /* list failed: fill fresh */ }
     })();
     return this.adopting;
@@ -137,7 +154,8 @@ export class DesktopPool {
   }
   /** a resumed clean desktop, or null when the pool is empty (the caller creates one cold) */
   async take(): Promise<any | null> {
-    const { Sandbox } = await e2bDesktop();
+    if (!this.size) return null;
+    const { Sandbox } = await this.sdk();
     await this.adopt();
     while (this.ids.length) {
       const id = this.ids.shift()!;

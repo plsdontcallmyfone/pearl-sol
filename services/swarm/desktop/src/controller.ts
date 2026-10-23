@@ -29,7 +29,8 @@ import { loadWallet, type Wallet } from "../../src/wallet.ts";
 import type { DeskConfig } from "./config.ts";
 import { usdPerSecond } from "./config.ts";
 import { Desk, type DeskHealth, type DesktopHost, type Role } from "./desk.ts";
-import { Ledger } from "./spend.ts";
+import { CreditGate, probeCredits, type ProbeResult } from "./credits.ts";
+import { daySummary, Ledger } from "./spend.ts";
 import { browseTask, chainTask, type Task, workTask } from "./tasks.ts";
 import { isTownSolana, type TownNode } from "../../src/townnode.ts";
 import { type Chat, runTask, systemPrompt } from "./vision.ts";
@@ -103,6 +104,9 @@ export class DesktopSwarm extends Swarm {
     return this.ctl.viaDesktop(da, body);
   }
   override async act(a: Agent, posts: any[], mention?: any): Promise<string> {
+    // the vision model is out of credit: a post, reply or reaction would pay for a Cadre thought that
+    // no desktop can type, so the agent waits (its DMs, answered off the desktops, still run)
+    if (this.ctl?.credits.paused) { this.ctl.credits.skip(); return "vision_paused"; }
     try {
       return await super.act(a, posts, mention);
     } catch (e) {
@@ -128,7 +132,18 @@ export interface CtlOpts {
   selfHostHandles?: string[];
   /** seconds between health checks of each desktop (default 300) */
   healthS?: number;
+  /** memory under this (MB available) is a health problem; the desktop's tabs are trimmed, then its
+   * browser restarted if the next check is still under it (default 80) */
+  memLowMb?: number;
+  /** the vision model's credit gate (src/credits.ts); defaults in creditDefaults */
+  credit?: Partial<typeof creditDefaults>;
+  /** GET /api/v1/key for the credit probe (absent: the probe only sends its tiny chat request) */
+  keyInfo?: () => Promise<{ status: number; json: any }>;
 }
+
+/** Credit gate defaults: probe every 5 min (doubling to 1 h when a resume does not hold for 10 min),
+ * pause the desktops themselves after 30 min without credit, a "still paused" line every 30 min. */
+export const creditDefaults = { probeS: 300, flapS: 600, maxProbeS: 3600, holdDesksS: 1800, remindS: 1800, minUsd: 0.01, probeMaxTokens: 1600 };
 
 export class Controller {
   agents: DeskAgent[] = [];
@@ -141,7 +156,10 @@ export class Controller {
   capped = false;
   started = now();
   lastSpendTick = now();
+  lastSpendLog = 0;
   visionInFlight = 0;
+  credits: CreditGate;
+  creditCfg: typeof creditDefaults;
 
   cfg: DeskConfig;
   private chat: Chat;
@@ -157,7 +175,10 @@ export class Controller {
   ) {
     this.cfg = cfg; this.chat = chat; this.o = o;
     this.usdPerS = usdPerSecond(cfg.vcpu, cfg.ramGib);
-    this.ledger = new Ledger(resolve(cfg.stateDir, "spend.json"), cfg.usdPerDay);
+    // one spend_day line per finished UTC day: E2B, vision (tasks + probes), total against the cap
+    this.ledger = new Ledger(resolve(cfg.stateDir, "spend.json"), cfg.usdPerDay, undefined, (d) => this.event({ event: "spend_day", ...daySummary(d, cfg.usdPerDay) }));
+    this.creditCfg = { ...creditDefaults, ...(o.credit ?? {}) };
+    this.credits = new CreditGate({ ...this.creditCfg, log: (e) => this.event(e) });
     const handles = cfg.handles ?? DEFAULT_HANDLES();
     const chosen = handles.slice(0, o.agentsN).map((h) => {
       const p = PERSONAS.find((x) => x.handle === h);
@@ -276,6 +297,13 @@ export class Controller {
       for (const d of this.runningDesks()) await d.pause();
       for (const a of this.agents) for (const r of a.roles) a.current[r] = `paused: day cap ${this.cfg.usdPerDay} USD reached`;
     }
+    // hourly: today's spend so far against the cap (the day's final line is spend_day, at 00:00 UTC)
+    if (t - this.lastSpendLog >= 3600_000) {
+      this.lastSpendLog = t;
+      const s = daySummary(this.ledger.d, this.cfg.usdPerDay);
+      const run = this.runningUsdPerS();
+      this.event({ event: "spend", ...s, left_usd: round(this.cfg.usdPerDay - this.ledger.spent), running_e2b_usd_per_h: round(run * 3600), e2b_if_running_to_midnight_usd: round(s.e2b_usd + run * this.ledger.secondsLeft()), vision_paused: this.credits.paused });
+    }
     this.ledger.save();
   }
 
@@ -286,7 +314,7 @@ export class Controller {
     const all = this.agents.flatMap((a) => a.roles.map((r) => ({ a, r })));
     let i = 0;
     const worker = async () => {
-      while (i < all.length && !this.killed() && !this.capped) {
+      while (i < all.length && !this.killed() && !this.holdDesks()) {
         const { a, r } = all[i++]!;
         const d = a.desks[r];
         if (d.state === "running") continue;
@@ -331,6 +359,11 @@ export class Controller {
   async task(da: DeskAgent, role: Role, t: Task): Promise<{ ok: boolean; summary: string } | null> {
     const d = da.desks[role];
     if (!d || d.state !== "running" || !d.sbx || da.busy[role] || this.capped || this.killed()) return null;
+    if (this.credits.paused) {
+      this.credits.skip();
+      da.current[role] = "paused: vision model out of credit";
+      return null;
+    }
     const perTaskMax = 0.05;
     if (this.ledger.visionHeadroom(this.runningUsdPerS()) < perTaskMax) {
       da.current[role] = "waiting: vision budget for today is used up";
@@ -350,6 +383,7 @@ export class Controller {
       const [w, h] = this.cfg.resolution;
       const r = await runTask(d.sbx, this.chat, {
         model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, openUrl: t.url, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
+        halted: () => this.credits.paused,
         onStep: (s) => {
           d.lastActionAt = now();
           if (s.action === "done") return; // the task_done line carries the summary
@@ -361,8 +395,9 @@ export class Controller {
         },
       });
       this.ledger.vision(da.persona.handle, r);
+      if (r.credit) this.credits.trip(r.credit, `${da.persona.handle}/${role} ${t.kind}`);
       this.push(da, { t: iso(), desk: role, kind: "task_done", text: r.summary || (r.ok ? "done" : "not done"), ok: r.ok });
-      da.current[role] = r.summary ? `${r.ok ? "" : "gave up: "}${r.summary}` : "idle";
+      da.current[role] = r.credit || r.error === "vision_paused" ? "paused: vision model out of credit" : r.summary ? `${r.ok ? "" : "gave up: "}${r.summary}` : "idle";
       this.event({ event: "task", agent: da.persona.handle, role, kind: t.kind, ok: r.ok, steps: r.steps, usd: Number(r.usd.toFixed(6)), in_tokens: r.inTokens, out_tokens: r.outTokens, error: r.error });
       return { ok: r.ok, summary: r.summary };
     } catch (e: any) {
@@ -401,7 +436,8 @@ export class Controller {
       const startedAt = Date.now();
       const before = sol ? 0n : BigInt((await node.call("getAccount", { account: da.wallet.address }))?.nonce ?? 0);
       const r = await this.task(da, "social", t);
-      if (!r) throw new DeskFailed("social desktop not available (budget, cap or not running)");
+      if (!r) throw new DeskFailed(this.credits.paused ? "vision model paused (out of credit)" : "social desktop not available (budget, cap or not running)");
+      if (this.credits.paused && !r.ok) throw new DeskFailed("vision model paused (out of credit)");
       // the town on Solana: the site signs a Solana tx in the wallet; find it by the agent's signatures
       const h = sol ? await this.findSolTx(sol, da.wallet.address, startedAt, 150_000) : await this.findTx(da.wallet.address, before, 150_000);
       if (!h) throw new DeskFailed(`no ${t.kind} tx from the desktop (${r.summary || "no summary"})`);
@@ -465,7 +501,7 @@ export class Controller {
   /** Read-only tasks: browsing on the social desktop, work on the work desktop (or, on a one-desktop
    * agent, whichever its mode says), when due. */
   async background() {
-    if (this.capped || this.killed()) return;
+    if (this.capped || this.killed() || this.credits.paused) return;
     this.scheduleModes();
     const due: { a: DeskAgent; r: Role; t: Task }[] = [];
     for (const [i, a] of this.agents.entries()) {
@@ -488,29 +524,94 @@ export class Controller {
     }
   }
 
+  /** Desktops stay paused (not started, not resumed): the day cap, or the credit gate holding them. */
+  holdDesks() { return this.capped || this.credits.desksHeld; }
+
+  /** The credit probe (src/credits.ts) with this controller's model and key. */
+  probe = (): Promise<ProbeResult> => probeCredits({ keyInfo: this.o.keyInfo, chat: this.chat, model: this.cfg.visionModel, maxTokens: this.creditCfg.probeMaxTokens, minUsd: this.creditCfg.minUsd });
+
+  /** Every minute: while the vision model is out of credit, probe when due (booking the probe's cost),
+   * and after holdDesksS pause the running desktops (E2B bills them by the second; a paused sandbox
+   * bills nothing and resumes in about a second). On resume the desktops start again in the next
+   * ensureAll. One pause and one resume per outage: no churn. */
+  async creditTick(): Promise<void> {
+    if (!this.credits.paused) {
+      if (this.credits.desksHeld) {
+        this.credits.desksHeld = false;
+        for (const a of this.agents) for (const r of a.roles) if (a.desks[r].state !== "running") a.current[r] = "resuming";
+      }
+      return;
+    }
+    await this.credits.tick(async () => {
+      const r = await this.probe();
+      if (r.usd) this.ledger.probe(r.usd);
+      return r;
+    });
+    if (this.credits.holdDue()) {
+      const running = this.runningDesks();
+      // a task or a signing action still running finishes first (it stops at its next model call)
+      if (this.agents.some((a) => a.signing || Object.values(a.busy).some(Boolean))) return;
+      this.credits.desksHeld = true;
+      for (const d of running) await d.pause();
+      for (const a of this.agents) for (const r of a.roles) a.current[r] = "paused: vision model out of credit (desktop paused to save E2B time)";
+      this.event({ event: "vision_paused_desktops", desktops: running.length, paused_min: Math.round((now() - this.credits.since) / 60000) });
+    }
+    if (!this.credits.paused && this.credits.desksHeld) await this.creditTick();
+  }
+
   /** Health of every running desktop (stream, browser host, memory, last action); problems go to the
    * journal as desk_unhealthy (the ops log, scripts/devnet-health.sh reads /health) and the encoder or
    * browser host is restarted when it is the one that died. */
   async healthTick(): Promise<void> {
     const staleMs = 3 * Math.max(this.o.browseGapS, this.o.workGapS, this.o.soloGapS ?? 0) * 1000;
     const desks = this.agents.flatMap((a) => a.roles.map((r) => ({ a, r, d: a.desks[r] }))).filter((x) => x.d.state === "running");
+    const memLow = this.o.memLowMb ?? 80;
+    // while the vision model is paused nothing acts on purpose: "no action" is not a desktop problem then
+    const stale = this.credits.paused ? Number.POSITIVE_INFINITY : staleMs;
     let i = 0;
     const worker = async () => {
       while (i < desks.length && !this.killed()) {
         const { a, r, d } = desks[i++]!;
         try {
           const h = await d.checkHealth();
-          const issues = deskIssues(h, d.lastActionAt, staleMs, now(), this.started);
-          if (issues.length) {
-            const healed = await d.heal(a.busy[r] || (r === "social" && a.signing)).catch(() => [] as string[]);
-            this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, issues, healed, mem_avail_mb: h?.mem_avail_mb ?? null, stream_age_s: h?.stream_age_s ?? null });
+          const issues = deskIssues(h, d.lastActionAt, stale, now(), this.started, memLow);
+          const healed = issues.length ? await d.heal(a.busy[r] || (r === "social" && a.signing), memLow).catch(() => [] as string[]) : [];
+          // one line when the problems change or something was repaired, else at most every 30 min
+          // (before 2026-10-23 a desktop between 60 and 80 MB logged the same line every 5 min, unrepaired)
+          const key = issues.map((x) => x.replace(/\d+/g, "N")).join("|");
+          if (issues.length && (healed.length || key !== d.issueKey || now() - d.issueLoggedAt >= 1800_000)) {
+            d.issueLoggedAt = now();
+            this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, layout: a.solo ? "one_desktop" : "two_desktops", mode: a.solo ? a.mode : null, issues, healed, mem_avail_mb: h?.mem_avail_mb ?? null, mem_total_mb: h?.mem_total_mb ?? null, tabs: h?.tabs ?? null, chrome_mb: h?.chrome_mb ?? null, ffmpeg_mb: h?.ffmpeg_mb ?? null, stream_age_s: h?.stream_age_s ?? null });
           }
+          d.issueKey = key;
         } catch (e: any) {
           this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, issues: [`health check failed: ${String(e?.message ?? e).slice(0, 120)}`] });
         }
       }
     };
     await Promise.all(Array.from({ length: 6 }, worker));
+    if (desks.length) this.event({ event: "desk_health", ...this.memorySummary(memLow) });
+  }
+
+  /** Memory of the running desktops by kind (two-desktop Social, two-desktop Work, one-desktop), from
+   * the last health check: MB available (min, p10, p50), tabs, Chromium and encoder RSS (p50). Logged
+   * once per health tick as desk_health, so memory is measured in the journal, not only when low. */
+  memorySummary(memLow = this.o.memLowMb ?? 80) {
+    const groups: Record<string, DeskHealth[]> = { two_social: [], two_work: [], one_desktop: [] };
+    for (const a of this.agents) for (const r of a.roles) {
+      const h = a.desks[r].health;
+      if (a.desks[r].state !== "running" || !h) continue;
+      groups[a.solo ? "one_desktop" : r === "work" ? "two_work" : "two_social"]!.push(h);
+    }
+    const q = (xs: number[], p: number) => (xs.length ? xs.slice().sort((x, y) => x - y)[Math.min(xs.length - 1, Math.floor(p * xs.length))]! : null);
+    const nums = (hs: DeskHealth[], k: keyof DeskHealth) => hs.map((h) => h[k]).filter((x): x is number => typeof x === "number");
+    const out: Record<string, unknown> = { mem_low_mb: memLow };
+    for (const [k, hs] of Object.entries(groups)) {
+      if (!hs.length) continue;
+      const av = nums(hs, "mem_avail_mb");
+      out[k] = { desktops: hs.length, mem_total_mb: q(nums(hs, "mem_total_mb"), 0.5), avail_min: q(av, 0), avail_p10: q(av, 0.1), avail_p50: q(av, 0.5), low: av.filter((x) => x < memLow).length, tabs_p50: q(nums(hs, "tabs"), 0.5), chrome_mb_p50: q(nums(hs, "chrome_mb"), 0.5), ffmpeg_mb_p50: q(nums(hs, "ffmpeg_mb"), 0.5) };
+    }
+    return out;
   }
 
   /** Summary for /health and the ops log: one entry per desktop with its problems. */
@@ -518,7 +619,7 @@ export class Controller {
     const staleMs = 3 * Math.max(this.o.browseGapS, this.o.workGapS, this.o.soloGapS ?? 0) * 1000;
     const rows = this.agents.flatMap((a) => a.roles.map((r) => {
       const d = a.desks[r];
-      const issues = d.state === "running" ? deskIssues(d.health, d.lastActionAt, staleMs, now(), this.started) : [`desktop ${d.state}`];
+      const issues = d.state === "running" ? deskIssues(d.health, d.lastActionAt, this.credits.paused ? Number.POSITIVE_INFINITY : staleMs, now(), this.started, this.o.memLowMb ?? 80) : this.credits.desksHeld && d.state === "paused" ? [] : [`desktop ${d.state}`];
       return { agent: a.persona.handle, role: r, host: d.api.kind ?? "e2b", state: d.state, issues };
     }));
     return { desktops: rows.length, running: rows.filter((x) => x.state === "running").length, streams_alive: this.agents.reduce((s, a) => s + a.roles.filter((r) => a.desks[r].health?.stream_alive).length, 0), unhealthy: rows.filter((x) => x.issues.length) };
@@ -535,8 +636,13 @@ export class Controller {
       ok: !this.stopped,
       stopped: this.killed(),
       capped: this.capped,
+      // the vision model's credit gate: paused = no vision task or desktop chain action starts
+      vision_paused: this.credits.paused,
+      vision_gate: this.credits.status(),
       cap_usd_per_day: this.cfg.usdPerDay,
-      spend_today: { day: this.ledger.d.day, e2b_usd: round(this.ledger.d.e2b_usd), vision_usd: round(this.ledger.d.vision_usd), total_usd: round(this.ledger.spent) },
+      spend_today: { day: this.ledger.d.day, e2b_usd: round(this.ledger.d.e2b_usd), vision_usd: round(this.ledger.d.vision_usd), probe_usd: round(this.ledger.d.probe_usd ?? 0), total_usd: round(this.ledger.spent), within_cap: this.ledger.spent <= this.cfg.usdPerDay },
+      spend_days: this.ledger.days(),
+      memory: this.memorySummary(),
       measured: { ...m, usd: round(m.usd), vision_usd: round(m.vision_usd), usd_per_desktop_hour: m.usd_per_desktop_hour === null ? null : round(m.usd_per_desktop_hour), usd_per_agent_hour: m.usd_per_desktop_hour === null || !this.agents.length ? null : round((m.usd_per_desktop_hour * this.agents.reduce((s, x) => s + x.roles.length, 0)) / this.agents.length) },
       e2b: { template: this.cfg.template, vcpu: this.cfg.vcpu, ram_gib: this.cfg.ramGib, usd_per_desktop_hour_list: round(this.usdPerS * 3600) },
       vision_model: this.cfg.visionModel,
@@ -590,13 +696,13 @@ const round = (x: number) => Math.round(x * 1e6) / 1e6;
 
 /** The problems a desktop's last health check shows (empty = healthy). A desktop with no action in
  * `staleMs` (3 task gaps) is flagged once the controller has run that long. */
-export function deskIssues(h: DeskHealth | null, lastActionAt: number, staleMs: number, t: number, started: number): string[] {
+export function deskIssues(h: DeskHealth | null, lastActionAt: number, staleMs: number, t: number, started: number, memLowMb = 80): string[] {
   const out: string[] = [];
   if (!h) return []; // not checked yet (the first check runs a minute after start)
   if (!h.encoder) out.push("stream encoder down");
   else if (!h.stream_alive) out.push(`stream stale (${h.stream_age_s ?? "no"} s)`);
   if (!h.browser_host) out.push("browser host down");
-  if (h.mem_avail_mb !== null && h.mem_avail_mb < 80) out.push(`memory low (${h.mem_avail_mb} MB free)`);
+  if (h.mem_avail_mb !== null && h.mem_avail_mb < memLowMb) out.push(`memory low (${h.mem_avail_mb} MB free)`);
   if (t - started > staleMs && t - lastActionAt > staleMs) out.push(lastActionAt ? `no action for ${Math.round((t - lastActionAt) / 60000)} min` : "no action since the controller started");
   return out;
 }

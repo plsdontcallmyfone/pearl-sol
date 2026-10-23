@@ -19,8 +19,9 @@ chmod +x "$T/bin/"*
 SECRET="sk-or-test-$(date +%s)"
 echo "PROVIDERS_ENV_FILE=$T/providers.env" > "$T/desktops.env"
 echo "OPENROUTER_API_KEY=$SECRET" > "$T/providers.env"
+echo '{"ok":true,"vision_paused":false}' > "$T/dhealth.json"
 run() {
-  HEALTH_SECTIONS=logs LOG_DIR="$T/log" STATE_DIR="$T/state" JOURNAL="$T/bin/journalctl" SYSTEMCTL="$T/bin/systemctl" \
+  DESKTOPS_URL="file://$T/dhealth.json?" HEALTH_SECTIONS=logs LOG_DIR="$T/log" STATE_DIR="$T/state" JOURNAL="$T/bin/journalctl" SYSTEMCTL="$T/bin/systemctl" \
     DESKTOPS_ENV="$T/desktops.env" OPENROUTER_CREDITS_URL="file://$T/credits.json" GATEWAY_STATS_URL="file://$T/stats.json" \
     bash "$SCRIPT" > "$T/out" 2>&1
 }
@@ -63,5 +64,6 @@ check "openrouter FAIL at zero" "line openrouter | grep -q 'FAIL openrouter'"
 check "refused_storage not rising since last run: no WARN from it alone" "echo '{\"request_data\":{\"bytes_waiting\":1,\"refused_storage\":9,\"refused_node_storage\":0}}' > $T/stats.json; run; line gateway_data | grep -q 'OK gateway_data'"
 check "the OpenRouter key never reaches the log, status or output" "! grep -rq -- '$SECRET' $T/log $T/out $T/state"
 check "a missing key is a WARN, not a crash" "echo 'OTHER=1' > $T/providers.env; run; line openrouter | grep -q 'WARN openrouter no OPENROUTER_API_KEY'"
+check "desktops FAIL when the controller paused vision (no 402 lines any more)" "echo '{\"ok\":true,\"vision_paused\":true}' > $T/dhealth.json; : > $T/j/cadre-desktops.log; run; line desktop_tasks | grep -q 'FAIL desktop_tasks 0 of 0 .*vision paused'"
 [[ $fails == 0 ]] && echo "ALL PASS" || { echo "FAILED $fails"; cat "$T/out"; tail -20 "$T/log/health.log"; }
 exit $fails

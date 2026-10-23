@@ -19,7 +19,7 @@ import type { Fact, Fill } from "./math.ts";
 import { realizedPerSell } from "./math.ts";
 import { TownIndex } from "../../../../apps/explorer/src/social.ts";
 import { DmIndex } from "../../../../apps/explorer/src/dm.ts";
-import { socialBlocks } from "../townsol.ts";
+import { isSolHeight, socialBlocks } from "../townsol.ts";
 import { agentTables, selfDealing, type AgentTables } from "../../../../apps/explorer/src/profile.ts";
 import { exclusion, type Context, type Hire, type MarketIndex } from "../../../../apps/explorer/src/market.ts";
 import { shared, type SharedTrade } from "../shared.ts";
@@ -180,6 +180,8 @@ export class Snap {
   /** Block time (ms) of a height, null when not indexed. */
   time(h: number | null | undefined): number | null {
     if (!h) return null;
+    // a Solana town pseudo height (docs/TOWN-ON-SOLANA.md 3): the transaction's block time
+    if (isSolHeight(h)) return this.src.d.town?.blocks.get(h)?.time || null;
     return this.src.d.ix.blocks.get(h)?.time ?? null;
   }
 
@@ -279,9 +281,12 @@ export function acceptanceFacts(s: Snap): Fact[] {
 }
 
 /** Paid DMs (pay > 0) the recipient answered: escrow released by its reply, or a reply to a paid-final DM. */
+/** Paid DMs on the Cadre chain (CADRE pay; the history before the town moved to Solana). */
 export function dmFacts(s: Snap): Fact[] {
   const out: Fact[] = [];
   for (const m of s.dm.messages.values()) {
+    // Solana town DMs carry lamports: they go to paid_dms_sol, never into a CADRE sum
+    if (isSolHeight(m.height)) continue;
     if (!m.to || m.channel || BigInt(m.pay) <= 0n) continue;
     const e = s.dm.escrows.get(m.messageId);
     let answer: { height: number; hash: string; time: number } | null = null;
@@ -338,16 +343,68 @@ export function thinkerFacts(s: Snap, refs: ThoughtRef[], receipt: (ref: string)
 }
 
 /** CADRE tips on posts, screened per tipper -> author pair. */
+/** CADRE tips on the Cadre chain (the history before the town moved to Solana). */
 export function tipFacts(s: Snap): Fact[] {
   const out: Fact[] = [];
   for (const [postId, rs] of s.town.reactions) {
     const author = s.town.posts.get(postId)?.author;
     if (!author) continue;
     for (const r of rs) {
-      if (r.tip === "0") continue;
+      if (r.tip === "0" || isSolHeight(r.height)) continue;
       const p = s.pair(r.account, author, r.height);
       out.push({ account: author, amount: BigInt(r.tip), payer: r.account, at: s.time(r.height), ref: { chain: "cadre", id: r.txHash, what: "React tip" }, house: p.house, excluded: p.excluded, heuristic: p.heuristic, extra: { tips: 1n } });
     }
+  }
+  return out;
+}
+
+/** SOL tips (lamports) on the Solana town: the indexer keeps each reaction's lamports apart from CADRE. */
+export function solTipFacts(s: Snap): Fact[] {
+  const out: Fact[] = [];
+  const town = s.src.d.town;
+  if (!town) return out;
+  for (const [postId, rs] of s.town.reactions) {
+    const author = s.town.posts.get(postId)?.author;
+    if (!author) continue;
+    for (const r of rs) {
+      if (!isSolHeight(r.height)) continue;
+      const lam = BigInt(town.reactLamports.get(`${r.txHash}:${postId}:${r.account}`) ?? "0");
+      if (lam <= 0n) continue;
+      const p = s.pair(r.account, author, r.height);
+      out.push({ account: author, amount: lam, payer: r.account, at: s.time(r.height), ref: { chain: "solana", id: r.txHash, what: "tip on the Solana town" }, house: p.house, excluded: p.excluded, heuristic: p.heuristic, extra: { tips: 1n } });
+    }
+  }
+  return out;
+}
+
+/** Paid DMs on the Solana town (lamports): an escrowed DM counts when the reply released it, a
+ * pay-at-once DM when the recipient replied to it; unanswered ones are tallied beside the row. */
+export function solDmFacts(s: Snap): Fact[] {
+  const out: Fact[] = [];
+  const town = s.src.d.town;
+  if (!town) return out;
+  for (const m of s.dm.messages.values()) {
+    if (!isSolHeight(m.height) || !m.to || m.channel) continue;
+    const sm = town.messages.get(m.messageId);
+    const pay = BigInt(sm?.pay ?? m.pay);
+    if (pay <= 0n) continue;
+    const e = town.escrows.get(m.messageId);
+    let answer: { hash: string; time: number } | null = null;
+    if (e) {
+      if (e.settled?.state === "released") answer = { hash: e.settled.sig, time: e.settled.time };
+    } else {
+      const r = s.dm.thread(m.from, m.to).find((x) => x.from === m.to && x.replyTo === m.messageId && x.height >= m.height);
+      if (r) answer = { hash: r.txHash, time: r.time };
+    }
+    const p = s.pair(m.from, m.to, m.height);
+    if (!answer) {
+      out.push({ account: m.to, amount: 0n, payer: m.from, at: m.time || null, ref: { chain: "solana", id: m.txHash, what: "paid DM, no answer" }, house: p.house, excluded: p.excluded, tally: true, extra: { unanswered: 1n } } as Fact);
+      continue;
+    }
+    out.push({
+      account: m.to, amount: pay, payer: m.from, at: answer.time || null, ref: { chain: "solana", id: answer.hash, what: e ? "reply that released the escrow" : "reply to a paid DM" },
+      house: p.house, excluded: p.excluded, heuristic: p.heuristic, extra: { answered: 1n, ...(answer.time && m.time ? { reply_secs: BigInt(Math.max(0, Math.round((answer.time - m.time) / 1000))) } : {}) },
+    });
   }
   return out;
 }
