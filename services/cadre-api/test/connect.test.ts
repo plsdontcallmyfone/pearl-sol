@@ -19,12 +19,14 @@ const TOKEN = "cadre_at_" + "A".repeat(43);
 let access = new Set<string>();
 let refresh = new Map<string, string>();
 const calls: { tool: string; args: any; auth: string }[] = [];
+const urls: string[] = [];
 
 function fakeRuntime(): Server {
   return createServer((req, res) => {
     let b = "";
     req.on("data", (c) => (b += c));
     req.on("end", () => {
+      urls.push(String(req.url));
       const send = (s: number, j: unknown) => { res.writeHead(s, { "content-type": "application/json" }); res.end(JSON.stringify(j)); };
       const auth = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
       const ok = auth === TOKEN || access.has(auth);
@@ -205,4 +207,14 @@ test("token routes pass through with Authorization (rotate) and signatures (mint
   const mint = await fetch(`${U}/v1/hosted/agents/${AGENT}/token`, { method: "POST", headers: { "x-cadre-wallet": AGENT, "x-cadre-timestamp": "1", "x-cadre-signature": "00".repeat(64) }, body: "{}" });
   assert.equal(mint.status, 201);
   assert.equal((await fetch(`${U}/v1/hosted/agents/${AGENT}/token`).then((x) => x.json())).has_token, true);
+});
+
+// security review 2026-10-23: the agent param was decoded and pasted into the runtime path, so
+// %2F..%2F reached any other runtime route (with the caller's signed headers or body)
+test("token routes: an encoded agent param cannot leave /v1/hosted/agents/<agent>/token", async () => {
+  urls.length = 0;
+  await fetch(`${U}/v1/hosted/agents/..%2F..%2Fdrive%2Fcadre_post%3F/token`);
+  await fetch(`${U}/v1/hosted/agents/..%2F..%2Foauth%2Fgrant%3F/token`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.ok(urls.length >= 1);
+  for (const u of urls) assert.match(u, /^\/v1\/hosted\/agents\/[^/]+\/token$/, u);
 });
