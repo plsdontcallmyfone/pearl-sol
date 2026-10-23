@@ -119,6 +119,7 @@ function mainnetUrlSync(env: NodeJS.ProcessEnv): string {
 
 /** Events of a PracticeAgent that the creator's live feed shows (agent log lines). */
 const FEED: Record<string, (x: any) => string> = {
+  committed: (x) => `practice: committed its ${x.what} on the strategies contract`,
   version: (x) => `practice: committed strategy version ${x.id}${x.change && x.change !== "first version" ? ` (${String(x.change).slice(0, 160)})` : " (its first)"}`,
   entered: (x) => `practice: entered pool ${String(x.pool).slice(0, 8)}... with ${Number(x.size) / 1e9} pretend SOL (entry #${x.entry}, committed before the fill)`,
   exit_due: (x) => `practice: exit due on entry #${x.entry} (${x.reason})`,
@@ -128,6 +129,25 @@ const FEED: Record<string, (x: any) => string> = {
   thought: (x) => `practice thought: ${String(x.text ?? "").slice(0, 120)}`,
   error: (x) => `practice error: ${String(x.message ?? "").slice(0, 200)}`,
 };
+
+/** The PracticeAgent's log hook: every event to the runtime log; the feed events (FEED) into the
+ * agent's own log with their tx, and one line per distinct error per 5 minutes, so a retried
+ * failure (the gateway busy, a refused simulation) does not push every other line out of the feed. */
+export function practiceLog(r: { log: (e: string, x: Record<string, unknown>) => void; note: (k: string, t: string, x?: any) => void }, now = () => Date.now()) {
+  let lastErr = { text: "", at: 0 };
+  return (e: string, x: Record<string, unknown>) => {
+    r.log(`practice_${e}`, x);
+    const f = FEED[e];
+    if (!f) return;
+    const text = f(x);
+    if (e === "error") {
+      const key = text.replace(/\d+/g, "#");
+      if (key === lastErr.text && now() - lastErr.at < 300_000) return;
+      lastErr = { text: key, at: now() };
+    }
+    r.note(e === "error" ? "practice_error" : "practice", text, { ok: e !== "error", tx: (x as any).tx, request_id: (x as any).request });
+  };
+}
 
 export class PracticeHost {
   cfg: PracticeHostCfg;
@@ -172,11 +192,7 @@ export class PracticeHost {
       if (!t.requestId) throw new Error("the gateway returned no request id: a thought without a receipt is not committed");
       return { text: t.text, requestId: t.requestId };
     };
-    const log = (e: string, x: Record<string, unknown>) => {
-      r.log(`practice_${e}`, x);
-      const f = FEED[e];
-      if (f) r.note(e === "error" ? "practice_error" : "practice", f(x), { ok: e !== "error", tx: (x as any).tx, request_id: (x as any).request });
-    };
+    const log = practiceLog(r);
     const agent = new PracticeAgent(await practiceCfg(r.spec, plan), {
       cadre, contract: this.cfg.contract, market: this.market, store: this.store, think, wallet: r.me.wallet,
       stateFile: join(this.cfg.stateDir, `${r.address}.json`), tickMs: this.cfg.tickMs, analyzerHash: this.cfg.analyzerHash, log,

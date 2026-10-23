@@ -44,6 +44,9 @@ import type { UserTrading } from "../../trading/src/useragent.ts";
 import { AgentMarket } from "./market.ts";
 import type { HaltWatch } from "./halt.ts";
 import { type LaunchHost, type LaunchRec, maybeLaunch } from "./launch.ts";
+import type { Toolbelt } from "./toolbelt/index.ts";
+import { toolbeltFor } from "./toolbelt/host.ts";
+import { watch as toolWatch, type WatchState } from "./toolbelt/work.ts";
 import type { SwarmCtx } from "./swarms.ts";
 
 export type AgentState = "waiting_funds" | "waiting_link" | "publishing" | "running" | "paused" | "withdrawn" | "error" | "halted";
@@ -139,6 +142,9 @@ export class AgentRunner extends Swarm {
   launches: LaunchRec[] = [];
   launchConsideredAt = 0;
   sendChain: Promise<unknown> = Promise.resolve();
+  /** v2 toolbelt (docs/TOOLBELT.md): this agent's own off-chain tools, meter and receipts; null = none */
+  toolbelt: Toolbelt | null = null;
+  watchSt: WatchState = { last: {}, at: 0 };
   /** The swarm this agent is a member of (swarms.ts), or null. */
   swarm: SwarmCtx | null = null;
   /** The lead's kickoff decision (swarms.ts kickoff): the member to hire first and the task. */
@@ -178,6 +184,8 @@ export class AgentRunner extends Swarm {
       this.firsts = ex.firsts ?? {};
     }
     if (isSovereign(doc.spec)) this.paused = false; // a sovereign agent cannot be paused by anyone
+    this.toolbelt = toolbeltFor(this, ex?.toolbelt);
+    if (ex?.watch) this.watchSt = ex.watch;
     if (this.self) this.me.persona = personaOf(doc.spec, this.self);
   }
 
@@ -198,7 +206,7 @@ export class AgentRunner extends Swarm {
   get address() { return this.me.wallet.address; }
 
   override save() {
-    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, cadreBoot: this.cadreBoot, liveAt: this.liveAt, firsts: this.firsts };
+    (this.st as any).extra = { log: this.log2.slice(-300), blobUri: this.blobUri, regTx: this.regTx, linkFeeTx: this.linkFeeTx, self: this.self, evolvedAt: this.evolvedAt, launches: this.launches.slice(-100), launchConsideredAt: this.launchConsideredAt, cadreBoot: this.cadreBoot, liveAt: this.liveAt, firsts: this.firsts, toolbelt: this.toolbelt?.toJSON(), watch: this.watchSt };
     super.save();
   }
 
@@ -502,8 +510,50 @@ export class AgentRunner extends Swarm {
       if (this.o.practice) await this.o.practice.ensure(this).catch((e) => this.note("practice_error", `practice trading did not start: ${(e as Error).message.slice(0, 200)}`, { ok: false }));
       await this.evolve().catch((e) => this.note("evolve_error", (e as Error).message, { ok: false }));
       await this.launchTick().catch((e) => this.note("launch_error", (e as Error).message.slice(0, 200), { ok: false }));
+      await this.toolbeltTick().catch((e) => this.note("toolbelt_error", (e as Error).message.slice(0, 200), { ok: false }));
     }
     return r;
+  }
+
+  /** A paid thought that may be larger than one standard top-up ticket (toolbelt reports): when the
+   * open tickets have fewer free rows than the thought's upper bound, buy one ticket big enough for
+   * it (still through the swarm's x402 top-up, inside the spec's daily SOL cap). */
+  async thinkSized(a: Agent, messages: { role: string; content: string }[], maxTokens: number, purpose: string) {
+    try {
+      return await this.think(a, messages, maxTokens, purpose);
+    } catch (e) {
+      // the gateway names the rows one ticket must have free ("no prepaid balance with N free rows")
+      const m = /\b402\b[\s\S]*with (\d+) free rows/.exec(String((e as Error).message));
+      if (!m) throw e;
+      const need = Number(m[1]);
+      const keep = this.cfg.topupRows;
+      this.cfg.topupRows = Math.max(keep, need + this.cfg.minFreeRows);
+      let ok = false;
+      try { ok = await this.topup(); } finally { this.cfg.topupRows = keep; }
+      this.note("inference_topup", ok ? `bought a ${Math.max(keep, need + this.cfg.minFreeRows)}-row prepaid ticket for a ${need}-row thought` : `could not top up for a ${need}-row thought (the spec's daily SOL cap, budget.sol_lamports_per_day, or the gateway refused)`, { ok });
+      if (!ok) return null;
+      return this.think(a, messages, maxTokens, purpose);
+    }
+  }
+
+  /** v2 toolbelt standing work: the spec's watch list, and a receipt batch older than a day. */
+  async toolbeltTick(): Promise<string> {
+    const tb = this.toolbelt;
+    if (!tb) return "off";
+    if (tb.spec.watch) {
+      const r = await toolWatch(tb, (m, n, p) => this.think(this.me, m, n, p).then((t) => (t ? { text: t.text, requestId: t.requestId } : null)), this.watchSt, this.d.now(), this.me.persona.persona);
+      for (const c of r.changed) {
+        if (!c.summary || !this.spec.actions.post) continue;
+        const text = `changed: ${c.url.replace(/^https:\/\//, "")}: ${c.summary}`.slice(0, 900);
+        if (!checkOutput(text, { maxBytes: 1024, allowHosts: [new URL(c.url).hostname, ...this.cfg.allowHosts] }).ok) continue;
+        const h = await this.send(this.me.wallet, { kind: "Post", postKind: 0, body: text, thoughtRef: c.thought ?? undefined });
+        this.note("watch", text, { tx: h, request_id: c.thought ?? undefined, ok: true });
+      }
+      if (r.due) this.save();
+    }
+    const old = tb.pending[0];
+    if (old && this.d.now() - old.started_ms > 86_400_000) await tb.maybeFlush(true);
+    return "ok";
   }
 
   /** The v2 launch skill (launch.ts), when the spec opts in. */
@@ -851,6 +901,7 @@ export class AgentRunner extends Swarm {
       practice: this.o.practice?.status(this.address) ?? (practicePlan(this.spec) ? { mode: "practice", state: "not started", why: this.o.practice ? (this.state === "running" ? "starting" : this.why || this.state) : this.o.practiceOff ?? "practice is off on this runtime" } : null),
       cadre_self_funding: this.cadreBoot,
       timings: { live_ms: this.liveAt || null, first_thought_ms: this.firsts.thought ?? null, first_tx_ms: this.firsts.tx ?? null, first_task_ms: this.firsts.task ?? null },
+      toolbelt: this.toolbelt ? this.toolbelt.status() : null,
       launches: this.spec.launch ? { bounds: this.spec.launch, launched: this.launches, considered_at: this.launchConsideredAt || null, label: "agent-launched (pump.fun create_v2 by this agent's key)" } : null,
       halt: this.o.halt ? this.o.halt.status() : null,
       swarm: this.swarm ? { key: this.swarm.key, id: this.swarm.id, name: this.swarm.name, role: this.swarm.role, is_lead: this.swarm.isLead } : null,

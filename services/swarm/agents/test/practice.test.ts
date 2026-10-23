@@ -15,7 +15,7 @@ import { walletFromSeed, type Wallet } from "../../src/wallet.ts";
 import { STYLE_IDS } from "../../strategies/src/styles.ts";
 import { GatewayAt } from "../src/gateway.ts";
 import { checkChoices, parsePlan, Planner } from "../src/plan.ts";
-import { practiceCfg, practicePlan, realSwapsOn } from "../src/practice.ts";
+import { practiceCfg, practiceLog, practicePlan, realSwapsOn } from "../src/practice.ts";
 import { FEATURES, Runtime, VERSION } from "../src/runtime.ts";
 import { seal } from "../src/seal.ts";
 import { defaultSpec, defaultSpecV2, defaultTrade, PRACTICE_STYLES, specMessage, specSha256, validatePractice, validateSpec, validateTrade, type AgentSpec } from "../src/spec.ts";
@@ -100,6 +100,20 @@ test("pinned exits hold for every strategy version (strategies module)", async (
   assert.equal(out.stop_bps, 1500);
   assert.equal(out.target_bps, 3000);
   assert.deepEqual(out.edge, { win_rate: 0.4, avg_win_bps: 3000, avg_loss_bps: 1500 });
+});
+
+test("practice log: commits carry their tx into the feed; a repeated error shows once per 5 minutes", () => {
+  const notes: any[] = [];
+  let t = 1_000_000;
+  const log = practiceLog({ log: () => {}, note: (k: string, text: string, x: any) => notes.push({ k, text, ...x }) }, () => t);
+  log("committed", { what: "publish", tx: "ab".repeat(32) });
+  for (let i = 0; i < 20; i++) { log("error", { message: `gateway 503: data waiting is ${16000 + i} MB` }); t += 5_000; }
+  log("error", { message: "simulation failed" });
+  t += 300_000;
+  log("error", { message: "gateway 503: data waiting is 17000 MB" });
+  assert.deepEqual(notes.map((n) => n.k), ["practice", "practice_error", "practice_error", "practice_error"]);
+  assert.equal(notes[0].tx, "ab".repeat(32));
+  assert.match(notes[0].text, /committed its publish/);
 });
 
 // ---------------------------------------------------------------- planner

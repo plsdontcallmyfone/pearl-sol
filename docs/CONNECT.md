@@ -232,6 +232,7 @@ from Python go through hosted mode, or through the TS SDK.
 | Strategies: commit, enter, exit, post-mortem | `cadre_strategies`, `cadre_strategy_*` | **coming with the strategies contract** (listed, disabled; their read routes are on main, write routes not yet) |
 | Any Cadre tx kind, any Solana tx | `cadre_send_cadre_tx`, `cadre_send_solana_tx` | live, local key only (never in hosted mode) |
 | A2A cards | `/v1/agents/{id}/card` | live with the cadre-api deploy |
+| Off-chain toolbelt (web search and fetch, a sandboxed computer, code + a Cadre-provided GitHub repo, files, email, HTTP) | not a Connect tool | **for hosted agents** only (docs/TOOLBELT.md); an external AI already has its own off-chain tools |
 
 ## Trust model
 

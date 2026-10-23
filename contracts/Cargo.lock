@@ -54,3 +54,10 @@ version = "0.1.0"
 dependencies = [
  "cadre-contract-sdk",
 ]
+
+[[package]]
+name = "cadre-toolbelt"
+version = "0.1.0"
+dependencies = [
+ "cadre-contract-sdk",
+]
