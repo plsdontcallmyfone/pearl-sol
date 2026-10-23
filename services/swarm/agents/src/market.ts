@@ -17,7 +17,7 @@ import { contractSigningBytes } from "../../trading/src/cadre.ts";
 import { frame, NS_TX } from "../../src/chaintx.ts";
 import type { Agent } from "../../src/swarm.ts";
 import type { AgentRunner } from "./agent.ts";
-import { research } from "./toolbelt/work.ts";
+import { qaTest, research } from "./toolbelt/work.ts";
 import { BATCH_LIMITS } from "./toolbelt/receipts.ts";
 
 export interface SpecOffer { title: string; category: string; price_units: string; turnaround_blocks: number; description: string; deliverable: string }
@@ -118,6 +118,27 @@ export class AgentMarket {
       });
       const s = await this.call({ action: "deliver", hire: h.id, result_hash: out.id, result_uri: out.uri, thought_ref: thought });
       this.r.note("deliver", `delivered hire #${h.id} (web research: ${res.sources.length} sources, ${res.receipts.length} tool receipts, batch ${res.batch?.root.slice(0, 12) ?? "pending"}...): ${s.review}`, { tx: s.tx, request_id: thought, ok: true });
+      return "deliver";
+    }
+    // the computer tool (docs/TOOLBELT.md 9): a QA hire opens the request's public page on a clean
+    // sandboxed desktop; the report is written from what the desktop saw, receipted and committed
+    if (tb?.spec.computer) {
+      const res = await qaTest(tb, (m, n, p) => this.r.thinkSized(a, m, n, p).then((x) => (x ? { text: x.text, requestId: x.requestId } : null)), {
+        request, deliverable: spec.deliverable, persona: `${a.persona.name}. ${spec.description}`, task: `hire:${h.id}`, maxTokens: 200,
+      });
+      if (res.why === "no_url") {
+        const s = await this.call({ action: "decline", hire: h.id, reason: "a test needs the public https page to open; the request names none" });
+        this.r.note("decline", `declined hire #${h.id} (no https page in the request): ${s.review}`, { tx: s.tx });
+        return "decline";
+      }
+      if (!res.ok) { this.r.note("market", `hire #${h.id}: the test did not finish (${res.why ?? "no text"}); will retry`, { ok: false }); return "budget"; }
+      const thought = res.thoughts.at(-1)!;
+      const out = await this.blob({
+        format: "cadre-delivery-v1", hire: h.id, offer: h.offer, provider: this.r.address, text: res.text, thought_ref: thought,
+        toolbelt: { thoughts: res.thoughts, url: res.url, instruction: res.instruction, computer: res.computer, receipts: res.receipts, artifact: res.artifact, batch: res.batch, contract: (await import("./toolbelt/host.ts")).sharedToolbelt().contract, limits: BATCH_LIMITS },
+      });
+      const s = await this.call({ action: "deliver", hire: h.id, result_hash: out.id, result_uri: out.uri, thought_ref: thought });
+      this.r.note("deliver", `delivered hire #${h.id} (computer test of ${res.url}: ${res.computer?.steps ?? 0} vision steps, ${res.computer?.ok ? "finished" : `did not finish: ${res.computer?.error ?? "error"}`}, ${res.receipts.length} tool receipts, batch ${res.batch?.root.slice(0, 12) ?? "pending"}...): ${s.review}`, { tx: s.tx, request_id: thought, ok: true });
       return "deliver";
     }
     const t = await this.r.think(a, [

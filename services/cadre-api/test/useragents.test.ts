@@ -105,6 +105,7 @@ before(async () => {
       rtSeen.push({ method: req.method, url: req.url, sig: req.headers["x-cadre-signature"], body: b });
       res.setHeader("content-type", "application/json");
       if (req.url === "/v1/hosted") return res.end(JSON.stringify({ runtime: "cadre-agents", seal_pub: "x" }));
+      if (req.url?.endsWith("/toolbelt") && req.method === "GET") return res.end(JSON.stringify({ agent: AGENT.address, toolbelt: { capabilities: [{ capability: "web" }] } }));
       if (req.url?.startsWith("/v1/hosted/agents/") && req.method === "GET") return res.end(JSON.stringify({ agent: AGENT.address, state: "running" }));
       if (req.url === "/v1/hosted/agents" && req.method === "POST") { res.statusCode = 401; return res.end(JSON.stringify({ error: { code: "bad_signature", message: "nope" } })); }
       res.end(JSON.stringify({ agents: [], total: 0 }));
@@ -223,4 +224,9 @@ test("hosted pass-through keeps the signed headers and the runtime's errors", as
   assert.equal((await r.json()).error.code, "bad_signature");
   assert.equal(rtSeen.at(-1).sig, "ab".repeat(64));
   assert.equal(b58decode(USER.address).length, 32);
+  // the public toolbelt status passes through (it was a 405 on the deployed API, 2026-10-23)
+  const tb = await get(`/v1/hosted/agents/${AGENT.address}/toolbelt`);
+  assert.equal(tb.status, 200);
+  assert.equal(tb.body.toolbelt.capabilities[0].capability, "web");
+  assert.equal(rtSeen.at(-1).url, `/v1/hosted/agents/${AGENT.address}/toolbelt`);
 });

@@ -3,6 +3,9 @@
 //   - research(): a sourced report for a market hire or a standing goal: thought -> search query,
 //     web.search, web.fetch of the top results (a fixed rule after the thought), thought -> report
 //     from the request and the pages (quoted as data), files.put of the report, batch commit.
+//   - qaTest(): a market hire for the computer tool: the request's public https page, thought ->
+//     one tester instruction, computer.task on a clean desktop, thought -> the bug report from what
+//     the desktop saw (quoted as data), files.put of the report, batch commit.
 //   - loop(): the general tool loop for a model that can plan (each step one paid thought answering
 //     CALL <tool> <json> or FINAL <text>); bounded by max_calls_per_task and the caps.
 //   - watch(): the spec's standing watch list, re-read on a schedule (decided by the signed spec's
@@ -85,6 +88,80 @@ async function write(tb: Toolbelt, think: Think, o: { deliverable: string; perso
   out.text = `${body}\n\nSources\n${refs}`;
   if (tb.spec.files) {
     const fp = await tb.call("files.put", { name: "report.md", content: out.text, content_type: "text/markdown" }, { thought_ref: t2.requestId, decided: "rule: store the deliverable the thought wrote", task: o.task });
+    if (fp.receipt) out.receipts.push(fp.receipt.seq);
+    if (fp.ok) out.artifact = fp.data.uri;
+  }
+  out.batch = await tb.maybeFlush(true);
+  out.ok = body.length > 0;
+  tb.taskCache.delete(o.task);
+  return out;
+}
+
+export interface QaOut {
+  ok: boolean;
+  text: string;
+  url: string;
+  instruction: string;
+  computer: { ok: boolean; summary: string; steps: number; screenshot: { uri: string; sha256: string } | null; error: string | null } | null;
+  thoughts: string[];
+  receipts: number[];
+  artifact: string | null;
+  batch: { tx: string; root: string; blob: string } | null;
+  /** "no_url": the request names no public https page (the market declines); else why it stopped */
+  why?: string;
+}
+
+/** The first https URL in a buyer's request (trailing punctuation dropped), or null. */
+export function firstHttpsUrl(text: string): string | null {
+  const m = /https:\/\/[^\s"'<>()\[\]]{3,900}/.exec(text);
+  return m ? m[0].replace(/[.,;:!?)\]]+$/, "") : null;
+}
+
+/** A QA hire on the computer tool (docs/TOOLBELT.md 9). A retried task reuses its paid desktop run
+ * for 30 minutes, so a refused report thought never pays for a second desktop. */
+export async function qaTest(tb: Toolbelt, think: Think, o: { request: string; deliverable: string; persona: string; task: string; maxTokens?: number }): Promise<QaOut> {
+  const req = o.request.slice(0, 1200);
+  const out: QaOut = { ok: false, text: "", url: "", instruction: "", computer: null, thoughts: [], receipts: [], artifact: null, batch: null };
+  const url = firstHttpsUrl(req);
+  if (!url) return { ...out, why: "no_url" };
+  out.url = url;
+  const cached = tb.taskCache.get(o.task) as any;
+  let thought: string;
+  if (cached?.qa && tb.h.now() - cached.at < 1_800_000) {
+    Object.assign(out, { instruction: cached.qa.instruction, computer: cached.qa.computer, thoughts: [cached.thought], receipts: [...cached.receipts] });
+    thought = cached.thought;
+  } else {
+    const t1 = await think([
+      { role: "system", content: `You are ${o.persona.slice(0, 400)}. A browser will open ${url} for you. Write ONE instruction (at most 40 words) for the tester operating that browser: what to check on the page to answer the buyer's request, and what to report. Output only the instruction.` },
+      { role: "user", content: asData("The buyer's request", req, 1200) },
+    ], 64, "tool_plan");
+    if (!t1) return { ...out, why: "budget: no paid thought for the test plan" };
+    out.thoughts.push(t1.requestId);
+    thought = t1.requestId;
+    let ins = clean(t1.text).replace(/^["'\s]*(instruction:)?\s*/i, "").slice(0, 400);
+    if (ins.split(/\s+/).length < 4) ins = `Look at the page and report what you see that matters for this request: ${req.replace(/\s+/g, " ").slice(0, 300)}`;
+    out.instruction = ins;
+    const r = await tb.call("computer.task", { url, task: ins }, { thought_ref: t1.requestId, decided: "thought", task: o.task });
+    if (r.receipt) out.receipts.push(r.receipt.seq);
+    // refused before anything ran (halt, caps, no key): nothing was paid, the market retries later
+    if (r.refused) return { ...out, why: `computer: ${r.refused.code}: ${r.refused.message}` };
+    const d = r.data ?? {};
+    out.computer = { ok: !!r.ok && !!d.ok, summary: String(d.summary ?? ""), steps: Number(d.steps ?? 0), screenshot: d.screenshot ?? null, error: d.error ?? (r.ok ? null : String(d.error ?? "failed")) };
+    tb.taskCache.set(o.task, { at: tb.h.now(), query: "", thought, pages: [], receipts: [...out.receipts], qa: { instruction: ins, computer: out.computer } } as any);
+  }
+  const c = out.computer!;
+  const seen = [`Desktop run: ${c.ok ? "finished" : `did not finish (${c.error ?? "unknown error"})`}, ${c.steps} vision steps.`, `What the tester saw: ${c.summary || "(nothing reported)"}`].join("\n");
+  const t2 = await think([
+    { role: "system", content: `You are ${o.persona.slice(0, 400)}, doing paid app testing. Deliver: ${o.deliverable.slice(0, 300)} Use only the tester's observations below. If the test did not run or saw too little to answer, say so plainly. Output only the deliverable.` },
+    { role: "user", content: `${asData("The buyer's request", req, 1200)}\n\n${asData(`The tester's observations of ${url}`, seen, 2400)}` },
+  ], Math.min(256, o.maxTokens ?? 256), "market_work");
+  if (!t2) return { ...out, why: "budget: no paid thought for the report" };
+  out.thoughts.push(t2.requestId);
+  const body = clean(t2.text);
+  const shot = c.screenshot ? `, final screenshot ${c.screenshot.uri} (sha256 ${c.screenshot.sha256})` : "";
+  out.text = `${body}\n\nTest run\n${url}: a clean sandboxed desktop, ${c.steps} vision steps, ${c.ok ? "finished" : `did not finish (${c.error ?? "error"})`}${shot}. Instruction: ${out.instruction}`;
+  if (tb.spec.files) {
+    const fp = await tb.call("files.put", { name: "qa-report.md", content: out.text, content_type: "text/markdown" }, { thought_ref: t2.requestId, decided: "rule: store the deliverable the thought wrote", task: o.task });
     if (fp.receipt) out.receipts.push(fp.receipt.seq);
     if (fp.ok) out.artifact = fp.data.uri;
   }
