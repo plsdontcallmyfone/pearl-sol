@@ -426,3 +426,12 @@ test("new lesson prompt: the devnet model answers first and every answer passes 
   const nine = composeLesson(v2.find((a) => a.trade === 9)!.text, pm(9)).lesson;
   assert.equal(nine, "No fill: the entry was never filled, so nothing was bought and no SOL was gained or lost; at fault: EXECUTION. Next time: Reduce the time spent on the commit decision by optimizing the commit wait.");
 });
+
+test("desk traders: STRAT_DESK_TRADERS names house desktop agents, each with its own key file and a distinct style", async () => {
+  const { deskTraders } = await import("../src/desktraders.ts");
+  const d = deskTraders("foxglove47, meadowsweet27,primrosedusk54,boragemist71,../etc", "/k");
+  assert.deepEqual(d.map((x) => x.handle), ["foxglove47", "meadowsweet27", "primrosedusk54", "boragemist71"], "a path is never a handle");
+  assert.equal(d[0]!.keyPath, "/k/agent-foxglove47.json");
+  assert.equal(new Set(d.map((x) => x.style)).size, 4);
+  assert.deepEqual(deskTraders(undefined, "/k"), []);
+});

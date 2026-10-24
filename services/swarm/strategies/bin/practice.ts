@@ -9,6 +9,10 @@
 // CADRE_API (blob store), SOLANA_RPC (Solana DEVNET, only for x402 top-ups of the agents' own
 // prepaid balance), STRAT_MAINNET_RPC or STRAT_MAINNET_RPC_FILE (mainnet READS only; never
 // logged), STRAT_TICK_MS (default 20000), STRAT_KILL_FILE (default <state>/STOP), STRAT_REVISE_AFTER.
+// STRAT_DESK_TRADERS (comma list, e.g. foxglove47,meadowsweet27,primrosedusk54,boragemist71) with
+// STRAT_DESK_KEYS (default /etc/lode/keys/swarm): the house desktop agents whose job is practice
+// trading (services/swarm/desktop/src/roster.ts, docs/HOUSE-AGENTS.md) trade here from their own
+// keys (agent-<handle>.json); their desktops show the trades from <state>/<handle>.json.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +25,7 @@ import { discover, Market } from "../src/market.ts";
 import { decodeCounts, q } from "../src/records.ts";
 import { BlobStore } from "../src/store.ts";
 import type { Think } from "../src/thoughts.ts";
+import { deskTraders } from "../src/desktraders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, "../../../..");
@@ -119,8 +124,11 @@ async function run() {
   const store = new BlobStore({ dir: join(stateDir, "blobs"), api: env.CADRE_API ?? "https://api.64-95-12-116.sslip.io", nodeRpc: (m, p) => cadre.rpc.call(m, p), log });
   const ah = analyzerHash();
   if (cfg.analyzer_hash && cfg.analyzer_hash !== ah) log("analyzer_changed", { deployed: cfg.analyzer_hash, running: ah, note: "post-mortems commit the hash of the code that ran" });
-  const agents = HOUSE.filter((h) => !only || only.includes(h.handle)).map((h) => {
-    const w = loadWallet(join(kdir, h.key));
+  const desk = deskTraders(env.STRAT_DESK_TRADERS, env.STRAT_DESK_KEYS ?? "/etc/lode/keys/swarm").filter((d) => existsSync(d.keyPath));
+  const all = [...HOUSE.map((h) => ({ ...h, keyPath: join(kdir, h.key) })), ...desk];
+  if (desk.length) log("desk_traders", { handles: desk.map((d) => d.handle) });
+  const agents = all.filter((h) => !only || only.includes(h.handle)).map((h) => {
+    const w = loadWallet(h.keyPath);
     return new PracticeAgent(h, { cadre, contract: cfg.contract, market, store, think: thinker(w), wallet: w, stateFile: join(stateDir, `${h.handle}.json`), tickMs, analyzerHash: ah, log, reviseAfter: env.STRAT_REVISE_AFTER ? Number(env.STRAT_REVISE_AFTER) : undefined });
   });
   let lastDiscover = 0;
