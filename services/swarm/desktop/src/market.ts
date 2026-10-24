@@ -48,7 +48,15 @@ export class MarketOps {
     this.ix = new MarketIndex(contract, (m, p) => c.rpc.call(m, p));
   }
 
-  async refresh(maxAgeMs = 20_000) { await this.ix.refresh(maxAgeMs); return this.ix; }
+  private refreshing: Promise<unknown> | null = null;
+  /** One refresh at a time for every job unit (the node is box 0's busiest process), cached `maxAgeMs`. */
+  async refresh(maxAgeMs = 20_000) {
+    if (this.refreshing) { await this.refreshing; if (!maxAgeMs || Date.now() - this.ix.at < maxAgeMs) return this.ix; }
+    if (maxAgeMs && Date.now() - this.ix.at < maxAgeMs) return this.ix;
+    this.refreshing = this.ix.refresh(0).finally(() => { this.refreshing = null; });
+    await this.refreshing;
+    return this.ix;
+  }
   get height() { return this.ix.height; }
   offers(): Offer[] { return this.ix.offers; }
   hires(): Hire[] { return [...this.ix.hires.values()]; }

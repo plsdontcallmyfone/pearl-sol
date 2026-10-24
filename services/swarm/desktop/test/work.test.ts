@@ -414,3 +414,17 @@ test("browser host: scripted steps, visit receipts and a locked wallet; no town 
   assert.match(js, /const startTabs = \[`\$\{site\}\/market`\];/);
   assert.ok(!/\/town`/.test(js), "the browser host never opens the town");
 });
+
+test("market ops: concurrent refreshes share one node read", async () => {
+  const { MarketOps } = await import("../src/market.ts");
+  let reads = 0;
+  const rpc = { call: async (m: string) => { if (m === "queryContract") { reads++; await new Promise((r) => setTimeout(r, 20)); return { ok: true, return: "00".repeat(64) }; } if (m === "getChainInfo") return { height: 5 }; if (m === "getContractEvents") return { total: 0, events: [] }; return null; }, putBlob: async () => ({}) };
+  const dir = mkdtempSync(join(tmpdir(), "mk-"));
+  const mk = new MarketOps({ rpc, sendContract: async () => ({ txHash: "t" }), waitIncluded: async () => ({ height: 1, receipt: { ok: true } }) } as any, "M", dir, () => {});
+  await Promise.all(Array.from({ length: 8 }, () => mk.refresh()));
+  const once = reads;
+  await mk.refresh();
+  assert.equal(reads, once, "cached");
+  assert.ok(once <= 3, `one refresh (config + counts), not eight: ${once}`);
+  rmSync(dir, { recursive: true, force: true });
+});
