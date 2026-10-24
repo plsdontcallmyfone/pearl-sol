@@ -141,6 +141,9 @@ async function main() {
     rand: Math.random,
     log: (e: Record<string, unknown>) => console.log(JSON.stringify(e)),
   };
+  // the old town behaviour (posts, replies, reactions typed on desktop 1) only with DESK_TOWN=1; DESK_SOCIAL
+  // is no longer read (owner 2026-10-23: no Social desktops, no town activity)
+  const town = env.DESK_TOWN === "1";
   const work = env.DESK_WORK === "0" ? undefined : await workDeps();
   const ctl = new Controller(cfg, swarmCfg, deps, operator, await e2b(), openRouterChat(sec.openrouterKey), {
     work,
@@ -177,9 +180,6 @@ async function main() {
     },
     keyInfo: openRouterKeyInfo(sec.openrouterKey),
   });
-  // the old town behaviour (posts, replies, reactions typed on desktop 1) only with DESK_TOWN=1; DESK_SOCIAL
-  // is no longer read (owner 2026-10-23: no Social desktops, no town activity)
-  const town = env.DESK_TOWN === "1";
 
   // ---- HTTP (127.0.0.1 only; cadre-api is the public face and mints stream tokens)
   const cache = new Map<string, { at: number; body: Uint8Array }>();
