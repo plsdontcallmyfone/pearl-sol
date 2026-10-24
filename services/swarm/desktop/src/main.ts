@@ -21,6 +21,10 @@ import { type DesktopHost, META_KEY, type Role, sdkApi } from "./desk.ts";
 import { selfHostApi, selfHostOptsFromEnv } from "./selfhost.ts";
 import { checkStreamToken } from "./token.ts";
 import { openRouterChat, openRouterKeyInfo } from "./vision.ts";
+import { Cadre } from "../../trading/src/cadre.ts";
+import { MarketOps } from "./market.ts";
+import { guardedFetch, htmlToText } from "../../agents/src/toolbelt/netguard.ts";
+import { fileURLToPath } from "node:url";
 
 const env = process.env;
 const num = (k: string, d: number) => (env[k] === undefined || env[k] === "" ? d : Number(env[k]));
@@ -51,6 +55,57 @@ async function stopAll(destroy: boolean) {
     }
   }
   console.log(JSON.stringify({ event: destroy ? "destroyed" : "stopped", desktops: n, flag: cfg.killFile }));
+}
+
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+/** The work loop's outside world: the market (signed with each agent's own key), cadre-api on the box,
+ * outside pages through the toolbelt's network guard, Solana devnet balances, the practice runner's state. */
+async function workDeps() {
+  const apiBase = cfg.apiUrl.replace(/\/$/, "");
+  const api = async (path: string) => {
+    const r = await fetch(apiBase + path, { signal: AbortSignal.timeout(20_000) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(`cadre-api ${path}: HTTP ${r.status}${j?.error?.message ? ` ${String(j.error.message).slice(0, 80)}` : ""}`);
+    return j;
+  };
+  const marketFile = env.DESK_MARKET_FILE ?? resolve(REPO, "deploy/market-devnet.json");
+  let market: MarketOps | null = null;
+  if (existsSync(marketFile)) {
+    const contract = String(JSON.parse(readFileSync(marketFile, "utf8")).market ?? "");
+    if (contract) {
+      const c = new Cadre(env.CHAIN_RPC ?? "http://127.0.0.1:10630");
+      await c.init().catch(() => {});
+      market = new MarketOps(c as any, contract, resolve(cfg.stateDir, "market-blobs"), (e) => console.log(JSON.stringify(addCx({ t: new Date().toISOString(), ...e }))));
+    }
+  }
+  const UA = { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) CadreHouseAgent/1.0 (+https://cadre.64-95-12-116.sslip.io)", accept: "text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8" };
+  const fetchRaw = async (url: string) => {
+    const r = await guardedFetch(url, { headers: UA, maxBytes: 2_000_000, timeoutMs: 20_000 });
+    if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
+    return r.body.toString("utf8");
+  };
+  const fetchPage = async (url: string) => {
+    const r = await guardedFetch(url, { headers: UA, maxBytes: 2_000_000, timeoutMs: 20_000 });
+    const body = r.body.toString("utf8");
+    if (/html/i.test(r.contentType) || /^\s*</.test(body)) { const t = htmlToText(body, r.url); return { status: r.status, url: r.url, title: t.title, text: t.text }; }
+    return { status: r.status, url: r.url, title: "", text: body };
+  };
+  const solRpc = env.SOLANA_RPC;
+  const solBalances = solRpc ? async (addrs: string[]) => {
+    const out: (number | null)[] = [];
+    for (let i = 0; i < addrs.length; i += 100) {
+      const r = await fetch(solRpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getMultipleAccounts", params: [addrs.slice(i, i + 100), { encoding: "base64", dataSlice: { offset: 0, length: 0 } }] }), signal: AbortSignal.timeout(20_000) });
+      const j: any = await r.json();
+      for (const v of j?.result?.value ?? addrs.slice(i, i + 100).map(() => undefined)) out.push(v === undefined ? null : v === null ? 0 : Number(v.lamports) / 1e9);
+    }
+    return out;
+  } : undefined;
+  const practiceDir = env.DESK_PRACTICE_DIR ?? "/var/lib/lode/practice";
+  const practice = (handle: string) => { try { const f = resolve(practiceDir, `${handle}.json`); return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null; } catch { return null; } };
+  const w = (k: string) => (env[k] ? Number(env[k]) : undefined);
+  const wcfg = Object.fromEntries(Object.entries({ monitorS: w("WORK_MONITOR_S"), qaS: w("WORK_QA_S"), flowS: w("WORK_FLOW_S"), newsHireS: w("WORK_NEWS_HIRE_S"), opsHireS: w("WORK_OPS_HIRE_S"), digestS: w("WORK_DIGEST_S"), managerCapCadre: w("WORK_MANAGER_CAP_CADRE"), fundCapCadre: w("WORK_FUND_CAP_CADRE"), researchMaxUsd: w("WORK_RESEARCH_MAX_USD"), flowMaxUsd: w("WORK_FLOW_MAX_USD") }).filter(([, v]) => v !== undefined && Number.isFinite(v)));
+  return { market, api, fetchPage, fetchRaw, solBalances, practice, publicApi: env.DESK_PUBLIC_API ?? "https://api.64-95-12-116.sslip.io", cfg: wcfg };
 }
 
 async function main() {
@@ -86,7 +141,10 @@ async function main() {
     rand: Math.random,
     log: (e: Record<string, unknown>) => console.log(JSON.stringify(e)),
   };
+  const work = env.DESK_WORK === "0" ? undefined : await workDeps();
   const ctl = new Controller(cfg, swarmCfg, deps, operator, await e2b(), openRouterChat(sec.openrouterKey), {
+    work,
+    town,
     roles,
     agentsN: num("DESK_AGENTS", 1),
     parallel: num("DESK_PARALLEL", 3),
@@ -118,7 +176,9 @@ async function main() {
     },
     keyInfo: openRouterKeyInfo(sec.openrouterKey),
   });
-  const social = env.DESK_SOCIAL !== "0"; // 0 = desktops browse and work but the swarm sends no chain action
+  // the old town behaviour (posts, replies, reactions typed on desktop 1) only with DESK_TOWN=1; DESK_SOCIAL
+  // is no longer read (owner 2026-10-23: no Social desktops, no town activity)
+  const town = env.DESK_TOWN === "1";
 
   // ---- HTTP (127.0.0.1 only; cadre-api is the public face and mints stream tokens)
   const cache = new Map<string, { at: number; body: Uint8Array }>();
@@ -154,6 +214,17 @@ async function main() {
           if (ctl.activity(x.agent, { kind, text: x.text.replace(/[\u0000-\u001f]/g, " ").slice(0, 240), tx, ref: typeof x.ref === "string" ? x.ref.slice(0, 80) : undefined })) n++;
         }
         return send(res, 200, { accepted: n });
+      }
+      if (p[0] === "agents" && p[1] && p[2] === "reports" && p[3] && p.length === 4) {
+        const r = ctl.store.get(p[1], p[3]);
+        if (!r) return send(res, 404, { error: "no such report" });
+        if (u.searchParams.get("format") === "md") return send(res, 200, r.body_md, "text/markdown; charset=utf-8");
+        if (u.searchParams.get("format") === "svg" && r.chart_svg) return send(res, 200, r.chart_svg, "image/svg+xml");
+        return send(res, 200, r);
+      }
+      if (p[0] === "agents" && p[1] && p[2] === "reports" && p.length === 3) {
+        if (!ctl.byHandle.has(p[1])) return send(res, 404, { error: "no such desktop agent" });
+        return send(res, 200, { agent: p[1], reports: ctl.store.list(p[1]).map((r) => ({ id: r.id, kind: r.kind, title: r.title, created: r.created, summary: r.summary, sha256: r.sha256 })) });
       }
       if (p[0] === "agents" && p[1] && p.length === 2) { const d = ctl.detail(p[1]); return d ? send(res, 200, d) : send(res, 404, { error: "no such desktop agent" }); }
       if (p[0] === "stream" && p.length === 4) {
@@ -203,7 +274,7 @@ async function main() {
   const onSig = () => { stop = true; };
   process.on("SIGTERM", onSig);
   process.on("SIGINT", onSig);
-  ctl.event({ event: "start", agents: ctl.agents.map((a) => a.persona.handle), roles, layout: ctl.agents.map((a) => `${a.persona.handle}:${a.roles.join("+")}${a.desks.social?.api.kind === "selfhost" ? "@selfhost" : ""}`), cap_usd_per_day: cfg.usdPerDay, vision_model: cfg.visionModel, e2b_usd_per_desktop_hour: Number((ctl.usdPerS * 3600).toFixed(4)), social, port: cfg.port });
+  ctl.event({ event: "start", agents: ctl.agents.map((a) => a.persona.handle), roles, layout: ctl.agents.map((a) => `${a.persona.handle}:${a.roles.join("+")}${a.desks.social?.api.kind === "selfhost" ? "@selfhost" : ""}`), cap_usd_per_day: cfg.usdPerDay, vision_model: cfg.visionModel, e2b_usd_per_desktop_hour: Number((ctl.usdPerS * 3600).toFixed(4)), town, work: !!work, market: work?.market?.contract ?? null, port: cfg.port });
 
   const loops = [
     (async () => { // desktops, keepalive and the spend ledger: every minute
@@ -216,11 +287,13 @@ async function main() {
         for (let i = 0; i < 60 && !stop && !ctl.killed(); i++) await sleep(1000);
       }
     })(),
-    (async () => { // the swarm's chain actions, carried out on the social desktops
+    (async () => { // profiles (always) and, only with DESK_TOWN=1, the swarm's town actions on desktop 1
       await sleep(30_000);
-      while (!stop && !ctl.killed() && social) {
-        if (!ctl.holdDesks() && ctl.runningDesks().length) await ctl.swarm.tick();
-        await sleep(num("SWARM_TICK_MS", 20_000));
+      while (!stop && !ctl.killed()) {
+        if (town) { if (!ctl.holdDesks() && ctl.runningDesks().length) await ctl.swarm.tick(); await sleep(num("SWARM_TICK_MS", 20_000)); continue; }
+        // a profile whose job text changed is published again (operator-written bio, no thought)
+        await ctl.swarm.bootstrap().catch((e) => ctl.event({ event: "profile_error", error: String(e?.message ?? e).slice(0, 200) }));
+        await sleep(ctl.agents.every((a) => (ctl.swarm.st.agents[a.persona.handle] as any)?.profileDone) ? 600_000 : 20_000);
       }
     })(),
     (async () => { // per-desktop health: stream, browser host, memory, last action
@@ -230,7 +303,7 @@ async function main() {
         for (let i = 0; i < num("DESK_HEALTH_S", 300) && !stop && !ctl.killed(); i++) await sleep(1000);
       }
     })(),
-    (async () => { // read-only browsing and work tasks
+    (async () => { // the work loop (src/work.ts)
       await sleep(45_000);
       while (!stop && !ctl.killed()) {
         await ctl.background();

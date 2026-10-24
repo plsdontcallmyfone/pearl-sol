@@ -152,7 +152,7 @@ interface AgentSt {
   mon?: MonSt;
   qa?: { issues: Issue[]; lastAt: Record<string, number>; flow: number };
   research?: { attempts: Record<string, number>; offer?: number };
-  manager?: { lastAt: number; done: string[]; q: number; day: string; spent: string; hires: number[]; reviewer: number };
+  manager?: { lastAt: number; done: string[]; q: number; day: string; spent: string; hires: number[]; reviewer: number; recent?: string[] };
   reviewer?: { voted: number[]; attempts: Record<string, number> };
   trader?: { version: number; entry: number | null; explained: number; waitingNoted?: boolean };
   digest?: { lastAt: number };
@@ -236,10 +236,11 @@ export class WorkEngine {
     const used = BigInt(this.st.fund.units);
     const cap = BigInt(Math.round(this.cfg.fundCapCadre * 1e9));
     if (used + want > cap) { this.h.event({ event: "work_fund_refused", agent: a.handle, want: want.toString(), used: used.toString(), cap: cap.toString() }); return; }
-    const tx = await this.h.fund(a.handle, want);
-    if (!tx) return;
+    // booked before the send (top-ups run side by side), given back if the send fails
     this.st.fund.units = (used + want).toString();
     this.dirty = true;
+    const tx = await this.h.fund(a.handle, want);
+    if (!tx) { if (this.st.fund.day === d) this.st.fund.units = (BigInt(this.st.fund.units) - want).toString(); return; }
     this.h.note(a.handle, "tx", `received ${cad(want)} CADRE from the house operator for its job (storage deposits and fees)`, { tx, ok: true });
   }
 
@@ -509,7 +510,10 @@ export class WorkEngine {
     const slots = (addr: string) => this.agents.find((x) => x.wallet.address === addr)?.roles.length ?? 1;
     const offers = mk.offers().filter((o) => o.active && o.title === RESEARCH_OFFER.title && providers.has(o.provider) && load(o.provider) < slots(o.provider));
     if (!offers.length) { s.lastAt = now - every / 2; return; } // every desk busy: look again in half an interval
-    offers.sort((x, y) => load(x.provider) / slots(x.provider) - load(y.provider) / slots(y.provider) || x.hires - y.hires);
+    // least busy first; on a tie the desk this manager hired least recently (spreads the work)
+    const recent = s.recent ?? [];
+    const lastUse = (addr: string) => recent.lastIndexOf(addr);
+    offers.sort((x, y) => load(x.provider) / slots(x.provider) - load(y.provider) / slots(y.provider) || lastUse(x.provider) - lastUse(y.provider));
     const offer = offers[0]!;
     let request: string, links: string[] = [], source: Record<string, unknown>;
     if (a.job.desk === "news") {
@@ -534,6 +538,7 @@ export class WorkEngine {
     s.lastAt = now;
     s.spent = (BigInt(s.spent) + r.total).toString();
     if (r.id !== null) s.hires = [...s.hires, r.id].slice(-200);
+    s.recent = [...recent, offer.provider].slice(-50);
     this.dirty = true;
     this.h.note(a.handle, "tx", `hired @${provider?.handle ?? offer.provider.slice(0, 8)} (hire #${r.id}) for ${cad(r.total)} CADRE, reviewer @${reviewer.handle}: ${request.slice(0, 120)}`, { tx: r.tx, ok: true });
     const role = this.h.freeRoles(a.handle)[0];

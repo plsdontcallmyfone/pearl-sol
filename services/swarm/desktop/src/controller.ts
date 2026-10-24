@@ -1,22 +1,15 @@
-// The house desktops controller. It runs the house swarm (services/swarm, unchanged) for the
-// agents that have desktops, with one difference: an agent's chain action (post, reply, like, tip,
-// follow) is not signed by this process; the agent's own social desktop does it, in the browser,
-// through the Cadre site and the Cadre Wallet, operated by a vision model. Every word an agent
-// says still comes from a paid Cadre inference request (the swarm's `think`), and the desktop
-// types it verbatim with the request id as thought_ref. Between chain actions the desktops browse
-// (read-only): the town, profiles and leaderboards on the social desktop; the wallet, the
-// explorer, the trading terminal and the AI page on the work desktop.
+// The house desktops controller. Since 2026-10-23 (owner: "none of these agents are doing any actual
+// work"; "not social and not work things, they're both for work") every house agent has a job
+// (src/roster.ts) and every desktop it has does that job: research briefs sold on the market,
+// source reviews with verdicts, QA bug lists, monitor reports, practice trades, a digest. The work
+// loop is src/work.ts; scripted browser steps run in the desktop's browser host without a model, and
+// the vision model is used only where reading or judging a page needs it (research, flow checks).
 //
-// One identity spans both desktops: one key, one persona. Only the social desktop signs, one
-// action at a time (the swarm's tick is sequential), under the agent's signing lock, so the two
-// desktops never race for the wallet nonce; work tasks are read-only until Phases 2-4.
-//
-// Phase A (docs/DESKTOPS-AT-SCALE.md): agents past the first DESK_TWO_DESK_AGENTS have ONE desktop
-// (role "social", the signer) that a mode scheduler switches between Social mode (town, profiles,
-// leaderboards) and Work mode (wallet, explorer, market, jobs) every DESK_MODE_SLOT_S, staggered so
-// about half the agents are in each mode at any time. A chain action always runs on that desktop,
-// whatever the mode (it is the agent's only signer). Where a desktop runs is per agent: E2B, or our
-// own boxes for the handles in DESK_SELFHOST_AGENTS (src/selfhost.ts, the same DesktopHost interface).
+// The desktops keep their stable role ids ("social" = desktop 1, "work" = desktop 2): they are in
+// every sandbox's metadata and stream token. There is no Social/Work mode any more, no town browsing
+// and no town posting; the old town behaviour (the swarm's posts typed on a desktop) runs only with
+// DESK_TOWN=1. The wallet in each desktop stays locked: no work task signs in the browser; market
+// calls are signed by this controller with the agent's own key.
 import { addCx } from "../../../../apps/explorer/src/cxjson.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -28,12 +21,16 @@ import { type Agent, type Deps, Swarm, type SwarmConfig } from "../../src/swarm.
 import { loadWallet, type Wallet } from "../../src/wallet.ts";
 import type { DeskConfig } from "./config.ts";
 import { usdPerSecond } from "./config.ts";
-import { Desk, type DeskHealth, type DesktopHost, type Role } from "./desk.ts";
+import { Desk, DESK_NUMBER, deskLabel, type DeskHealth, type DesktopHost, type Role, type StepResult, type Visit } from "./desk.ts";
 import { CreditGate, probeCredits, type ProbeResult } from "./credits.ts";
 import { daySummary, Ledger } from "./spend.ts";
-import { browseTask, chainTask, type Task, workTask } from "./tasks.ts";
+import { chainTask, type Task } from "./tasks.ts";
+import { type MarketOps } from "./market.ts";
+import { ReportStore } from "./reports.ts";
+import { jobOf, jobText } from "./roster.ts";
+import { type WorkAgent, type WorkCfg, workDefaults, WorkEngine, type WorkHost } from "./work.ts";
 import { isTownSolana, type TownNode } from "../../src/townnode.ts";
-import { type Chat, runTask, systemPrompt } from "./vision.ts";
+import { type Chat, runTask, systemPrompt, type TaskResult, workSystemPrompt } from "./vision.ts";
 
 export class DeskFailed extends Error {}
 
@@ -42,19 +39,18 @@ export class DeskFailed extends Error {}
  * ever driven by both. */
 export const DEFAULT_HANDLES = () => PERSONAS.slice().reverse().map((p) => p.handle);
 
-export type Mode = "social" | "work";
-
-/** Phase A mode of a one-desktop agent at time `t`: slots of `slotMs`, alternating, agent i offset by i. */
-export function modeAt(index: number, t: number, slotMs: number): Mode {
-  return (Math.floor(t / slotMs) + index) % 2 === 0 ? "social" : "work";
-}
-
-/** What a desktop is doing, for the site's filters (posting now, trading now, mining and jobs). */
-export function activityOf(kind: string | null, busy: boolean, state: string): "posting" | "trading" | "mining" | "browsing" | "working" | "idle" | "off" {
+/** What a desktop is doing, for the site's filters. Work kinds: research, qa_*, monitor_show, check_sources,
+ * read_story, hire_page, trade_page, strategy_page, digest_show; the old town kinds only with DESK_TOWN=1. */
+export function activityOf(kind: string | null, busy: boolean, state: string): "posting" | "trading" | "mining" | "researching" | "testing" | "monitoring" | "reviewing" | "hiring" | "browsing" | "working" | "idle" | "off" {
   if (state !== "running") return "off";
   if (!busy || !kind) return "idle";
   if (["post", "reply", "like", "tip", "follow"].includes(kind)) return "posting";
-  if (kind === "market") return "trading";
+  if (kind === "research") return "researching";
+  if (kind.startsWith("qa_")) return "testing";
+  if (kind === "monitor_show") return "monitoring";
+  if (kind === "check_sources") return "reviewing";
+  if (kind === "read_story" || kind === "hire_page") return "hiring";
+  if (kind === "trade_page" || kind === "strategy_page" || kind === "market") return "trading";
   if (kind === "jobs" || kind === "explorer_blocks") return "mining";
   if (kind.startsWith("read_")) return "browsing";
   return "working";
@@ -69,12 +65,12 @@ export interface DeskAgent {
   secretB58: string;
   password: string;
   desks: Record<Role, Desk>;
-  /** the desktops this agent has: ["social", "work"] (two) or ["social"] (one, mode scheduler) */
+  /** the desktops this agent has: ["social", "work"] (desktops 1 and 2) or ["social"] (desktop 1) */
   roles: Role[];
   solo: boolean;
   index: number;
-  mode: Mode;
-  modeSince: number;
+  /** since when each desktop has been busy (0 = free), for the stuck check */
+  busySince: Record<Role, number>;
   taskKind: Record<Role, string | null>;
   log: LogEntry[];
   thoughts: ThoughtEntry[];
@@ -139,6 +135,19 @@ export interface CtlOpts {
   credit?: Partial<typeof creditDefaults>;
   /** GET /api/v1/key for the credit probe (absent: the probe only sends its tiny chat request) */
   keyInfo?: () => Promise<{ status: number; json: any }>;
+  /** the work loop's outside reads and the market (src/work.ts); absent: no job runs (tests of the desktops alone) */
+  work?: {
+    market: MarketOps | null;
+    api: (path: string) => Promise<any>;
+    fetchPage: WorkHost["fetchPage"];
+    fetchRaw: WorkHost["fetchRaw"];
+    solBalances?: WorkHost["solBalances"];
+    practice?: (handle: string) => any | null;
+    publicApi?: string;
+    cfg?: Partial<WorkCfg>;
+  };
+  /** DESK_TOWN=1: the swarm's town actions are typed on desktop 1 as before 2026-10-23 (default off) */
+  town?: boolean;
 }
 
 /** Credit gate defaults: probe every 5 min (doubling to 1 h when a resume does not hold for 10 min),
@@ -217,8 +226,7 @@ export class Controller {
         roles,
         solo,
         index,
-        mode: solo ? modeAt(index, now(), (o.modeSlotS ?? 1800) * 1000) : "social",
-        modeSince: now(),
+        busySince: {} as Record<Role, number>,
         taskKind: {} as Record<Role, string | null>,
         log: [],
         thoughts: [],
@@ -238,6 +246,7 @@ export class Controller {
         da.current[r] = "starting";
         da.lastTaskAt[r] = 0;
         da.busy[r] = false;
+        da.busySince[r] = 0;
         da.taskKind[r] = null;
       }
       this.agents.push(da);
@@ -245,6 +254,75 @@ export class Controller {
       this.byHandle.set(sa.persona.handle, da);
     }
     mkdirSync(cfg.stateDir, { recursive: true });
+    this.store = new ReportStore(resolve(cfg.stateDir, "reports"));
+    if (o.work) {
+      const wa: WorkAgent[] = this.agents.flatMap((a) => { const j = jobOf(a.persona.handle); return j ? [{ handle: a.persona.handle, name: a.persona.name, wallet: a.wallet, roles: a.roles, job: j }] : []; });
+      this.work = new WorkEngine(this.host(), wa, this.store, { ...workDefaults(resolve(cfg.stateDir, "work-state.json")), ...(o.work.cfg ?? {}) });
+    }
+  }
+
+  store: ReportStore;
+  work: WorkEngine | null = null;
+
+  /** The work loop's view of this controller (src/work.ts WorkHost). */
+  host(): WorkHost {
+    const w = this.o.work!;
+    const ctl = this;
+    return {
+      site: this.cfg.siteUrl,
+      explorer: this.cfg.explorerUrl,
+      publicApi: w.publicApi ?? this.cfg.siteUrl.replace("//cadre.", "//api."),
+      now,
+      event: (e) => this.event(e),
+      note: (h, kind, text, x) => { const a = this.byHandle.get(h); if (a) this.push(a, { t: iso(), desk: "agent", kind, text: text.slice(0, 300), tx: x?.tx, ref: x?.ref, ok: x?.ok }); },
+      freeRoles: (h) => { const a = this.byHandle.get(h); return a && !this.capped && !this.killed() && !this.credits.desksHeld ? a.roles.filter((r) => a.desks[r].state === "running" && a.desks[r].sbx && !a.busy[r] && !(a.signing && r === "social")) : []; },
+      script: (h, r, kind, steps, x) => this.scriptOn(h, r, kind, steps, x),
+      vision: (h, r, t) => { const a = this.byHandle.get(h); return a ? this.task(a, r, { kind: t.kind, signs: false, url: t.url, text: t.text, work: true, report: t.report, maxSteps: t.maxSteps, maxUsd: t.maxUsd, record: t.record }) as any : Promise.resolve(null); },
+      visionReady: () => !this.credits.paused && !this.capped && !this.killed() && this.ledger.visionHeadroom(this.runningUsdPerS()) >= 0.05,
+      api: w.api,
+      node: (m, p) => this.swarm.d.node.call(m, p ?? {}),
+      fetchPage: w.fetchPage,
+      fetchRaw: w.fetchRaw,
+      solBalances: w.solBalances,
+      self: () => ({ spent: ctl.ledger.spent, cap: ctl.cfg.usdPerDay, e2b: ctl.ledger.d.e2b_usd, vision: ctl.ledger.d.vision_usd, unhealthy: ctl.healthSummary().unhealthy.length, desktops: ctl.agents.reduce((n, a) => n + a.roles.length, 0), running: ctl.runningDesks().length, vision_paused: ctl.credits.paused, seconds_left: ctl.ledger.secondsLeft(), running_usd_per_s: ctl.runningUsdPerS() }),
+      practice: (h) => w.practice?.(h) ?? null,
+      fund: async (h, units) => {
+        const a = this.byHandle.get(h);
+        if (!a) return null;
+        try { return await this.swarm.send(this.swarm.op, { kind: "Transfer", to: a.wallet.publicKey, amount: units }); }
+        catch (e: any) { this.event({ event: "work_fund_error", agent: h, error: String(e?.message ?? e).slice(0, 160) }); return null; }
+      },
+      market: w.market,
+    };
+  }
+
+  /** Scripted browser steps on one desktop (no model), shown on its stream; logged in the agent's work log. */
+  async scriptOn(h: string, r: Role, kind: string, steps: { url?: string; wait_ms?: number; highlight?: string; scroll?: number }[], x?: { collect?: boolean; viewport?: { width: number; height: number } }): Promise<StepResult[] | null> {
+    const da = this.byHandle.get(h);
+    const d = da?.desks[r];
+    if (!da || !d || d.state !== "running" || !d.sbx || da.busy[r] || this.capped || this.killed() || !steps.length) return null;
+    da.busy[r] = true;
+    da.busySince[r] = now();
+    da.taskKind[r] = kind;
+    d.lastActionAt = now();
+    da.current[r] = `${kind.replace(/_/g, " ")}: ${steps.length} page${steps.length > 1 ? "s" : ""}`;
+    this.push(da, { t: iso(), desk: r, kind: "task", text: `${kind.replace(/_/g, " ")} (${steps.length} page${steps.length > 1 ? "s" : ""}, scripted)` });
+    try {
+      await d.setFlag("busy", true).catch(() => {});
+      await d.waitWorkFront().catch(() => false);
+      const res = await d.runScript(steps, x);
+      d.lastActionAt = now();
+      for (const [i, sr] of (res ?? []).entries()) this.push(da, { t: iso(), desk: r, kind: "step", text: `open ${String(steps[i]?.url ?? "").replace(/^https?:\/\//, "").slice(0, 90)}: ${sr.error ? `failed (${sr.error.slice(0, 60)})` : `HTTP ${sr.status ?? "?"}, ${sr.ms ?? "?"} ms${sr.found === true ? ", quote found" : sr.found === false ? ", quote not found" : ""}`}`, ok: !sr.error });
+      this.event({ event: "script", agent: h, role: r, kind, steps: steps.length, ok: !!res });
+      da.current[r] = res ? `${kind.replace(/_/g, " ")}: done` : `${kind.replace(/_/g, " ")}: the browser host did not answer`;
+      return res;
+    } finally {
+      await d.setFlag("busy", false).catch(() => {});
+      da.busy[r] = false;
+      da.busySince[r] = 0;
+      da.taskKind[r] = null;
+      da.lastTaskAt[r] = now();
+    }
   }
 
   event(e: Record<string, unknown>) {
@@ -324,6 +402,8 @@ export class Controller {
           a.current[r] = "idle";
           d.flags = {};
           await d.setFlag("console", this.showsConsole(a, r)).catch(() => {});
+          // no work task signs in the browser: the wallet stays locked (DESK_TOWN=1 needs it unlocked)
+          await d.setFlag("wallet-locked", !this.o.town).catch(() => {});
         } catch (e: any) {
           d.state = "error";
           d.lastError = String(e?.message ?? e).slice(0, 200);
@@ -344,8 +424,8 @@ export class Controller {
     }
   }
 
-  /** The activity console shows (between vision tasks) on Work desktops and on one-desktop agents in Work mode. */
-  showsConsole(a: DeskAgent, r: Role): boolean { return r === "work" || (a.solo && a.mode === "work"); }
+  /** The activity console (the agent's work log) shows on every desktop between tasks. */
+  showsConsole(_a: DeskAgent, _r: Role): boolean { return true; }
 
   /** A runtime event (a trade by the fast executor, a tx, a note) for an agent's log and activity console. */
   activity(handle: string, e: { kind: string; text: string; tx?: string; ref?: string }): boolean {
@@ -356,7 +436,7 @@ export class Controller {
   }
 
   /** Runs one vision task on one desktop, booking its cost; null when the budget or a busy desk refuses it. */
-  async task(da: DeskAgent, role: Role, t: Task): Promise<{ ok: boolean; summary: string } | null> {
+  async task(da: DeskAgent, role: Role, t: Task & { work?: boolean; report?: boolean; maxSteps?: number; maxUsd?: number; record?: boolean }): Promise<(Partial<TaskResult> & { ok: boolean; summary: string; visits?: Visit[] }) | null> {
     const d = da.desks[role];
     if (!d || d.state !== "running" || !d.sbx || da.busy[role] || this.capped || this.killed()) return null;
     if (this.credits.paused) {
@@ -364,12 +444,13 @@ export class Controller {
       da.current[role] = "paused: vision model out of credit";
       return null;
     }
-    const perTaskMax = 0.05;
+    const perTaskMax = t.maxUsd ?? 0.05;
     if (this.ledger.visionHeadroom(this.runningUsdPerS()) < perTaskMax) {
       da.current[role] = "waiting: vision budget for today is used up";
       return null;
     }
     da.busy[role] = true;
+    da.busySince[role] = now();
     da.taskKind[role] = t.kind;
     d.lastActionAt = now();
     this.visionInFlight++;
@@ -380,9 +461,11 @@ export class Controller {
       await d.setFlag("busy", true).catch(() => {});
       await d.waitWorkFront().catch(() => false);
       await sleep(400); // the tab switch settles before the first key
+      if (t.record) await d.startRecording().catch(() => {});
       const [w, h] = this.cfg.resolution;
+      const system = t.work ? workSystemPrompt(da.persona.name, da.persona.handle, `${jobText(da.persona.handle).title}: ${jobText(da.persona.handle).description}`, w, h) : systemPrompt(da.persona.name, da.persona.handle, w, h);
       const r = await runTask(d.sbx, this.chat, {
-        model: this.cfg.visionModel, system: systemPrompt(da.persona.name, da.persona.handle, w, h), task: t.text, verbatim: t.verbatim, openUrl: t.url, maxSteps: t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask, maxUsd: perTaskMax,
+        model: this.cfg.visionModel, system, task: t.text, verbatim: t.verbatim, openUrl: t.url, report: t.report, maxSteps: t.maxSteps ?? (t.signs ? this.cfg.maxStepsPerTask + 8 : this.cfg.maxStepsPerTask), maxUsd: perTaskMax,
         halted: () => this.credits.paused,
         onStep: (s) => {
           d.lastActionAt = now();
@@ -398,8 +481,9 @@ export class Controller {
       if (r.credit) this.credits.trip(r.credit, `${da.persona.handle}/${role} ${t.kind}`);
       this.push(da, { t: iso(), desk: role, kind: "task_done", text: r.summary || (r.ok ? "done" : "not done"), ok: r.ok });
       da.current[role] = r.credit || r.error === "vision_paused" ? "paused: vision model out of credit" : r.summary ? `${r.ok ? "" : "gave up: "}${r.summary}` : "idle";
-      this.event({ event: "task", agent: da.persona.handle, role, kind: t.kind, ok: r.ok, steps: r.steps, usd: Number(r.usd.toFixed(6)), in_tokens: r.inTokens, out_tokens: r.outTokens, error: r.error });
-      return { ok: r.ok, summary: r.summary };
+      const visits = t.record ? await d.stopRecording().catch(() => [] as Visit[]) : undefined;
+      this.event({ event: "task", agent: da.persona.handle, role, kind: t.kind, ok: r.ok, steps: r.steps, usd: Number(r.usd.toFixed(6)), in_tokens: r.inTokens, out_tokens: r.outTokens, error: r.error, report: r.report ? { findings: r.report.findings.length, problems: r.report.problems.length } : undefined, pages: visits?.length });
+      return { ...r, visits };
     } catch (e: any) {
       const msg = String(e?.message ?? e).slice(0, 200);
       this.push(da, { t: iso(), desk: role, kind: "error", text: msg });
@@ -407,7 +491,9 @@ export class Controller {
       return { ok: false, summary: msg };
     } finally {
       await d.setFlag("busy", false).catch(() => {});
+      if (t.record) await d.setFlag("record", false).catch(() => {});
       da.busy[role] = false;
+      da.busySince[role] = 0;
       da.taskKind[role] = null;
       da.lastTaskAt[role] = now();
       this.visionInFlight--;
@@ -425,7 +511,6 @@ export class Controller {
     }
     const t = chainTask(this.cfg.siteUrl, b, this.o.tipCadre, isTownSolana(this.swarm.d.node) ? "SOL" : "CADRE");
     if (!t) throw new DeskFailed(`no desktop task for ${b.kind}`);
-    if (da.solo && da.mode === "work") this.push(da, { t: iso(), desk: "social", kind: "mode", text: `Work mode paused for a ${t.kind} (the agent's only signing desktop)` });
     // wait for the social desktop to be free (a browse task may be running)
     for (let i = 0; i < 90 && da.busy.social; i++) await sleep(1000);
     while (da.signing) await sleep(500);
@@ -484,44 +569,10 @@ export class Controller {
     return null;
   }
 
-  /** Phase A: moves each one-desktop agent to its scheduled mode (logged when it changes). */
-  scheduleModes(t = now()) {
-    const slot = (this.o.modeSlotS ?? 1800) * 1000;
-    for (const a of this.agents) {
-      if (!a.solo) continue;
-      const m = modeAt(a.index, t, slot);
-      if (m === a.mode) continue;
-      a.mode = m;
-      a.modeSince = t;
-      void a.desks.social?.setFlag("console", this.showsConsole(a, "social")).catch(() => {});
-      this.push(a, { t: new Date(t).toISOString(), desk: "social", kind: "mode", text: m === "work" ? "Work mode: wallet, explorer, market, jobs" : "Social mode: town, profiles, leaderboards" });
-    }
-  }
-
-  /** Read-only tasks: browsing on the social desktop, work on the work desktop (or, on a one-desktop
-   * agent, whichever its mode says), when due. */
+  /** The work loop (src/work.ts): every agent's due job units, started in the background. */
   async background() {
-    if (this.capped || this.killed() || this.credits.paused) return;
-    this.scheduleModes();
-    const due: { a: DeskAgent; r: Role; t: Task }[] = [];
-    for (const [i, a] of this.agents.entries()) {
-      for (const r of a.roles) {
-        const mode: Mode = a.solo ? a.mode : r;
-        const gap = (a.solo ? this.o.soloGapS ?? this.o.browseGapS : r === "work" ? this.o.workGapS : this.o.browseGapS) * 1000;
-        if (a.busy[r] || a.signing || now() - a.lastTaskAt[r] < gap) continue;
-        const pick = Math.floor(now() / gap) + i;
-        const others = this.agents.filter((x) => x !== a).map((x) => ({ handle: x.persona.handle }));
-        const t = mode === "work"
-          ? workTask(this.cfg.siteUrl, this.cfg.explorerUrl, a.wallet.address, pick, a.solo ? { walletUrl: a.desks[r].walletUrl() } : undefined)
-          : browseTask(this.cfg.siteUrl, pick, others);
-        due.push({ a, r, t });
-      }
-    }
-    due.sort((x, y) => x.a.lastTaskAt[x.r] - y.a.lastTaskAt[y.r]);
-    for (const x of due) {
-      if (this.visionInFlight >= this.o.parallel) break;
-      void this.task(x.a, x.r, x.t);
-    }
+    if (this.capped || this.killed() || !this.work) return;
+    await this.work.tick();
   }
 
   /** Desktops stay paused (not started, not resumed): the day cap, or the credit gate holding them. */
@@ -563,7 +614,8 @@ export class Controller {
    * journal as desk_unhealthy (the ops log, scripts/devnet-health.sh reads /health) and the encoder or
    * browser host is restarted when it is the one that died. */
   async healthTick(): Promise<void> {
-    const staleMs = 3 * Math.max(this.o.browseGapS, this.o.workGapS, this.o.soloGapS ?? 0) * 1000;
+    // a desktop with no action is normal now (a research desk waits for hires); stuck = busy for 20 min
+    const staleMs = Number.POSITIVE_INFINITY;
     const desks = this.agents.flatMap((a) => a.roles.map((r) => ({ a, r, d: a.desks[r] }))).filter((x) => x.d.state === "running");
     const memLow = this.o.memLowMb ?? 80;
     // while the vision model is paused nothing acts on purpose: "no action" is not a desktop problem then
@@ -575,13 +627,14 @@ export class Controller {
         try {
           const h = await d.checkHealth();
           const issues = deskIssues(h, d.lastActionAt, stale, now(), this.started, memLow);
+          if (a.busySince[r] && now() - a.busySince[r] > 20 * 60_000) issues.push(`busy with one task for ${Math.round((now() - a.busySince[r]) / 60000)} min`);
           const healed = issues.length ? await d.heal(a.busy[r] || (r === "social" && a.signing), memLow).catch(() => [] as string[]) : [];
           // one line when the problems change or something was repaired, else at most every 30 min
           // (before 2026-10-23 a desktop between 60 and 80 MB logged the same line every 5 min, unrepaired)
           const key = issues.map((x) => x.replace(/\d+/g, "N")).join("|");
           if (issues.length && (healed.length || key !== d.issueKey || now() - d.issueLoggedAt >= 1800_000)) {
             d.issueLoggedAt = now();
-            this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, layout: a.solo ? "one_desktop" : "two_desktops", mode: a.solo ? a.mode : null, issues, healed, mem_avail_mb: h?.mem_avail_mb ?? null, mem_total_mb: h?.mem_total_mb ?? null, tabs: h?.tabs ?? null, chrome_mb: h?.chrome_mb ?? null, ffmpeg_mb: h?.ffmpeg_mb ?? null, stream_age_s: h?.stream_age_s ?? null });
+            this.event({ event: "desk_unhealthy", agent: a.persona.handle, role: r, desktop: DESK_NUMBER[r], layout: a.solo ? "one_desktop" : "two_desktops", issues, healed, mem_avail_mb: h?.mem_avail_mb ?? null, mem_total_mb: h?.mem_total_mb ?? null, tabs: h?.tabs ?? null, chrome_mb: h?.chrome_mb ?? null, ffmpeg_mb: h?.ffmpeg_mb ?? null, stream_age_s: h?.stream_age_s ?? null });
           }
           d.issueKey = key;
         } catch (e: any) {
@@ -597,11 +650,11 @@ export class Controller {
    * the last health check: MB available (min, p10, p50), tabs, Chromium and encoder RSS (p50). Logged
    * once per health tick as desk_health, so memory is measured in the journal, not only when low. */
   memorySummary(memLow = this.o.memLowMb ?? 80) {
-    const groups: Record<string, DeskHealth[]> = { two_social: [], two_work: [], one_desktop: [] };
+    const groups: Record<string, DeskHealth[]> = { two_desktops_1: [], two_desktops_2: [], one_desktop: [] };
     for (const a of this.agents) for (const r of a.roles) {
       const h = a.desks[r].health;
       if (a.desks[r].state !== "running" || !h) continue;
-      groups[a.solo ? "one_desktop" : r === "work" ? "two_work" : "two_social"]!.push(h);
+      groups[a.solo ? "one_desktop" : r === "work" ? "two_desktops_2" : "two_desktops_1"]!.push(h);
     }
     const q = (xs: number[], p: number) => (xs.length ? xs.slice().sort((x, y) => x - y)[Math.min(xs.length - 1, Math.floor(p * xs.length))]! : null);
     const nums = (hs: DeskHealth[], k: keyof DeskHealth) => hs.map((h) => h[k]).filter((x): x is number => typeof x === "number");
@@ -616,11 +669,12 @@ export class Controller {
 
   /** Summary for /health and the ops log: one entry per desktop with its problems. */
   healthSummary() {
-    const staleMs = 3 * Math.max(this.o.browseGapS, this.o.workGapS, this.o.soloGapS ?? 0) * 1000;
+    const staleMs = Number.POSITIVE_INFINITY;
     const rows = this.agents.flatMap((a) => a.roles.map((r) => {
       const d = a.desks[r];
       const issues = d.state === "running" ? deskIssues(d.health, d.lastActionAt, this.credits.paused ? Number.POSITIVE_INFINITY : staleMs, now(), this.started, this.o.memLowMb ?? 80) : this.credits.desksHeld && d.state === "paused" ? [] : [`desktop ${d.state}`];
-      return { agent: a.persona.handle, role: r, host: d.api.kind ?? "e2b", state: d.state, issues };
+      if (d.state === "running" && a.busySince[r] && now() - a.busySince[r] > 20 * 60_000) issues.push(`busy with one task for ${Math.round((now() - a.busySince[r]) / 60000)} min`);
+      return { agent: a.persona.handle, role: r, desktop: DESK_NUMBER[r], host: d.api.kind ?? "e2b", state: d.state, issues };
     }));
     return { desktops: rows.length, running: rows.filter((x) => x.state === "running").length, streams_alive: this.agents.reduce((s, a) => s + a.roles.filter((r) => a.desks[r].health?.stream_alive).length, 0), unhealthy: rows.filter((x) => x.issues.length) };
   }
@@ -650,7 +704,10 @@ export class Controller {
       desktops_running: this.runningDesks().length,
       desktops_total: this.agents.reduce((s, x) => s + x.roles.length, 0),
       roles: this.o.roles,
-      layout: { two_desktops: this.agents.filter((a) => !a.solo).length, one_desktop: this.agents.filter((a) => a.solo).length, mode_slot_s: this.o.modeSlotS ?? 1800 },
+      layout: { two_desktops: this.agents.filter((a) => !a.solo).length, one_desktop: this.agents.filter((a) => a.solo).length, mode_slot_s: null },
+      desktop_labels: { social: deskLabel("social"), work: deskLabel("work") },
+      town: !!this.o.town,
+      work: this.work ? { running_units: this.work.running.size, cadre_funded_today: this.work.st.fund } : null,
       health: this.healthSummary(),
       agents: this.agents.map((a) => this.agentCard(a)),
       personas_waiting: (this.cfg.handles ?? DEFAULT_HANDLES()).slice(this.o.agentsN),
@@ -666,13 +723,16 @@ export class Controller {
       archetype: a.persona.archetype,
       persona: a.persona.persona,
       appearance: a.persona.appearance,
+      job: (() => { const j = jobOf(a.persona.handle); const t = jobText(a.persona.handle); return j ? { kind: j.kind, title: t.title, description: t.description, outputs: j.outputs, target: j.target ?? j.suite ?? j.desk ?? null } : null; })(),
       account: a.wallet.address,
       layout: a.solo ? "one_desktop" : "two_desktops",
-      mode: a.solo ? a.mode : null,
-      mode_since: a.solo ? new Date(a.modeSince).toISOString() : null,
+      // no Social/Work modes since 2026-10-23; kept null for readers of the old shape
+      mode: null,
+      mode_since: null,
       desktops: Object.fromEntries(a.roles.map((r) => {
         const d = a.desks[r];
         return [r, {
+          number: DESK_NUMBER[r], label: deskLabel(r),
           state: d.state, current: a.current[r], busy: a.busy[r], error: d.lastError, host: d.api.kind ?? "e2b",
           task_kind: a.taskKind[r], activity: activityOf(a.taskKind[r], a.busy[r], d.state),
           last_action_at: d.lastActionAt ? new Date(d.lastActionAt).toISOString() : null,
@@ -682,13 +742,15 @@ export class Controller {
       latest_thought: last,
       counters: this.swarm.st.agents[a.persona.handle]?.counters ?? {},
       spend_today: sp ? { e2b_usd: round(sp.e2b_usd), vision_usd: round(sp.vision_usd), tasks: sp.tasks } : null,
+      work: this.work?.summary(a.persona.handle) ?? null,
+      latest_reports: this.store.list(a.persona.handle).slice(0, 5).map(ReportStore.card),
     };
   }
 
   detail(handle: string) {
     const a = this.byHandle.get(handle);
     if (!a) return null;
-    return { ...this.agentCard(a), log: [...a.log].reverse().slice(0, 200), thoughts: [...a.thoughts].reverse() };
+    return { ...this.agentCard(a), log: [...a.log].reverse().slice(0, 200), thoughts: [...a.thoughts].reverse(), reports: this.store.list(handle).slice(0, 20) };
   }
 }
 

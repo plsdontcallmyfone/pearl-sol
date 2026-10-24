@@ -10,10 +10,10 @@ import { key32 } from "../../src/b58.ts";
 import { REACTION } from "../../src/chaintx.ts";
 import { Desk, type E2BApi, type E2BInfo, type SandboxLike } from "../src/desk.ts";
 import { daySummary, Ledger } from "../src/spend.ts";
-import { chainTask, workTask, browseTask } from "../src/tasks.ts";
+import { chainTask } from "../src/tasks.ts";
 import { runTask, type Chat } from "../src/vision.ts";
 import { checkStreamToken, mintStreamToken } from "../src/token.ts";
-import { Controller, DEFAULT_HANDLES, DeskFailed, deskIssues, modeAt, secretB58 } from "../src/controller.ts";
+import { activityOf, Controller, DEFAULT_HANDLES, DeskFailed, deskIssues, secretB58 } from "../src/controller.ts";
 import { PERSONAS } from "../../src/personas.ts";
 import { containerSandbox, type Runner, selfHostApi, xKey } from "../src/selfhost.ts";
 import { deskConfig } from "../src/config.ts";
@@ -42,9 +42,10 @@ class FakeSbx implements SandboxLike {
       if (cmd.includes("tar -xzf")) out = "ok";
       if (cmd.startsWith("cat /home/user/.cadre/stream.sh")) out = this.files_.get("/home/user/.cadre/stream.sh") ?? "";
       if (cmd.startsWith("cat /home/user/.cadre/deskhost.mjs")) out = this.files_.get("/home/user/.cadre/deskhost.mjs") ?? "";
-      if (cmd.startsWith("touch /home/user/.cadre/console")) this.files_.set("/home/user/.cadre/console", "");
+      { const m = /^touch (\/home\/user\/\.cadre\/[\w-]+)$/.exec(cmd); if (m) this.files_.set(m[1]!, ""); }
       if (cmd.startsWith("cat /home/user/.cadre/front")) out = this.front ?? "work";
-      if (cmd.startsWith("rm -f /home/user/.cadre/console")) this.files_.delete("/home/user/.cadre/console");
+      { const m = /^rm -f (\/home\/user\/\.cadre\/[\w-]+)$/.exec(cmd); if (m) this.files_.delete(m[1]!); }
+      if (cmd.startsWith("cat /home/user/.cadre/script-done.json")) out = this.files_.get("/home/user/.cadre/script-done.json") ?? "";
       if (cmd.includes("/proc/meminfo")) { const n = Math.floor(Date.now() / 1000); out = this.healthLine ?? `${n} ${n - 1} ${n - 3} 1 1 1024 300 0.42`; }
       if (cmd.startsWith("cat /home/user/.cadre/state.json")) out = JSON.stringify({ ext: "extid0000", tabs: [] });
       return { exitCode: 0, stdout: out, stderr: "" };
@@ -155,8 +156,6 @@ test("tasks: a post carries the paid text verbatim and the thought id; tips and 
   const fol = chainTask(SITE, { kind: "Follow", items: [{ target: key32(target), on: true }] })!;
   assert.equal(fol.url, `${SITE}/u/${target}`);
   assert.equal(chainTask(SITE, { kind: "Transfer", to: key32(target), amount: 1n }), null, "desktops never move funds");
-  for (let i = 0; i < 5; i++) assert.equal(workTask(SITE, `${SITE}/explorer`, target, i).signs, false, "work tasks are read-only");
-  for (let i = 0; i < 3; i++) assert.equal(browseTask(SITE, i, [{ handle: "meadowsweet27" }]).signs, false);
 });
 
 test("vision loop: executes the model's actions in order, books its cost, keeps at most two screenshots", async () => {
@@ -283,17 +282,7 @@ test("split: desktop agents come from the end of the persona list, so the headle
   }
 });
 
-test("mode scheduler: alternates Social and Work per slot, staggered across agents", () => {
-  const slot = 1800_000;
-  const t0 = Date.UTC(2026, 9, 21, 20, 0, 0);
-  const at = (t: number) => Array.from({ length: 30 }, (_, i) => modeAt(i, t, slot));
-  const m0 = at(t0);
-  assert.equal(m0.filter((m) => m === "social").length, 15, "half the agents in each mode");
-  assert.deepEqual(at(t0 + slot), m0.map((m) => (m === "social" ? "work" : "social")), "every agent flips at the next slot");
-  assert.deepEqual(at(t0 + slot - 1), m0, "stable within a slot");
-});
-
-test("Phase A controller: first agents keep two desktops, the rest one; solo work tasks follow the mode; a chain action runs on the solo desktop in Work mode", async () => {
+test("Phase A layout without modes: first agents keep two desktops, the rest one; every desktop shows the work log, the wallet stays locked; a town action still runs on desktop 1 with DESK_TOWN", async () => {
   const dir = mkdtempSync(join(tmpdir(), "desk-phasea-"));
   const keys = join(dir, "keys");
   createKeyFile(join(keys, "operator.json"));
@@ -308,76 +297,65 @@ test("Phase A controller: first agents keep two desktops, the rest one; solo wor
   const cfg = { ...deskConfig({}), stateDir: dir, killFile: join(dir, "STOP"), keysDir: keys, handles, siteUrl: SITE, explorerUrl: `${SITE}/explorer` };
   const e2b = new FakeE2B();
   const ctl = new Controller(cfg, swarmCfg(dir), { node: node as any, gateway: {} as any, api: {} as any, latestBlockhash: async () => "", now: () => Date.now(), rand: () => 0.5, log: () => {} }, op, e2b, chat,
-    { roles: ["social", "work"], agentsN: 3, parallel: 4, browseGapS: 600, workGapS: 600, soloGapS: 600, modeSlotS: 1800, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw" });
+    { roles: ["social", "work"], agentsN: 3, parallel: 4, browseGapS: 600, workGapS: 600, twoDeskAgents: 1, tipShare: 0, tipCadre: "0.001", tipUnits: 1n, tipsPerDay: 0, walletTgz: join(tmpdir(), "cadre-desk-wallet.tgz"), passwordFor: () => "pw", town: true });
   await ctl.ensureAll();
   assert.equal(ctl.runningDesks().length, 4, "1 agent x 2 + 2 agents x 1");
-  const [two, s1, s2] = handles.map((h) => ctl.byHandle.get(h)!);
+  const [two, s1] = handles.map((h) => ctl.byHandle.get(h)!);
   assert.deepEqual(two!.roles, ["social", "work"]);
   assert.deepEqual(s1!.roles, ["social"]);
-  assert.equal(s1!.solo && s2!.solo && !two!.solo, true);
-  assert.notEqual(s1!.mode, s2!.mode, "neighbours are staggered");
-  // health first, so the browser host's wallet id is known for a solo Work-mode wallet task
   await ctl.healthTick();
-  const solo = s1!.mode === "work" ? s1! : s2!;
-  assert.equal(solo.desks.social.walletUrl(), "chrome-extension://extid0000/index.html");
-  assert.equal(solo.desks.social.health?.stream_alive, true);
-  assert.equal(ctl.healthSummary().unhealthy.length, 0);
+  assert.equal(ctl.healthSummary().unhealthy.length, 0, "an idle desktop is not a problem any more");
+  // no work deps: background does nothing, and nothing browses the town
   await ctl.background();
-  while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 100));
-  const workKinds = ["wallet", "explorer_account", "explorer_blocks", "market", "jobs"];
-  const socialKinds = ["read_town", "read_profile", "read_leaderboards"];
-  const done = (a: typeof solo) => a.log.filter((l) => l.kind === "task").map((l) => l.text.replace(" ", "_"));
-  assert.ok(done(solo).every((k) => workKinds.includes(k)) && done(solo).length === 1, `work-mode solo agent ran a work task: ${done(solo)}`);
-  const other = solo === s1 ? s2! : s1!;
-  assert.ok(done(other).every((k) => socialKinds.includes(k)) && done(other).length === 1, `social-mode solo agent browsed: ${done(other)}`);
-  assert.equal(done(two!).length, 2, "the two-desktop agent ran one task on each desktop");
-  // a chain action while in Work mode still runs on the solo agent's only (signing) desktop
-  included = false;
-  const h = await ctl.viaDesktop(solo, { kind: "Post", postKind: 0, body: "Ledger says hello.", thoughtRef: "req-solo" } as any);
+  assert.equal(ctl.visionInFlight, 0);
+  assert.equal(seen.length, 0, "no filler browsing");
+  // every desktop shows the work log between tasks
+  const has = (a: typeof s1, r: "social" | "work", f: string) => e2b.boxes.get(a!.desks[r].id!)!.sbx.files_.has(`/home/user/.cadre/${f}`);
+  assert.equal(has(two, "work", "console") && has(two, "social", "console") && has(s1, "social", "console"), true);
+  // DESK_TOWN=1 (this controller): the wallet is not locked and a town post still runs on desktop 1
+  assert.equal(has(s1, "social", "wallet-locked"), false);
+  const h = await ctl.viaDesktop(s1!, { kind: "Post", postKind: 0, body: "Ledger says hello.", thoughtRef: "req-solo" } as any);
   assert.equal(h, "e".repeat(64));
-  assert.ok(solo.log.some((l) => l.kind === "mode" && l.text.includes("paused for a post")));
-  assert.ok(seen.some((x) => x.includes("thought=req-solo")), "the post task carries the thought id for thought_ref");
-  // the mode flips at the next slot and is logged
-  ctl.scheduleModes(Date.now() + 1800_000);
-  assert.ok(solo.log.some((l) => l.kind === "mode" && l.text.startsWith("Social mode")));
-  // status: layout, per-desktop health and activity, no sandbox ids
+  assert.ok(seen.some((x) => x.includes("thought=req-solo")));
+  // status: neutral desktop names, no modes, no sandbox ids
   const st: any = ctl.status();
-  assert.deepEqual(st.layout, { two_desktops: 1, one_desktop: 2, mode_slot_s: 1800 });
-  assert.equal(st.desktops_total, 4);
-  const card = st.agents.find((a: any) => a.handle === solo.persona.handle);
-  assert.equal(card.layout, "one_desktop");
-  assert.deepEqual(Object.keys(card.desktops), ["social"]);
-  assert.equal(card.desktops.social.health.mem_avail_mb, 300);
-  assert.ok(!JSON.stringify(st).includes(solo.desks.social.id!));
-  // the activity console: on the Work desktop and on the solo agent in Work mode, not on Social desktops
-  const flagOf = (a: typeof solo, r: "social" | "work") => e2b.boxes.get(a.desks[r].id!)!.sbx.files_.has("/home/user/.cadre/console");
-  assert.equal(flagOf(two!, "work"), true);
-  assert.equal(flagOf(two!, "social"), false);
-  // runtime events (the fast executor's trades) land in the agent's log for the console
-  assert.equal(ctl.activity(solo.persona.handle, { kind: "trade", text: "bought 1.2 CADRE for 0.01 SOL", tx: "abc12345" }), true);
+  assert.deepEqual(st.layout, { two_desktops: 1, one_desktop: 2, mode_slot_s: null });
+  assert.deepEqual(st.desktop_labels, { social: "Desktop 1", work: "Desktop 2" });
+  const card = st.agents.find((a: any) => a.handle === "nigella71");
+  assert.equal(card.mode, null);
+  assert.equal(card.desktops.social.label, "Desktop 1");
+  assert.equal(card.job.title, "Web researcher");
+  assert.equal(card.job.kind, "research");
+  assert.equal(st.agents.find((a: any) => a.handle === "speedwell41").desktops.work.number, 2);
+  assert.ok(!JSON.stringify(st).includes(s1!.desks.social.id!));
+  // runtime events land in the agent's log for the console
+  assert.equal(ctl.activity("nigella71", { kind: "trade", text: "x", tx: "abc12345" }), true);
   assert.equal(ctl.activity("nobody", { kind: "trade", text: "x" }), false);
-  assert.ok(solo.log.some((l) => l.kind === "trade" && l.tx === "abc12345"));
-  // a dead encoder is flagged and restarted
-  const sbx = e2b.boxes.get(solo.desks.social.id!)!.sbx;
+  // a dead encoder is flagged and restarted; a desktop busy for 20 min is flagged as stuck
+  const sbx = e2b.boxes.get(s1!.desks.social.id!)!.sbx;
   const n = Math.floor(Date.now() / 1000);
-  sbx.healthLine = `${n} ${n - 60} ${n - 2} 0 1 1024 60 0.9`;
+  sbx.healthLine = `${n} ${n - 60} ${n - 2} 0 1 1024 600 0.9`;
+  s1!.busy.social = true;
+  s1!.busySince.social = Date.now() - 25 * 60_000;
   await ctl.healthTick();
-  const bad = ctl.healthSummary().unhealthy.find((x) => x.agent === solo.persona.handle)!;
-  assert.ok(bad.issues.includes("stream encoder down") && bad.issues.some((i) => i.startsWith("memory low")), JSON.stringify(bad));
+  const bad = ctl.healthSummary().unhealthy.find((x) => x.agent === "nigella71")!;
+  assert.ok(bad.issues.includes("stream encoder down") && bad.issues.some((i) => i.startsWith("busy with one task")), JSON.stringify(bad));
   assert.ok(sbx.cmds.some((c) => c.includes("stream.sh") && c.includes("nohup")), "encoder restarted");
-  assert.ok(sbx.cmds.some((c) => c.includes("kill -9") && c.includes("rm -f /tmp/stream/thumb.jpg")), "old loops killed and the old still removed first");
-  // a frozen stream (encoder running, still 400 s old) is restarted too; low memory restarts the browser when idle
-  const before = sbx.cmds.length;
-  sbx.healthLine = `${n} ${n - 400} ${n - 2} 1 1 1024 40 0.9`;
-  await ctl.healthTick();
-  const fresh = sbx.cmds.slice(before);
-  assert.ok(fresh.some((c) => c.includes("rm -f /tmp/stream/thumb.jpg")), "frozen stream: encoder restarted");
-  assert.ok(fresh.some((c) => c.includes("deskhost.mjs") && c.includes("nohup")), "memory under 60 MB: browser host restarted");
-  // no process match can hit its own shell (2026-10-21: pkill -f "[s]tream.sh" in a command naming stream.sh killed itself)
   for (const c of sbx.cmds) {
     for (const m of c.matchAll(/p(?:grep|kill)\s+(?:-\S+\s+)*-f\s+"([^"]+)"/g)) assert.ok(/^\[/.test(m[1]!), `bracketed pattern: ${m[1]}`);
   }
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("activity: work kinds map to what the site can filter on", () => {
+  assert.equal(activityOf("research", true, "running"), "researching");
+  assert.equal(activityOf("qa_site", true, "running"), "testing");
+  assert.equal(activityOf("check_sources", true, "running"), "reviewing");
+  assert.equal(activityOf("monitor_show", true, "running"), "monitoring");
+  assert.equal(activityOf("hire_page", true, "running"), "hiring");
+  assert.equal(activityOf("trade_page", true, "running"), "trading");
+  assert.equal(activityOf("research", false, "running"), "idle");
+  assert.equal(activityOf("research", true, "paused"), "off");
 });
 
 test("health: issues name a dead stream, a dead browser host, low memory and an idle desktop", () => {
@@ -503,8 +481,8 @@ test("controller credit gate: a recorded 402 pauses every vision task and chain 
         credit: { probeS: 0, holdDesksS: 0, remindS: 3600 } });
     await ctl.ensureAll();
     assert.equal(ctl.runningDesks().length, 4);
-    await ctl.background();
-    while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 50));
+    // a work task on every desktop at once (what the work loop does), all refused for credit
+    await Promise.all(ctl.agents.flatMap((a) => a.roles.map((r) => ctl.task(a, r, { kind: "qa_flow", signs: false, text: "check a flow", work: true }))));
     assert.equal(ctl.credits.paused, true);
     assert.equal(lines.filter((l) => l.event === "vision_paused").length, 1, "one clear line, however many tasks failed");
     const st: any = ctl.status();
@@ -512,8 +490,7 @@ test("controller credit gate: a recorded 402 pauses every vision task and chain 
     assert.equal(st.vision_gate.afford_tokens, 137);
     // nothing new starts: no model call, no chain action
     const n = calls.length;
-    for (const a of ctl.agents) a.lastTaskAt = { social: 0, work: 0 } as any;
-    await ctl.background();
+    assert.equal(await ctl.task(ctl.agents[0]!, "social", { kind: "qa_flow", signs: false, text: "x", work: true }), null);
     assert.equal(calls.length, n, "no task started while paused");
     assert.equal(await ctl.swarm.act({ persona: ctl.agents[0]!.persona, wallet: ctl.agents[0]!.wallet } as any, []), "vision_paused");
     await assert.rejects(ctl.viaDesktop(ctl.agents[0]!, { kind: "Post", postKind: 0, body: "x", thoughtRef: "r" } as any), /vision model paused/);
@@ -540,9 +517,7 @@ test("controller credit gate: a recorded 402 pauses every vision task and chain 
     assert.equal(ctl.runningDesks().length, 4);
     assert.ok(e2b.log.filter((x) => x.startsWith("connect")).length >= 4, "resumed, not recreated");
     assert.equal(e2b.log.filter((x) => x.startsWith("create")).length, 4);
-    for (const a of ctl.agents) a.lastTaskAt = { social: 0, work: 0 } as any;
-    await ctl.background();
-    while (ctl.visionInFlight > 0) await new Promise((r) => setTimeout(r, 50));
+    await ctl.task(ctl.agents[0]!, "social", { kind: "qa_flow", signs: false, text: "check a flow", work: true });
     assert.ok(ctl.agents.some((a) => a.log.some((l) => l.kind === "task_done" && l.ok)), "tasks succeed again");
     // the probes' cost is vision spend; the credit failures are counted
     assert.ok((ctl.ledger.d.probe_usd ?? 0) > 0);
@@ -647,9 +622,9 @@ test("health log: the same problem is logged once per 30 min, a desk_health line
     assert.equal(hl.length, 3);
     assert.equal(hl[0].one_desktop.desktops, 1);
     assert.equal(hl[0].one_desktop.low, 1);
-    assert.equal(hl[0].two_social.desktops, 1);
-    assert.equal(hl[0].two_social.low, 0);
-    assert.equal(hl[0].two_work.avail_p50, 300);
+    assert.equal(hl[0].two_desktops_1.desktops, 1);
+    assert.equal(hl[0].two_desktops_1.low, 0);
+    assert.equal(hl[0].two_desktops_2.avail_p50, 300);
     // an unrepairable problem (busy desktop, nothing healed) repeats only after 30 min
     ctl.byHandle.get("nigella71")!.busy.social = true;
     lines.length = 0;

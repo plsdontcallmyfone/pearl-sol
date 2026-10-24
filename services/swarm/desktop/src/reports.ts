@@ -51,10 +51,10 @@ export class ReportStore {
     const full: Report = { ...body, sha256: sha256(canon(body)) } as Report;
     const d = join(this.dir, r.agent);
     mkdirSync(d, { recursive: true });
+    const list = this.list(r.agent); // read (and cache) before the new file exists, so it is not listed twice
     const f = join(d, `${id}.json`);
     writeFileSync(`${f}.tmp`, JSON.stringify(full));
     renameSync(`${f}.tmp`, f);
-    const list = this.list(r.agent);
     list.unshift(full);
     // keep the newest `keep` per agent on disk
     for (const old of list.splice(this.keep)) rmSync(join(d, `${old.id}.json`), { force: true });
