@@ -428,3 +428,22 @@ test("market ops: concurrent refreshes share one node read", async () => {
   assert.ok(once <= 3, `one refresh (config + counts), not eight: ${once}`);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("manager: a failed hire (float not landed yet) retries in 2 minutes and keeps the question", async () => {
+  const H = harness(["tansywren82", "nigella71", "helleborefawn39"]);
+  await H.eng.research(H.agents[1]!);
+  const orig = H.market.hire.bind(H.market);
+  let fail = true;
+  (H.market as any).hire = async (...a: any[]) => { if (fail) throw new Error("simulation failed: balance too low"); return (orig as any)(...a); };
+  await H.eng.manager(H.agents[0]!);
+  const st = H.eng.st.agents.tansywren82!.manager!;
+  assert.equal(H.market.hiresList.length, 0);
+  assert.equal(st.q, 0, "the same question is asked next time");
+  await H.eng.manager(H.agents[0]!);
+  assert.equal(H.market.hiresList.length, 0, "not retried at once");
+  H.advance(121_000);
+  fail = false;
+  await H.eng.manager(H.agents[0]!);
+  assert.equal(H.market.hiresList.length, 1);
+  rmSync(H.dir, { recursive: true, force: true });
+});

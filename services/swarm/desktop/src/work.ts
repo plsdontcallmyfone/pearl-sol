@@ -521,9 +521,7 @@ export class WorkEngine {
       const story = pickStory(items, new Set(s.done), now);
       if (!story) { this.h.note(a.handle, "note", `no new story in ${NEWS_FEEDS.length} feeds (${items.length} items read)`); s.lastAt = now; return; }
       request = newsRequest(story); links = [story.link]; source = { kind: "news", feed: story.feed, headline: story.title, link: story.link, published: story.published ? new Date(story.published).toISOString() : null };
-      s.done = [...s.done, story.link].slice(-300);
-      const role = this.h.freeRoles(a.handle)[0];
-      if (role) void this.h.script(a.handle, role, "read_story", [{ url: story.link, wait_ms: 5000, scroll: 2 }]).catch(() => null);
+
     } else {
       request = OPS_QUESTIONS[s.q % OPS_QUESTIONS.length]!; s.q++; source = { kind: "operator question", bank_index: (s.q - 1) % OPS_QUESTIONS.length };
     }
@@ -534,14 +532,29 @@ export class WorkEngine {
     const reviewer = reviewers[s.reviewer % reviewers.length]!;
     s.reviewer++;
     const provider = this.agents.find((x) => x.wallet.address === offer.provider);
-    const r = await mk.hire(a.wallet, a.handle, offer, { request, links, source, kind: "research", reviewer: reviewer.wallet.address }, reviewer.wallet.address, this.cfg.judgeFee, Math.max(offer.turnaround, this.cfg.deadlineBlocks));
+    let r: Awaited<ReturnType<MarketOps["hire"]>>;
+    try {
+      r = await mk.hire(a.wallet, a.handle, offer, { request, links, source, kind: "research", reviewer: reviewer.wallet.address }, reviewer.wallet.address, this.cfg.judgeFee, Math.max(offer.turnaround, this.cfg.deadlineBlocks));
+    } catch (e) {
+      // usually the float top-up has not landed yet: try again in 2 minutes, not every tick
+      s.lastAt = now - every + 120_000;
+      if (a.job.desk === "ops") s.q--;
+      this.dirty = true;
+      this.h.note(a.handle, "note", `hire not sent: ${String((e as Error).message).slice(0, 140)}`, { ok: false });
+      return;
+    }
     s.lastAt = now;
+    if (a.job.desk === "news" && links[0]) {
+      s.done = [...s.done, links[0]].slice(-300);
+      const role = this.h.freeRoles(a.handle)[0];
+      if (role) void this.h.script(a.handle, role, "read_story", [{ url: links[0], wait_ms: 5000, scroll: 2 }, ...(r.id !== null ? [{ url: `${this.h.site}/market/hires/${r.id}`, wait_ms: 4000 }] : [])]).catch(() => null);
+    }
     s.spent = (BigInt(s.spent) + r.total).toString();
     if (r.id !== null) s.hires = [...s.hires, r.id].slice(-200);
     s.recent = [...recent, offer.provider].slice(-50);
     this.dirty = true;
     this.h.note(a.handle, "tx", `hired @${provider?.handle ?? offer.provider.slice(0, 8)} (hire #${r.id}) for ${cad(r.total)} CADRE, reviewer @${reviewer.handle}: ${request.slice(0, 120)}`, { tx: r.tx, ok: true });
-    const role = this.h.freeRoles(a.handle)[0];
+    const role = a.job.desk === "ops" ? this.h.freeRoles(a.handle)[0] : undefined;
     if (role && r.id !== null) void this.h.script(a.handle, role, "hire_page", [{ url: `${this.h.site}/market/hires/${r.id}`, wait_ms: 5000 }]).catch(() => null);
     this.report(a, {
       kind: "commission", title: `Commissioned hire #${r.id}: ${request.slice(0, 100)}`, summary: `Hired @${provider?.handle ?? "?"} for ${cad(r.total)} CADRE (price ${cad(q.price)}, market fee, reviewer fee ${cad(this.cfg.judgeFee)}), reviewed by @${reviewer.handle}. House hire.`,

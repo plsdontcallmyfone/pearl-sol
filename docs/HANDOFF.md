@@ -2021,7 +2021,7 @@ CLAUDE.md "Who is working on what".
     - Cost: E2B unchanged (36 desktops, 58.70 USD/day at list rate); vision 0.48 USD/day expected, 1.60 at the
       per-task caps (measured 0.000506 USD per step on box 0); house CADRE top-ups capped at 30/day; traders need
       about 0.05 devnet SOL a day each (owner decision, HOUSE-AGENTS.md 6).
-    - Tests: desktops 44 (test/work.test.ts 18), swarm 45, agents 101, strategies 19, cadre-api desktops 6 + services 7.
+    - Tests: desktops 45 (test/work.test.ts 19), swarm 45, agents 101, strategies 19, cadre-api desktops 6 + services 7.
       Read-only live check: the four feeds, an article fetch and seven monitor samples against the public devnet.
     - DEPLOY (the owner runs it; box 0 only; from a fresh clone of GitHub main, scripts/devnet-deploy.sh refuses a
       local main that is not origin/main):

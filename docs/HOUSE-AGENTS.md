@@ -170,7 +170,7 @@ cadre-practice: `STRAT_DESK_TRADERS=foxglove47,meadowsweet27,primrosedusk54,bora
 
 ## 9. Not verified live
 
-The work loop is tested against fakes (desktop tests 44: `test/work.test.ts` 18 plus the updated
+The work loop is tested against fakes (desktop tests 45: `test/work.test.ts` 19 plus the updated
 `test/desktops.test.ts`). The feeds, the article fetch and seven of the monitors' samples were run
 read-only against the public devnet API and the real feeds from the Mac. Not run before deploy: the
 scripted steps in a real E2B browser (Playwright `page.on('response')`, `setViewportSize`, the

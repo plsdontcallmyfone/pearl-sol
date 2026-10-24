@@ -263,6 +263,7 @@ export class Controller {
 
   store: ReportStore;
   work: WorkEngine | null = null;
+  private fundQueue: Promise<unknown> = Promise.resolve();
 
   /** The work loop's view of this controller (src/work.ts WorkHost). */
   host(): WorkHost {
@@ -286,11 +287,17 @@ export class Controller {
       solBalances: w.solBalances,
       self: () => ({ spent: ctl.ledger.spent, cap: ctl.cfg.usdPerDay, e2b: ctl.ledger.d.e2b_usd, vision: ctl.ledger.d.vision_usd, unhealthy: ctl.healthSummary().unhealthy.length, desktops: ctl.agents.reduce((n, a) => n + a.roles.length, 0), running: ctl.runningDesks().length, vision_paused: ctl.credits.paused, seconds_left: ctl.ledger.secondsLeft(), running_usd_per_s: ctl.runningUsdPerS() }),
       practice: (h) => w.practice?.(h) ?? null,
-      fund: async (h, units) => {
-        const a = this.byHandle.get(h);
-        if (!a) return null;
-        try { return await this.swarm.send(this.swarm.op, { kind: "Transfer", to: a.wallet.publicKey, amount: units }); }
-        catch (e: any) { this.event({ event: "work_fund_error", agent: h, error: String(e?.message ?? e).slice(0, 160) }); return null; }
+      // operator sends one at a time (Swarm.send reads the nonce, then sends: two at once would share it)
+      fund: (h, units) => {
+        const run = async () => {
+          const a = this.byHandle.get(h);
+          if (!a) return null;
+          try { return await this.swarm.send(this.swarm.op, { kind: "Transfer", to: a.wallet.publicKey, amount: units }); }
+          catch (e: any) { this.event({ event: "work_fund_error", agent: h, error: String(e?.message ?? e).slice(0, 160) }); return null; }
+        };
+        const p = this.fundQueue.then(run, run);
+        this.fundQueue = p.catch(() => null);
+        return p;
       },
       market: w.market,
     };
