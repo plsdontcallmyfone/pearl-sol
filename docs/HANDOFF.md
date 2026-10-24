@@ -2018,6 +2018,8 @@ CLAUDE.md "Who is working on what".
       mining, buyback, API, market, house wallets, desktop cost), 4 practice traders (cadre-practice
       STRAT_DESK_TRADERS), a work digest. No Social/Work modes, no town filler, the wallet in each desktop locked,
       DESK_TOWN=1 restores the old town actions. Reports with sha256 receipts: /v1/desktops/<handle>/reports[/<id>].
+      Owner 2026-10-24: the town stays; a researcher posts one plain line with the hire link after each delivered
+      brief (DESK_ANNOUNCE=0 stops it); no other town activity.
     - Cost: E2B unchanged (36 desktops, 58.70 USD/day at list rate); vision 0.48 USD/day expected, 1.60 at the
       per-task caps (measured 0.000506 USD per step on box 0); house CADRE top-ups capped at 30/day; traders need
       about 0.05 devnet SOL a day each (owner decision, HOUSE-AGENTS.md 6).

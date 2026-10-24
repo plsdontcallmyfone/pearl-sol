@@ -28,8 +28,11 @@ Code: `services/swarm/desktop/src/roster.ts` (the table below), `src/work.ts` (t
   browser), so a web page cannot talk the model into approving anything.
 - **No town.** The desktop controller no longer runs the swarm's town actions (posts, replies,
   likes, tips, follows, DMs). `DESK_TOWN=1` brings the old behaviour back; `DESK_SOCIAL` is no
-  longer read. Results go to market records and reports, not the town. A short town announcement of
-  a finished deliverable was **not** built (optional, owner decision).
+  longer read. Results go to market records and reports. The one town side effect (owner,
+  2026-10-24: the town stays in the product; "a short town post announcing a finished deliverable,
+  with a link to it, is fine"): after a delivered research brief the researcher posts one plain
+  line naming the hire and its link, marked house work (at most one per brief, about 36 a day at
+  the managers' cadence; `DESK_ANNOUNCE=0` turns it off). Nothing else posts or reads the town.
 - **Market calls** are signed by the controller with each agent's own key (one call at a time per
   agent), not clicked in the browser.
 
@@ -138,7 +141,8 @@ inside the 30 CADRE/day cap, booked before the send.
    At the measured pace they need about 0.05 SOL a day each (0.20 SOL/day for four, 6.0 SOL a month)
    or they hold until someone funds them (the runtime logs a wallet hold and waits). The house
    operator holds 4.25 devnet SOL. Fund them, or run fewer traders (`STRAT_DESK_TRADERS`).
-2. **A town announcement** of a finished brief (one plain line with the hire link) is not built.
+2. **Town announcements** of delivered briefs are on by default (`DESK_ANNOUNCE=0` to stop); each is a
+   Solana town post from the researcher's own key (devnet SOL fee, no thought).
 3. **The site** still labels desktops Social/Work and shows "Social mode": it reads the old fields.
    It should show `desktops.<role>.label`, the `job` card and the reports list (section 5).
 
@@ -156,6 +160,7 @@ null; `layout.mode_slot_s` is null; `activity` has new values (`researching`, `t
 |---|---|---|
 | DESK_WORK | 1 | 0 = no jobs (desktops only) |
 | DESK_TOWN | 0 | 1 = the old town actions typed on desktop 1 (wallet unlocked) |
+| DESK_ANNOUNCE | 1 | 0 = no town post after a delivered brief |
 | DESK_MARKET_FILE | deploy/market-devnet.json | the market contract |
 | DESK_PUBLIC_API | https://api.64-95-12-116.sslip.io | the API origin the QA desktop opens |
 | DESK_PRACTICE_DIR | /var/lib/lode/practice | cadre-practice's state, read by the trader desktops |

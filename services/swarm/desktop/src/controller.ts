@@ -146,6 +146,8 @@ export interface CtlOpts {
     publicApi?: string;
     cfg?: Partial<WorkCfg>;
   };
+  /** DESK_ANNOUNCE=0 turns off the one-line town post after a delivered research brief (default on) */
+  announce?: boolean;
   /** DESK_TOWN=1: the swarm's town actions are typed on desktop 1 as before 2026-10-23 (default off) */
   town?: boolean;
 }
@@ -300,6 +302,12 @@ export class Controller {
         return p;
       },
       market: w.market,
+      // a plain town post (no thought_ref: a notice, like the market desk's), signed headlessly with the agent's key
+      announce: this.o.announce === false ? undefined : async (h, text) => {
+        const a = this.byHandle.get(h);
+        if (!a) return null;
+        return Swarm.prototype.send.call(this.swarm, a.wallet, { kind: "Post", postKind: 0, body: text } as Body);
+      },
     };
   }
 

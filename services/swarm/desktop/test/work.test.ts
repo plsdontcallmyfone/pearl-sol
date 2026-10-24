@@ -249,7 +249,9 @@ test("market jobs: the manager hires the least busy research desk, the desk rese
   const pageA = "The exchange said fees will fall to 0.1 percent starting next month for all users.";
   const pageB = "Analysts at the firm expect trading volume to double by the end of the year.";
   const visionCalls: any[] = [];
+  const posts: string[] = [];
   const H = harness(["tansywren82", "nigella71", "lunaria38", "helleborefawn39"], {
+    announce: async (_h: string, t: string) => { posts.push(t); return "sig"; },
     vision: async (_h, _r, t) => {
       visionCalls.push(t);
       return { ok: true, summary: "s", steps: 9, usd: 0.006, inTokens: 1, outTokens: 1, log: [], visits: [{ t: 1, url: "https://a.example/news", title: "A", text: pageA }, { t: 2, url: "https://b.example/report", title: "B", text: pageB }],
@@ -278,6 +280,8 @@ test("market jobs: the manager hires the least busy research desk, the desk rese
   assert.equal(doc.pages_opened.length, 2);
   assert.match(doc.written_by.note, /not a paid Cadre thought/);
   assert.equal(H.store.list(desk.handle)[0]!.kind, "research");
+  assert.equal(posts.length, 1, "one town post per delivered brief");
+  assert.match(posts[0]!, /market\/hires\/0 \(house work\)$/);
   // a second manager pass hires the OTHER desk (least busy)
   H.eng.st.agents.tansywren82!.manager!.lastAt = 0;
   await H.eng.manager(H.agents[0]!);

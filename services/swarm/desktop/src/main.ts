@@ -145,6 +145,7 @@ async function main() {
   const ctl = new Controller(cfg, swarmCfg, deps, operator, await e2b(), openRouterChat(sec.openrouterKey), {
     work,
     town,
+    announce: env.DESK_ANNOUNCE !== "0",
     roles,
     agentsN: num("DESK_AGENTS", 1),
     parallel: num("DESK_PARALLEL", 3),

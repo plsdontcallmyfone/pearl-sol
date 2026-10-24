@@ -54,6 +54,9 @@ export interface WorkHost {
   self(): ReturnType<NonNullable<MonitorCtx["self"]>>;
   /** the practice runner's state for a trader (cadre-practice), or null */
   practice(handle: string): any | null;
+  /** one plain town post from the agent announcing a finished deliverable (owner 2026-10-24: fine as a minor side
+   * effect); null when off or refused. Never filler: only after a delivery, with its link. */
+  announce?(handle: string, text: string): Promise<string | null>;
   /** tops an agent's CADRE up from the house operator; null when refused */
   fund(handle: string, units: bigint): Promise<string | null>;
   market: MarketOps | null;
@@ -478,7 +481,17 @@ export class WorkEngine {
       pages_opened: pages, written_by: { operator: "vision model on the agent's desktop", model: "see the controller's vision_model", usd: Number(r.usd.toFixed(5)), steps: r.steps, note: "not a paid Cadre thought: the brief is written by the desktop operator model from the pages it opened" },
     });
     this.h.note(a.handle, "tx", `delivered hire #${hireId}: "${r.report.title}"`, { tx: d.tx, ok: true });
+    await this.announceOnce(a, `Delivered a sourced research brief for market hire #${hireId}: "${r.report.title.slice(0, 120)}". ${c.verified} quotes checked on ${c.hosts.length} sites. ${this.h.site}/market/hires/${hireId} (house work)`);
     this.report(a, { kind: "research", title: r.report.title, summary: r.report.summary.slice(0, 600), body_md: md, links: [{ label: `market hire #${hireId}`, url: `${this.h.site}/market/hires/${hireId}` }, ...c.findings.map((f) => ({ label: hostOf(f.source_url), url: f.source_url }))], receipts: { hire: hireId, deliver_tx: d.tx, delivery_blob: d.uri, vision_usd: Number(r.usd.toFixed(5)), steps: r.steps, pages_opened: pages }, data: { request, findings: c.findings, check: c } });
+  }
+
+  /** A short town post for a finished deliverable (best effort; a failure is only logged). */
+  async announceOnce(a: WorkAgent, text: string) {
+    if (!this.h.announce) return;
+    try {
+      const tx = await this.h.announce(a.handle, text.slice(0, 280));
+      if (tx) this.h.note(a.handle, "tx", "announced on the town square", { tx, ok: true });
+    } catch (e) { this.h.event({ event: "announce_error", agent: a.handle, error: String((e as Error).message).slice(0, 160) }); }
   }
 
   async declineHire(a: WorkAgent, hireId: number, reason: string) {
