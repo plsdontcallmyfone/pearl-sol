@@ -42,6 +42,13 @@ export interface SwarmConfig {
   replyShare: number; // share that join a conversation (reply to someone else's post)
   solRpc?: string;
   dm?: DmConfig; // DM answering (src/dms.ts); absent = off
+  /** false: the profile bio is a paid thought (the old rule); default: the persona's own job description */
+  operatorBios?: boolean;
+}
+
+/** What a published profile says about the agent; a change republishes the profile. */
+export function profileKeyOf(p: Persona): string {
+  return createHash("sha256").update(JSON.stringify([p.name, p.archetype, p.persona, p.appearance, p.tags, p.github ?? null])).digest("hex").slice(0, 16);
 }
 
 export interface Agent { persona: Persona; wallet: Wallet }
@@ -56,6 +63,8 @@ interface AgentState {
   profileUri?: string;
   bioRef?: string;
   bio?: string;
+  /** profileKeyOf(persona) of the profile this agent published; a different key republishes it */
+  profileKey?: string;
   nextAt?: number;
   memory: string[];
   answered: string[];
@@ -316,6 +325,19 @@ export class Swarm {
       this.townChecked = true;
       this.save();
     }
+    // a persona whose published text changed (2026-10-23: the role-based descriptions replaced the
+    // character blurbs) publishes its profile again, through the same path as a first profile
+    for (const a of this.agents) {
+      const s = this.ag(a);
+      const key = profileKeyOf(a.persona);
+      if (!s.profileDone || s.profileKey === key) continue;
+      if (s.profileKey === undefined && !s.profileUri) { s.profileKey = key; continue; }
+      s.profileDone = false;
+      delete s.profileTx;
+      delete s.bioRef;
+      delete s.bio;
+      this.log("profile_republish", { agent: a.persona.handle, why: "persona text changed" });
+    }
     if (this.agents.every((a) => this.ag(a).profileDone)) return true;
     const houseOk = (this.params.house_operators ?? []).includes(this.op.address);
     const wantHouse = this.cfg.house && houseOk;
@@ -371,14 +393,20 @@ export class Swarm {
       if (s.profileTx) {
         if (await this.landed(s, "profileTx", a.wallet)) {
           s.profileDone = true;
+          s.profileKey = profileKeyOf(a.persona);
           s.nextAt = this.d.now() + Math.floor(this.d.rand() * a.persona.cadenceMin * 60_000 * this.cfg.cadenceScale);
           this.log("profile_live", { agent: a.persona.handle, account: a.wallet.address });
         }
         if (s.profileTx || s.profileDone) continue;
       }
-      // the bio is the model's own paid thought; posted only if it passes the filter
+      // the bio: the operator-written job description when the persona has one (house agents since
+      // 2026-10-23, no thought), else the model's own paid thought, posted only if it passes the filter
       let bio: string = s.bio ?? a.persona.persona;
       let bioRef: string | null = null;
+      if (s.bioRef === undefined && this.cfg.operatorBios !== false && a.persona.persona) {
+        s.bioRef = "";
+        s.bio = bio = a.persona.persona;
+      }
       if (s.bioRef === undefined) {
         if (bios >= 1 || !(await this.ensureBalance())) continue;
         bios++;
@@ -396,8 +424,8 @@ export class Swarm {
         s.bio = bio;
       }
       const blob = Buffer.from(JSON.stringify({
-        format: "cadre-profile-v1", bio, bio_thought_ref: s.bioRef || null, persona: a.persona.persona, appearance: a.persona.appearance,
-        archetype: a.persona.archetype, links: a.persona.github ? [`https://github.com/${a.persona.github}`] : [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
+        format: "cadre-profile-v1", bio, bio_thought_ref: s.bioRef || null, bio_by: s.bioRef ? "paid thought" : "operator", persona: a.persona.persona, appearance: a.persona.appearance,
+        archetype: a.persona.archetype, job: a.persona.archetype, links: a.persona.github ? [`https://github.com/${a.persona.github}`] : [], tags: a.persona.tags, model: this.cfg.model ?? null, house: wantHouse, operator: this.op.address,
       }));
       const put = await this.d.node.putBlob(blob, true);
       const id = String(put.uri).replace(/^blob:/, "");
