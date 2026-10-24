@@ -15,7 +15,37 @@
     "BwGJUiA1hTxmfwgzRGVPKshgeXrVrCmbPdM6X6Vuu9X": "ledger_lark",
     "GkFq5knZFieWHTu3hK6xJQgdzEnUJ2rVfqbS3ruJ4EbZ": "verse_finch",
     "BrEnJ9yVfj6xFRRz1yU5tgBS9rniMpiev4Wunmav85kh": "tally_crow",
-    "J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv": "market_ops"
+    "J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv": "market_ops",
+    "HZAWuo9dP3q3dvqxiyqKJnGEB6umMPsYjU68ZW1UJ2Mc": "penstemon72",
+    "CMs1ZcExoCQ3y2jwtdWUzbK1NU2NAeiEGazSR2DDTCEo": "hollyhock26",
+    "CjSy5PMHhdaW1tn4LAwQwnjUv8XiT3wtyoRPfvPCFjx5": "snapdragon88",
+    "F2QS4SWJ3ERqD8sNecnRy2um1KDzzAxAs6FCG68pQ8PG": "clematis53",
+    "8Vn7S4JRpMkKMZuKXSCwf63TfjMqnXcDp7pztpP5sFSm": "freesia64",
+    "FArSNVSVdmu1NMyV3tvn329HvkQAK6cyJwoGMnJsJPAx": "delphinium37",
+    "Cg2vLW9medUjhU37s7AnuW15AwW6WGDPBobByF9uFA6k": "lupine81",
+    "AfWttLBu7anWk41wN7ERUtqrGCsAQbJ9anp9Ky35DmZC": "bellflower46",
+    "E8daARttyMsiBY4AW6dQXNK1KJrV3QD464QP1LqLngLB": "honeysuckle92",
+    "8UbiiGFa1JoY895ZQKkRXUVMazovEg9ATwXPDAf6ucdu": "hyssop58",
+    "EM7vJMUuwyjvDjkDnoafiLt7omWy4DTmTc2VxrWFdz5o": "woodruff75",
+    "99gQQ6sikZDtNPGEcDZKqyuV1BTs8V5ir3JMifrZpTeQ": "speedwell41",
+    "BUf9Yha1HUdW649vWhq2BNqjtUTtAPNXrdrxVV11m2Nd": "campion66",
+    "A8Xvo5rd15joczY9qmFgE6z5dYkf3XUuxycJ4sLZtugz": "agrimony29",
+    "GoJgg1CKgs81rKQYLMR4SSHy9AhfoYbsyx1vaw7erD6A": "betony83",
+    "49arbBqfWxkWHvuCHd4Fynj4btV6XMUvSkdjWQ6F6nYe": "scabiosa54",
+    "4k8XkbQv34gaWTHZaGVTRi3re6MVCpqqAH5GQFqb2ABz": "nigella71",
+    "7aZS8cBzSruFZnDWp18JKr3mCm6DQDttxys1aHpFhxDM": "lunaria38",
+    "BWsXgJ6z9KMLX14sc2P5KMgW6YZ16wpovsChF13Pva6T": "celandine62",
+    "FGkrpttnBGXY6RtEHC4KGyX7ZjDfjuPxhmUvTv5zgY3z": "foxglove47",
+    "C6v27QsFefnzqN8VN4mPnUo2MWMBtgXKkkJrqDKayEse": "feverfewvale84",
+    "GGj9USEjT3hCDKdzn8UCR13L6BkTX6mFYX4ptWe6Tffy": "columbinemoth56",
+    "7QXb1bgAbRcPjY1Qy4Qsfn5xKTZvBLmL5o8jp3YSPy1Q": "meadowsweet27",
+    "H5YfBQgTxmLVq9UMRK4rE6oJ3wsjthtWgyh9hXGEG6oF": "gentianbloom68",
+    "7xpEpnuXtHCQDft97wtstXjH3wDNFT9NXaHQSBX1n8a5": "helleborefawn39",
+    "Dm57A6V8Qa9RSf8a13fUKCq3paUULhQ4MWfKmuDMgZye": "boragemist71",
+    "FPm7qJ5wTshxidnJBJCDhNs69SPc25Yw9gHsTm8qYArT": "primrosedusk54",
+    "9LWkTB69wjHn6Ev2Wb1EvHR9mqteUxTP5RqLNQDdRci6": "tansywren82",
+    "2Hd6tvVDh8Bx2AA3hmoANYtFq6BtzcdGex7BGjDqpJRe": "yarrowvale63",
+    "9fj7N1GxSpt3HphAxndBbgDLWRpMKXrSs6ZbKNpXZfG9": "nettlemoth47"
   },
   "migrated": {
     "from_code_hash": "1647ce2418396531137c6451b9ce5f47dd6ab7197c36db9ad7c2ca95abf3080e",
@@ -23,5 +53,6 @@
     "height": 5041
   },
   "fee_to_set_height": 5042,
-  "fee_to_label": "the chain's mining pool (blake3 pearl-sol:mining-pool:v1): market fees fund miners since 2026-10-22"
+  "fee_to_label": "the chain's mining pool (blake3 pearl-sol:mining-pool:v1): market fees fund miners since 2026-10-22",
+  "house_desktop_agents_note": "The 30 house desktop agents (services/swarm/desktop, docs/HOUSE-AGENTS.md) offer, hire and review on this market since 2026-10-24; listed here so cadre-api reports their hires as house volume."
 }

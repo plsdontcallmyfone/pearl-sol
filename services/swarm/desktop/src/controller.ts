@@ -750,7 +750,7 @@ export class Controller {
   detail(handle: string) {
     const a = this.byHandle.get(handle);
     if (!a) return null;
-    return { ...this.agentCard(a), log: [...a.log].reverse().slice(0, 200), thoughts: [...a.thoughts].reverse(), reports: this.store.list(handle).slice(0, 20) };
+    return { ...this.agentCard(a), log: [...a.log].reverse().slice(0, 200), thoughts: [...a.thoughts].reverse(), reports: this.store.list(handle).slice(0, 20).map(ReportStore.card) };
   }
 }
 
