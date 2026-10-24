@@ -1,4 +1,6 @@
-// One house desktop: an E2B Desktop sandbox owned by one agent in one role ("social" or "work"),
+// One house desktop: an E2B Desktop sandbox owned by one agent in one role id ("social" = desktop 1,
+// "work" = desktop 2; the ids are kept because they are in every sandbox's metadata and stream token,
+// both desktops do the agent's work since 2026-10-23, docs/HOUSE-AGENTS.md),
 // found again by its metadata (cadre_desktop=<handle>, cadre_role=<role>) after a controller
 // restart, kept running (timeout pushed every minute; E2B pauses it, never kills it, if the
 // controller dies), renewed before the plan's session length (pause + resume, about a second),
@@ -10,6 +12,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type Role = "social" | "work";
+
+/** The public name of a desktop: its number (owner 2026-10-23: no Social/Work split). */
+export const DESK_NUMBER: Record<Role, 1 | 2> = { social: 1, work: 2 };
+export const deskLabel = (r: Role) => `Desktop ${DESK_NUMBER[r]}`;
+
+/** One scripted browser step run by the browser host (sandbox/deskhost.mjs), no model involved. */
+export interface ScriptStep { url?: string; wait_ms?: number; highlight?: string; scroll?: number }
+export interface StepResult {
+  url: string; final_url: string | null; status: number | null; ms: number | null; title: string; excerpt: string; text_len: number;
+  found: boolean | null; console_errors: string[]; page_errors: string[]; failed_requests: { url: string; error: string }[];
+  bad_responses: { url: string; status: number }[]; overflow_px: number | null; error: string | null;
+}
+/** A page the browser landed on while recording (receipt for a research report). */
+export interface Visit { t: number; url: string; title: string; text: string }
 
 export interface SandboxLike {
   sandboxId: string;
@@ -382,12 +398,54 @@ export class Desk {
   }
 
   /** Sets or clears a flag file the browser host reads (`console`: show the activity console when
-   * idle; `busy`: a vision task is running). Skips the call when the flag already has that value. */
+   * idle; `busy`: a task is running; `record`: keep every visited page as a receipt; `wallet-locked`:
+   * keep the wallet locked). Skips the call when the flag already has that value. */
   flags: Record<string, boolean> = {};
-  async setFlag(name: "console" | "busy", on: boolean): Promise<void> {
+  async setFlag(name: "console" | "busy" | "record" | "wallet-locked", on: boolean): Promise<void> {
     if (!this.sbx || this.flags[name] === on) return;
     await this.sh(on ? `touch ${HOME}/${name}` : `rm -f ${HOME}/${name}`, 10_000);
     this.flags[name] = on;
+  }
+
+  /** Runs scripted steps in the browser host (visible on the stream, no model) and returns each step's
+   * result, or null when the host did not answer in `timeoutMs`. The caller holds the `busy` flag. */
+  async runScript(steps: ScriptStep[], o: { collect?: boolean; viewport?: { width: number; height: number }; timeoutMs?: number } = {}): Promise<StepResult[] | null> {
+    if (!this.sbx) return null;
+    const id = `s${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+    await this.sh(`rm -f ${HOME}/script-done.json`, 10_000);
+    await this.sbx.files.write(`${HOME}/script.json`, JSON.stringify({ id, steps, collect: !!o.collect, viewport: o.viewport ?? null }));
+    const end = Date.now() + (o.timeoutMs ?? 60_000 + steps.length * 40_000);
+    while (Date.now() < end) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const r = await this.sh(`cat ${HOME}/script-done.json 2>/dev/null`, 15_000);
+      if (!r.stdout) continue;
+      try {
+        const j = JSON.parse(r.stdout);
+        if (j.id === id) return Array.isArray(j.results) ? j.results : [];
+      } catch { /* partial read: next poll */ }
+    }
+    return null;
+  }
+
+  /** Starts a receipt recording: every page the browser lands on is kept until stopRecording. */
+  async startRecording(): Promise<void> {
+    await this.sh(`rm -f ${HOME}/visits.jsonl`, 10_000);
+    this.flags.record = false;
+    await this.setFlag("record", true);
+  }
+
+  /** Stops the recording and returns the visited pages (URL, title, visible text). */
+  async stopRecording(): Promise<Visit[]> {
+    await this.setFlag("record", false).catch(() => {});
+    if (!this.sbx) return [];
+    let raw = "";
+    try { raw = new TextDecoder().decode(await this.sbx.files.read(`${HOME}/visits.jsonl`, { format: "bytes" })); } catch { return []; }
+    const out: Visit[] = [];
+    for (const l of raw.split("\n")) {
+      if (!l.trim()) continue;
+      try { const v = JSON.parse(l); if (typeof v.url === "string") out.push({ t: Number(v.t) || 0, url: v.url, title: String(v.title ?? ""), text: String(v.text ?? "") }); } catch { /* skip */ }
+    }
+    return out;
   }
 
   /** The Cadre Wallet's home screen URL in this desktop's browser, once the browser host reported its id. */

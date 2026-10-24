@@ -9,14 +9,26 @@
 //   - if the wallet ever shows its unlock screen, types the password (read from a 0600 file).
 // It writes ~/.cadre/state.json every 5 s (open tabs, wallet address, locked or not) for the
 // controller's action log, and never listens on a port.
-// Live activity console: while ~/.cadre/console exists (the controller sets it on Work desktops and on
-// one-desktop agents in Work mode) and ~/.cadre/busy does not (no vision task running), it keeps the
-// agent's activity console (<site>/live/<handle>/console) in front, so the stream shows the agent's
-// runtime as it acts; when a vision task starts it puts the last working tab back in front first.
+// Live activity console: while ~/.cadre/console exists and ~/.cadre/busy does not (no task running),
+// it keeps the agent's activity console (<site>/live/<handle>/console) in front, so the stream shows
+// the agent's work log between tasks; when a task starts it puts the last working tab back in front.
+//
+// Work (2026-10-23, docs/HOUSE-AGENTS.md): every desktop is a work desktop; there is no Social mode.
+//   - scripted steps: the controller writes ~/.cadre/script.json ({id, steps: [{url, wait_ms, highlight,
+//     scroll}], collect, viewport}); this host runs them in the working tab, visibly, without a model,
+//     and writes ~/.cadre/script-done.json: per step the final URL, HTTP status, load time, title, a text
+//     excerpt, whether `highlight` was found (and marked on the page), console errors, page errors,
+//     failed requests and responses >= 400, and at phone width whether the page scrolls sideways.
+//   - receipts: while ~/.cadre/record exists every page the browser lands on is appended to
+//     ~/.cadre/visits.jsonl with its URL, title and visible text (cut at 60 KB), so a research report's
+//     sources and quotes can be checked against the pages the agent really opened.
+//   - while ~/.cadre/wallet-locked exists the Cadre Wallet is locked and never unlocked: no work task
+//     needs it, so a web page cannot talk the model into approving anything.
 //
 //   node /home/user/.cadre/deskhost.mjs <social|work> <siteUrl> <explorerUrl> [handle]
+// (the first argument is the desktop's stable role id, kept for the sandbox metadata; both run the same way)
 import { chromium } from 'playwright-core';
-import { existsSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 
 const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`, handle = ''] = process.argv.slice(2);
 const consoleUrl = handle ? `${site}/live/${handle}/console` : null;
@@ -92,11 +104,9 @@ for (const p of ctx.pages()) if (p.url().startsWith(`chrome-extension://${extId}
 if (existsSync(`${HOME}/agent-secret`)) await seed().catch(e => log('seed_error', { error: String(e.message).slice(0, 200) }));
 else if (!(await seeded())) log('no_wallet', { why: 'no key file and no seeded profile' });
 
-// Work: the wallet and one working tab (tasks open their pages in the focused tab), plus the activity
-// console; a third tab (the market) pushed 1 GiB desktops into the OOM killer on 2026-10-21
-const startTabs = mode === 'work'
-  ? [walletUrl, explorer]
-  : [`${site}/town`];
+// one working tab (tasks open their pages in the focused tab) plus the activity console; no wallet tab
+// (no work task signs in the browser) and no town tab (owner 2026-10-23: no Social desktops)
+const startTabs = [`${site}/market`];
 if (ctx.pages().filter(p => !p.url().startsWith('about:')).length === 0) {
   const blank = ctx.pages()[0];
   for (const [i, u] of startTabs.entries()) {
@@ -106,7 +116,14 @@ if (ctx.pages().filter(p => !p.url().startsWith('about:')).length === 0) {
   await ctx.pages()[0]?.bringToFront().catch(() => {});
 }
 
+const walletLocked = () => existsSync(`${HOME}/wallet-locked`);
+async function lockWallet() {
+  // the wallet locks by dropping its session key (its own auto-lock does the same); the service worker
+  // clears its seed caches when it sees the key go (pearl-wallet router.ts)
+  await sw.evaluate(async () => { await chrome.storage.session.remove('encryptionKey'); }).catch(() => {});
+}
 async function unlockIfLocked() {
+  if (walletLocked()) return;
   for (const p of ctx.pages()) {
     if (!p.url().startsWith(`chrome-extension://${extId}`)) continue;
     const box = p.getByTestId('password-input');
@@ -134,7 +151,7 @@ function writeFront(v) { if (v !== frontFile) { writeFileSync(`${HOME}/front`, v
 async function consoleAway() {
   const back = lastWork && !lastWork.isClosed() && !isConsole(lastWork) ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
   if (back) await back.bringToFront().catch(() => {});
-  else { const p = await ctx.newPage(); await p.goto(mode === 'work' ? explorer : `${site}/town`).catch(() => {}); }
+  else { const p = await ctx.newPage(); await p.goto(`${site}/market`).catch(() => {}); }
   front = null;
 }
 async function consoleTick() {
@@ -182,12 +199,115 @@ async function trimTabs(why) {
     await p.close().catch(() => {});
     closed++;
   }
-  if (!ctx.pages().length) { const p = await ctx.newPage(); await p.goto(`${site}/town`).catch(() => {}); }
+  if (!ctx.pages().length) { const p = await ctx.newPage(); await p.goto(`${site}/market`).catch(() => {}); }
   await sleep(1500);
   const after = memMb();
   log('tabs_trimmed', { why, closed, avail_before_mb: before ? Math.round(before.avail) : null, avail_after_mb: after ? Math.round(after.avail) : null });
 }
+// ---- receipts: every page the browser lands on while ~/.cadre/record exists
+const VISIT_MAX = 60_000;
+async function recordVisit(p) {
+  if (!existsSync(`${HOME}/record`) || isConsole(p)) return;
+  const url = p.url();
+  if (!/^https?:/.test(url)) return;
+  await sleep(1200); // late text (client-rendered pages)
+  const text = await p.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+  const title = await p.title().catch(() => '');
+  appendFileSync(`${HOME}/visits.jsonl`, JSON.stringify({ t: Date.now(), url: p.url(), title: title.slice(0, 200), text: String(text).slice(0, VISIT_MAX) }) + '\n');
+}
+const watched = new WeakSet();
+function watch(p) {
+  if (watched.has(p)) return;
+  watched.add(p);
+  p.on('load', () => { recordVisit(p).catch(() => {}); });
+}
+for (const p of ctx.pages()) watch(p);
+ctx.on('page', watch);
+
+// ---- scripted work steps (no model): the controller writes script.json, this host writes script-done.json
+async function runScript(sc) {
+  const out = [];
+  let page = lastWork && !lastWork.isClosed() && !isConsole(lastWork) ? lastWork : ctx.pages().find(p => !isConsole(p) && !p.url().startsWith('chrome-extension://')) ?? null;
+  if (!page) page = await ctx.newPage();
+  await page.bringToFront().catch(() => {});
+  lastWork = page;
+  const vp = sc.viewport && Number(sc.viewport.width) > 0 ? { width: Math.round(sc.viewport.width), height: Math.round(sc.viewport.height || 844) } : null;
+  if (vp) await page.setViewportSize(vp).catch(() => {});
+  for (const st of (sc.steps ?? []).slice(0, 40)) {
+    const r = { url: String(st.url ?? ''), final_url: null, status: null, ms: null, title: '', excerpt: '', text_len: 0, found: null, console_errors: [], page_errors: [], failed_requests: [], bad_responses: [], overflow_px: null, error: null };
+    const onConsole = m => { if (m.type() === 'error' && r.console_errors.length < 10) r.console_errors.push(m.text().slice(0, 300)); };
+    const onPageError = e => { if (r.page_errors.length < 10) r.page_errors.push(String(e?.message ?? e).slice(0, 300)); };
+    const onFailed = q => { if (r.failed_requests.length < 10) r.failed_requests.push({ url: q.url().slice(0, 300), error: (q.failure()?.errorText ?? '').slice(0, 120) }); };
+    const onResp = x => { if (x.status() >= 400 && r.bad_responses.length < 10) r.bad_responses.push({ url: x.url().slice(0, 300), status: x.status() }); };
+    if (sc.collect) { page.on('console', onConsole); page.on('pageerror', onPageError); page.on('requestfailed', onFailed); page.on('response', onResp); }
+    const t0 = Date.now();
+    try {
+      if (r.url) {
+        const resp = await page.goto(r.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        r.status = resp ? resp.status() : null;
+      }
+      r.ms = Date.now() - t0;
+      await sleep(Math.max(500, Math.min(15000, Number(st.wait_ms ?? 2500))));
+      r.final_url = page.url().slice(0, 500);
+      r.title = (await page.title().catch(() => '')).slice(0, 200);
+      const text = String(await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => ''));
+      r.text_len = text.length;
+      r.excerpt = text.replace(/\s+/g, ' ').trim().slice(0, 600);
+      if (vp) r.overflow_px = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - window.innerWidth)).catch(() => null);
+      if (typeof st.highlight === 'string' && st.highlight.trim()) {
+        // mark the first occurrence of the quote on the page and scroll to it (what a person checking a source does)
+        r.found = await page.evaluate((q) => {
+          const norm = s => s.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ');
+          const want = norm(q).slice(0, 80);
+          const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let n = w.nextNode(); n; n = w.nextNode()) {
+            const i = norm(n.textContent || '').indexOf(want.slice(0, 40));
+            if (i < 0) continue;
+            const el = n.parentElement;
+            if (!el) continue;
+            el.style.outline = '3px solid #e8a400';
+            el.style.background = 'rgba(255, 214, 0, 0.35)';
+            el.scrollIntoView({ block: 'center' });
+            return true;
+          }
+          return false;
+        }, st.highlight).catch(() => false);
+        await sleep(1500);
+      }
+      if (Number(st.scroll) > 0) for (let i = 0; i < Math.min(6, Number(st.scroll)); i++) { await page.mouse.wheel(0, 500).catch(() => {}); await sleep(700); }
+      await recordVisit(page).catch(() => {});
+    } catch (e) {
+      r.error = String(e?.message ?? e).split('\n')[0].slice(0, 200);
+      r.ms = Date.now() - t0;
+    }
+    if (sc.collect) { page.off('console', onConsole); page.off('pageerror', onPageError); page.off('requestfailed', onFailed); page.off('response', onResp); }
+    out.push(r);
+  }
+  if (vp) await page.setViewportSize(null).catch(async () => { await page.setViewportSize({ width: W, height: H - 120 }).catch(() => {}); });
+  return out;
+}
+let scriptRunning = false;
+async function scriptTick() {
+  if (scriptRunning || !existsSync(`${HOME}/script.json`)) return;
+  scriptRunning = true;
+  let sc = null;
+  try { sc = JSON.parse(readFileSync(`${HOME}/script.json`, 'utf8')); } catch { sc = null; }
+  rmSync(`${HOME}/script.json`, { force: true });
+  try {
+    if (sc && sc.id) {
+      const results = await runScript(sc);
+      writeFileSync(`${HOME}/script-done.json.tmp`, JSON.stringify({ id: sc.id, results }));
+      renameSync(`${HOME}/script-done.json.tmp`, `${HOME}/script-done.json`);
+      log('script_done', { id: String(sc.id).slice(0, 40), steps: results.length });
+    }
+  } catch (e) {
+    log('script_error', { error: String(e?.message ?? e).slice(0, 160) });
+  } finally { scriptRunning = false; }
+}
+
 for (let n = 0; ; n++) {
+  void scriptTick();
+  if (walletLocked() && n % 5 === 0) await lockWallet();
   await consoleTick().catch(e => log('console_error', { error: String(e.message).slice(0, 120) }));
   if (n % 5 === 0) {
     await unlockIfLocked().catch(() => {});
