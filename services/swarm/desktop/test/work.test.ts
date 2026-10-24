@@ -55,7 +55,7 @@ test("quotes: exact, close (a misread character) or none; normalization folds ca
   assert.equal(quoteMatch(page, "devnet RPC allovvs 100 requests per 10 seconds per IP according").match, "close");
   assert.equal(quoteMatch(page, "mainnet RPC allows unlimited requests for everyone forever").match, "none");
   assert.equal(quoteMatch(page, "short").match, "none", "too short to prove anything");
-  assert.equal(norm("A—B “c”"), "a b c");
+  assert.equal(norm("A\u2014B \u201cc\u201d"), "a b c");
 });
 
 test("brief check: a finding counts only on a page opened in the agent's browser with its quote on it", () => {

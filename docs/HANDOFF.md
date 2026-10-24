@@ -85,6 +85,8 @@ mandate contract `JCs8ZiUdUq3myCHK7M9r8LCepRrkAKwyY6EN8u1w3VT7`, agent token
     lightclient program upgrade, then header-relay on boxes 0-2 (item 56).
 13. (Fixed 2026-10-23, qa2, NOT DEPLOYED) Hosted agents' profile blobs are pruned by the node (their SetProfile is on
     Solana): the runtime puts them back; a lasting pin is open (item 56).
+14. (Built 2026-10-24, NOT DEPLOYED) House desktops do real work, no Social/Work split, no town activity (item 58,
+    docs/HOUSE-AGENTS.md). Until deployed, box 0's desktops still browse the town and the wallet.
 
 ## Goal (owner, 2026-10-16, ongoing)
 
@@ -2002,6 +2004,47 @@ CLAUDE.md "Who is working on what".
       getParams uncle_digest_rule_height 13000 and finalized-hash agreement after each); box 0 cadre-gateway (no
       flag change) and cadre-attester (no flag change) restarts after the sync; cadre-agents and cadre-api restarts
       for the swarms change; cadre CLI binary for the health line.
+
+58. HOUSE AGENTS DO REAL WORK (2026-10-23/24, "house agents do real work" row; owner: "cut the tinkerer and gardener
+    stuff", "none of these agents are doing any actual work", then "not social and not work things, they're both for
+    work ... not really liking the idea of the town"). docs/HOUSE-AGENTS.md (roster, jobs, outputs, cost).
+    - Personas: job title + plain description per agent (services/swarm/src/personas.ts); handles and names kept
+      (first-come on the Solana town, sandbox metadata, key files, GitHub); the bio is the description, operator
+      written; a changed persona republishes the profile once (Swarm.bootstrap, profileKeyOf).
+    - Jobs (services/swarm/desktop/src/roster.ts, work.ts): 8 web researchers selling "Sourced web research brief"
+      on the market, a news desk editor (RSS headlines) and an ops research lead (operator questions) hiring them,
+      2 source reviewers voting on chain from their own fetch of every cited page (no model), 4 QA testers (site
+      crawl, API + explorer, vision flow checks, phone width), 9 monitors (chain, bridge/light client, storefront,
+      mining, buyback, API, market, house wallets, desktop cost), 4 practice traders (cadre-practice
+      STRAT_DESK_TRADERS), a work digest. No Social/Work modes, no town filler, the wallet in each desktop locked,
+      DESK_TOWN=1 restores the old town actions. Reports with sha256 receipts: /v1/desktops/<handle>/reports[/<id>].
+    - Cost: E2B unchanged (36 desktops, 58.70 USD/day at list rate); vision 0.48 USD/day expected, 1.60 at the
+      per-task caps (measured 0.000506 USD per step on box 0); house CADRE top-ups capped at 30/day; traders need
+      about 0.05 devnet SOL a day each (owner decision, HOUSE-AGENTS.md 6).
+    - Tests: desktops 44 (test/work.test.ts 18), swarm 45, agents 101, strategies 19, cadre-api desktops 6 + services 7.
+      Read-only live check: the four feeds, an article fetch and seven monitor samples against the public devnet.
+    - DEPLOY (the owner runs it; box 0 only; from a fresh clone of GitHub main, scripts/devnet-deploy.sh refuses a
+      local main that is not origin/main):
+        D=$(mktemp -d) && git clone -q https://github.com/plsdontcallmyfone/pearl-sol "$D/ps" && cd "$D/ps"
+        scripts/devnet-desktops.sh code                     # ~/cadre-desktops = main, npm ci
+        scripts/devnet-deploy.sh ctl 0 restart cadre-desktops
+        # every browser host restarts once (desk_host_updated); then within ~2 min:
+        scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-desktops -n 300 --no-pager -o cat' | grep -E '"event":"(start|work_report|script|market_offer|profile_republish|work_error)"' | head -40
+        scripts/devnet-deploy.sh ssh 0 'curl -s 127.0.0.1:10720/status' | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["town"], s["work"]); [print(a["handle"], a["job"]["title"], a["work"]) for a in s["agents"]]'
+        # cadre-api: report routes + the 30 desktop agents listed as house in deploy/market-devnet.json
+        scripts/devnet-deploy.sh sync
+        scripts/devnet-deploy.sh ctl 0 restart cadre-api
+        curl -fsS https://api.64-95-12-116.sslip.io/v1/desktops/celandine62/reports | head -c 400
+        # practice traders (optional, needs their SOL, HOUSE-AGENTS.md 6): a drop-in, then restart
+        scripts/devnet-deploy.sh ssh 0 'sudo mkdir -p /etc/systemd/system/cadre-practice.service.d && printf "[Service]\nEnvironment=STRAT_DESK_TRADERS=foxglove47,meadowsweet27,primrosedusk54,boragemist71 STRAT_DESK_KEYS=/etc/lode/keys/swarm\n" | sudo tee /etc/systemd/system/cadre-practice.service.d/desk-traders.conf && sudo systemctl daemon-reload'
+        scripts/devnet-deploy.sh ctl 0 restart cadre-practice
+        scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-practice -n 50 --no-pager -o cat' | grep desk_traders
+      cadre-swarm and cadre-agents are not touched. Profiles republish by themselves (30 Solana SetProfile txs,
+      operator link kept). Rollback: ~/cadre-desktops to the previous sha (git -C ~/cadre-desktops checkout <sha>)
+      and restart cadre-desktops; the town behaviour back without a rollback: DESK_TOWN=1 in /etc/lode/desktops.env.
+      First checks after the deploy: one scripted crawl (qa_site script line), one research brief end to end
+      (market_hire, research task, market_deliver, market_verdict), one monitor report, vision spend in the hourly
+      spend line.
 
 ## M1 components (SPEC v2, all DONE)
 
