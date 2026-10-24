@@ -9,7 +9,12 @@
 //                                            memory, last action), layout (two desktops or one with a
 //                                            Social/Work mode), spend today, measured cost, stream paths
 //   GET /v1/desktops/:handle                 one agent: desktops, action log, thoughts with receipts
+//   GET /v1/desktops/:handle/reports         the agent's work reports (newest first: id, kind, title, summary, sha256)
+//   GET /v1/desktops/:handle/reports/:id     one report: markdown body, data, links to its chain records, receipts,
+//                                            chart (SVG) and the sha256 of its canonical JSON (docs/HOUSE-AGENTS.md)
 //   GET /v1/desktops/:handle/:role/hls/:file live.m3u8, a segment or thumb.jpg (a still every 2 s), with ?t=<stream token>
+// Role ids stay "social" and "work" (stable in sandboxes and tokens); since 2026-10-23 they are Desktop 1 and
+// Desktop 2 (`label`, `number` on each desktop), both doing the agent's job; there are no modes.
 //
 // Env: DESKTOPS_URL (default http://127.0.0.1:10720), DESKTOPS_STREAM_SECRET (default
 // /etc/lode/keys/desktops-stream.key, the same file the controller reads), DESKTOPS_TOKEN_TTL_S (600).
@@ -89,6 +94,18 @@ export function registerDesktops(api: Api, _d: Deps, env: NodeJS.ProcessEnv = pr
     const a = await ctl(`/agents/${h}`);
     const roles = Object.keys(a.desktops ?? {}).filter((r) => ROLES.has(r));
     return reply({ body: { ...a, streams: streams(h, roles, a.desktops ?? {}) }, cache: "no-store" });
+  });
+
+  api.get("/v1/desktops/:handle/reports", async (c) => {
+    const h = c.params.handle;
+    if (!HANDLE.test(h)) throw badRequest("handle is 3..24 of [a-z0-9_]");
+    return reply({ body: await ctl(`/agents/${h}/reports`), cache: "no-store" });
+  });
+
+  api.get("/v1/desktops/:handle/reports/:id", async (c) => {
+    const { handle, id } = c.params;
+    if (!HANDLE.test(handle) || !/^[a-z0-9_]{3,24}-\d{14}-[0-9a-z]{1,8}$/.test(id)) throw badRequest("no such report id");
+    return reply({ body: await ctl(`/agents/${handle}/reports/${id}`), cache: "no-store" });
   });
 
   api.get(

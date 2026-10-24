@@ -37,6 +37,14 @@ function controller() {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ stopped: false, capped: false, cap_usd_per_day: 25, spend_today: { total_usd: 1 }, measured: {}, e2b: {}, vision_model: "m", desktops_running: 2, desktops_total: 3, roles: ["social", "work"], layout: { two_desktops: 1, one_desktop: 1, mode_slot_s: 1800 }, health: { desktops: 3, running: 2, streams_alive: 2, unhealthy: [{ agent: "cartographer", role: "work", host: "e2b", state: "paused", issues: ["desktop paused"] }] }, agents: [agent, solo], personas_waiting: ["ferry_nan"] }));
     }
+    if (u.pathname === "/agents/cartographer/reports") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ agent: "cartographer", reports: [{ id: "cartographer-20261024010000-1", kind: "monitor", title: "Bridge: all clear", created: "2026-10-24T01:00:00Z", summary: "", sha256: "ab" }] }));
+    }
+    if (u.pathname === "/agents/cartographer/reports/cartographer-20261024010000-1") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ id: "cartographer-20261024010000-1", body_md: "# Bridge", sha256: "ab" }));
+    }
     if (u.pathname === "/agents/cartographer") {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ...agent, log: [{ t: "x", desk: "social", kind: "task", text: "read town" }], thoughts: [agent.latest_thought] }));
@@ -142,4 +150,13 @@ test("no controller: 503 with a reason", async () => {
   assert.match((await r.json()).error.message, /not running/);
   ctlSrv = controller();
   await listen(ctlSrv, PORTS.ctl);
+});
+
+test("reports: the list and one report pass through; a bad id is 400, a missing one 404", async () => {
+  const l = await (await fetch(base + "/v1/desktops/cartographer/reports")).json();
+  assert.equal(l.reports[0].kind, "monitor");
+  const r = await (await fetch(base + "/v1/desktops/cartographer/reports/cartographer-20261024010000-1")).json();
+  assert.equal(r.body_md, "# Bridge");
+  assert.equal((await fetch(base + "/v1/desktops/cartographer/reports/..%2Fstatus")).status, 400);
+  assert.equal((await fetch(base + "/v1/desktops/cartographer/reports/cartographer-20261024010000-9")).status, 404);
 });
