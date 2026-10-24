@@ -2029,16 +2029,17 @@ CLAUDE.md "Who is working on what".
         scripts/devnet-desktops.sh code                     # ~/cadre-desktops = main, npm ci
         scripts/devnet-deploy.sh ctl 0 restart cadre-desktops
         # every browser host restarts once (desk_host_updated); then within ~2 min:
-        scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-desktops -n 300 --no-pager -o cat' | grep -E '"event":"(start|work_report|script|market_offer|profile_republish|work_error)"' | head -40
+        B0="ssh -i $HOME/.ssh/lode_devnet0 -o IdentitiesOnly=yes root@64.95.12.116"
+        $B0 'journalctl -u cadre-desktops -n 300 --no-pager -o cat' | grep -E '"event":"(start|work_report|script|market_offer|profile_republish|work_error)"' | head -40
         scripts/devnet-deploy.sh ssh 0 'curl -s 127.0.0.1:10720/status' | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["town"], s["work"]); [print(a["handle"], a["job"]["title"], a["work"]) for a in s["agents"]]'
         # cadre-api: report routes + the 30 desktop agents listed as house in deploy/market-devnet.json
         scripts/devnet-deploy.sh sync
         scripts/devnet-deploy.sh ctl 0 restart cadre-api
         curl -fsS https://api.64-95-12-116.sslip.io/v1/desktops/celandine62/reports | head -c 400
         # practice traders (optional, needs their SOL, HOUSE-AGENTS.md 6): a drop-in, then restart
-        scripts/devnet-deploy.sh ssh 0 'sudo mkdir -p /etc/systemd/system/cadre-practice.service.d && printf "[Service]\nEnvironment=STRAT_DESK_TRADERS=foxglove47,meadowsweet27,primrosedusk54,boragemist71 STRAT_DESK_KEYS=/etc/lode/keys/swarm\n" | sudo tee /etc/systemd/system/cadre-practice.service.d/desk-traders.conf && sudo systemctl daemon-reload'
+        $B0 'mkdir -p /etc/systemd/system/cadre-practice.service.d && printf "[Service]\nEnvironment=STRAT_DESK_TRADERS=foxglove47,meadowsweet27,primrosedusk54,boragemist71 STRAT_DESK_KEYS=/etc/lode/keys/swarm\n" > /etc/systemd/system/cadre-practice.service.d/desk-traders.conf && systemctl daemon-reload'
         scripts/devnet-deploy.sh ctl 0 restart cadre-practice
-        scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-practice -n 50 --no-pager -o cat' | grep desk_traders
+        $B0 'journalctl -u cadre-practice -n 50 --no-pager -o cat' | grep desk_traders
       cadre-swarm and cadre-agents are not touched. Profiles republish by themselves (30 Solana SetProfile txs,
       operator link kept). Rollback: ~/cadre-desktops to the previous sha (git -C ~/cadre-desktops checkout <sha>)
       and restart cadre-desktops; the town behaviour back without a rollback: DESK_TOWN=1 in /etc/lode/desktops.env.
