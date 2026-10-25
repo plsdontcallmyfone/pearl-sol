@@ -167,12 +167,56 @@ impl BlobClass {
 pub struct BlobRef {
     pub until: u64,
     pub class: BlobClass,
+    /// `until` without the segment replay window (SPEC 4.5): a blob with `until` past the tip
+    /// but `mine_until` behind it is held for replay only and counts against
+    /// `replay_max_bytes`. Equal to `until` for everything but segment A.
+    pub mine_until: u64,
 }
 
 fn add_ref(refs: &mut HashMap<BlobId, BlobRef>, id: BlobId, until: u64, class: BlobClass) {
-    let e = refs.entry(id).or_insert(BlobRef { until, class });
+    add_ref2(refs, id, until, until, class);
+}
+
+fn add_ref2(refs: &mut HashMap<BlobId, BlobRef>, id: BlobId, until: u64, mine_until: u64, class: BlobClass) {
+    let e = refs.entry(id).or_insert(BlobRef { until, class, mine_until });
     e.until = e.until.max(until);
+    e.mine_until = e.mine_until.max(mine_until);
     e.class = e.class.min(class);
+}
+
+/// Replay-only blobs past the replay budget (SPEC 4.5 "Segment data retention"): among the
+/// stored blobs that only the replay window keeps (reference live, mining hold and age grace
+/// ended, not pinned), the ones with the latest replay end are kept up to `budget` bytes and
+/// the rest returned, to be pruned. Also returns the replay-only bytes kept.
+pub fn replay_over_budget<'a>(
+    entries: impl Iterator<Item = (&'a BlobId, &'a blobs::Meta)>,
+    refs: &HashMap<BlobId, BlobRef>,
+    pinned: &std::collections::HashSet<BlobId>,
+    tip: u64,
+    grace: u64,
+    budget: u64,
+) -> (std::collections::HashSet<BlobId>, u64) {
+    let mut cand: Vec<(u64, BlobId, u64)> = Vec::new();
+    for (id, m) in entries {
+        let Some(r) = refs.get(id) else { continue };
+        if pinned.contains(id) || r.until.saturating_add(grace) < tip || r.mine_until.saturating_add(grace) >= tip {
+            continue;
+        }
+        if blobs::held_by_age(m, Some(r.until), tip, grace) {
+            continue;
+        }
+        cand.push((r.until, *id, m.size));
+    }
+    cand.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let (mut held, mut drop) = (0u64, std::collections::HashSet::new());
+    for (_, id, size) in cand {
+        if held.saturating_add(size) <= budget {
+            held += size;
+        } else {
+            drop.insert(id);
+        }
+    }
+    (drop, held)
 }
 
 /// Segment A retention (SPEC 4.5 "Segment data retention"; node policy over consensus state).
@@ -219,6 +263,25 @@ pub fn segment_a_until(
         }
     };
     mining.max(replay)
+}
+
+/// [`segment_a_until`] split into its mining and replay holds: `(mining, replay)`.
+#[allow(clippy::too_many_arguments)]
+pub fn segment_a_holds(
+    seg: &schema::JobRecord,
+    seg_f: Option<&schema::JobRecord>,
+    ticket: Option<&schema::JobRecord>,
+    ticket_f: Option<&schema::JobRecord>,
+    tip: u64,
+    f_height: u64,
+    job_count: u64,
+    template_scan: u64,
+    mine_blocks: u64,
+    replay_blocks: u64,
+) -> (u64, u64) {
+    let mining = segment_a_until(seg, seg_f, ticket, ticket_f, tip, f_height, job_count, template_scan, mine_blocks, false, replay_blocks);
+    let both = segment_a_until(seg, seg_f, ticket, ticket_f, tip, f_height, job_count, template_scan, mine_blocks, true, replay_blocks);
+    (mining, both)
 }
 
 #[derive(Debug, Clone)]
@@ -311,7 +374,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let height = self.chain.tip_height();
         let Some(store) = self.blobs.as_mut() else { return Err(PutError::Storage("this node has no blob store".into())) };
         let id = blobs::blob_id(data);
-        if store.has(&id).is_some() {
+        if store.touch(&id, height) {
             return Ok((id, false));
         }
         // RPC writers stop short of the quota (backpressure, SPEC 4.5 "Segment data retention")
@@ -445,11 +508,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     tickets.insert(ticket_id, (t, tf));
                 }
                 let (t, tf) = &tickets[&ticket_id];
-                let until = segment_a_until(
+                let (mining, both) = segment_a_holds(
                     &j, seg_f.as_ref(), t.as_ref(), tf.as_ref(), tip, f_height, c.job_count,
-                    consensus_pow::chain::TEMPLATE_JOB_SCAN, mine_blocks, keep_replay, replay_blocks,
+                    consensus_pow::chain::TEMPLATE_JOB_SCAN, mine_blocks, replay_blocks,
                 );
-                add_ref(&mut refs, a, until, BlobClass::SegmentA);
+                add_ref2(&mut refs, a, if keep_replay { both } else { mining }, mining, BlobClass::SegmentA);
                 continue;
             }
             let mut until = match j.status {
@@ -501,6 +564,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             prunable: u64,
             prunable_bytes: u64,
         }
+        let (over, replay_held) = replay_over_budget(b.entries(), &refs, &pinned, tip, grace, c.replay_budget());
+        let mut age_held = 0u64;
         let mut by: std::collections::BTreeMap<&'static str, Tally> = std::collections::BTreeMap::new();
         for k in ["model", "segment_a", "social", "ticket", "job", "other"] {
             by.insert(k, Tally::default());
@@ -509,7 +574,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         for (id, m) in b.entries() {
             let r = refs.get(id);
             let class = if pinned.contains(id) { "model" } else { r.map_or("other", |r| r.class.name()) };
-            let keep = pinned.contains(id) || blobs::keep(m, r.map(|r| r.until), tip, grace);
+            let keep = pinned.contains(id) || (blobs::keep(m, r.map(|r| r.until), tip, grace) && !over.contains(id));
+            // kept only by the age grace (uploads waiting for their tx, fresh fetches)
+            if !pinned.contains(id) && !r.is_some_and(|r| r.until.saturating_add(grace) >= tip) && blobs::held_by_age(m, r.map(|r| r.until), tip, grace) {
+                age_held += m.size;
+            }
             let t = by.get_mut(class).unwrap();
             t.count += 1;
             t.bytes += m.size;
@@ -539,7 +608,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "rpc_reserve_bytes": c.rpc_reserve(), "rpc_put_limit_bytes": c.rpc_put_limit(), "rpc_headroom_bytes": b.rpc_headroom(),
             "puts_open": b.rpc_headroom() >= c.max_blob_bytes as u64,
             "referenced_bytes": ref_bytes, "unreferenced_bytes": b.total_bytes() - ref_bytes, "prunable_bytes": prune_bytes,
-            "retention": {"segment_mine_blocks": c.segment_mine_blocks, "keep_replay": c.keep_replay,
+            "age_held_bytes": age_held, "replay_held_bytes": replay_held,
+            "replay_over_budget_bytes": over.iter().filter_map(|id| b.has(id)).map(|m| m.size).sum::<u64>(),
+            "retention": {"segment_mine_blocks": c.segment_mine_blocks, "keep_replay": c.keep_replay, "replay_max_bytes": c.replay_budget(),
                           "segment_replay_blocks": replay_blocks, "template_job_scan": consensus_pow::chain::TEMPLATE_JOB_SCAN},
             "classes": classes,
         }))
@@ -627,7 +698,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let pinned = self.model_pinned().await;
         let store = self.blobs.as_mut().unwrap();
         let grace = store.config().grace_blocks;
-        let removed = store.prune(|id, m| pinned.contains(id) || blobs::keep(m, refs.get(id).map(|r| r.until), tip, grace)).await;
+        let (over, replay_held) = replay_over_budget(store.entries(), &refs, &pinned, tip, grace, store.config().replay_budget());
+        if !over.is_empty() {
+            info!(count = over.len(), replay_held, budget = store.config().replay_budget(), "replay-only segment A over the replay budget: pruning the earliest-ending");
+        }
+        // room for one more blob of any size: else a fetched replay A would be dropped again at
+        // the next pass after its age grace (a fetch loop with the peers)
+        let replay_room = replay_held.saturating_add(store.config().max_blob_bytes as u64) <= store.config().replay_budget();
+        let removed = store.prune(|id, m| pinned.contains(id) || (blobs::keep(m, refs.get(id).map(|r| r.until), tip, grace) && !over.contains(id))).await;
         if !removed.is_empty() {
             info!(count = removed.len(), "pruned blobs");
         }
@@ -635,7 +713,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         // needs that this node lacks.
         let missing: Vec<BlobId> = refs
             .iter()
-            .filter(|(id, r)| r.until.saturating_add(grace) >= tip && store.has(id).is_none())
+            // replay-only A is fetched only while the replay budget has room (else the next
+            // pass would drop it again: a fetch loop)
+            .filter(|(id, r)| r.until.saturating_add(grace) >= tip && store.has(id).is_none() && (replay_room || r.mine_until.saturating_add(grace) >= tip))
             .map(|(id, _)| *id)
             .collect();
         for id in missing {
@@ -648,7 +728,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 if pinned.contains(*id) {
                     return false;
                 }
-                let meta = blobs::Meta { size: 0, stored_height: **since };
+                let meta = blobs::Meta { size: 0, stored_height: **since, reloaded: false };
                 !blobs::keep(&meta, refs.get(*id).map(|r| r.until), tip, grace)
             })
             .map(|(id, _)| *id)
@@ -1015,4 +1095,43 @@ pub fn template_id(t: &Template) -> String {
     h.proof_hash = [0; 32];
     h.timestamp_ms = 0;
     hex::encode(h.hash())
+}
+
+#[cfg(test)]
+mod replay_budget_tests {
+    use super::*;
+
+    fn meta(size: u64) -> blobs::Meta {
+        blobs::Meta { size, stored_height: 0, reloaded: true }
+    }
+
+    /// Replay-only blobs past the budget go, the latest replay end first is kept; blobs the
+    /// mining rule holds, pinned ones, ended references and fresh uploads never count.
+    #[test]
+    fn keeps_latest_replay_end_within_budget() {
+        let (tip, grace) = (1_000, 10);
+        let ids: Vec<BlobId> = (0u8..6).map(|i| [i; 32]).collect();
+        let mut store = std::collections::BTreeMap::new();
+        for id in &ids {
+            store.insert(*id, meta(100));
+        }
+        store.insert(ids[5], blobs::Meta { size: 100, stored_height: 995, reloaded: false });
+        let mut refs = HashMap::new();
+        add_ref2(&mut refs, ids[0], 5_000, 10, BlobClass::SegmentA); // replay only, latest end
+        add_ref2(&mut refs, ids[1], 4_000, 10, BlobClass::SegmentA); // replay only
+        add_ref2(&mut refs, ids[2], 3_000, 10, BlobClass::SegmentA); // replay only, earliest end
+        add_ref2(&mut refs, ids[3], 6_000, 2_000, BlobClass::SegmentA); // mining still holds it
+        add_ref(&mut refs, ids[4], 500, BlobClass::Job); // reference ended: not replay's business
+        add_ref2(&mut refs, ids[5], 2_000, 10, BlobClass::SegmentA); // fresh upload (age grace)
+        let pinned = std::collections::HashSet::new();
+        let (drop, held) = replay_over_budget(store.iter(), &refs, &pinned, tip, grace, 250);
+        assert_eq!(held, 200);
+        assert_eq!(drop, [ids[2]].into_iter().collect());
+        let pinned: std::collections::HashSet<BlobId> = [ids[0]].into_iter().collect();
+        let (drop, held) = replay_over_budget(store.iter(), &refs, &pinned, tip, grace, 100);
+        assert_eq!(held, 100);
+        assert_eq!(drop, [ids[2]].into_iter().collect(), "pinned blobs never count");
+        let (drop, _) = replay_over_budget(store.iter(), &refs, &std::collections::HashSet::new(), tip, grace, 0);
+        assert_eq!(drop.len(), 3, "budget 0 drops every replay-only blob");
+    }
 }

@@ -93,6 +93,11 @@ pub struct BlobConfig {
     /// for `segment_replay_blocks` (chain parameter) after it closes. A node that only mines
     /// sets false and keeps A for mining only.
     pub keep_replay: bool,
+    /// Byte budget for segment A that only the replay window holds (not the mining rule):
+    /// past it the replay blobs with the earliest replay end are dropped first, so a node
+    /// with `keep_replay` cannot fill its store with the A of long-lived tickets (box 0,
+    /// 2026-10-25: 55 GB of A held for live tickets). 0 = automatic, `max_total_bytes / 2`.
+    pub replay_max_bytes: u64,
 }
 
 impl Default for BlobConfig {
@@ -108,6 +113,7 @@ impl Default for BlobConfig {
             rpc_reserve_bytes: 0,
             segment_mine_blocks: DEFAULT_SEGMENT_MINE_BLOCKS,
             keep_replay: true,
+            replay_max_bytes: 0,
         }
     }
 }
@@ -122,6 +128,11 @@ impl BlobConfig {
         r.min(self.max_total_bytes)
     }
 
+    /// Byte budget for replay-only segment A (see `replay_max_bytes`).
+    pub fn replay_budget(&self) -> u64 {
+        if self.replay_max_bytes > 0 { self.replay_max_bytes.min(self.max_total_bytes) } else { self.max_total_bytes / 2 }
+    }
+
     /// Total bytes up to which RPC puts are accepted.
     pub fn rpc_put_limit(&self) -> u64 {
         self.max_total_bytes - self.rpc_reserve()
@@ -131,8 +142,11 @@ impl BlobConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meta {
     pub size: u64,
-    /// Tip height when this node stored it.
+    /// Tip height when this node stored it (or when an RPC put of it last arrived).
     pub stored_height: u64,
+    /// Loaded from disk at open rather than stored or put since: `stored_height` is the open
+    /// height, not a real upload, so the age grace only covers it while nothing references it.
+    pub reloaded: bool,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -185,10 +199,19 @@ impl Bucket {
 
 /// Retention rule. `last_ref` is the last height at which a job needs the blob (`None`:
 /// no job references it; `Some(u64::MAX)`: a live job still needs it).
+///
+/// The age grace protects an upload until the tx that references it lands. A blob reloaded
+/// at open gets it only while nothing references it: a referenced blob's fate is its
+/// reference. (Before 2026-10-25 every reloaded blob got a fresh grace, so a restart held the
+/// whole store for `grace_blocks` and a full node freed nothing for that long.)
 pub fn keep(meta: &Meta, last_ref: Option<u64>, tip: u64, grace: u64) -> bool {
     let by_ref = last_ref.is_some_and(|r| r.saturating_add(grace) >= tip);
-    let by_age = meta.stored_height.saturating_add(grace) >= tip;
-    by_ref || by_age
+    by_ref || held_by_age(meta, last_ref, tip, grace)
+}
+
+/// Kept by the age grace alone (see [`keep`]).
+pub fn held_by_age(meta: &Meta, last_ref: Option<u64>, tip: u64, grace: u64) -> bool {
+    meta.stored_height.saturating_add(grace) >= tip && (last_ref.is_none() || !meta.reloaded)
 }
 
 pub struct BlobStore<S: Storage> {
@@ -227,7 +250,7 @@ impl<S: Storage> BlobStore<S> {
             let Some(id) = std::str::from_utf8(&n).ok().and_then(parse_id) else { continue };
             match s.storage.open(partition, &n).await {
                 Ok((_, len)) if len > 0 => {
-                    s.meta.insert(id, Meta { size: len, stored_height: height });
+                    s.meta.insert(id, Meta { size: len, stored_height: height, reloaded: true });
                     s.total += len;
                 }
                 Ok(_) => {
@@ -321,9 +344,23 @@ impl<S: Storage> BlobStore<S> {
         blob.resize(0).await.map_err(st)?;
         blob.write_at(0, data.to_vec(), WriteOptions::default()).await.map_err(st)?;
         blob.sync().await.map_err(st)?;
-        self.meta.insert(id, Meta { size: data.len() as u64, stored_height: height });
+        self.meta.insert(id, Meta { size: data.len() as u64, stored_height: height, reloaded: false });
         self.total += data.len() as u64;
         Ok((id, true))
+    }
+
+    /// An RPC put of a blob already held: restart its age grace (the uploader is about to
+    /// reference it again, e.g. a round whose A is byte-identical to an older round's, whose
+    /// reference may have ended). Returns false if the blob is not held.
+    pub fn touch(&mut self, id: &BlobId, height: u64) -> bool {
+        match self.meta.get_mut(id) {
+            Some(m) => {
+                m.stored_height = m.stored_height.max(height);
+                m.reloaded = false;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Store bytes that claim to be blob `id` (p2p delivery): the hash must match.
@@ -391,12 +428,28 @@ mod tests {
 
     #[test]
     fn retention_rule() {
-        let m = Meta { size: 1, stored_height: 10 };
+        let m = Meta { size: 1, stored_height: 10, reloaded: false };
         assert!(keep(&m, None, 110, 100));
         assert!(!keep(&m, None, 111, 100));
         assert!(keep(&m, Some(u64::MAX), 10_000, 100));
         assert!(keep(&m, Some(500), 600, 100));
         assert!(!keep(&m, Some(500), 601, 100));
+        // a fresh upload whose reference already ended keeps its age grace
+        let fresh = Meta { size: 1, stored_height: 590, reloaded: false };
+        assert!(keep(&fresh, Some(500), 690, 100));
+        assert!(!keep(&fresh, Some(500), 691, 100));
+    }
+
+    /// Box 0, 2026-10-25: a restart reloaded 57 GB of blobs at the open height and held all
+    /// of it for grace_blocks although every segment A reference had ended.
+    #[test]
+    fn reloaded_blobs_follow_their_reference() {
+        let r = Meta { size: 1, stored_height: 14_630, reloaded: true };
+        assert!(!keep(&r, Some(13_000), 14_640, 100), "an ended reference is not extended by a restart");
+        assert!(keep(&r, Some(14_600), 14_640, 100), "a live reference still keeps it");
+        assert!(keep(&r, None, 14_640, 100), "an unreferenced upload keeps its grace across a restart");
+        assert!(!keep(&r, None, 14_731, 100));
+        assert!(held_by_age(&r, None, 14_640, 100) && !held_by_age(&r, Some(13_000), 14_640, 100));
     }
 
     #[test]
@@ -430,7 +483,7 @@ mod tests {
             drop(s);
             let mut s = BlobStore::open(ctx.child("b"), "t-blobs", cfg, 7).await.unwrap();
             assert_eq!(s.len(), 1);
-            assert_eq!(s.has(&b), Some(Meta { size: 100, stored_height: 7 }));
+            assert_eq!(s.has(&b), Some(Meta { size: 100, stored_height: 7, reloaded: true }));
             assert_eq!(s.get(&b).await.unwrap(), Some(vec![2u8; 100]));
         });
     }

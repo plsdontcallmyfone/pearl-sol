@@ -2182,3 +2182,25 @@ across real nodes, restarts mid-flow, more than one relayer/attester.
   stop under 6 GB. Throwaway test-crate target dirs (token/tests/*/target,
   crates/pearl-verify-sbf/target, crates/chain-litesvm/target) are safe to delete;
   never chain/target casually (18 min rebuild) or token/target/deploy.
+
+59. BOX 0 BLOB STORE FULL AT 60 GB; keep_replay=false FREED NOTHING AFTER A RESTART (2026-10-25, "blob2" row; box 0 read only).
+    - Measured 20:15-20:20 UTC, tip 14,646: getBlobStats total 56,999,260,532 of 60e9 (rpc_put_limit 57e9, headroom
+      739,468), referenced 56,944,525,768, prunable 0. Classes: segment_a 55,158,120,932 B in 43,731 blobs; model
+      1,784,685,275 (836, pinned); other 54,734,764 (82); ticket 1,669,890 (30); social 49,671 (72). Gateway
+      refused_node_storage 49,775, node_blob_need 387,005,688. Disk 46 GB free.
+    - The owner set node.json `blobs.keep_replay` false and restarted cadre-node at 20:10 (height 14,630). It was read:
+      ExecStart `agent-node run --config /etc/lode/node.json`, no override flag, getBlobStats retention.keep_replay false.
+    - Why nothing was prunable: BlobStore::open loads every existing blob with stored_height = the open height, and
+      blobs::keep keeps a blob while stored_height + grace_blocks (100) >= tip. A restart therefore held all 57 GB until
+      tip 14,730; the first prune pass at or after 14,731 frees it. getBlobStats only shows which rule references a blob,
+      not why it is kept, so the age hold was invisible.
+    - What the reference rule keeps without replay (listJobs over the newest 4,096 jobs, 76,677..80,772): 4,095 segments,
+      1,283 mineable, posted 10,750..13,155, every one past min(posted + 1440, deadline) + 100: zero A blobs. Expected
+      after the 14,731 pass: about 1.79 GB kept, about 55.2 GB freed; no new jobs since about 13,155 (gateway blocked).
+    - FIXED in code (node-local, not consensus, NOT deployed): (1) a reloaded blob gets the age grace only while nothing
+      references it (Meta.reloaded; blobs::held_by_age), so a restart no longer freezes pruning; an RPC put of a blob
+      already held restarts its grace (BlobStore::touch) so a round whose A dedups onto an old blob is not pruned before
+      its PostSegments lands; (2) `blobs.replay_max_bytes` (default max_total_bytes / 2) caps A that only the replay
+      window holds, pruning the earliest replay end first, and replay-only A is not re-fetched while the budget is full;
+      (3) getBlobStats age_held_bytes, replay_held_bytes, replay_over_budget_bytes, retention.replay_max_bytes;
+      (4) agent-node logs the retention config at startup ("blob retention").

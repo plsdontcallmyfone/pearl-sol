@@ -674,7 +674,12 @@ state.
      deadline + W; once the ticket is closed at F (Completed or Expired, final), until its close
      height + W. Evaluators replay a Delivered ticket (4.7) and challengers build fraud proofs
      from the posted A, so it outlives the ticket by W.
-  A blob shared by several segments is kept while any of them needs it. Model registry blobs
+  A blob shared by several segments is kept while any of them needs it. Rule 2 is bounded by
+  the node's `replay_max_bytes` (default half of `max_total_bytes`): when the blobs that only
+  rule 2 keeps exceed it, the ones whose replay hold ends first are pruned (2026-10-25: box 0
+  filled its 60 GB quota with 55 GB of A held for live tickets). Rule 1 needs no cap, it holds
+  at most the A of the newest 4096 jobs. The `grace_blocks` age grace covers uploads waiting for
+  their tx; a blob reloaded at a restart gets it only while nothing references it. Model registry blobs
   (manifests and every chunk a held manifest lists) are pinned while the model is registered,
   as before; profile, post, DM, ticket and plain-job blobs keep their existing rules.
 - Parameters. `segment_replay_blocks` W: AdminConfig key 48 (u32, 0..=1,000,000, default 720

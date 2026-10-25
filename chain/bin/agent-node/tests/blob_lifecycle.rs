@@ -499,3 +499,57 @@ fn reorg_around_mined_and_pruned_segments_and_fresh_node_after_pruning() {
         assert_eq!(j2["blocks_mined"], json!(1), "the fresh node has the mined segment's state");
     });
 }
+
+/// Replay budget (box 0, 2026-10-25: 55 GB of A held for live tickets filled the 60 GB quota):
+/// once a ticket's segments leave the mining window, their A is held by the replay window only
+/// and counts against `replay_max_bytes`; past it the earliest-ending replay blobs are pruned
+/// and not fetched back, while a node with room keeps both.
+#[test]
+fn replay_only_segment_a_is_capped_by_replay_max_bytes() {
+    runner(44).start(|ctx| async move {
+        // node 0: room for one 8 KB A blob of replay; node 1: the default budget (half the quota)
+        let cfg = |i: usize| blobs::BlobConfig {
+            grace_blocks: 5,
+            segment_mine_blocks: 10,
+            keep_replay: true,
+            replay_max_bytes: if i == 0 { 10_000 } else { 0 },
+            max_blob_bytes: 9_000,
+            ..Default::default()
+        };
+        let net = setup(&ctx, 2, 3, cfg).await;
+        net.link(0, 1).await;
+        ctx.sleep(Duration::from_secs(1)).await;
+        let api = &net.apis[0];
+        let m = fund_and_model(api).await;
+        let tid = post_ticket(api, &m, 0, 400, 4).await;
+        let segs = post_round(api, &m, tid, 0, 0, 1).await;
+        let (a0, a1) = (segs[0].1.clone(), segs[1].1.clone());
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        assert!(wait_blob(&ctx, &net.apis[1], &a0, 20).await && wait_blob(&ctx, &net.apis[1], &a1, 20).await);
+        let s = api.call("getBlobStats", json!({})).await;
+        assert_eq!(s["retention"]["replay_max_bytes"], json!(10_000), "{s}");
+        assert_eq!(s["replay_held_bytes"], json!(0), "still in the mining window: {s}");
+        // past the mining window (10) and the grace (5) plus a prune pass
+        api.mine_n(30).await;
+        wait_tips_equal(&ctx, &net.apis, 20).await;
+        let held = [api.has(&a0).await, api.has(&a1).await];
+        let s = api.call("getBlobStats", json!({})).await;
+        assert_eq!(held.iter().filter(|h| **h).count(), 1, "one A within the 10 KB replay budget: {held:?} at {} {s}", api.height().await);
+        let dropped = if held[0] { &a1 } else { &a0 };
+        assert!(!api.fetching(dropped).await, "the dropped replay A is not fetched back");
+        let s = api.call("getBlobStats", json!({})).await;
+        let held_bytes = s["replay_held_bytes"].as_u64().unwrap();
+        assert!(held_bytes > 8_000 && held_bytes <= 10_000, "{s}");
+        assert_eq!(s["replay_over_budget_bytes"], json!(0), "the over-budget blob is gone: {s}");
+        assert_eq!(s["classes"]["segment_a"]["count"], json!(1), "{s}");
+        // node 1 has the default budget: both kept for replay
+        let n1 = &net.apis[1];
+        assert!(n1.has(&a0).await && n1.has(&a1).await, "default budget keeps both");
+        let s1 = n1.call("getBlobStats", json!({})).await;
+        assert!(s1["replay_held_bytes"].as_u64().unwrap() > 16_000, "{s1}");
+        assert_eq!(s1["retention"]["replay_max_bytes"], json!(blobs::BlobConfig::default().max_total_bytes / 2));
+        // more blocks: the kept one stays (no churn), nothing re-fetched
+        api.mine_n(20).await;
+        assert!(api.has(if held[0] { &a0 } else { &a1 }).await && !api.has(dropped).await && !api.fetching(dropped).await);
+    });
+}

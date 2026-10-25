@@ -165,7 +165,11 @@ loads it at start, so a node rejoins without its seeds. `getPeers` lists live co
 | `enabled` | true | false: no blob store; putBlob/getBlob fail and templates do not check data availability |
 | `max_blob_bytes` | 4194304 | largest blob (RPC or p2p); at most 7 MiB |
 | `max_total_bytes` | 1073741824 | total stored; puts beyond it fail until pruning frees room |
-| `grace_blocks` | 100 | kept this long after the last referencing job closes (or after storing, if unreferenced) |
+| `grace_blocks` | 100 | kept this long after the last referencing job closes (or after storing, if unreferenced). Blobs reloaded at a restart get the age grace only while nothing references it (before 2026-10-25 a restart held the whole store for this many blocks) |
+| `rpc_reserve_bytes` | 0 | putBlob stops this far below `max_total_bytes` (0: 5%, at least two max blobs) |
+| `segment_mine_blocks` | 1440 | blocks after posting a segment's A is kept for mining (0: until its deadline) |
+| `keep_replay` | true | keep segment A for evaluator replay while its ticket is live and `segment_replay_blocks` after (SPEC 4.5); false on a mining-only node |
+| `replay_max_bytes` | 0 | byte budget for A held by the replay window alone; past it the replay-only blobs with the earliest replay end are pruned first (0: `max_total_bytes / 2`) |
 | `put_rate_bytes_per_s`, `put_burst_bytes` | 1048576, 16777216 | putBlob token bucket (whole node) |
 | `peer_rate_bytes_per_s`, `peer_burst_bytes` | 1048576, 16777216 | per-peer budget for pushed blobs |
 

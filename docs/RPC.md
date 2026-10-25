@@ -624,7 +624,9 @@ Since 2026-10-22 (SPEC 4.5 "Segment data retention") also: `rpc_reserve_bytes`, 
 (= max_total_bytes - reserve), `rpc_headroom_bytes` (what putBlob still accepts), `puts_open`
 (headroom >= max_blob_bytes), `referenced_bytes` (pinned or referenced by chain state),
 `unreferenced_bytes`, `prunable_bytes` (would go at the next prune pass), `retention`
-`{segment_mine_blocks, keep_replay, segment_replay_blocks, template_job_scan}` and `classes`: for each
+`{segment_mine_blocks, keep_replay, replay_max_bytes, segment_replay_blocks, template_job_scan}`, `age_held_bytes`
+(kept only by the grace after storing: uploads not yet referenced, fresh fetches), `replay_held_bytes` (segment A
+kept only by the replay window), `replay_over_budget_bytes` (replay-only A past `replay_max_bytes`, prunable) and `classes`: for each
 of `model` (manifests and pinned chunks), `segment_a`, `social` (profiles), `ticket` (request and
 response blobs), `job` (plain job data and results), `other` (referenced by nothing: posts, DMs,
 uploads not yet referenced) `{count, bytes, kept, kept_bytes, prunable, prunable_bytes}`. Byte counts

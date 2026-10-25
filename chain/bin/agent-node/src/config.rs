@@ -137,6 +137,8 @@ pub struct BlobsFile {
     pub segment_mine_blocks: Option<u64>,
     /// false: a mining-only node, keeps segment A for mining only (no replay window).
     pub keep_replay: Option<bool>,
+    /// Bytes of segment A the replay window alone may hold (0 or unset: max_total_bytes / 2).
+    pub replay_max_bytes: Option<u64>,
 }
 
 impl BlobsFile {
@@ -148,7 +150,7 @@ impl BlobsFile {
         macro_rules! set {
             ($($f:ident),*) => { $( if let Some(v) = self.$f { c.$f = v; } )* };
         }
-        set!(max_blob_bytes, max_total_bytes, grace_blocks, put_rate_bytes_per_s, put_burst_bytes, peer_rate_bytes_per_s, peer_burst_bytes, rpc_reserve_bytes, segment_mine_blocks, keep_replay);
+        set!(max_blob_bytes, max_total_bytes, grace_blocks, put_rate_bytes_per_s, put_burst_bytes, peer_rate_bytes_per_s, peer_burst_bytes, rpc_reserve_bytes, segment_mine_blocks, keep_replay, replay_max_bytes);
         if c.max_blob_bytes == 0 || c.max_blob_bytes > blobs::MAX_BLOB_BYTES_LIMIT {
             bail!("blobs.max_blob_bytes must be 1..={} (below the p2p message limit)", blobs::MAX_BLOB_BYTES_LIMIT);
         }

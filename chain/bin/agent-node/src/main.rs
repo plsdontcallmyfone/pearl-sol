@@ -228,6 +228,11 @@ async fn start<V: PowVerifier>(
     if let Some(bc) = blob_cfg {
         let store = blobs::BlobStore::open(context.child("blobs"), "node-blobs", bc, height).await.map_err(|e| anyhow::anyhow!("blob store: {e}"))?;
         tracing::info!(count = store.len(), bytes = store.total_bytes(), "blob store open");
+        {
+            let c = store.config();
+            tracing::info!(max_total_bytes = c.max_total_bytes, rpc_put_limit = c.rpc_put_limit(), grace_blocks = c.grace_blocks,
+                segment_mine_blocks = c.segment_mine_blocks, keep_replay = c.keep_replay, replay_max_bytes = c.replay_budget(), "blob retention");
+        }
         core = core.with_blobs(store);
     }
     let (tx, rx) = futures::channel::mpsc::channel(1024);
