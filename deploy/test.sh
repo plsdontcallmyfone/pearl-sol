@@ -21,6 +21,6 @@ for d in services/relayer services/storefront-x402; do t "$d" bash -c "cd $ROOT/
 t explorer bash -c "cd $ROOT/apps/explorer && npm test --silent"
 t cadre-api bash -c "cd $ROOT/services/cadre-api && npm test --silent"
 # the int7 worker's tests need torch + transformers (CADRE_PYTHON; the test box: ~/int7-exp/venv)
-CADRE_PY="${CADRE_PYTHON:-$HOME/int7-exp/venv/bin/python}"
+CADRE_PY="${CADRE_PYTHON:-$HOME/cadre-venv/bin/python}"; [ -x "$CADRE_PY" ] || CADRE_PY="$HOME/int7-exp/venv/bin/python" # devnet box 0 (devnet-deploy.sh venv), else the test box
 if [ -x "$CADRE_PY" ]; then t cadre-worker bash -c "cd $ROOT/tools/cadre && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $CADRE_PY -m unittest test_cadre"; else echo "SKIP cadre-worker (no $CADRE_PY)"; fi
 echo "FAILS=$fails"

@@ -53,6 +53,44 @@ Your 7-step plan leaves out four things the maps found:
 | D13 | Desktops Phase A budget (30 agents, $64/day E2B + OpenRouter) | Run or defer | **Run after e2e passes** |
 | D14 | agent-dump repo | Tag the old snapshot and continue, or leave the writer off | **Tag `5f1f7b9e` as `old-chain-29293`, then re-enable the writer** |
 
+## Hostnames (D5, set in Phase B)
+
+`DEVNET_DOMAIN=devnet.cadre.ag` in `deploy/devnet.env`. Every public URL in the repo (scripts, units, services, CLI, SDKs, current docs) is a name under it, so a later rebuild only changes the DNS records and `BOX0_IP`..`BOX2_IP`. `scripts/devnet-deploy.sh install N` fills the Caddy templates: `@DOMAIN@` everywhere, and `@RPC_HOST@` (`rpc`, `rpc1`, `rpc2`) in `deploy/Caddyfile.tmpl`.
+
+| Name | Box | Serves (local port behind caddy) | First devnet name |
+|---|---|---|---|
+| `rpc.devnet.cadre.ag` | 0 | agent-chain node 0 JSON-RPC :10630, WebSocket `/ws` :10631 | `rpc.64-95-12-116.sslip.io` |
+| `rpc1.devnet.cadre.ag` | 1 | node 1 JSON-RPC and `/ws` | `rpc.64-95-13-213.sslip.io` |
+| `rpc2.devnet.cadre.ag` | 2 | node 2 JSON-RPC and `/ws` | `rpc.64-95-12-22.sslip.io` |
+| `api.devnet.cadre.ag` | 0 | cadre-api :10685 (`/v1`, `/v1/openai`, `/mcp`) | `api.64-95-12-116.sslip.io` |
+| `mcp.devnet.cadre.ag` | 0 | the same cadre-api, short name for Cadre Connect (`/mcp`) | `mcp.64-95-12-116.sslip.io` |
+| `explorer.devnet.cadre.ag` | 0 | explorer :10670, plus `/cadre-token.json` | `explorer.64-95-12-116.sslip.io` |
+| `storefront.devnet.cadre.ag` | 0 | storefront-x402 :10662 | `storefront.64-95-12-116.sslip.io` |
+| `relayer.devnet.cadre.ag` | 0 | relayer health :10660 (GET only) | `relayer.64-95-12-116.sslip.io` |
+| `devnet.cadre.ag` | 0 | the website, cadre-web :10710 (`/install-miner.sh`, `/explorer`, `/live`) | `cadre.64-95-12-116.sslip.io` |
+| `app.devnet.cadre.ag` | 0 | permanent redirect to `https://devnet.cadre.ag` | none |
+
+Allow-host defaults (swarm, hosted agents, cadre-agent) are `devnet.cadre.ag`; the filter matches the name and every subdomain. p2p seeds stay IPs (`<BOXn_IP>:10640`): a seed is a socket address, not a name. The CADRE mint's metadata URI is the one exception: it was written into the mint as `explorer.64-95-12-116.sslip.io/cadre-token.json` and can't change.
+
+**DNS records the owner creates at Porkbun** (zone `cadre.ag`, TTL 600, as soon as the IPs are known so they propagate during the build). Either 10 A records:
+
+| Type | Host (in zone cadre.ag) | Answer |
+|---|---|---|
+| A | `devnet` | BOX0_IP |
+| A | `app.devnet` | BOX0_IP |
+| A | `rpc.devnet` | BOX0_IP |
+| A | `api.devnet` | BOX0_IP |
+| A | `mcp.devnet` | BOX0_IP |
+| A | `explorer.devnet` | BOX0_IP |
+| A | `storefront.devnet` | BOX0_IP |
+| A | `relayer.devnet` | BOX0_IP |
+| A | `rpc1.devnet` | BOX1_IP |
+| A | `rpc2.devnet` | BOX2_IP |
+
+or 4 records: A `devnet` = BOX0_IP, A `*.devnet` = BOX0_IP, A `rpc1.devnet` = BOX1_IP, A `rpc2.devnet` = BOX2_IP (an explicit record wins over the wildcard; the wildcard does not cover the bare `devnet` name). No AAAA records (the boxes are set up IPv4 only). The existing `api.cadre.ag` record (dead IP) is not used by the devnet; point it or delete it as you like. Caddy gets a Let's Encrypt certificate per name on first request, so each name must resolve to its box before `install N` reloads caddy, or caddy retries until it does.
+
+Check after the records exist: `for h in devnet app.devnet rpc.devnet api.devnet mcp.devnet explorer.devnet storefront.devnet relayer.devnet rpc1.devnet rpc2.devnet; do echo "$h $(dig +short $h.cadre.ag)"; done`.
+
 ## 3. Ordered rebuild
 
 Run everything from the Mac with `scripts/devnet-deploy.sh` unless noted. N is 0, 1 or 2.
@@ -143,6 +181,7 @@ Run everything from the Mac with `scripts/devnet-deploy.sh` unless noted. N is 0
 7. `ctl 1` and `ctl 2 enable --now cadre-header-relay`. `ctl 0 enable --now cadre-attester cadre-settle`.
 8. ops sends the 9 dust withdrawals (D8).
 9. Let the refund path handle the 141 Pending orders (D9, REFUND_GRACE_MS 1 h).
+   **Open (found in Phase B):** D7 and D9 conflict as written. The relayer only looks at deposits at or above its cursor (`services/relayer/src/relayer.ts` `checkOrderFees` / `unlockDeposits` take the pending deposits from `state.deposit` on), and every one of the 141 order deposits has a nonce below 219. With the cursor at 219 the relayer never sees them, so it neither unlocks nor refunds them. They need a one-off refund (bridge `refund_deposit` + storefront `mark_refunded`, attester-signed) by nonce, or the owner accepts leaving them Pending. Not built in Phase B.
 
 ### Phase G. Box 0 services, in start order (about 45 min)
 Order so far: node, miner, attester, storefront, relayer, settle, crank (Phases D to F). Then:

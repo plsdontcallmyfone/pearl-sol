@@ -1,17 +1,17 @@
 
-explorer.@IP@.sslip.io {
+explorer.@DOMAIN@ {
 	import sec
 	encode gzip
 	# token metadata URI of the devnet mint (pump.fun create_v2 uri)
 	handle /cadre-token.json {
 		header Content-Type application/json
 		header Access-Control-Allow-Origin *
-		respond `{"name":"Cadre","symbol":"CADRE","description":"Cadre public devnet token (Solana devnet). Bridges 1:1 to the Cadre agent chain, where useful proof of work on paid AI jobs produces the blocks.","external_url":"https://explorer.@IP@.sslip.io"}` 200
+		respond `{"name":"Cadre","symbol":"CADRE","description":"Cadre public devnet token (Solana devnet). Bridges 1:1 to the Cadre agent chain, where useful proof of work on paid AI jobs produces the blocks.","external_url":"https://explorer.@DOMAIN@"}` 200
 	}
 	reverse_proxy 127.0.0.1:10670
 }
 
-storefront.@IP@.sslip.io {
+storefront.@DOMAIN@ {
 	import sec
 	header Access-Control-Allow-Origin *
 	header Access-Control-Allow-Headers "content-type, x-payment"
@@ -20,7 +20,7 @@ storefront.@IP@.sslip.io {
 	reverse_proxy 127.0.0.1:10662
 }
 
-relayer.@IP@.sslip.io {
+relayer.@DOMAIN@ {
 	import sec
 	@get method GET
 	handle @get {
@@ -31,7 +31,7 @@ relayer.@IP@.sslip.io {
 }
 
 # cadre-api (services/cadre-api, docs/API.md): CORS, caching and rate limits are the app's
-api.@IP@.sslip.io {
+api.@DOMAIN@ {
 	import sec
 	encode gzip
 	request_body {
@@ -46,8 +46,8 @@ api.@IP@.sslip.io {
 }
 
 # Cadre Connect remote MCP (docs/CONNECT.md): the same cadre-api under a short name, so a user can
-# paste https://mcp.@IP@.sslip.io/mcp; OAuth metadata and the consent page follow the Host it came in on
-mcp.@IP@.sslip.io {
+# paste https://mcp.@DOMAIN@/mcp; OAuth metadata and the consent page follow the Host it came in on
+mcp.@DOMAIN@ {
 	import sec
 	encode gzip
 	request_body {
@@ -61,9 +61,15 @@ mcp.@IP@.sslip.io {
 	}
 }
 
-# Cadre website (~/cadre-web, cadre-web.service on :10710); serves /install-miner.sh (devnet defaults)
-cadre.@IP@.sslip.io {
+# Cadre website (~/cadre-web, cadre-web.service on :10710) on the bare domain; serves /install-miner.sh (devnet defaults)
+@DOMAIN@ {
 	import sec
 	encode gzip
 	reverse_proxy 127.0.0.1:10710
+}
+
+# app.@DOMAIN@ is an alias of the site
+app.@DOMAIN@ {
+	import sec
+	redir https://@DOMAIN@{uri} permanent
 }

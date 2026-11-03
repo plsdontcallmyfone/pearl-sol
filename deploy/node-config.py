@@ -12,6 +12,10 @@ for line in open(os.path.join(root, "deploy/devnet.env")):
         k, v = line.split("=", 1)
         env[k] = v
 n = int(sys.argv[1])
+# BOXn_IP stays TBD_BOXn_IP until the box exists (docs/REBUILD-2026-11.md Phase A): every node needs all three
+for i in range(3):
+    if env.get(f"BOX{i}_IP", "").startswith("TBD_") or not env.get(f"BOX{i}_IP"):
+        sys.exit(f"deploy/devnet.env: BOX{i}_IP is still a placeholder ({env.get(f'BOX{i}_IP', 'empty')}); set it once box {i} is bought")
 key = lambda i: os.path.join(root, f"keys/devnet/node{i}-p2p-keypair.json")
 seeds = []
 for i in range(3):

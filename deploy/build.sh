@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # On the devnet build box (box 0, user lode, repo ~/pearl-sol): build everything the devnet runs.
 #   bash deploy/build.sh [rust|sbf|npm|all]   (default all; one heavy build at a time)
-# Outputs: /opt/lode/bin/{agent-node,pearl-miner,pearl-attester,pearl-job,header-relay,pearl}
+# Outputs: /opt/lode/bin/{agent-node,pearl-miner,pearl-attester,pearl-job,header-relay,cadre,cadre-gateway}
 #          ~/devnet-so/{reserve,bridge,storefront,lightclient}.so  (--features devnet: the devnet program ids)
 #          /opt/lode/idl/{reserve,storefront,bridge,lightclient}.json (IDL "address" = the devnet id)
 set -euo pipefail
@@ -15,10 +15,13 @@ step() { echo "[$(( $(date +%s) - t0 )) s] $*"; }
 if [[ $what == all || $what == rust ]]; then
   step "agent-node"; (cd "$ROOT/chain" && cargo build --release -q -p agent-node)
   step "pearl-job, pearl-miner, pearl-attester"; (cd "$ROOT/crates" && cargo build --release -q -p pearl-job -p pearl-miner -p pearl-attester)
+  # the inference gateway (cadre-gateway.service): its own step at -j 2, as in docs/REBUILD-2026-11.md Phase D2
+  step "cadre-gateway"; (cd "$ROOT/crates" && cargo build --release -q -p cadre-gateway -j 2)
   step "cadre (CLI)"; (cd "$ROOT/crates/cadre-cli" && cargo build --release -q)
   step "header-relay (devnet ids)"; (cd "$ROOT/services/header-relay" && cargo build --release -q --features devnet)
   install -m 755 "$ROOT/chain/target/release/agent-node" "$ROOT/crates/target/release/pearl-miner" "$ROOT/crates/target/release/pearl-attester" \
-    "$ROOT/crates/target/release/pearl-job" "$ROOT/services/header-relay/target/release/header-relay" "$ROOT/crates/cadre-cli/target/release/cadre" /opt/lode/bin/
+    "$ROOT/crates/target/release/pearl-job" "$ROOT/services/header-relay/target/release/header-relay" "$ROOT/crates/cadre-cli/target/release/cadre" \
+    "$ROOT/crates/target/release/cadre-gateway" /opt/lode/bin/
 fi
 if [[ $what == all || $what == sbf ]]; then
   # localnet build first (IDLs + the localnet .so the tests use), with the committed localnet program keypairs

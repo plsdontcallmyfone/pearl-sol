@@ -20,6 +20,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/deploy/devnet.env"
+# box 0's IP is a placeholder until the boxes are bought (docs/REBUILD-2026-11.md Phase A)
+if [[ -z ${BOX0_IP:-} || $BOX0_IP == TBD_* ]]; then echo "deploy/devnet.env: BOX0_IP is still a placeholder ($BOX0_IP); set it when box 0 exists" >&2; exit 1; fi
 sshb() { local u=$1; shift; ssh -i "$HOME/.ssh/lode_devnet0" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$u@$BOX0_IP" "$@"; }
 put() { # put <local file> <remote path> (root writes it 0600 lode)
   sshb root "umask 077; cat > '$2.new' && chown lode:lode '$2.new' && chmod 600 '$2.new' && mv -f '$2.new' '$2'" < "$1"
@@ -49,8 +51,9 @@ DESK_WORK_MEM_MB=${DESK_WORK_MEM_MB:-1536}
 DESK_SOCIAL=${DESK_SOCIAL:-1}
 DESK_BROWSE_GAP_S=${DESK_BROWSE_GAP_S:-1200}
 DESK_WORK_GAP_S=${DESK_WORK_GAP_S:-1200}
-DESK_SITE_URL=https://cadre.${BOX0_IP//./-}.sslip.io
-DESK_EXPLORER_URL=https://cadre.${BOX0_IP//./-}.sslip.io/explorer
+DESK_SITE_URL=https://${DEVNET_DOMAIN}
+DESK_EXPLORER_URL=https://${DEVNET_DOMAIN}/explorer
+DESK_PUBLIC_API=https://api.${DEVNET_DOMAIN}
 SWARM_ROWS_PER_DAY=${SWARM_ROWS_PER_DAY:-16384}
 SWARM_TOPUP_ROWS=8192
 SWARM_TOPUP_ROUND_SECS=10800
