@@ -57,11 +57,13 @@ use pv::header::Header;
 use pv::verify::{JobParams, Side};
 
 // Localnet id = keys/localnet/lightclient-keypair.json; the public devnet build (`--features devnet`,
-// docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
+// docs/DEVNET.md) uses its own program keypair (keys/devnet/lightclient2-keypair.json, not committed).
+// Since the 2026-11 rebuild (docs/REBUILD-2026-11.md D4) this is a new id: the old devnet light client
+// 47mavKip... holds the dead chain's fixed-seed accounts and has no reset instruction.
 #[cfg(not(feature = "devnet"))]
 declare_id!("BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5");
 #[cfg(feature = "devnet")]
-declare_id!("47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m");
+declare_id!("9WB5X6XXgVysKVWC58u4VifSWdTbBpGpawUQCQnFAQ36");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const CANON_SEED: &[u8] = b"canon";

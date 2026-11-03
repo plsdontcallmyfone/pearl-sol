@@ -17,11 +17,17 @@ set +a
 K="$ROOT/keys/devnet"
 SO="${DEVNET_SO:-$HOME/.config/pearl-sol/devnet-so}"
 U=(-u "$SOLANA_RPC")
-pub() { solana-keygen pubkey "$K/$1-keypair.json"; }
+# program keypair file of PROG: the light client moved to a new id in the 2026-11 rebuild (D4,
+# LIGHTCLIENT_KEYPAIR in deploy/devnet.env); the others keep keys/devnet/PROG-keypair.json
+kp() { if [[ $1 == lightclient ]]; then echo "$K/${LIGHTCLIENT_KEYPAIR:-lightclient}-keypair.json"; else echo "$K/$1-keypair.json"; fi; }
+pub() { solana-keygen pubkey "$(kp "$1")"; }
 case "${1:-}" in
   balances) for k in deployer ops storefront-wallet; do echo "$k $(pub $k) $(solana balance "${U[@]}" "$(pub $k)")"; done ;;
   deploy)
     for p in ${2:-reserve bridge storefront lightclient}; do
+      # the .so must be built for the id it is deployed to (--features devnet, deploy/build.sh)
+      var="$(echo "$p" | tr a-z A-Z)_PROGRAM"
+      if [[ "$(pub "$p")" != "${!var}" ]]; then echo "$p: keypair $(kp "$p") is $(pub "$p"), deploy/devnet.env $var is ${!var}" >&2; exit 1; fi
       size=$(stat -f %z "$SO/$p.so" 2>/dev/null || stat -c %s "$SO/$p.so")
       if solana program show "${U[@]}" "$(pub $p)" >/dev/null 2>&1; then
         cur=$(solana program show "${U[@]}" "$(pub $p)" | awk '/Data Length/{print $3}')
@@ -31,7 +37,7 @@ case "${1:-}" in
       else
         max=$(( size * 11 / 10 ))
         echo "deploy $p ($size bytes, max-len $max, programdata rent $(solana rent "${U[@]}" $((max + 45)) | head -1))"
-        solana program deploy "${U[@]}" -k "$K/deployer-keypair.json" --program-id "$K/$p-keypair.json" --upgrade-authority "$K/deployer-keypair.json" --max-len "$max" "$SO/$p.so"
+        solana program deploy "${U[@]}" -k "$K/deployer-keypair.json" --program-id "$(kp "$p")" --upgrade-authority "$K/deployer-keypair.json" --max-len "$max" "$SO/$p.so"
       fi
     done ;;
   fund)

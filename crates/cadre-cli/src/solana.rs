@@ -49,13 +49,13 @@ pub const LOCALNET: Profile = Profile {
 };
 
 pub const DEVNET: Profile = Profile {
-    rpc: "https://rpc.64-95-12-116.sslip.io",
+    rpc: "https://rpc.devnet.cadre.ag",
     sol_rpc: "https://api.devnet.solana.com",
     pool: None,
     bridge: "3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN",
     storefront: "9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu",
     reserve: "8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi",
-    lightclient: "47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m",
+    lightclient: "9WB5X6XXgVysKVWC58u4VifSWdTbBpGpawUQCQnFAQ36",
 };
 
 impl Network {
