@@ -22,7 +22,7 @@ function arg(name: string, def?: string): string {
   throw new Error(`--${name} is required`);
 }
 
-const rpcUrl = process.env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io";
+const rpcUrl = process.env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag";
 const c = new Cadre(rpcUrl);
 
 async function landed(what: string, s: { txHash: string }) {

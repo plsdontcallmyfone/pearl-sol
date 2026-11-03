@@ -7,7 +7,7 @@ Wants=network-online.target
 User=lode
 # reads the local cadre-api and node; every link in the dump points at the public URLs
 Environment=DUMP_API_READ=http://127.0.0.1:10685 DUMP_RPC_READ=http://127.0.0.1:10630
-Environment=DUMP_API=https://api.64-95-12-116.sslip.io DUMP_RPC=https://rpc.64-95-12-116.sslip.io DUMP_EXPLORER=https://explorer.64-95-12-116.sslip.io DUMP_SITE=https://cadre.64-95-12-116.sslip.io
+Environment=DUMP_API=https://api.devnet.cadre.ag DUMP_RPC=https://rpc.devnet.cadre.ag DUMP_EXPLORER=https://explorer.devnet.cadre.ag DUMP_SITE=https://devnet.cadre.ag
 Environment=DUMP_NETWORK=devnet DUMP_REPO=cadredotag/agent-dump DUMP_INTERVAL_S=600 DUMP_CONCURRENCY=2
 Environment=DUMP_STATE_DIR=/var/lib/lode/agent-dump HOME=/var/lib/lode/agent-dump
 # who pushes: the org owner token for now; switch to the GitHub App with DUMP_AUTH=app (docs/AGENT-DUMP.md)

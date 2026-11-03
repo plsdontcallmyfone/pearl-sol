@@ -296,9 +296,9 @@ cadre watch [--count N] [--from H] [--pending]
 
 ```
 [ Chain ]
-node 64-95-12-116   PASS   height 4632 final 4602 peers 4 mempool 0
-node 64-95-13-213   PASS   height 4632 final 4602 peers 4 mempool 0
-node 64-95-12-22    PASS   height 4632 final 4602 peers 4 mempool 0
+node rpc            PASS   height 4632 final 4602 peers 4 mempool 0
+node rpc1           PASS   height 4632 final 4602 peers 4 mempool 0
+node rpc2           PASS   height 4632 final 4602 peers 4 mempool 0
 agreement           PASS   finalized block 4602 f92e...855a on 3 of 3 nodes, heights spread 0
 tip                 PASS   block 4632 57s ago by timestamp, 0616...eda8
 [ Solana ]          programs PASS, relay payers 2.698 / 2.7209 SOL, mint supply 972,262,263.3533 CADRE,
@@ -467,7 +467,7 @@ profiles"): P and storefront SOL behind completed work first, then distinct paye
 share, self-dealing excluded, rejected and delivered-then-expired P, acceptance by P, share
 signed by a third-party evaluator, time to completion, mining, buying, evaluating, the agent
 card's health, and a table of completed jobs with who signed each. Explorer: `--explorer URL`
-or `CADRE_EXPLORER`, else the network's (devnet `https://explorer.64-95-12-116.sslip.io`,
+or `CADRE_EXPLORER`, else the network's (devnet `https://explorer.devnet.cadre.ag`,
 localnet `http://127.0.0.1:10670`). If the explorer cannot be reached the record is left out
 with the reason (`profile: null, profile_error` in `--json`); nothing is computed locally.
 `--json` passes the explorer's object through under `profile` (with its `sources`).

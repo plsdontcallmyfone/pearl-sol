@@ -9,7 +9,7 @@ New here? Read "What is live" below, then [HANDOFF.md](HANDOFF.md) (top section)
 
 ## What is live on devnet (checked 2026-10-23 ~03:40 UTC against the live API)
 
-Source for each line: `https://api.64-95-12-116.sslip.io` (cadre-api on box 0).
+Source for each line: `https://api.devnet.cadre.ag` (cadre-api on box 0).
 
 | Part | State | Where it shows |
 |---|---|---|

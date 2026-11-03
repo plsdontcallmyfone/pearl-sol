@@ -11,7 +11,7 @@ that time; read the endpoint for the current value.
 
 | Field | Value | Source |
 |---|---|---|
-| Name / symbol | Cadre / CADRE | pump.fun `create_v2` metadata (devnet: `https://explorer.64-95-12-116.sslip.io/cadre-token.json`) |
+| Name / symbol | Cadre / CADRE | pump.fun `create_v2` metadata (devnet: `https://explorer.64-95-12-116.sslip.io/cadre-token.json`, the first devnet's box 0 name, fixed in the mint; the rebuilt box 0 serves the JSON at `https://explorer.devnet.cadre.ag/cadre-token.json`) |
 | Chain | Solana (SPL Token-2022 mint created by pump.fun) | token/, docs/MAINNET.md 4 |
 | Decimals | 6 | the mint account (`/v1/supply` `decimals`) |
 | Initial supply | 1,000,000,000 CADRE, fixed at create; no mint authority after create | pump bonding curve `token_total_supply` (`/v1/supply` `initial_supply_spl`) |
@@ -31,11 +31,11 @@ Links to give a listing (devnet today; the mainnet hosts replace them):
 
 | What | Devnet URL |
 |---|---|
-| Website | https://cadre.64-95-12-116.sslip.io |
-| Explorer | https://explorer.64-95-12-116.sslip.io |
-| Public API | https://api.64-95-12-116.sslip.io/v1 |
-| Trader board (revenue, buyback, burn) | https://cadre.64-95-12-116.sslip.io/board, JSON `/v1/traderboard` |
-| Leaderboards | https://cadre.64-95-12-116.sslip.io/leaderboards, JSON `/v1/leaderboards` |
+| Website | https://devnet.cadre.ag |
+| Explorer | https://explorer.devnet.cadre.ag |
+| Public API | https://api.devnet.cadre.ag/v1 |
+| Trader board (revenue, buyback, burn) | https://devnet.cadre.ag/board, JSON `/v1/traderboard` |
+| Leaderboards | https://devnet.cadre.ag/leaderboards, JSON `/v1/leaderboards` |
 | Source | https://github.com/plsdontcallmyfone/pearl-sol (public) |
 | X, Telegram | none yet: the owner creates and approves each account |
 
@@ -43,10 +43,10 @@ Links to give a listing (devnet today; the mainnet hosts replace them):
 
 | Endpoint | Body | Read 2026-10-22 02:40 UTC (devnet) |
 |---|---|---|
-| `GET https://explorer.64-95-12-116.sslip.io/api/supply/circulating` | plain text, whole CADRE with 6 decimals | 146232092.620879 |
-| `GET https://explorer.64-95-12-116.sslip.io/api/supply/total` | plain text, whole CADRE | 972262263.353381 |
-| `GET https://explorer.64-95-12-116.sslip.io/api/supply` | JSON with every component and its account | |
-| `GET https://api.64-95-12-116.sslip.io/v1/supply` | the same through cadre-api (`explorer.circulating_supply` in base units) | |
+| `GET https://explorer.devnet.cadre.ag/api/supply/circulating` | plain text, whole CADRE with 6 decimals | 146232092.620879 |
+| `GET https://explorer.devnet.cadre.ag/api/supply/total` | plain text, whole CADRE | 972262263.353381 |
+| `GET https://explorer.devnet.cadre.ag/api/supply` | JSON with every component and its account | |
+| `GET https://api.devnet.cadre.ag/v1/supply` | the same through cadre-api (`explorer.circulating_supply` in base units) | |
 
 Definition (apps/explorer/src/supply.ts): total = live mint supply (1B minus burns);
 circulating = total minus the mining reserve's token account minus the chain mining pool (chain
@@ -90,7 +90,7 @@ adapter already reports pump fees; adding them here would double count).
 
 Checks (2026-10-22, test box, docs/TEST-REPORT.md "Ecosystem Phase 5"):
 - `npm test`: event layouts, window bounds, paging, the mandate Settled offsets and fields;
-- `CADRE_STOREFRONT_PROGRAM=9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu CADRE_MANDATE_PROGRAM=BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc SOLANA_RPC=<devnet RPC with history> CADRE_API=https://api.64-95-12-116.sslip.io npm run live -- --strict`:
+- `CADRE_STOREFRONT_PROGRAM=9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu CADRE_MANDATE_PROGRAM=BG5WkxZyYwWXTY2YSAJGhwL7JcxChRXx8UqHEAMAC5yc SOLANA_RPC=<devnet RPC with history> CADRE_API=https://api.devnet.cadre.ag npm run live -- --strict`:
   the all-time window against the storefront Config counters and against cadre-api's own index
   (`/v1/buyback` accrued) and the Mandate accounts' `fees_protocol`. A public RPC prunes history,
   so the all-time check needs an RPC that keeps it; a mismatch names the pruned part.

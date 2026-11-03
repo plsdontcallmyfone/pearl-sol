@@ -48,7 +48,7 @@ export const HOUSE: (AgentCfg & { key: string })[] = [
   { key: "practice-3.json", handle: "still_heron", name: "Still Heron", persona: "Still Heron, who only trades calm, liquid pools", base: { ...BASE, conditions: [{ signal: "pool_sol", op: ">=", value: 150 }, { signal: "ret_15m", op: ">=", value: 0.01 }, { signal: "vol_15m", op: "<=", value: 0.01 }, { signal: "top10_share", op: "<=", value: 0.3 }] } },
 ];
 
-const cadreRpc = () => env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io";
+const cadreRpc = () => env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag";
 
 async function deploy() {
   const w = loadWallet(arg("key"));
@@ -96,7 +96,7 @@ function keys() {
 }
 
 function thinker(w: ReturnType<typeof loadWallet>): Think {
-  const brain = new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.64-95-12-116.sslip.io/v1/openai", wallet: w, solRpc: env.SOLANA_RPC ?? "https://api.devnet.solana.com", topupRows: 4_096, maxTopupLamportsPerDay: 100_000_000n, log: (e, x) => log(e, { agent: w.address, ...x }) });
+  const brain = new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.devnet.cadre.ag/v1/openai", wallet: w, solRpc: env.SOLANA_RPC ?? "https://api.devnet.solana.com", topupRows: 4_096, maxTopupLamportsPerDay: 100_000_000n, log: (e, x) => log(e, { agent: w.address, ...x }) });
   return async (messages, maxTokens) => {
     await brain.ensureRows(512);
     const t = await brain.think(messages, maxTokens);
@@ -121,7 +121,7 @@ async function run() {
   const counts = decodeCounts((await cadre.query(cfg.contract, q.counts())).b);
   log("practice_start", { contract: cfg.contract, versions: counts.versions, entries: counts.entries, tick_ms: tickMs, analyzer_hash: analyzerHash(), mainnet: "read-only" });
   const market = new Market(sol);
-  const store = new BlobStore({ dir: join(stateDir, "blobs"), api: env.CADRE_API ?? "https://api.64-95-12-116.sslip.io", nodeRpc: (m, p) => cadre.rpc.call(m, p), log });
+  const store = new BlobStore({ dir: join(stateDir, "blobs"), api: env.CADRE_API ?? "https://api.devnet.cadre.ag", nodeRpc: (m, p) => cadre.rpc.call(m, p), log });
   const ah = analyzerHash();
   if (cfg.analyzer_hash && cfg.analyzer_hash !== ah) log("analyzer_changed", { deployed: cfg.analyzer_hash, running: ah, note: "post-mortems commit the hash of the code that ran" });
   const desk = deskTraders(env.STRAT_DESK_TRADERS, env.STRAT_DESK_KEYS ?? "/etc/lode/keys/swarm").filter((d) => existsSync(d.keyPath));
@@ -154,7 +154,7 @@ async function run() {
 
 async function syncBlobs() {
   const stateDir = resolve(arg("state", join(env.HOME ?? ".", "practice")));
-  const store = new BlobStore({ dir: join(stateDir, "blobs"), api: env.CADRE_API ?? "https://api.64-95-12-116.sslip.io", log });
+  const store = new BlobStore({ dir: join(stateDir, "blobs"), api: env.CADRE_API ?? "https://api.devnet.cadre.ag", log });
   log("sync_blobs", await store.syncToApi());
 }
 

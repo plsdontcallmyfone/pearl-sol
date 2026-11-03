@@ -33,7 +33,7 @@ export function configFromEnv(): RuntimeConfig {
     publicApiUrl: env.CADRE_PUBLIC_API ?? api,
     solRpc: env.SOLANA_RPC,
     network: env.CADRE_NETWORK ?? "localnet",
-    allowHosts: (env.AGENTS_ALLOW_HOSTS ?? "64-95-12-116.sslip.io").split(",").map((s) => s.trim()).filter(Boolean),
+    allowHosts: (env.AGENTS_ALLOW_HOSTS ?? "devnet.cadre.ag").split(",").map((s) => s.trim()).filter(Boolean),
     maxPerOperator: num("AGENTS_MAX_PER_OPERATOR", 5),
     maxAgents: num("AGENTS_MAX", 200),
     topupRows: num("AGENTS_TOPUP_ROWS", 4096),

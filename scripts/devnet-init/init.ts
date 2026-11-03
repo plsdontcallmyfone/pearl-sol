@@ -23,8 +23,8 @@ import { BRIDGE_PROGRAM_ID, STOREFRONT_PROGRAM_ID, bridgeConfigPda, decodeBridge
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env = process.env;
 const SOL_RPC = env.SOLANA_RPC!;
-const DASH = env.BOX0_IP!.replaceAll(".", "-");
-const NODE_RPC = `https://rpc.${DASH}.sslip.io`;
+const DOMAIN = env.DEVNET_DOMAIN!; // deploy/devnet.env (docs/REBUILD-2026-11.md "Hostnames")
+const NODE_RPC = `https://rpc.${DOMAIN}`;
 const conn = new Connection(SOL_RPC, "confirmed");
 const loadKp = (f: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(resolve(ROOT, f), "utf8"))));
 const ops = loadKp("keys/devnet/ops-keypair.json");
@@ -86,7 +86,7 @@ if (!status.initialized && !status.admin) {
 if (!status.mint || status.mint === PublicKey.default.toBase58()) {
   const mintFile = resolve(ROOT, "keys/devnet/mint-keypair.json");
   try { readFileSync(mintFile); } catch { execFileSync("solana-keygen", ["new", "--no-bip39-passphrase", "-s", "-o", mintFile]); }
-  log(crank(["launch", "--name", "Cadre", "--symbol", "CADRE", "--uri", `https://explorer.${DASH}.sslip.io/cadre-token.json`,
+  log(crank(["launch", "--name", "Cadre", "--symbol", "CADRE", "--uri", `https://explorer.${DOMAIN}/cadre-token.json`,
     "--devBuy", DEV_BUY, "--mintKeypair", mintFile]).trim());
   status = reserveStatus();
 }

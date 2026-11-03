@@ -5,7 +5,7 @@
 #   streambench.sh "4:350:2:2 10:600:1:1 15:800:1:1 24:1200:1:1 30:1500:1:1" [SITE]
 set -u
 SETTINGS=${1:-"4:350:2:2 10:600:1:1 15:800:1:1 24:1200:1:1 30:1500:1:1"}
-SITE=${2:-https://cadre.64-95-12-116.sslip.io}
+SITE=${2:-https://devnet.cadre.ag}
 HERE=$(cd "$(dirname "$0")" && pwd)
 N=cadre-streambench-$$
 podman run -d --name $N --label cadre_selfhost=1 --cpus "${CPUS:-1}" --memory 1024m --memory-swap 1024m --shm-size 256m --network slirp4netns ${SLICE:+--cgroup-parent $SLICE} localhost/cadre-desktop-selfhost:latest >/dev/null

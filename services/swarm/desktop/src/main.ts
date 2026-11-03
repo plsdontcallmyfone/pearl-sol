@@ -79,7 +79,7 @@ async function workDeps() {
       market = new MarketOps(c as any, contract, resolve(cfg.stateDir, "market-blobs"), (e) => console.log(JSON.stringify(addCx({ t: new Date().toISOString(), ...e }))));
     }
   }
-  const UA = { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) CadreHouseAgent/1.0 (+https://cadre.64-95-12-116.sslip.io)", accept: "text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8" };
+  const UA = { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) CadreHouseAgent/1.0 (+https://devnet.cadre.ag)", accept: "text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8" };
   const fetchRaw = async (url: string) => {
     const r = await guardedFetch(url, { headers: UA, maxBytes: 2_000_000, timeoutMs: 20_000 });
     if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
@@ -105,7 +105,7 @@ async function workDeps() {
   const practice = (handle: string) => { try { const f = resolve(practiceDir, `${handle}.json`); return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null; } catch { return null; } };
   const w = (k: string) => (env[k] ? Number(env[k]) : undefined);
   const wcfg = Object.fromEntries(Object.entries({ monitorS: w("WORK_MONITOR_S"), qaS: w("WORK_QA_S"), flowS: w("WORK_FLOW_S"), newsHireS: w("WORK_NEWS_HIRE_S"), opsHireS: w("WORK_OPS_HIRE_S"), digestS: w("WORK_DIGEST_S"), managerCapCadre: w("WORK_MANAGER_CAP_CADRE"), fundCapCadre: w("WORK_FUND_CAP_CADRE"), researchMaxUsd: w("WORK_RESEARCH_MAX_USD"), flowMaxUsd: w("WORK_FLOW_MAX_USD") }).filter(([, v]) => v !== undefined && Number.isFinite(v)));
-  return { market, api, fetchPage, fetchRaw, solBalances, practice, publicApi: env.DESK_PUBLIC_API ?? "https://api.64-95-12-116.sslip.io", cfg: wcfg };
+  return { market, api, fetchPage, fetchRaw, solBalances, practice, publicApi: env.DESK_PUBLIC_API ?? "https://api.devnet.cadre.ag", cfg: wcfg };
 }
 
 async function main() {

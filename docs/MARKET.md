@@ -230,12 +230,12 @@ sessions' unpushed commits; `devnet-deploy.sh` refuses a local main that is not 
     D=$(mktemp -d) && git clone -q https://github.com/plsdontcallmyfone/pearl-sol "$D/ps" && cd "$D/ps"
     scripts/devnet-deploy.sh sync                         # box 0 ~/pearl-sol = origin/main
     scripts/devnet-deploy.sh ctl 0 restart cadre-api
-    curl -fsS https://api.64-95-12-116.sslip.io/v1/market | jq -r .contract      # E1kpbaHn14z4...
-    curl -fsS 'https://api.64-95-12-116.sslip.io/v1/market/offers' | jq .count  # 4 or more
+    curl -fsS https://api.devnet.cadre.ag/v1/market | jq -r .contract      # E1kpbaHn14z4...
+    curl -fsS 'https://api.devnet.cadre.ag/v1/market/offers' | jq .count  # 4 or more
     scripts/devnet-deploy.sh ctl 0 restart cadre-agents   # hosted user agents: hire / offer permissions
     scripts/devnet-deploy.sh ssh 0 'journalctl -u cadre-agents -n 20 --no-pager' | grep -i error || echo ok
     CADRE_WEB=~/cadre-web scripts/devnet-deploy.sh site    # ~/cadre-web must equal its origin/main
-    curl -fsS -o /dev/null -w '%{http_code}\n' https://cadre.64-95-12-116.sslip.io/market   # 200
+    curl -fsS -o /dev/null -w '%{http_code}\n' https://devnet.cadre.ag/market   # 200
     # rollback cadre-api: scripts/devnet-deploy.sh ssh 0 'git -C ~/pearl-sol checkout <previous sha>'
     #   then scripts/devnet-deploy.sh ctl 0 restart cadre-api; the site: redeploy the previous cadre-web sha
 

@@ -42,9 +42,9 @@ async function setup() {
   const dir = arg("keys");
   const cad = JSON.parse(readFileSync(arg("cadre"), "utf8"));
   const sol = JSON.parse(readFileSync(arg("solana"), "utf8")).solana;
-  const cadre = new Cadre(env.CADRE_RPC ?? cad.rpc ?? "https://rpc.64-95-12-116.sslip.io");
+  const cadre = new Cadre(env.CADRE_RPC ?? cad.rpc ?? "https://rpc.devnet.cadre.ag");
   await cadre.init();
-  const wsUrl = env.CADRE_WS ?? (env.CADRE_RPC ?? cad.rpc ?? "https://rpc.64-95-12-116.sslip.io").replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
+  const wsUrl = env.CADRE_WS ?? (env.CADRE_RPC ?? cad.rpc ?? "https://rpc.devnet.cadre.ag").replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
   const solRpc = env.SOLANA_RPC ?? "https://api.devnet.solana.com";
   const mp = new MandateProgram(sol.program);
   const { Connection } = await import("@solana/web3.js");
@@ -66,7 +66,7 @@ const loadKp = (f: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(r
 
 async function profiles() {
   const dir = arg("keys");
-  const cadre = new Cadre(env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io");
+  const cadre = new Cadre(env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag");
   await cadre.init();
   const ops = loadWallet(join(dir, "ops.json"));
   for (const h of HOUSE) {
@@ -86,13 +86,13 @@ async function run() {
   for (const h of HOUSE) {
     const wallet = loadWallet(join(s.dir, h.key));
     const kp = loadKp(join(s.dir, h.key));
-    const brain = brainOn ? new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.64-95-12-116.sslip.io/v1/openai", wallet, solRpc: s.solRpc, topupRows: 2_048, log }) : null;
+    const brain = brainOn ? new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.devnet.cadre.ag/v1/openai", wallet, solRpc: s.solRpc, topupRows: 2_048, log }) : null;
     for (const v of h.venues) {
       const venue = venueFor(s, v, wallet, kp);
       const t = new Trader({
         handle: h.handle, persona: h.persona, house: true, venue, brain, cadre: s.cadre, poster: wallet, risk: riskFor(venue.name),
         thinkEveryMs: Number(env.TRADING_THINK_MIN ?? 20) * 60_000, killFile: env.TRADING_KILL_FILE ?? "/tmp/cadre-trading.stop",
-        latencyLog: env.TRADING_LATENCY_LOG ?? "trading-latency.jsonl", houseBook, log, postReceipts: true, apiUrl: env.CADRE_API ?? "https://api.64-95-12-116.sslip.io",
+        latencyLog: env.TRADING_LATENCY_LOG ?? "trading-latency.jsonl", houseBook, log, postReceipts: true, apiUrl: env.CADRE_API ?? "https://api.devnet.cadre.ag",
       });
       if (!brainOn) t.strategy = { stance: (env.TRADING_STANCE as any) ?? "hold", conviction: 1, setAt: Date.now(), requestId: "", text: "fixed" };
       await t.start();
@@ -115,11 +115,11 @@ async function once() {
   const kp = loadKp(join(s.dir, h.key));
   const venue = venueFor(s, arg("venue"), wallet, kp);
   const side = arg("side") === "sell" ? 1 : 0;
-  const brain = env.TRADING_BRAIN === "off" ? null : new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.64-95-12-116.sslip.io/v1/openai", wallet, solRpc: s.solRpc, topupRows: 2_048, log });
+  const brain = env.TRADING_BRAIN === "off" ? null : new Brain({ gatewayUrl: env.GATEWAY_URL ?? "https://api.devnet.cadre.ag/v1/openai", wallet, solRpc: s.solRpc, topupRows: 2_048, log });
   const t = new Trader({
     handle, persona: h.persona, house: true, venue, brain, cadre: s.cadre, poster: wallet, risk: { ...riskFor(venue.name), cooldownMs: 0, maxChaseBps: 100_000 },
     thinkEveryMs: 1e12, killFile: env.TRADING_KILL_FILE ?? "/tmp/cadre-trading.stop", latencyLog: env.TRADING_LATENCY_LOG ?? "trading-latency.jsonl",
-    houseBook: new Map(), log, postReceipts: true, apiUrl: env.CADRE_API ?? "https://api.64-95-12-116.sslip.io",
+    houseBook: new Map(), log, postReceipts: true, apiUrl: env.CADRE_API ?? "https://api.devnet.cadre.ag",
   });
   t.book = await venue.book();
   if (brain) await t.think(); // the paid thought (timed); its stance is logged, the measured order below uses --side

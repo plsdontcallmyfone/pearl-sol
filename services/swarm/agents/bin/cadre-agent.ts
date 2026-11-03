@@ -34,7 +34,7 @@ import { GatewayAt } from "../src/gateway.ts";
 import { type SignedSpec, verifySigned } from "../src/spec.ts";
 import { HaltWatch, haltContractFrom } from "../src/halt.ts";
 
-const DEVNET = { api: "https://api.64-95-12-116.sslip.io", node: "https://rpc.64-95-12-116.sslip.io", solana: "https://api.devnet.solana.com" };
+const DEVNET = { api: "https://api.devnet.cadre.ag", node: "https://rpc.devnet.cadre.ag", solana: "https://api.devnet.solana.com" };
 
 function opts(argv: string[]) {
   const o: Record<string, string | boolean> = {};
@@ -73,7 +73,7 @@ function runner(o: Record<string, string | boolean>) {
     rand: Math.random,
     log: (e) => console.log(JSON.stringify(e)),
   }, new ApiClient(api), {
-    stateFile: `${state}/agent-${w.address}.json`, killFile: `${state}/STOP`, allowHosts: String(o["allow-hosts"] ?? "64-95-12-116.sslip.io").split(","),
+    stateFile: `${state}/agent-${w.address}.json`, killFile: `${state}/STOP`, allowHosts: String(o["allow-hosts"] ?? "devnet.cadre.ag").split(","),
     solRpc: String(o.solana ?? process.env.SOLANA_RPC ?? DEVNET.solana), topupRows: Number(o["topup-rows"] ?? 1024), minFreeRows: Number(o["min-free-rows"] ?? 256),
     cardUrl: (a) => `${api}/v1/useragents/${a}/card`, stateDir: state, halt, solWs: o["solana-ws"] ? String(o["solana-ws"]) : process.env.SOLANA_WS,
   });

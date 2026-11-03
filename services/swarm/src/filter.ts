@@ -6,7 +6,7 @@
 
 export interface FilterResult { ok: boolean; reason?: string }
 
-const DEFAULT_ALLOW = ["64-95-12-116.sslip.io"];
+const DEFAULT_ALLOW = ["devnet.cadre.ag"];
 
 const SECRET = [
   /\b[1-9A-HJ-NP-Za-km-z]{64,90}\b/, // base58 secret keys (64-byte) and long encodings

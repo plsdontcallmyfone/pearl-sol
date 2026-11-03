@@ -162,7 +162,7 @@
        "amount": "325297391936000",
        "links": {
         "api": "/v1/tx/chain/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
        }
       },
       {
@@ -173,7 +173,7 @@
        "amount": "333423836269000",
        "links": {
         "api": "/v1/tx/chain/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
        }
       },
       {
@@ -184,7 +184,7 @@
        "amount": "3482699259829000",
        "links": {
         "api": "/v1/tx/chain/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574"
        }
       },
       {
@@ -195,7 +195,7 @@
        "amount": "5007250128882000",
        "links": {
         "api": "/v1/tx/chain/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17"
        }
       }
      ]
@@ -237,7 +237,7 @@
        "amount": "347097221752000",
        "links": {
         "api": "/v1/tx/chain/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
        }
       },
       {
@@ -248,7 +248,7 @@
        "amount": "373051931847000",
        "links": {
         "api": "/v1/tx/chain/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
        }
       },
       {
@@ -259,7 +259,7 @@
        "amount": "428306157998000",
        "links": {
         "api": "/v1/tx/chain/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
        }
       },
       {
@@ -270,7 +270,7 @@
        "amount": "499859930678000",
        "links": {
         "api": "/v1/tx/chain/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91"
        }
       },
       {
@@ -281,7 +281,7 @@
        "amount": "545218075083000",
        "links": {
         "api": "/v1/tx/chain/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e"
        }
       }
      ]
@@ -355,7 +355,7 @@
        "amount": "86774305438000",
        "links": {
         "api": "/v1/tx/chain/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
        }
       },
       {
@@ -366,7 +366,7 @@
        "amount": "93262982961000",
        "links": {
         "api": "/v1/tx/chain/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
        }
       },
       {
@@ -377,7 +377,7 @@
        "amount": "107076539499000",
        "links": {
         "api": "/v1/tx/chain/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
        }
       },
       {
@@ -388,7 +388,7 @@
        "amount": "124964982669000",
        "links": {
         "api": "/v1/tx/chain/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/3b41646165ba5c5bdf4de5efe76b982e62b13a4a257aa17ac79692ceae94cf91"
        }
       },
       {
@@ -399,7 +399,7 @@
        "amount": "136304518770000",
        "links": {
         "api": "/v1/tx/chain/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/281f0f80362810d00c4fa207c6393c4cad9f2e0a03c72f09ae8d1609e4e9b72e"
        }
       }
      ]
@@ -441,7 +441,7 @@
        "amount": "81324347984000",
        "links": {
         "api": "/v1/tx/chain/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
        }
       },
       {
@@ -452,7 +452,7 @@
        "amount": "83355959067000",
        "links": {
         "api": "/v1/tx/chain/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
        }
       },
       {
@@ -463,7 +463,7 @@
        "amount": "870674814957000",
        "links": {
         "api": "/v1/tx/chain/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/e63047753cb26a584b796cd5bfde8b3b267469ae0ada9dc97795938f77fab574"
        }
       },
       {
@@ -474,7 +474,7 @@
        "amount": "1251812532220000",
        "links": {
         "api": "/v1/tx/chain/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/5e4fcdc5c9569175304da73cdb9d8595649a6010f84015a828cee55f71ec2f17"
        }
       }
      ]
@@ -671,7 +671,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/5c65b4e8d6fc19a726ecc36e1577e4b0ed7280c1e85f5055f73b057b4de0f7b5",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5037"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5037"
        }
       },
       {
@@ -682,7 +682,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/ede1d9e1784517f79352e13fba79a693ea1eec76ca5bd832b303a6d81c3fb618",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5036"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5036"
        }
       },
       {
@@ -693,7 +693,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/c9c85de5fe51bab0f6a56d996dc20899a78b9ff211ca63f305d90c28d86d140d",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5034"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5034"
        }
       },
       {
@@ -704,7 +704,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/6faa3b0484f31150f779ba1dc88bee2e5d45efa77e2dfde4a81c32bc8a59c654",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5032"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5032"
        }
       },
       {
@@ -715,7 +715,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/c7444413f2c24abe5b3332b9a5e204f707b80e152fb91d8e309e03430f769d16",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5026"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5026"
        }
       }
      ]
@@ -759,7 +759,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/bbe3853a1e2fb559a55c07e60b2c75e06b23d9685d83a111f60ae2c357c7d97e",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5035"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5035"
        }
       },
       {
@@ -770,7 +770,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/69107a99b4d2359875c14139c45e75f64025e0178a06c68d4ef03722a44bc559",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5029"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5029"
        }
       },
       {
@@ -781,7 +781,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/539825b21aeafa7af2b90c05333474380900fc674d828dd19a734b0dd225c9dd",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5028"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5028"
        }
       },
       {
@@ -792,7 +792,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/16d3290674362eb79ce8200a2536ecf2ac2f43f971c9331699230d50ca13e571",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5027"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5027"
        }
       },
       {
@@ -803,7 +803,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/95c4bd52bbfad7fddb3119a054f2eaecd0fb5df6e787fd7b376d2c0616679ff7",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5025"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5025"
        }
       }
      ]
@@ -847,7 +847,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/a26ea3ff61f1fba22e5398e67e2e562ad7448309a7e79fefcb42346e5aab8dc7",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5033"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5033"
        }
       },
       {
@@ -858,7 +858,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/13e6674392ad30ebbd7e7b92b82d29e2aa3696a2fb993911fa00f06c0016964b",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5031"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5031"
        }
       },
       {
@@ -869,7 +869,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/22eee1dde2f43f6bf10610ca063a4cc52b42b851b25bc4155d2e2f6e9c2637c4",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5030"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5030"
        }
       },
       {
@@ -880,7 +880,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/c39ce68d7053b99179a56aa5620a1a8aa0977613c2bd8b06716642b3db7f0826",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5024"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5024"
        }
       },
       {
@@ -891,7 +891,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/blocks/6fcad8fb596edf9fb6f887208010767dbec4c4e62612b815e16e183f3e34069b",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/block/5021"
+        "explorer": "https://explorer.devnet.cadre.ag/block/5021"
        }
       }
      ]
@@ -963,7 +963,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/tx/chain/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/a6be89dbc90de9bd6dde0f4b7ebcb33c7b6b1833a5821bc7a1633f3a2bf890b3"
        }
       },
       {
@@ -974,7 +974,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/tx/chain/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/543e0cd930e30d369ee066094c412fa8141d12655b470cef27612bbc2d7e9330"
        }
       },
       {
@@ -985,7 +985,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/tx/chain/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/dc1c6c9889bb590455e71b9fcac280e55070af735ef779942725a87ce92c05f9"
        }
       },
       {
@@ -996,7 +996,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/tx/chain/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/5c9fdcb2efc92d8106f245acf5e98dd30c048131e5f8e7eef6ab02c4f538d7b4"
        }
       },
       {
@@ -1007,7 +1007,7 @@
        "amount": "1",
        "links": {
         "api": "/v1/tx/chain/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1",
-        "explorer": "https://explorer.64-95-12-116.sslip.io/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
+        "explorer": "https://explorer.devnet.cadre.ag/tx/e801d54fd40c242c29377f371876eae4603312792c0bc26382806572fc4270a1"
        }
       }
      ]

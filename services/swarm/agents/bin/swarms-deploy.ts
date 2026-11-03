@@ -24,7 +24,7 @@ async function main() {
   const wasm = join(REPO, "contracts/target/wasm32-unknown-unknown/release/cadre_swarms.wasm");
   if (!existsSync(wasm)) throw new Error(`build it first: (cd contracts && cargo build --release --target wasm32-unknown-unknown -p cadre-swarms)`);
   const code = readFileSync(wasm);
-  const cadre = new Cadre(process.env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io");
+  const cadre = new Cadre(process.env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag");
   const info = await cadre.init();
   log("deployer", { account: w.address, balance: (await cadre.balance(w.address)).toString(), height: info.height });
   const ch = codeHash(code);

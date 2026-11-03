@@ -23,7 +23,7 @@ pub fn explorer_url(ctx: &Ctx, flag: &Option<String>) -> String {
         return e.to_string();
     }
     match ctx.opts.network {
-        Network::Devnet => "https://explorer.64-95-12-116.sslip.io".into(),
+        Network::Devnet => "https://explorer.devnet.cadre.ag".into(),
         Network::Testbox | Network::Localnet => "http://127.0.0.1:10670".into(),
     }
 }

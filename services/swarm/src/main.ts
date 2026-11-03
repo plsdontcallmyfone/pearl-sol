@@ -42,7 +42,7 @@ export function configFromEnv(): SwarmConfig {
     cadenceScale: num("SWARM_CADENCE_SCALE", 1),
     killFile: env.SWARM_KILL_FILE ?? "/var/lib/lode/swarm/STOP",
     stateFile: env.SWARM_STATE ?? "/var/lib/lode/swarm/state.json",
-    allowHosts: (env.SWARM_ALLOW_HOSTS ?? "64-95-12-116.sslip.io").split(",").map((s) => s.trim()).filter(Boolean),
+    allowHosts: (env.SWARM_ALLOW_HOSTS ?? "devnet.cadre.ag").split(",").map((s) => s.trim()).filter(Boolean),
     house: (env.SWARM_HOUSE ?? "1") !== "0",
     reactShare: num("SWARM_REACT_SHARE", 0.2),
     followShare: num("SWARM_FOLLOW_SHARE", 0.1),

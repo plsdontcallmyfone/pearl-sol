@@ -1,7 +1,7 @@
 # Running an agent-chain node
 
 To mine you do not need a node of your own: `pearl-miner` talks to any node's public RPC, and
-`curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash` builds and starts one
+`curl -fsSL https://devnet.cadre.ag/install-miner.sh | bash` builds and starts one
 against the public devnet (docs/MINING.md). `agent-node mine` below is a dev helper, not the miner.
 
 Binary: `chain/target/release/agent-node` (`cd chain && cargo build --release -p agent-node`,
@@ -44,9 +44,10 @@ RSS, build cache 778 MB, cargo registry 300 MB, binary 19 MB.) Rust: same as the
         (umask 077; head -c 32 /dev/urandom | od -An -v -tx1 | tr -d ' \n' > p2p-key.hex)
         agent-node pubkey "$(cat p2p-key.hex)"                    # your node's public key
 
-3. `~/cadre-node/node.json`, with the genesis from the repo (`deploy/genesis.json`, genesis hash
-   `51c86b67...4d52028a`) and the three devnet nodes as seeds, pinned by key (`getPeers` on any
-   node lists them). Pick ports that are free (`ss -ltn`); RPC on 127.0.0.1 unless you put a
+3. `~/cadre-node/node.json`, with the genesis from the repo (`deploy/genesis.json`, chain_id 1128350803
+   since the 2026-11 rebuild; its genesis hash is in docs/DEVNET.md once node 0 has started) and the
+   three devnet nodes as seeds, pinned by key (`getPeers` on any node lists them; a seed takes an IP:
+   `<BOXn_IP>` = BOX0_IP..BOX2_IP in deploy/devnet.env, or `getPeers` on https://rpc.devnet.cadre.ag). Pick ports that are free (`ss -ltn`); RPC on 127.0.0.1 unless you put a
    proxy in front:
 
         {
@@ -58,9 +59,9 @@ RSS, build cache 778 MB, cargo registry 300 MB, binary 19 MB.) Rust: same as the
           "ws_listen": "127.0.0.1:10631",
           "net": "open",
           "seeds": [
-            "33DN9By34qf7dvbTGuatKq8dMjx7gkDbWtpoRnCsjQdx@64.95.12.116:10640",
-            "DGMwftkptkEDRyweCGup6TeAADuQMb5NHtEdL6YNpxX7@64.95.13.213:10640",
-            "8HiMBfdEf1NinBYsoePbCUEfxTzCr619qKZxbNvWHQFJ@64.95.12.22:10640"
+            "33DN9By34qf7dvbTGuatKq8dMjx7gkDbWtpoRnCsjQdx@<BOX0_IP>:10640",
+            "DGMwftkptkEDRyweCGup6TeAADuQMb5NHtEdL6YNpxX7@<BOX1_IP>:10640",
+            "8HiMBfdEf1NinBYsoePbCUEfxTzCr619qKZxbNvWHQFJ@<BOX2_IP>:10640"
           ],
           "verifier": "pearl"
         }
@@ -94,7 +95,7 @@ RSS, build cache 778 MB, cargo registry 300 MB, binary 19 MB.) Rust: same as the
         [Install]
         WantedBy=multi-user.target
 
-6. Mine against it: `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash -s --
+6. Mine against it: `curl -fsSL https://devnet.cadre.ag/install-miner.sh | bash -s --
    --rpc http://127.0.0.1:10630`. The installer sees the devnet genesis and adds the three public
    nodes after yours, so the miner fails over to them while your node is down.
 

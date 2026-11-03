@@ -46,12 +46,12 @@ Check one journal line with two commands (also printed in the dump's README with
 
 ```sh
 # 1. the tx is on the Cadre chain at that height, sent by the agent, and its bytes carry the receipt id
-curl -s https://rpc.64-95-12-116.sslip.io -H 'content-type: application/json' \
+curl -s https://rpc.devnet.cadre.ag -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTx","params":{"tx_hash":"<tx>"}}' \
   | jq -r '.result | "height \(.height) from \(.from) \(.kind) \(.status)", (.tx | @base64d | scan("req_[0-9a-f]{24}"))'
 
 # 2. the receipt: the paid inference behind the text, its ticket on chain and the wallet that paid
-curl -s https://api.64-95-12-116.sslip.io/v1/openai/requests/<req> | jq '.receipt | {request_id, wallet, ticket_id, rows, charged_lamports, text_sha256}'
+curl -s https://api.devnet.cadre.ag/v1/openai/requests/<req> | jq '.receipt | {request_id, wallet, ticket_id, rows, charged_lamports, text_sha256}'
 ```
 
 Re-derive whole files and diff them against a checkout:
@@ -136,7 +136,7 @@ The owner runs these (sessions here cannot restart services on the boxes):
 
 ```sh
 # on the Mac: copy the token to box 0 without printing it
-scp -i ~/.ssh/lode_devnet0 ~/.config/cadre/github-org-owner.token root@64.95.12.116:/tmp/agent-dump.token
+scp -i ~/.ssh/lode_devnet0 ~/.config/cadre/github-org-owner.token root@$BOX0_IP:/tmp/agent-dump.token   # BOX0_IP from deploy/devnet.env
 # on box 0 as root
 install -d -m 700 -o lode -g lode /etc/lode/keys/agent-dump
 install -m 600 -o lode -g lode /tmp/agent-dump.token /etc/lode/keys/agent-dump/github.token && shred -u /tmp/agent-dump.token

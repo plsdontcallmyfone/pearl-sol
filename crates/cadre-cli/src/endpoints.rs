@@ -42,7 +42,12 @@ pub struct Endpoints {
 
 pub const DEDICATED_RPC_FILE: &str = "/etc/lode/solana-rpc-url";
 
-const DEVNET_NODES: [&str; 3] = ["https://rpc.64-95-12-116.sslip.io", "https://rpc.64-95-13-213.sslip.io", "https://rpc.64-95-12-22.sslip.io"];
+/// The public devnet's domain (deploy/devnet.env DEVNET_DOMAIN; docs/REBUILD-2026-11.md "Hostnames").
+pub const DEVNET_DOMAIN: &str = "devnet.cadre.ag";
+/// Fill in after `devnet-deploy.sh relay-key 1` and `relay-key 2` (REBUILD-2026-11 Phase D6).
+const DEVNET_RELAY_PAYERS: &[&str] = &[];
+/// Box 0, 1 and 2 nodes.
+const DEVNET_NODES: [&str; 3] = ["https://rpc.devnet.cadre.ag", "https://rpc1.devnet.cadre.ag", "https://rpc2.devnet.cadre.ag"];
 
 /// Box-local services (127.0.0.1, deploy/systemd units and the port plan in CLAUDE.md).
 const LOCAL: &[(&str, &str)] = &[
@@ -69,12 +74,14 @@ impl Endpoints {
                         nodes.push(n.into());
                     }
                 }
-                put("api", "https://api.64-95-12-116.sslip.io/v1");
-                put("explorer", "https://explorer.64-95-12-116.sslip.io");
-                put("storefront", "https://storefront.64-95-12-116.sslip.io");
-                put("relayer", "https://relayer.64-95-12-116.sslip.io");
-                put("site", "https://cadre.64-95-12-116.sslip.io");
-                relay_payers = vec!["XQUUCs5tZaJrf4VMuKJRmUbA2gEV2M7uKWTQiSTe6Cy".into(), "E66ekRjfD9tjquu5F4qyRHt3y7AZhM9hsXY63KV4Ug7L".into()];
+                put("api", "https://api.devnet.cadre.ag/v1");
+                put("explorer", "https://explorer.devnet.cadre.ag");
+                put("storefront", "https://storefront.devnet.cadre.ag");
+                put("relayer", "https://relayer.devnet.cadre.ag");
+                put("site", "https://devnet.cadre.ag");
+                // header-relay fee payers of boxes 1 and 2: generated on the boxes by `devnet-deploy.sh relay-key`
+                // (REBUILD-2026-11 Phase D6); the old XQUUCs5t / E66ekRjf keys died with the old boxes
+                relay_payers = DEVNET_RELAY_PAYERS.iter().map(|s| s.to_string()).collect();
                 mint = Some("BwJqbsJUXshRj9ABxXs4RZ838kZrSqw8TT4CKMNfEu5e".into());
             }
             Network::Testbox => {
@@ -169,10 +176,30 @@ pub fn parse_endpoint(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// Short display name of a node URL: `rpc.64-95-12-116.sslip.io` -> `64-95-12-116`.
+/// Short display name of a node URL: `rpc1.devnet.cadre.ag` -> `rpc1`, `rpc.1-2-3-4.sslip.io` -> `1-2-3-4`,
+/// anything else -> its host.
 pub fn node_name(url: &str) -> String {
     let h = url.trim_start_matches("https://").trim_start_matches("http://");
     let h = h.split('/').next().unwrap_or(h);
-    let h = h.strip_prefix("rpc.").unwrap_or(h);
-    h.strip_suffix(".sslip.io").unwrap_or(h).to_string()
+    if let Some(ip) = h.strip_suffix(".sslip.io") {
+        return ip.strip_prefix("rpc.").unwrap_or(ip).to_string();
+    }
+    if let Some(name) = h.strip_suffix(&format!(".{DEVNET_DOMAIN}")) {
+        return name.to_string();
+    }
+    h.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_names_of_the_devnet_hosts() {
+        assert_eq!(node_name("https://rpc.devnet.cadre.ag"), "rpc");
+        assert_eq!(node_name("https://rpc2.devnet.cadre.ag/"), "rpc2");
+        assert_eq!(node_name("https://rpc.1-2-3-4.sslip.io"), "1-2-3-4");
+        assert_eq!(node_name("http://127.0.0.1:10630"), "127.0.0.1:10630");
+        assert!(DEVNET_NODES.iter().all(|n| n.ends_with(DEVNET_DOMAIN)));
+    }
 }

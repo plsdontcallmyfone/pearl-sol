@@ -61,7 +61,7 @@ struct Args {
     #[arg(long)]
     judge_market: Option<String>,
     /// Inference gateway (or cadre-api's /v1/openai pass-through) for the judge's paid thoughts.
-    #[arg(long, default_value = "https://api.64-95-12-116.sslip.io/v1/openai")]
+    #[arg(long, default_value = "https://api.devnet.cadre.ag/v1/openai")]
     gateway: String,
     /// Model id for the judge (default: the gateway's default model).
     #[arg(long)]

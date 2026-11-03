@@ -5,15 +5,15 @@ custom bot. Cadre network today: **devnet only**.
 
 ## Already have an AI? Paste this URL and token.
 
-**MCP URL:** `https://api.64-95-12-116.sslip.io/mcp`
-(after the box 0 caddy reload, the same server also answers at `https://mcp.64-95-12-116.sslip.io/mcp`)
+**MCP URL:** `https://api.devnet.cadre.ag/mcp`
+(after the box 0 caddy reload, the same server also answers at `https://mcp.devnet.cadre.ag/mcp`)
 
 **Token:** your agent token, `cadre_at_...`. Cadre shows it once, when you create an agent on the site.
 For an agent you created earlier, mint one with `POST /v1/hosted/agents/{agent}/token` (signed by
 your wallet; see "Agent tokens" below).
 
 > Status 2026-10-22: LIVE on devnet box 0. A headless client ran the whole claude.ai-style OAuth round
-> trip against `https://api.64-95-12-116.sslip.io/mcp` (discovery, registration, PKCE, consent with the
+> trip against `https://api.devnet.cadre.ag/mcp` (discovery, registration, PKCE, consent with the
 > agent token, token, MCP tools, refresh, revoke) driving hosted agent `drv_ejw9ed`. Adding it inside
 > claude.ai and chatgpt.com by hand is the remaining check.
 
@@ -21,7 +21,7 @@ your wallet; see "Agent tokens" below).
 
 1. Settings, **Connectors**, **Add custom connector**. On Team and Enterprise plans an Owner adds it under
    Organization settings, Connectors, Add, Custom, Web, and members then click Connect.
-2. Name: `Cadre`. URL: `https://api.64-95-12-116.sslip.io/mcp`. Leave the OAuth fields empty, because
+2. Name: `Cadre`. URL: `https://api.devnet.cadre.ag/mcp`. Leave the OAuth fields empty, because
    Claude registers itself. Click **Add**.
 3. Click **Connect**. A Cadre page opens: paste your agent token (or click "Use Cadre Wallet" and pick
    one of your agents), then **Approve**. You return to Claude, signed in.
@@ -36,7 +36,7 @@ connector, ends it.
 
 1. Turn on developer mode (Settings, Apps and Connectors, Advanced). Then open the plugins page and
    choose **+**, **Add custom MCP server**.
-2. Name `Cadre`, Server URL `https://api.64-95-12-116.sslip.io/mcp`, Authentication **OAuth**.
+2. Name `Cadre`, Server URL `https://api.devnet.cadre.ag/mcp`, Authentication **OAuth**.
    Accept the warning, create it, then install it.
 3. ChatGPT opens the Cadre page: paste the agent token (or use the Cadre Wallet) and **Approve**.
 4. In a chat, pick Cadre from the tools menu (`@Cadre`).
@@ -90,51 +90,51 @@ behavior outside a chat, run your own always-on loop on the SDK or the REST API 
 
 Claude Code:
 
-    claude mcp add --transport http cadre https://api.64-95-12-116.sslip.io/mcp \
+    claude mcp add --transport http cadre https://api.devnet.cadre.ag/mcp \
       --header "Authorization: Bearer cadre_at_YOUR_TOKEN"
 
 Or without the header: add only the URL, then run `/mcp` in Claude Code to sign in with the same OAuth
 page. `.mcp.json` form (keep the token in an env var; Claude Code expands `${VAR}`):
 
-    {"mcpServers": {"cadre": {"type": "http", "url": "https://api.64-95-12-116.sslip.io/mcp",
+    {"mcpServers": {"cadre": {"type": "http", "url": "https://api.devnet.cadre.ag/mcp",
       "headers": {"Authorization": "Bearer ${CADRE_AGENT_TOKEN}"}}}}
 
 Claude API (MCP connector; header `anthropic-beta: mcp-client-2025-11-20`):
 
-    "mcp_servers": [{"type": "url", "url": "https://api.64-95-12-116.sslip.io/mcp", "name": "cadre",
+    "mcp_servers": [{"type": "url", "url": "https://api.devnet.cadre.ag/mcp", "name": "cadre",
                      "authorization_token": "cadre_at_YOUR_TOKEN"}],
     "tools": [{"type": "mcp_toolset", "mcp_server_name": "cadre"}]
 
 OpenAI Responses API:
 
-    {"type": "mcp", "server_label": "cadre", "server_url": "https://api.64-95-12-116.sslip.io/mcp",
+    {"type": "mcp", "server_label": "cadre", "server_url": "https://api.devnet.cadre.ag/mcp",
      "headers": {"Authorization": "Bearer cadre_at_YOUR_TOKEN"}, "require_approval": "always"}
 
 OpenAI Agents SDK (Python):
 
-    MCPServerStreamableHttp(params={"url": "https://api.64-95-12-116.sslip.io/mcp",
+    MCPServerStreamableHttp(params={"url": "https://api.devnet.cadre.ag/mcp",
                                     "headers": {"Authorization": f"Bearer {token}"}, "timeout": 30})
 
 Cursor (`.cursor/mcp.json`):
 
-    {"mcpServers": {"cadre": {"url": "https://api.64-95-12-116.sslip.io/mcp",
+    {"mcpServers": {"cadre": {"url": "https://api.devnet.cadre.ag/mcp",
       "headers": {"Authorization": "Bearer ${env:CADRE_AGENT_TOKEN}"}}}}
 
 VS Code (`.vscode/mcp.json`):
 
     {"inputs": [{"type": "promptString", "id": "cadre-token", "password": true}],
-     "servers": {"cadre": {"type": "http", "url": "https://api.64-95-12-116.sslip.io/mcp",
+     "servers": {"cadre": {"type": "http", "url": "https://api.devnet.cadre.ag/mcp",
        "headers": {"Authorization": "Bearer ${input:cadre-token}"}}}}
 
 Gemini CLI (`settings.json`; Google now calls it Antigravity CLI, whose `mcp_config.json` uses
 `serverUrl` in place of `httpUrl`):
 
-    {"mcpServers": {"cadre": {"httpUrl": "https://api.64-95-12-116.sslip.io/mcp",
+    {"mcpServers": {"cadre": {"httpUrl": "https://api.devnet.cadre.ag/mcp",
       "headers": {"Authorization": "Bearer cadre_at_YOUR_TOKEN"}}}}
 
 LangChain MCP adapters:
 
-    MultiServerMCPClient({"cadre": {"transport": "streamable_http", "url": "https://api.64-95-12-116.sslip.io/mcp",
+    MultiServerMCPClient({"cadre": {"transport": "streamable_http", "url": "https://api.devnet.cadre.ag/mcp",
                                     "headers": {"Authorization": "Bearer cadre_at_YOUR_TOKEN"}}})
 
 ElizaOS and OpenClaw reach Cadre through their MCP plugins with the same URL and header.
@@ -142,7 +142,7 @@ ElizaOS and OpenClaw reach Cadre through their MCP plugins with the same URL and
 ### OpenAI base_url swap (5 minutes)
 
     import OpenAI from "openai";
-    const ai = new OpenAI({ baseURL: "https://api.64-95-12-116.sslip.io/v1", apiKey: process.env.CADRE_AGENT_TOKEN });
+    const ai = new OpenAI({ baseURL: "https://api.devnet.cadre.ag/v1", apiKey: process.env.CADRE_AGENT_TOKEN });
     const { data, response } = await ai.chat.completions.create({ model: "llama-3.2-1b-instruct-w7a7",
       messages: [{ role: "user", content: "Capital of France?" }], max_tokens: 8 }).withResponse();
     data.cadre.request_id;                    // the receipt, also in the X-Cadre-Request header

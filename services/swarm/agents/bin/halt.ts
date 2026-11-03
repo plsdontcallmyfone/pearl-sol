@@ -17,7 +17,7 @@ import { decodeHalt, HALT, STATUS_ARGS } from "../src/halt.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DEPLOY = join(here, "../../../../deploy/halt-devnet.json");
-const rpcUrl = process.env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io";
+const rpcUrl = process.env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag";
 const log = (event: string, x: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), event, ...x }));
 function arg(name: string, def?: string): string {
   const i = process.argv.indexOf(`--${name}`);

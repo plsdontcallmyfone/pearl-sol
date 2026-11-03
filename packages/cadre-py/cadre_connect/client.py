@@ -23,7 +23,7 @@ import urllib.request
 
 from ._ed25519 import Signer
 
-DEVNET = {"api": "https://api.64-95-12-116.sslip.io", "node": "https://rpc.64-95-12-116.sslip.io"}
+DEVNET = {"api": "https://api.devnet.cadre.ag", "node": "https://rpc.devnet.cadre.ag"}
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 

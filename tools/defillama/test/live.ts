@@ -8,7 +8,7 @@
 // A mismatch means the RPC no longer has part of the history (a pruned ledger), and is reported.
 //
 //   SOLANA_RPC=http://127.0.0.1:10600 npm run live [-- --from UNIX --to UNIX] [--strict]
-// With CADRE_API set (e.g. https://api.64-95-12-116.sslip.io, the public devnet) the all-time window
+// With CADRE_API set (e.g. https://api.devnet.cadre.ag, the public devnet) the all-time window
 // is also checked against what cadre-api reports from its own index of the same chain:
 //   holders revenue (storefront part) == /v1/buyback accrued_lamports
 //   holders revenue (mandate part)    == sum of fees_protocol over every Mandate account (the program's own

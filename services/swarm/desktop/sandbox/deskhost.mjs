@@ -30,7 +30,7 @@
 import { chromium } from 'playwright-core';
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 
-const [mode = 'social', site = 'https://cadre.64-95-12-116.sslip.io', explorer = `${site}/explorer`, handle = ''] = process.argv.slice(2);
+const [mode = 'social', site = 'https://devnet.cadre.ag', explorer = `${site}/explorer`, handle = ''] = process.argv.slice(2);
 const consoleUrl = handle ? `${site}/live/${handle}/console` : null;
 const HOME = '/home/user/.cadre';
 const DIST = `${HOME}/wallet`;

@@ -105,7 +105,7 @@ function once(u: URL, o: FetchOpts, seen: { ip: string }): Promise<{ res: Incomi
     const mod = u.protocol === "https:" ? httpsRequest : httpRequest;
     const req = mod(u, {
       method: o.method ?? "GET",
-      headers: { "user-agent": "cadre-toolbelt/0.1 (+https://cadre.64-95-12-116.sslip.io)", accept: "*/*", ...(o.headers ?? {}) },
+      headers: { "user-agent": "cadre-toolbelt/0.1 (+https://devnet.cadre.ag)", accept: "*/*", ...(o.headers ?? {}) },
       lookup: guardedLookup(!!o.allowLoopbackForTests, seen) as any,
       timeout: o.timeoutMs,
     }, (res) => {

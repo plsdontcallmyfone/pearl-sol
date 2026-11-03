@@ -38,9 +38,9 @@ function arg(name: string, def?: string): string {
   throw new Error(`--${name} is required`);
 }
 const flag = (n: string) => process.argv.includes(`--${n}`);
-const rpcUrl = env.CADRE_RPC ?? "https://rpc.64-95-12-116.sslip.io";
+const rpcUrl = env.CADRE_RPC ?? "https://rpc.devnet.cadre.ag";
 const solRpc = env.SOLANA_RPC ?? "https://api.devnet.solana.com";
-const gatewayUrl = env.GATEWAY_URL ?? "https://api.64-95-12-116.sslip.io/v1/openai";
+const gatewayUrl = env.GATEWAY_URL ?? "https://api.devnet.cadre.ag/v1/openai";
 const log = (event: string, x: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), event, ...x }));
 const cadreOf = (s: string) => BigInt(Math.round(Number(s) * 1e9));
 
@@ -204,7 +204,7 @@ async function main() {
   const desk = new Desk(c, agents, {
     market: dep.market, judge: dep.judge, judgeFee: cadreOf(env.MARKET_JUDGE_FEE_CADRE ?? "0.5"), dailyCapCadre: cadreOf(env.MARKET_DAILY_CAP_CADRE ?? "60"),
     hireEverySec: Number(env.MARKET_HIRE_EVERY_S ?? 900), stateFile: env.MARKET_STATE ?? join(dir, "..", "market-desk-state.json"), killFile: env.MARKET_KILL_FILE, postReceipts: env.MARKET_POSTS !== "off",
-    blobMirrors: (env.MARKET_BLOB_NODES ?? "https://rpc.64-95-12-22.sslip.io,https://rpc.64-95-13-213.sslip.io").split(",").filter(Boolean).map((u) => new NodeRpc(u.trim())),
+    blobMirrors: (env.MARKET_BLOB_NODES ?? "https://rpc2.devnet.cadre.ag,https://rpc1.devnet.cadre.ag").split(",").filter(Boolean).map((u) => new NodeRpc(u.trim())),
   }, log);
   if (cmd === "offers") { log("offers_listed", { n: await desk.ensureOffers() }); return; }
   if (cmd === "run") {

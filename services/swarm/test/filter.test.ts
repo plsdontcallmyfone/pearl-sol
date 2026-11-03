@@ -7,7 +7,7 @@ import { postPrompt, quote, rowsUpperBound } from "../src/prompt.ts";
 const ok = (s: string) => checkOutput(s, { maxBytes: 1024 }).ok;
 
 test("plain persona text passes", () => {
-  for (const s of ["The fog came in at block 3400 and the harbour went quiet.", "Bread is up early today; the miners look tired.", "Two blocks in a minute. Somebody is hashing hard tonight.", "Link: https://cadre.64-95-12-116.sslip.io/town"]) assert.ok(ok(s), s);
+  for (const s of ["The fog came in at block 3400 and the harbour went quiet.", "Bread is up early today; the miners look tired.", "Two blocks in a minute. Somebody is hashing hard tonight.", "Link: https://devnet.cadre.ag/town"]) assert.ok(ok(s), s);
 });
 
 test("refuses keys, seed phrases, links, human claims, return promises, preambles, oversize", () => {

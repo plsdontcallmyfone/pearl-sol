@@ -470,30 +470,30 @@ the deploy below.
 **Launches + halt (2026-10-22), box 0, one at a time** (no node change; cadre-api and cadre-agents only):
 
 1. `scripts/devnet-deploy.sh sync` from a fresh clone of GitHub main.
-2. cadre-api: `sudo systemctl restart cadre-api`; checks: `curl -s https://api.64-95-12-116.sslip.io/v1/halt | jq -r .contract`
-   = `88uaR3ea...`; `curl -s https://api.64-95-12-116.sslip.io/v1/l/JS2uWxJieF5EcJy3EakM3yGyPVB42tKN8UA7ibRQwJp | jq -r .symbol`
-   = `CLTEST`; `curl -s https://api.64-95-12-116.sslip.io/v1/launches | jq .total` is a number;
-   `curl -s https://api.64-95-12-116.sslip.io/v1/trading | jq '.volume.solana_lamports | keys'` lists organic, house, self_trade;
+2. cadre-api: `sudo systemctl restart cadre-api`; checks: `curl -s https://api.devnet.cadre.ag/v1/halt | jq -r .contract`
+   = `88uaR3ea...`; `curl -s https://api.devnet.cadre.ag/v1/l/JS2uWxJieF5EcJy3EakM3yGyPVB42tKN8UA7ibRQwJp | jq -r .symbol`
+   = `CLTEST`; `curl -s https://api.devnet.cadre.ag/v1/launches | jq .total` is a number;
+   `curl -s https://api.devnet.cadre.ag/v1/trading | jq '.volume.solana_lamports | keys'` lists organic, house, self_trade;
    `/v1/ready` 200. Rollback: `git -C ~/pearl-sol checkout <previous main>` then restart.
    Restore CLTEST's metadata into the durable store (once, after this cadre-api runs):
-   `curl -s -X POST -H 'content-type: application/json' --data-binary @deploy/launch-meta/04772db196d6880bfc31da5a1db1817aa5323fedf34da1cda1ffbe7a5ae6c639.json https://api.64-95-12-116.sslip.io/v1/launches/metadata | jq -r .id`
+   `curl -s -X POST -H 'content-type: application/json' --data-binary @deploy/launch-meta/04772db196d6880bfc31da5a1db1817aa5323fedf34da1cda1ffbe7a5ae6c639.json https://api.devnet.cadre.ag/v1/launches/metadata | jq -r .id`
    = `04772db1...` (run from the repo root; it returns the same id because the bytes are the same),
    then `ls /var/lib/lode/cadre-api/launch-meta/` on box 0 shows that file.
 3. cadre-agents: `sudo systemctl restart cadre-agents`; check `journalctl -u cadre-agents -n 30 --no-pager | grep halt_record`
    shows `"contract":"88uaR3ea..."` (it reads deploy/halt-devnet.json from the checkout; `AGENTS_HALT_CONTRACT=off`
    in its env disables it). Rollback as above.
 
-**Phase 4b (sovereign agents, user-agent trading), box 0 (64.95.12.116), one at a time:**
+**Phase 4b (sovereign agents, user-agent trading), box 0, one at a time:**
 
 1. `scripts/devnet-deploy.sh sync` (box 0 ~/pearl-sol to GitHub main; it refuses an unpushed local main).
 2. `cd ~/pearl-sol/services/swarm/trading && npm ci` (the trading engine's one dependency, needed
    by cadre-agents for v2 trading agents).
 3. cadre-api: `sudo systemctl restart cadre-api`; check
-   `curl -s https://api.64-95-12-116.sslip.io/v1/trading/leaderboard | jq '.user_agents | type'` = `"array"`,
-   `curl -s 'https://api.64-95-12-116.sslip.io/v1/pump/quote?side=buy&sol_in=1000000' | jq .mint`
+   `curl -s https://api.devnet.cadre.ag/v1/trading/leaderboard | jq '.user_agents | type'` = `"array"`,
+   `curl -s 'https://api.devnet.cadre.ag/v1/pump/quote?side=buy&sol_in=1000000' | jq .mint`
    = the CADRE mint, `/v1/ready` 200. Rollback: `git -C ~/pearl-sol checkout <previous main>` then restart.
 4. cadre-agents: `sudo systemctl restart cadre-agents`; check
-   `curl -s https://api.64-95-12-116.sslip.io/v1/hosted | jq -r .trust` starts with "Hosted agents are
+   `curl -s https://api.devnet.cadre.ag/v1/hosted | jq -r .trust` starts with "Hosted agents are
    sovereign", and `journalctl -u cadre-agents -n 20` shows the legacy agent ticking. Rollback as above.
 5. Site: `scripts/devnet-deploy.sh site` from a fresh clone with `CADRE_WEB=~/cadre-web` at cadre-web
    main (58cacc6 or later); check `/agents/new`, `/agents/mine`, `/trade` answer 200.
@@ -502,14 +502,14 @@ the deploy below.
 
 The earlier steps for Phase 4 follow.
 
-Box 0 (64.95.12.116), one at a time, health checks between:
+Box 0, one at a time, health checks between:
 
 1. `scripts/devnet-deploy.sh sync` (box 0 ~/pearl-sol to main, which has the trading routes and
    deploy/trading-*.json).
-2. cadre-api: `sudo systemctl restart cadre-api`; check `curl -s https://api.64-95-12-116.sslip.io/v1/trading | jq .venues.solana.program`
+2. cadre-api: `sudo systemctl restart cadre-api`; check `curl -s https://api.devnet.cadre.ag/v1/trading | jq .venues.solana.program`
    = `"BG5WkxZy..."` and `/v1/ready` 200. Rollback: `git -C ~/pearl-sol checkout <previous main>` then restart.
 3. Site: `scripts/devnet-deploy.sh site` (cadre-web main has /trade and the Trading tab); check
-   `curl -s -o /dev/null -w '%{http_code}' https://cadre.64-95-12-116.sslip.io/trade` = 200.
+   `curl -s -o /dev/null -w '%{http_code}' https://devnet.cadre.ag/trade` = 200.
 4. Move the house traders from the test box to box 0 (optional, lower latency to the gateway):
    copy `keys/devnet/trading/*.json` to `/etc/lode/keys/trading/` (0600, user lode), install
    `deploy/systemd/cadre-trading.service`, `cd ~/pearl-sol/services/swarm/trading && npm ci`,

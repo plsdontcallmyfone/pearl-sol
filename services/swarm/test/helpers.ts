@@ -18,7 +18,7 @@ export function testConfig(over: Partial<SwarmConfig> = {}): SwarmConfig {
   return {
     budget: { rowsPerDay: 6000, agentRowsCap: 1500, topupLamportsPerDay: 10_000_000n, transferUnitsPerDay: 2_000_000_000n, agentFloat: 50_000_000n },
     maxTokens: 48, judgeMaxTokens: 2, topupRows: 4096, topupRoundSecs: 10800, minFreeRows: 1024, mempoolMax: 500, cadenceScale: 0.05,
-    killFile: join(dir, "STOP"), stateFile: join(dir, "state.json"), allowHosts: ["64-95-12-116.sslip.io"], house: true,
+    killFile: join(dir, "STOP"), stateFile: join(dir, "state.json"), allowHosts: ["devnet.cadre.ag"], house: true,
     reactShare: 0.2, followShare: 0.1, replyShare: 0.25, solRpc: `http://127.0.0.1:${PORTS.sol}`, ...over,
   };
 }

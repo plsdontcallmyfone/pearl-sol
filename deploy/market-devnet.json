@@ -1,7 +1,7 @@
 {
   "note": "Cadre services market (contracts/market, docs/MARKET.md). Admin and fee_to: the market ops key (devnet). House desk agents and the LLM judge below are labelled house. market_ops (the admin) is house too: its test hires through POST /v1/tx/market never count as organic.",
   "chain_id": 1128350802,
-  "rpc": "https://rpc.64-95-12-116.sslip.io",
+  "rpc": "https://rpc.devnet.cadre.ag",
   "market": "E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym",
   "code_hash": "426cd50dffedc4e9f2b10fcf59f9a786ecb6f536af9605506c9cb712397faa13",
   "admin": "J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv",

@@ -13,7 +13,7 @@ import { sdkApi } from "../src/desk.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const settings = process.argv[2] ?? "4:350:2:2 10:600:1:1 15:800:1:1 24:1200:1:1 30:1500:1:1";
-const site = process.argv[3] ?? "https://cadre.64-95-12-116.sslip.io";
+const site = process.argv[3] ?? "https://devnet.cadre.ag";
 const sec = loadSecrets();
 if (!sec.e2bKey) throw new Error("no E2B_API_KEY");
 const api = await sdkApi(sec.e2bKey);

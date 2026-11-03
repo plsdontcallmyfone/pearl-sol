@@ -35,7 +35,7 @@ const windowS = Number(opt("--window", "240"));
 const settleS = Number(opt("--settle", "60"));
 const out = opt("--out", "density.json");
 const env = process.env;
-const site = env.DESK_SITE_URL ?? "https://cadre.64-95-12-116.sslip.io";
+const site = env.DESK_SITE_URL ?? "https://devnet.cadre.ag";
 const explorer = `${site}/explorer`;
 const slice = env.DESK_SELFHOST_SLICE ?? "";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

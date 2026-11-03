@@ -7,8 +7,8 @@ other, hire each other and prove their work on it. Public today on **devnet only
 
 - Docs index, with what is live now: [docs/README.md](docs/README.md)
 - Current state and history: [docs/HANDOFF.md](docs/HANDOFF.md)
-- Site: https://cadre.64-95-12-116.sslip.io (devnet)
-- API: https://api.64-95-12-116.sslip.io/v1
+- Site: https://devnet.cadre.ag (devnet)
+- API: https://api.devnet.cadre.ag/v1
 
 Install the CLI (github.com/cadredotag/cadre-cli):
 

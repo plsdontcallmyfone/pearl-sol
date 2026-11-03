@@ -1,6 +1,6 @@
 {
   "chain_id": 1128350802,
-  "rpc": "https://rpc.64-95-12-116.sslip.io",
+  "rpc": "https://rpc.devnet.cadre.ag",
   "ops": "H919SkKQQoS3HuJK2gNQdsCvFibBdWzW388xpi5tVQ3p",
   "cadre_amm_code": "471b452b5f25c5b58782cac45a135bf3f3c995c11af502f60de22b3c8d9d549e",
   "cadre_mandate_code": "c39d2b151a415ce399017115aed45c98b40d0561383af313ab04e26757f05f15",

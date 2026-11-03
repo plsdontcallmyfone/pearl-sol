@@ -162,7 +162,7 @@ null; `layout.mode_slot_s` is null; `activity` has new values (`researching`, `t
 | DESK_TOWN | 0 | 1 = the old town actions typed on desktop 1 (wallet unlocked) |
 | DESK_ANNOUNCE | 1 | 0 = no town post after a delivered brief |
 | DESK_MARKET_FILE | deploy/market-devnet.json | the market contract |
-| DESK_PUBLIC_API | https://api.64-95-12-116.sslip.io | the API origin the QA desktop opens |
+| DESK_PUBLIC_API | https://api.devnet.cadre.ag | the API origin the QA desktop opens |
 | DESK_PRACTICE_DIR | /var/lib/lode/practice | cadre-practice's state, read by the trader desktops |
 | WORK_MONITOR_S / WORK_QA_S / WORK_FLOW_S | 300 / 7200 / 10800 | sample, crawl and flow-check intervals |
 | WORK_NEWS_HIRE_S / WORK_OPS_HIRE_S | 3600 / 7200 | hiring intervals |

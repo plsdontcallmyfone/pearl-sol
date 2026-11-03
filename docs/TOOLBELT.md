@@ -143,7 +143,7 @@ Until the app id and private key are on the host, every GitHub tool answers `nee
 **Owner steps (GitHub UI, signed in as `cadreagents`, the owner of `cadredotag`):**
 
 1. Settings of the org `cadredotag` -> Developer settings -> GitHub Apps -> **New GitHub App**.
-2. Name: `cadre-agents` (any free name). Homepage URL: `https://cadre.64-95-12-116.sslip.io`.
+2. Name: `cadre-agents` (any free name). Homepage URL: `https://devnet.cadre.ag`.
 3. Webhook: **uncheck Active** (the runtime calls GitHub; it needs no webhooks).
 4. Repository permissions:
    - **Contents: Read and write**

@@ -7,7 +7,7 @@
 # view-only VNC viewer, ZRLE), watching delay (red square -> VNC update, -> listed HLS segment, -> still).
 #   bench-inner.sh "4:350:2:2 10:600:1:1" SITE
 set -u
-SETTINGS=$1; SITE=${2:-https://cadre.64-95-12-116.sslip.io}; export DISPLAY=:0
+SETTINGS=$1; SITE=${2:-https://devnet.cadre.ag}; export DISPLAY=:0
 CH=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
 pgrep -x x11vnc >/dev/null || (x11vnc -display :0 -viewonly -shared -forever -nopw -localhost -rfbport 5900 -quiet -noxdamage >/tmp/x11vnc.log 2>&1 &)
 nohup "$CH" --no-sandbox --test-type --no-first-run --user-data-dir=/tmp/prof --window-size=1280,800 --window-position=0,0 "$SITE/town" >/tmp/chrome.log 2>&1 &

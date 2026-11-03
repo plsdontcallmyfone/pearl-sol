@@ -10,11 +10,14 @@ set -uo pipefail
 LOG_DIR="${LOGS_DIRECTORY:-${LOG_DIR:-/var/log/cadre-health}}"
 STATE_DIR="${STATE_DIRECTORY:-${STATE_DIR:-/var/lib/cadre-health}}"
 mkdir -p "$LOG_DIR" "$STATE_DIR"
-NODES="${NODES:-https://rpc.64-95-12-116.sslip.io https://rpc.64-95-13-213.sslip.io https://rpc.64-95-12-22.sslip.io}"
-API="${API:-https://api.64-95-12-116.sslip.io/v1}"
-# header-relay fee payers (public keys, docs/DEVNET.md "Keys on the boxes")
-RELAY_PAYERS="${RELAY_PAYERS:-XQUUCs5tZaJrf4VMuKJRmUbA2gEV2M7uKWTQiSTe6Cy E66ekRjfD9tjquu5F4qyRHt3y7AZhM9hsXY63KV4Ug7L}"
-SITES="${SITES:-rpc.64-95-12-116.sslip.io rpc.64-95-13-213.sslip.io rpc.64-95-12-22.sslip.io api.64-95-12-116.sslip.io explorer.64-95-12-116.sslip.io storefront.64-95-12-116.sslip.io relayer.64-95-12-116.sslip.io cadre.64-95-12-116.sslip.io}"
+# public names (deploy/devnet.env DEVNET_DOMAIN, docs/REBUILD-2026-11.md "Hostnames")
+DOMAIN="${DEVNET_DOMAIN:-devnet.cadre.ag}"
+NODES="${NODES:-https://rpc.$DOMAIN https://rpc1.$DOMAIN https://rpc2.$DOMAIN}"
+API="${API:-https://api.$DOMAIN/v1}"
+# header-relay fee payers (public keys, docs/DEVNET.md "Keys on the boxes"): made on boxes 1 and 2 by
+# `devnet-deploy.sh relay-key` (REBUILD-2026-11 Phase D6); set them in /etc/lode/health.env
+RELAY_PAYERS="${RELAY_PAYERS:-}"
+SITES="${SITES:-rpc.$DOMAIN rpc1.$DOMAIN rpc2.$DOMAIN api.$DOMAIN mcp.$DOMAIN explorer.$DOMAIN storefront.$DOMAIN relayer.$DOMAIN $DOMAIN app.$DOMAIN}"
 MAX_HEIGHT_SPREAD="${MAX_HEIGHT_SPREAD:-3}"      # blocks between the highest and lowest node
 MAX_LC_BEHIND_FINAL="${MAX_LC_BEHIND_FINAL:-120}" # light client final vs chain tip, blocks
 MIN_RELAY_SOL="${MIN_RELAY_SOL:-1}"               # relay payer balance floor, SOL
@@ -36,7 +39,7 @@ if [[ ${HEALTH_SECTIONS:-all} == all ]]; then
 heights=()
 for u in $NODES; do
   r="$(rpc "$u" getChainInfo | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; print(r["height"], r["finalized_height"], r["peers"])' 2>/dev/null)"
-  name="${u#https://}"; name="${name#rpc.}"; name="${name%.sslip.io}"
+  name="${u#https://}"; name="${name%%/*}"; name="${name%".$DOMAIN"}"
   if [[ -z $r ]]; then emit FAIL "node:$name" "no answer"; continue; fi
   read -r h f p <<<"$r"; heights+=("$h")
   lvl=OK; [[ $p -lt 1 ]] && lvl=WARN
@@ -60,6 +63,7 @@ if [[ -z $lc ]]; then emit FAIL light_client "cadre-api summary did not answer";
 fi
 
 # 3. relay payer balances (Solana devnet)
+[[ -z $RELAY_PAYERS ]] && emit WARN relay_sol "no RELAY_PAYERS configured (/etc/lode/health.env)"
 for k in $RELAY_PAYERS; do
   lam="$(curl -s -m 10 -X POST "$SOLANA_RPC" -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"$k\"]}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["value"])' 2>/dev/null)"
   if [[ -z $lam ]]; then emit WARN "relay_sol:${k:0:6}" "balance read failed"; continue; fi
@@ -83,9 +87,9 @@ emit "$lvl" disk "${free_pct}% free on /"
 # 6. certificates
 for s in $SITES; do
   end="$(echo | timeout 10 openssl s_client -servername "$s" -connect "$s:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"
-  if [[ -z $end ]]; then emit FAIL "cert:${s%.sslip.io}" "no certificate read"; continue; fi
+  if [[ -z $end ]]; then emit FAIL "cert:${s%".$DOMAIN"}" "no certificate read"; continue; fi
   days=$(( ($(date -d "$end" +%s) - $(date +%s)) / 86400 )); lvl=OK; (( days < MIN_CERT_DAYS )) && lvl=WARN
-  emit "$lvl" "cert:${s%.sslip.io}" "$days days left"
+  emit "$lvl" "cert:${s%".$DOMAIN"}" "$days days left"
 done
 
 # 7. the Cadre CLI's checks when its binary is installed (docs/CLI.md "status"): finalized-hash

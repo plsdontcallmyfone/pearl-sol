@@ -14,9 +14,9 @@ import { ORDER_LAYOUT, ORDER_STATUS_FINALIZED, STOREFRONT_PROGRAM_ID, orderPda }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env = process.env;
-const DASH = env.BOX0_IP!.replaceAll(".", "-");
-const API = env.INF_API ?? `https://api.${DASH}.sslip.io`;
-const NODE_RPC = `https://rpc.${DASH}.sslip.io`;
+const DOMAIN = env.DEVNET_DOMAIN!; // deploy/devnet.env (docs/REBUILD-2026-11.md "Hostnames")
+const API = env.INF_API ?? `https://api.${DOMAIN}`;
+const NODE_RPC = `https://rpc.${DOMAIN}`;
 const conn = new Connection(env.SOLANA_RPC!, "confirmed");
 const OUT = resolve(ROOT, ".devnet-e2e");
 mkdirSync(resolve(OUT, "keys"), { recursive: true });

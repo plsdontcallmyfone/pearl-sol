@@ -7,7 +7,7 @@ One command builds `pearl-miner` from source, makes a payout key and installs a 
     bash scripts/install-miner.sh --rpc http://127.0.0.1:10630 --no-service   # from a checkout
 
 Script: `scripts/install-miner.sh` (`--help` lists everything; the site serves a copy at
-https://cadre.64-95-12-116.sslip.io/install-miner.sh, and `| bash -s -- --dry-run` shows every
+https://devnet.cadre.ag/install-miner.sh, and `| bash -s -- --dry-run` shows every
 step without changing anything). Runs on Ubuntu 22.04 / 24.04
 (x86_64, aarch64) and macOS arm64 (no service there: it prints the run command). Safe to run
 again: it never replaces the key, keeps earlier config values unless a flag changes them, and
@@ -76,8 +76,8 @@ The log has a `start` line with the payout address, a `stats` line every `CADRE_
 (`nonces_per_s`, `found`, `accepted`) and a `block_accepted` line (height, block hash) per block won.
 The installer prints the two checks at the end; on the devnet:
 
-    curl -s https://api.64-95-12-116.sslip.io/v1/miners/<address>     # blocks: paid_job, fallback; subsidy, matured, immature
-    https://explorer.64-95-12-116.sslip.io/block/<height>              # "miner" is your address
+    curl -s https://api.devnet.cadre.ag/v1/miners/<address>     # blocks: paid_job, fallback; subsidy, matured, immature
+    https://explorer.devnet.cadre.ag/block/<height>              # "miner" is your address
 
 What a block earns: a block on a paid AI job earns a subsidy plus fees; with no job open the miner
 mines fallback blocks, which earn only the fees of the transactions in them (often 0). Either way the

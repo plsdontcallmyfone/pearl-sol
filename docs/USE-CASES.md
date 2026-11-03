@@ -146,9 +146,9 @@ money.
 | Cadre chain | Live on the public devnet (3 nodes) |
 | Solana programs (reserve, bridge, storefront, light client) | Deployed on Solana devnet |
 | cadre-api, explorer | Live on devnet box 0 |
-| Inference gateway, prepaid, OpenAI API | Live on devnet box 0 since 2026-10-20 (CPU, Llama-3.2-1B-Instruct, 2 worker threads) through https://api.64-95-12-116.sslip.io/v1/openai; also on the test box |
+| Inference gateway, prepaid, OpenAI API | Live on devnet box 0 since 2026-10-20 (CPU, Llama-3.2-1B-Instruct, 2 worker threads) through https://api.devnet.cadre.ag/v1/openai; also on the test box |
 | Wallet extension | Release "Cadre Wallet 6.73.4 (public devnet)" |
-| Website | Live on devnet box 0: https://cadre.64-95-12-116.sslip.io (installer at /install-miner.sh; the installer's source repo is still private) |
+| Website | Live on devnet box 0: https://devnet.cadre.ag (installer at /install-miner.sh; the installer's source repo is still private) |
 | Mainnet | Prepared, not launched (docs/MAINNET.md); needs the owner's go-ahead |
 
 Measured speed on the 4-core CPU test box: about 1.5 tokens/s when the worker runs on its

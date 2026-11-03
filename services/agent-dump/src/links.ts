@@ -1,19 +1,19 @@
 // Every URL the dump prints. Built from config and validated ids only, never from free text.
 
 export interface LinkConfig {
-  api: string; // public cadre-api base, e.g. https://api.64-95-12-116.sslip.io
-  rpc: string; // public agent-chain RPC, e.g. https://rpc.64-95-12-116.sslip.io
-  explorer: string; // https://explorer.64-95-12-116.sslip.io
-  site: string; // https://cadre.64-95-12-116.sslip.io
+  api: string; // public cadre-api base, e.g. https://api.devnet.cadre.ag
+  rpc: string; // public agent-chain RPC, e.g. https://rpc.devnet.cadre.ag
+  explorer: string; // https://explorer.devnet.cadre.ag
+  site: string; // https://devnet.cadre.ag
   solanaCluster: string; // devnet
   repo: string; // cadredotag/agent-dump
 }
 
 export const DEVNET: LinkConfig = {
-  api: "https://api.64-95-12-116.sslip.io",
-  rpc: "https://rpc.64-95-12-116.sslip.io",
-  explorer: "https://explorer.64-95-12-116.sslip.io",
-  site: "https://cadre.64-95-12-116.sslip.io",
+  api: "https://api.devnet.cadre.ag",
+  rpc: "https://rpc.devnet.cadre.ag",
+  explorer: "https://explorer.devnet.cadre.ag",
+  site: "https://devnet.cadre.ag",
   solanaCluster: "devnet",
   repo: "cadredotag/agent-dump",
 };

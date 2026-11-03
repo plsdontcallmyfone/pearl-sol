@@ -128,7 +128,7 @@ test("receipts: Merkle root, per-leaf proofs, and tamper detection", () => {
 
 test("network guard: private, loopback, metadata and odd ports are refused; allowlists hold", async () => {
   for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "224.0.0.1"]) assert.ok(isBlockedIp(ip), ip);
-  for (const ip of ["8.8.8.8", "64.95.12.116", "2606:4700::1111"]) assert.ok(!isBlockedIp(ip), ip);
+  for (const ip of ["8.8.8.8", "1.1.1.1", "2606:4700::1111"]) assert.ok(!isBlockedIp(ip), ip);
   // security review 2026-10-23: IPv4 embedded in IPv6 in other spellings (hex mapped, compatible, translated, 6to4)
   for (const ip of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::127.0.0.1", "::7f00:1", "::ffff:0:7f00:1", "0:0:0:0:0:ffff:10.0.0.1", "2002:7f00:1::", "2002:a9fe:a9fe::1", "fe80::1%eth0"]) assert.ok(isBlockedIp(ip), ip);
   for (const ip of ["::ffff:808:808", "2002:808:808::1"]) assert.ok(!isBlockedIp(ip), ip);

@@ -40,12 +40,14 @@
 set -euo pipefail
 
 main() {
-  DEFAULT_RPC="https://rpc.64-95-12-116.sslip.io"
+  DEFAULT_RPC="https://rpc.devnet.cadre.ag"
   # The three public devnet nodes (docs/DEVNET.md), one chain: written together so pearl-miner
   # fails over between them. DEVNET_GENESIS tells whether a given --rpc serves this chain.
-  DEVNET_RPCS=("$DEFAULT_RPC" "https://rpc.64-95-13-213.sslip.io" "https://rpc.64-95-12-22.sslip.io")
-  DEVNET_GENESIS="51c86b676bfd1b9f0877e6994cff95ab92cc1f2c784b39fc943b8b0d4d52028a"
-  DEFAULT_API="https://api.64-95-12-116.sslip.io"   # cadre-api of the same devnet (miner lookups)
+  DEVNET_RPCS=("$DEFAULT_RPC" "https://rpc1.devnet.cadre.ag" "https://rpc2.devnet.cadre.ag")
+  # the new chain (chain_id 1128350803, 2026-11 rebuild) has no genesis hash until node 0 starts:
+  # set it then (docs/REBUILD-2026-11.md Phase D11). The placeholder matches no node.
+  DEVNET_GENESIS="TBD_NEW_GENESIS_HASH"
+  DEFAULT_API="https://api.devnet.cadre.ag"   # cadre-api of the same devnet (miner lookups)
   DEFAULT_REPO="https://github.com/plsdontcallmyfone/pearl-sol.git"
   TOOLCHAIN="1.95.0"
   CADRE_HOME="${CADRE_HOME:-$HOME/.cadre}"

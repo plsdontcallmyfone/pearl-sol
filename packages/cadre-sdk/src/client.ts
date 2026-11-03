@@ -12,7 +12,7 @@ import { encodeWindowBody, signed, signingBytes, framed } from "./txs.ts";
 import { signSolanaTx, simulateOutflow, txSignature } from "./solana.ts";
 
 export const NETWORKS = {
-  devnet: { api: "https://api.64-95-12-116.sslip.io", node: "https://rpc.64-95-12-116.sslip.io", solana: "https://api.devnet.solana.com", cluster: "devnet" },
+  devnet: { api: "https://api.devnet.cadre.ag", node: "https://rpc.devnet.cadre.ag", solana: "https://api.devnet.solana.com", cluster: "devnet" },
 } as const;
 
 export class CadreError extends Error {
