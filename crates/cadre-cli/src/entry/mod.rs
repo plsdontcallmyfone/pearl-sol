@@ -258,6 +258,9 @@ pub struct Launch {
     pub start: ViewId,
 }
 
+/// Two Esc presses this close together clear the Home prompt.
+const ESC_CLEAR: Duration = Duration::from_millis(800);
+
 pub(crate) struct App {
     ctx: Arc<Ctx>,
     net: Net,
@@ -295,6 +298,8 @@ pub(crate) struct App {
     mode: usize,
     input: Vec<char>,
     cur: usize,
+    /// When Esc was last pressed on a non-empty prompt; a second Esc within ESC_CLEAR clears it.
+    esc_at: Option<Instant>,
     transcript: Vec<Entry>,
     scroll: usize,
     history: Vec<Value>,
@@ -412,6 +417,7 @@ impl App {
             mode: 0,
             input: vec![],
             cur: 0,
+            esc_at: None,
             transcript: vec![],
             scroll: 0,
             history: vec![],
@@ -1228,7 +1234,15 @@ impl App {
         true
     }
 
+    /// True while one Esc on a typed prompt is waiting for the second one that clears it.
+    pub(crate) fn esc_armed(&self) -> bool {
+        !self.input.is_empty() && self.esc_at.is_some_and(|t| t.elapsed() < ESC_CLEAR)
+    }
+
     fn home_key(&mut self, k: KeyEvent, ctrl: bool) {
+        if k.code != KeyCode::Esc {
+            self.esc_at = None;
+        }
         match k.code {
             KeyCode::Esc => {
                 if self.quote.take().is_some() {
@@ -1236,6 +1250,13 @@ impl App {
                 } else if self.input.is_empty() {
                     // the toggle: back to the last view, exactly as it was
                     self.go(self.last_view);
+                } else if self.esc_armed() {
+                    // second Esc: clear what was typed
+                    self.input.clear();
+                    self.cur = 0;
+                    self.esc_at = None;
+                } else {
+                    self.esc_at = Some(Instant::now());
                 }
             }
             KeyCode::Char('l') if ctrl => {
@@ -2364,6 +2385,36 @@ mod tests {
         assert_eq!(a.view, ViewId::Boards);
         a.key(k(KeyCode::Char('w'), KeyModifiers::NONE));
         assert_eq!(a.boards_v.window(), "all");
+    }
+
+    /// Owner 2026-11-03: Esc twice clears the typed prompt; one Esc only arms it (with a hint),
+    /// any other key disarms, and Esc on an empty prompt still goes back to the last view.
+    #[test]
+    fn double_esc_clears_the_prompt() {
+        let k = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+        let mut a = test_app();
+        assert_eq!(a.view, ViewId::Home);
+        for c in "hello".chars() {
+            a.key(k(KeyCode::Char(c)));
+        }
+        a.key(k(KeyCode::Esc));
+        assert_eq!(a.input.iter().collect::<String>(), "hello", "one Esc keeps the text");
+        assert!(a.esc_armed());
+        assert!(rows(&render(&a, 120, 40)).join("\n").contains("esc again to clear"));
+        // another key disarms, so the next Esc only arms again
+        a.key(k(KeyCode::Char('!')));
+        assert!(!a.esc_armed());
+        a.key(k(KeyCode::Esc));
+        assert_eq!(a.input.len(), 6);
+        a.key(k(KeyCode::Esc));
+        assert!(a.input.is_empty() && a.cur == 0, "two Esc clear it");
+        assert_eq!(a.view, ViewId::Home, "clearing does not leave Home");
+        // an Esc that arrives too late only arms
+        a.key(k(KeyCode::Char('x')));
+        a.key(k(KeyCode::Esc));
+        a.esc_at = Some(Instant::now() - ESC_CLEAR - Duration::from_millis(1));
+        a.key(k(KeyCode::Esc));
+        assert_eq!(a.input.iter().collect::<String>(), "x");
     }
 
     /// Owner 2026-10-21: "if i toggle the dashboard it shouldn't reset". Ask something on
