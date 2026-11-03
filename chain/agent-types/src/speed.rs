@@ -21,7 +21,8 @@
 use crate::codec::{R, W};
 use crate::{blake3_hash, DecodeError, Hash, Header, Pubkey};
 
-/// Cadre public devnet chain id (deploy/genesis.json).
+/// The first Cadre public devnet (gone 2026-11-01); its schedule only. The rebuilt devnet
+/// (`tx::DEVNET2_CHAIN_ID`, docs/REBUILD-2026-11.md D2) has every rule from genesis.
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Height of the block whose execution migrates the devnet to 30 s blocks (docs/SPEED.md 3.1).
 pub const DEVNET_SPEED_HEIGHT: u64 = 6000;

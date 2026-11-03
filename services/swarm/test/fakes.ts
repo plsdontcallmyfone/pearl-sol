@@ -35,7 +35,7 @@ function serve(port: number, h: (method: string, url: string, headers: Record<st
 }
 
 export class FakeNode {
-  chainId = 1128350802;
+  chainId = 1128350803;
   height = 5000;
   params: any = { min_fee: "1000", social_min_fee: "1000", social_byte_fee: "2", post_inline_max: 1024, house_operators: [] as string[], target_block_time_ms: 5000 };
   dmActive = true;

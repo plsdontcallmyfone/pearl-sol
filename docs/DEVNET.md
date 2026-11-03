@@ -12,23 +12,30 @@ box), upgraded in place (rolling, chain kept finalizing) to commit fe8e04a, whic
 from the same commit, initialized, light client following, proof modes on, relayer, header-relay,
 storefront-x402, crank, explorer and cadre-api running on box 0. e2e results: "End to end results" below.
 
+**Rebuild (2026-11):** the three boxes of the first devnet were deleted about 2026-11-01 (BitLaunch
+balance). The devnet is being rebuilt per docs/REBUILD-2026-11.md: a new chain (chain_id 1128350803,
+params in genesis), a new light client id, and public names under `devnet.cadre.ag` (that doc's
+"Hostnames"), so a later rebuild changes no URL. The endpoint, chain and program tables below show the
+rebuilt values; dated sections further down (rollouts, e2e runs, measurements) describe the first
+devnet and keep its names and heights as they were.
+
 ## Endpoints
 
 | what | URL |
 |---|---|
-| agent-chain node 0 JSON-RPC (docs/RPC.md) | https://rpc.64-95-12-116.sslip.io (WebSocket: `/ws`) |
-| node 1 | https://rpc.64-95-13-213.sslip.io |
-| node 2 | https://rpc.64-95-12-22.sslip.io |
-| p2p seeds (open membership, `key@host:port`) | `64.95.12.116:10640`, `64.95.13.213:10640`, `64.95.12.22:10640` (keys: `agent-node pubkey`, or `getPeers`) |
-| explorer (docs/EXPLORER.md, JSON under `/api`) | https://explorer.64-95-12-116.sslip.io |
-| storefront x402 (buy AI jobs in SOL) | https://storefront.64-95-12-116.sslip.io (`/health`, `/quote`) |
-| relayer health (GET only) | https://relayer.64-95-12-116.sslip.io/health |
-| mint metadata (pump.fun uri) | https://explorer.64-95-12-116.sslip.io/cadre-token.json |
+| agent-chain node 0 JSON-RPC (docs/RPC.md) | https://rpc.devnet.cadre.ag (WebSocket: `/ws`) |
+| node 1 | https://rpc1.devnet.cadre.ag |
+| node 2 | https://rpc2.devnet.cadre.ag |
+| p2p seeds (open membership, `key@host:port`) | `<BOX0_IP>:10640`, `<BOX1_IP>:10640`, `<BOX2_IP>:10640` (the IPs in deploy/devnet.env: a seed takes an IP, not a name; keys: `agent-node pubkey`, or `getPeers`) |
+| explorer (docs/EXPLORER.md, JSON under `/api`) | https://explorer.devnet.cadre.ag |
+| storefront x402 (buy AI jobs in SOL) | https://storefront.devnet.cadre.ag (`/health`, `/quote`) |
+| relayer health (GET only) | https://relayer.devnet.cadre.ag/health |
+| mint metadata (pump.fun uri) | https://explorer.64-95-12-116.sslip.io/cadre-token.json (the first devnet's box 0 name, written into the mint at creation; pump.fun metadata cannot change, so it stays dead. The rebuilt box 0 serves the same JSON at https://explorer.devnet.cadre.ag/cadre-token.json) |
 | Solana RPC | https://api.devnet.solana.com (public; rate limited) |
-| cadre-api (public site API, docs/API.md) | https://api.64-95-12-116.sslip.io/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway and prepaid ON since 2026-10-20 06:17 UTC (`/v1/openai/*`, `/v1/inference/*`), pool off |
-| Cadre website (~/cadre-web) | https://cadre.64-95-12-116.sslip.io (`cadre-web.service` on box 0, :10710 behind caddy); miner installer at https://cadre.64-95-12-116.sslip.io/install-miner.sh (devnet defaults) |
-| house desktops (ECOSYSTEM 2.10) | https://cadre.64-95-12-116.sslip.io/live (grid) and /live/<handle>; API `/v1/desktops`; `cadre-desktops.service` on box 0, 127.0.0.1:10720 (see "House desktops") |
-| paid AI (inference gateway, SPEC 5.4) | through cadre-api: base URL https://api.64-95-12-116.sslip.io/v1/openai (OpenAI-compatible), model `llama-3.2-1b-instruct-w7a7`; gateway :10664 and worker :10665 on box 0 (127.0.0.1 only) |
+| cadre-api (public site API, docs/API.md) | https://api.devnet.cadre.ag/v1 (`/v1/ready`, `/v1/summary`, ...): `cadre-api.service` on box 0, :10685 behind caddy; gateway and prepaid ON since 2026-10-20 06:17 UTC (`/v1/openai/*`, `/v1/inference/*`), pool off |
+| Cadre website (~/cadre-web) | https://devnet.cadre.ag (`cadre-web.service` on box 0, :10710 behind caddy); miner installer at https://devnet.cadre.ag/install-miner.sh (devnet defaults) |
+| house desktops (ECOSYSTEM 2.10) | https://devnet.cadre.ag/live (grid) and /live/<handle>; API `/v1/desktops`; `cadre-desktops.service` on box 0, 127.0.0.1:10720 (see "House desktops") |
+| paid AI (inference gateway, SPEC 5.4) | through cadre-api: base URL https://api.devnet.cadre.ag/v1/openai (OpenAI-compatible), model `llama-3.2-1b-instruct-w7a7`; gateway :10664 and worker :10665 on box 0 (127.0.0.1 only) |
 
 CLI: `pearl` now defaults to the devnet (`--network devnet`); `--network localnet` (or
 `PEARL_NETWORK=localnet`) gives the old 127.0.0.1 endpoints and localnet program ids.
@@ -38,10 +45,11 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 
 | | |
 |---|---|
-| chain_id | 1128350802 (0x43414452, "CADR") |
-| genesis hash | 51c86b676bfd1b9f0877e6994cff95ab92cc1f2c784b39fc943b8b0d4d52028a |
-| params | `{}` = the SPEC / `Config::defaults`: 60 s blocks, K 30, emission 7 ppm, alpha 0.8, WTEMA half life 1 h, min_fee 1000, min_protocol_fee 0 |
-| genesis target | 0x1e0f1b3f (from a measured 6 threads x 3,085 nonces/s; too easy by about 1000x: the first ~1,000 blocks came fast while WTEMA hardened it, settling toward 60 s within about an hour) |
+| chain_id | 1128350803 (0x43414453) since the 2026-11 rebuild; the first devnet was 1128350802 (0x43414452, "CADR"). A new id has no scheduled heights: every rule is live from genesis |
+| genesis hash | set when node 0 first starts (REBUILD-2026-11 Phase D7); the first devnet's was 51c86b676bfd1b9f0877e6994cff95ab92cc1f2c784b39fc943b8b0d4d52028a |
+| timestamp_ms | 0 in the committed file until launch: `scripts/devnet-deploy.sh genesis-stamp` writes the launch time, commit it, then `install 0/1/2` (install refuses an unstamped genesis) |
+| params | `{"target_block_time_ms":30000,"finality_k":60,"emission_ppb":3500,"max_balance_rows":8192,"price_mlamports_per_gflop":8767}`, the first devnet's values after its speed and AdminConfig changes; the rest `Config::defaults` (alpha 0.8, WTEMA half life 1 h, min_fee 1000, min_protocol_fee 0). house_operators can go in genesis too (a list of keys) but stays an AdminConfig from ops (REBUILD Phase D10) |
+| genesis target | 0x1c1e367f, derived: 3 boxes x 2 threads x 3,085 nonces/s = 18,510 nonces/s; 30 s blocks need 555,300 nonces. A fallback nonce tests one 4 x 8 tile, and a tile wins when its jackpot hash is at most target x 2^16 (`pearl_job::job::difficulty_bound`, factor h*w*(dlen/r)*128 = 4*8*16*128 for the fallback config), so a block takes 2^240 / target nonces and target = 2^240 / 555,300 = 0x1e367f x 2^200. The first devnet's 0x1e0f1b3f came from 2^256 / target without the 2^16 factor: 17 nonces a block, which is why its first ~1,000 blocks came fast. Until box 0's miner starts (after the model is quantized) 4 threads give about 45 s blocks; WTEMA corrects either way (test: chain/bin/agent-node/src/config.rs `devnet_genesis_loads_with_its_params`) |
 | admin (AdminConfig) | ops `Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb` |
 | attester (chain + bridge signer + storefront attester), 1 of 1 | `9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD` |
 | miner payouts | box 0 `GDcEUhU4fXRziN3YQyrwyoZJhsGhSRytJooX7kr7hC4s`, box 1 `4pDphQUNYsybNnXH4nkHdHMS6udinkjVuFrf6iRZpU8b`, box 2 `AHYHqULAUjJzvBkNsRYFpksrbjL1qqurZcgMWq9mHdAH` |
@@ -55,7 +63,7 @@ Wallet: the "Cadre Devnet" network preset is the default in ~/pearl-wallet (dev)
 | reserve | 8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi | 386,216 B, 13f78f26...613570c4 |
 | bridge | 3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN | 398,248 B, 1f6abc9c...2f7970e0 |
 | storefront | 9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu | 624,544 B, ad947c9a...2e717088 |
-| lightclient | 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m | 665,536 B, 2017132c...657c0b (upgraded 2026-10-21, begin_verify_job; was 652,840 B, e8786d59...5d58aef) |
+| lightclient | 9WB5X6XXgVysKVWC58u4VifSWdTbBpGpawUQCQnFAQ36 (since the 2026-11 rebuild, keys/devnet/lightclient2-keypair.json; LIGHTCLIENT_KEYPAIR in deploy/devnet.env) | not deployed yet. The first devnet's 47mavKipT2URcdj9qp2Stv6H5cM41cmzDXiTEcmDie4m (665,536 B, 2017132c...657c0b) is orphaned: its fixed-seed accounts track the dead chain and it has no reset |
 
 Deployed 2026-10-19 from commit fe8e04a (build on box 0), max-len 1.1x the .so size (programdata
 424,837 / 438,072 / 686,998 / 718,124 B).
@@ -108,6 +116,11 @@ To redo from scratch (new keypairs would mean new ids everywhere; normally only 
     scripts/devnet-e2e.sh                    # end to end from the Mac
 
 ## Boxes (BitLaunch, Dallas dal1, Ubuntu 24.04 LTS)
+
+The table is the first devnet's boxes (deleted about 2026-11-01). The rebuilt boxes' IPs go in
+deploy/devnet.env (BOX0_IP..BOX2_IP, placeholders `TBD_BOXn_IP` until bought; the scripts refuse to
+reach a box while its value is a placeholder) and in the DNS records of docs/REBUILD-2026-11.md
+"Hostnames".
 
 | box | name | id | IPv4 | size | runs | $/hr | $/month (cap) |
 |---|---|---|---|---|---|---|---|
@@ -254,14 +267,14 @@ is built while the live server keeps serving the previous one (before, `next bui
 under the running server and old pages got 500s for a few minutes), the previous release's static chunks
 from the last 7 days are carried over (an open old page still loads its scripts), ~/cadre-web-current is
 switched by an atomic rename, the unit (WorkingDirectory=/home/lode/cadre-web-current) is reinstalled and
-restarted; three releases are kept; a failed build changes nothing. `npm ci` and `npm run build` run in the release with `NEXT_PUBLIC_CADRE_API=https://api.64-95-12-116.sslip.io`,
-`NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.64-95-12-116.sslip.io`
+restarted; three releases are kept; a failed build changes nothing. `npm ci` and `npm run build` run in the release with `NEXT_PUBLIC_CADRE_API=https://api.devnet.cadre.ag`,
+`NEXT_PUBLIC_CADRE_NETWORK=devnet`, `NEXT_PUBLIC_CADRE_EXPLORER=https://explorer.devnet.cadre.ag`
 (prebuild copies the installer committed on this checkout's main to public/), then restarts
-`cadre-web.service` (enabled, starts on boot). Caddy block `cadre.@IP@.sslip.io` in
+`cadre-web.service` (enabled, starts on boot). Caddy block `@DOMAIN@` (the bare domain; `app.@DOMAIN@` redirects to it; first devnet: `cadre.<ip>.sslip.io`) in
 deploy/Caddyfile.box0.tmpl. Live from cadre-web a9c903a. Check 2026-10-20: every page (overview, buy,
 AI, dashboard, mine, agents, explorer, crank) at desktop and phone width in headless Chromium, no
 console errors, no horizontal overflow, live chain data (height 2,250, 4 paid-job blocks, agents
-directory); `curl -fsSL https://cadre.64-95-12-116.sslip.io/install-miner.sh | bash -s -- --dry-run`
+directory); `curl -fsSL https://devnet.cadre.ag/install-miner.sh | bash -s -- --dry-run`
 walks all 8 steps with the devnet node as default RPC. The source repo is public since 2026-10-20,
 and a real `curl ... | bash` install mined on the devnet that day from a fresh HOME on the test box
 (block 2842), a fresh ubuntu:24.04 container (blocks 2828, 2829, 2831) and macOS; times and
@@ -273,6 +286,14 @@ so an installer change goes live with a commit and `site`.
 
 Owner decision 2026-10-20 (b): Llama-3.2-1B-Instruct on a CPU devnet box now, GPU later. Box 0 is the
 only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3 GB).
+
+Rebuild (2026-11, D6): base checkpoint `unsloth/Llama-3.2-1B-Instruct` pinned at revision
+`5a8abab4a5d6f164389b1079fb721cfab8d7126c` (public, no HF token; MODEL_CHECKPOINT / MODEL_REVISION in
+deploy/devnet.env). On box 0: `scripts/devnet-deploy.sh venv` (CPU venv ~/cadre-venv: torch 2.5.1 cpu,
+transformers 4.46.3, datasets 3.1.0, numpy>=2, safetensors, huggingface_hub), then `checkpoint`
+(snapshot_download into /home/lode/hf/llama-3.2-1b-instruct, with a REVISION file), then
+tools/cadre/quantize.py as in REBUILD-2026-11 Phase E3. The quantized model gets a new model_id; the
+bullets below are the first devnet's.
 
 - Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
@@ -292,10 +313,10 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
   /etc/lode/inference.env (written by `install 0`). cadre-api: `GATEWAY_URL=http://127.0.0.1:10664`,
   `CADRE_PREPAID=gateway`.
 - Receipt links (2026-10-20, 5488d42): the gateway runs with `--public-api-root
-  https://api.64-95-12-116.sslip.io/v1/openai` (`GATEWAY_PUBLIC_API_ROOT` in inference.env), so a
+  https://api.devnet.cadre.ag/v1/openai` (`GATEWAY_PUBLIC_API_ROOT` in inference.env), so a
   receipt's `status_url` and `X-Cadre-Receipt` are `<api>/v1/openai/requests/<id>`, which cadre-api
   passes through (before: http://127.0.0.1:10664/v1/requests/<id>, since `--public-url` only takes a
-  host). Checked: GET https://api.64-95-12-116.sslip.io/v1/openai/requests/req_62fc4ba094b44e8eca9d331f
+  host). Checked: GET https://api.devnet.cadre.ag/v1/openai/requests/req_62fc4ba094b44e8eca9d331f
   (the devnet-ai-1 request) answers with that same URL as its status_url. The test box gateway runs
   with the same flag (`GATEWAY_PUBLIC_API_ROOT` for scripts/demo.sh).
 - Measured on box 0 (docs/measurements/cadre-worker-devnet-box0-2026-10-20.jsonl, bench.py, 2 threads,
@@ -305,7 +326,7 @@ only devnet box with room (8 GB; boxes 1-2 have 2 GB and the worker peaks at 2.3
 - Paid flow: `scripts/devnet-inference.sh` (results in .devnet-e2e/inference-<run>.json). Run
   devnet-ai-1, 2026-10-20, our own devnet keys only (ops funded a throwaway buyer
   GiPdGUzmzUotKqjCvtzXutYTm5bbGrPC9LgEZyNUNCkr with 0.2 SOL), everything through
-  https://api.64-95-12-116.sslip.io:
+  https://api.devnet.cadre.ag:
   1. 06:18:14 top-up without payment: 402, 256 rows for 95,411,375 lamports, payTo the storefront wallet.
      cadre-api built the payment tx, the buyer signed it; 06:18:17 201: ticket
      8a73d024a32546825192b3b1a3f8043a9c239c40b4ac098bfa0e4775f3ae8ca0, storefront Order 12 (2.9 s).
@@ -433,7 +454,8 @@ whose number is lowered keeps its sandboxes until `node src/main.ts destroy` or 
 ### Reset the chain (new genesis)
 
 Stop every node, `rm -rf /var/lib/lode/chain` on each box, write a new deploy/genesis.json (new
-timestamp, same keys), `install N` on every box, start node 0 then 1, 2. The Solana side keeps the
+chain_id so no old scheduled height applies, `scripts/devnet-deploy.sh genesis-stamp` for the timestamp,
+same keys; commit it), `install N` on every box, start node 0 then 1, 2. The Solana side keeps the
 old deposits; re-run `header-relay init` (box 0) for a light client on the new chain (a new
 light-client program deploy or re-init is needed because its accounts track the old chain).
 
@@ -681,9 +703,9 @@ Example contracts, deployed and called with our own key (keys/devnet/contracts-k
 | token "Cadre Demo Token" CDT | BfaxysW2erS1dPc37z4rsCQwobPrAknQ5A6q5o6P6aLB | 4707 | transfer 12,345 to miner0 (4711, 285,934 gas, 6,031); balance_of(miner0) = 12345 |
 | bounty | 23ruAcWqrGY2VVLAVuAswNDGCJnrTeneZyBmPFDwpXb6 | 4713 | post with 2 CADRE and a town announcement as the contract (4717, 618,348 gas, 9,805), submit (4718), award (4719) |
 
-Explorer: https://explorer.64-95-12-116.sslip.io/contracts and /contract/<address>; API:
-https://api.64-95-12-116.sslip.io/v1/contracts. Screenshots: screenshots/explorer/devnet-*.png.
-Use: `pearl --rpc https://rpc.64-95-12-22.sslip.io --key K contract call <address> <method> TYPE:VALUE ...`
+Explorer: https://explorer.devnet.cadre.ag/contracts and /contract/<address>; API:
+https://api.devnet.cadre.ag/v1/contracts. Screenshots: screenshots/explorer/devnet-*.png.
+Use: `pearl --rpc https://rpc2.devnet.cadre.ag --key K contract call <address> <method> TYPE:VALUE ...`
 (docs/CLI.md). `agent-node.pre-contracts` stays on each box but is no rollback target any more: blocks from 4703 carry
 contract txs that it cannot decode.
 
@@ -775,6 +797,8 @@ deploy/devnet.env now carries the new quotas (BOX0_BLOBS 40 GB, BOX1/2_BLOBS 16 
 `devnet-deploy.sh` node.json write keeps them.
 
 ## Speed rollout (2026-10-22, HANDOFF item 39, docs/SPEED.md)
+
+(First devnet, chain_id 1128350802. The rebuilt chain has the speed values in genesis: no rollout, no set-speed.)
 
 Staged by the chain speed row in `/home/lode/stage-speed/` on boxes 0-2 (built on the test box from branch speed
 49c6700 (chain sources; later commits touch docs and tests only), which contains main up to 741194c): agent-node `8b4b3f749f2e6674149f95c073fc516129809915d470ae173419e6107fcb9222`, pearl-miner `9d78dda6d06cd717bab6097845eacf6109909fb43841fe7e26d6c20c08412068`.
@@ -869,7 +893,7 @@ Box 0 only, after its node, one at a time:
     install -m 755 /home/lode/stage-jobperf/header-relay /opt/lode/bin/header-relay.new && mv -f /opt/lode/bin/header-relay.new /opt/lode/bin/header-relay
     systemctl restart cadre-settle     # check: journalctl -u cadre-settle -n 20, no errors; only cadre-settle uses this binary on box 0
     # relayer (TypeScript, runs from /home/lode/pearl-sol): from the Mac `scripts/devnet-deploy.sh sync` (box 0 checkout to main), then on box 0:
-    systemctl restart cadre-relayer    # check: curl -s https://relayer.64-95-12-116.sslip.io/health
+    systemctl restart cadre-relayer    # check: curl -s https://relayer.devnet.cadre.ag/health
 
 After (box 0, root, read-only, 5 minutes; the before numbers are in HANDOFF 40 and TEST-REPORT):
 

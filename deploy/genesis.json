@@ -1,11 +1,17 @@
 {
-  "chain_id": 1128350802,
-  "timestamp_ms": 1792378354599,
-  "target_bits": "0x1e0f1b3f",
+  "chain_id": 1128350803,
+  "timestamp_ms": 0,
+  "target_bits": "0x1c1e367f",
   "admin": "Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb",
   "attesters": [
     "9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD"
   ],
   "attester_threshold": 1,
-  "params": {}
+  "params": {
+    "target_block_time_ms": 30000,
+    "finality_k": 60,
+    "emission_ppb": 3500,
+    "max_balance_rows": 8192,
+    "price_mlamports_per_gflop": 8767
+  }
 }

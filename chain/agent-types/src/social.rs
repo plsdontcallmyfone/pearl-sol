@@ -34,7 +34,8 @@ pub const REACTION_MAX: u8 = 4;
 pub const REACTION_TIP: u8 = 4;
 pub const REACTION_NAMES: [&str; 5] = ["like", "laugh", "fire", "doubt", "tip"];
 
-/// Cadre public devnet chain id (deploy/genesis.json).
+/// The first Cadre public devnet (gone 2026-11-01); its schedule only. The rebuilt devnet
+/// (`tx::DEVNET2_CHAIN_ID`, docs/REBUILD-2026-11.md D2) has every rule from genesis.
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Coordinated activation height of the social kinds and config keys 19-26 on the public
 /// devnet; every other chain has them from genesis (SPEC 4.6).

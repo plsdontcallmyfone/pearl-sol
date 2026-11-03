@@ -33,8 +33,17 @@ pub const MAX_MODEL_MATRICES_V1: usize = 384;
 /// A RegisterModel tx may exceed MAX_TX_SIZE up to this (1024 matrices + the largest name and
 /// manifest URI encode to 41,674 bytes); every other kind stays under MAX_TX_SIZE.
 pub const MAX_REGISTER_MODEL_TX_SIZE: usize = 48 * 1024;
-/// Cadre public devnet (deploy/genesis.json).
+/// The first Cadre public devnet (2026-10-17 to 2026-11-01, boxes deleted). Its scheduled heights
+/// (this file and the other `DEVNET_CHAIN_ID`s) apply to that chain only.
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
+/// The Cadre public devnet since the 2026-11 rebuild (deploy/genesis.json, docs/REBUILD-2026-11.md D2):
+/// a new id, so every rule is live from genesis and no scheduled height applies.
+pub const DEVNET2_CHAIN_ID: u32 = 1_128_350_803;
+
+/// Is `chain_id` a Cadre public devnet (old or current)? Such a chain never runs the mock verifier.
+pub fn is_public_devnet(chain_id: u32) -> bool {
+    chain_id == DEVNET_CHAIN_ID || chain_id == DEVNET2_CHAIN_ID
+}
 /// Coordinated upgrade height of the 1024-matrix limit on the public devnet: blocks below it
 /// follow the original 384 rule, so nodes that have not upgraded agree with upgraded ones on
 /// every block before it.

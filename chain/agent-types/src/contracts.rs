@@ -45,7 +45,8 @@ pub const RECORD_VERSION: u8 = 0x02;
 pub const RECORD_LEN: usize = 89;
 pub const RECEIPT_VERSION: u8 = 1;
 
-/// Cadre public devnet chain id (deploy/genesis.json).
+/// The first Cadre public devnet (gone 2026-11-01); its schedule only. The rebuilt devnet
+/// (`tx::DEVNET2_CHAIN_ID`, docs/REBUILD-2026-11.md D2) has every rule from genesis.
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Coordinated activation height of the contract kinds and config keys 27-34 on the public
 /// devnet; every other chain has them from genesis.

@@ -184,7 +184,7 @@ fn run_node(
     let runner = cw_tokio::Runner::new(cfg);
     let use_mock = nf.verifier == "mock";
     // The mock verifier accepts proofs that cost no work: never on the public devnet.
-    if use_mock && genesis.chain_id == agent_types::tx::DEVNET_CHAIN_ID {
+    if use_mock && agent_types::tx::is_public_devnet(genesis.chain_id) {
         anyhow::bail!("verifier \"mock\" is for local test chains only; the public devnet (chain_id {}) needs the real verifier", genesis.chain_id);
     }
     if use_mock {

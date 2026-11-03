@@ -39,7 +39,8 @@ pub mod keys {
     }
 }
 
-/// Cadre public devnet chain id (deploy/genesis.json).
+/// The first Cadre public devnet (gone 2026-11-01); its schedule only. The rebuilt devnet
+/// (`agent_types::tx::DEVNET2_CHAIN_ID`, docs/REBUILD-2026-11.md D2) has every rule from genesis.
 pub const DEVNET_CHAIN_ID: u32 = 1_128_350_802;
 /// Coordinated activation height of AdminConfig keys 48-49 on the public devnet (tip about
 /// 5011 at 2026-10-22 02:15 UTC, about one block a minute). Below it a node refuses those keys

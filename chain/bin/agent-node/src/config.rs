@@ -67,14 +67,27 @@ impl GenesisFile {
                 keys::ADMIN => parse_key(v.as_str().context("admin is a key string")?)?.to_vec(),
                 keys::FALLBACK_CONFIG => hex::decode(v.as_str().context("hex")?)?,
                 keys::ATTESTERS => bail!("set attesters at the top level"),
-                keys::ATTESTER_THRESHOLD | keys::BRIDGE_PAUSED => vec![num(v)? as u8],
+                // a list of operator keys: ["<base58 or hex>", ...]
+                keys::HOUSE_OPERATORS => {
+                    let list = v.as_array().context("house_operators is a list of keys")?;
+                    let mut b = vec![u8::try_from(list.len()).map_err(|_| anyhow::anyhow!("too many house_operators"))?];
+                    for k in list {
+                        b.extend_from_slice(&parse_key(k.as_str().context("house_operators entry is a key string")?)?);
+                    }
+                    b
+                }
+                keys::ATTESTER_THRESHOLD | keys::BRIDGE_PAUSED | keys::MAX_CALL_DEPTH => vec![u8::try_from(num(v)?).with_context(|| format!("{name} is a u8"))?],
+                // u32 values (state::config::Config::set): the rest are u64
                 keys::POW_LIMIT_BITS
                 | keys::FINALITY_K
                 | keys::MAX_BLOCK_TXS
                 | keys::FALLBACK_M
                 | keys::FALLBACK_N
                 | keys::MAX_JOB_BLOCKS
-                | keys::MIN_DIFFICULTY_BITS => (num(v)? as u32).to_le_bytes().to_vec(),
+                | keys::MIN_DIFFICULTY_BITS
+                | keys::POST_INLINE_MAX
+                | keys::MAX_BALANCE_ROWS
+                | keys::MAX_CODE_SIZE => u32::try_from(num(v)?).with_context(|| format!("{name} is a u32"))?.to_le_bytes().to_vec(),
                 _ => num(v)?.to_le_bytes().to_vec(),
             };
             c.set(k, &bytes).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
@@ -305,6 +318,54 @@ pub fn save_addrs(path: &Path, addrs: &[(std::net::SocketAddr, Option<commonware
 mod tests {
     use super::*;
     use commonware_cryptography::Signer as _;
+
+    /// deploy/genesis.json (the public devnet, docs/REBUILD-2026-11.md D2/D3) loads, and every speed
+    /// value is in genesis, so nothing waits for a scheduled height or an AdminConfig.
+    #[test]
+    fn devnet_genesis_loads_with_its_params() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../deploy/genesis.json");
+        let gf = GenesisFile::load(&p).unwrap();
+        assert_eq!(gf.chain_id, 1_128_350_803);
+        assert_ne!(gf.chain_id, agent_types::tx::DEVNET_CHAIN_ID, "the old devnet's id replays its scheduled heights");
+        let g = gf.to_genesis().unwrap();
+        let c = &g.config;
+        assert_eq!((c.target_block_time_ms, c.finality_k, c.emission_ppb, c.max_balance_rows), (30_000, 60, 3_500, 8_192));
+        assert_eq!(c.price_mlamports_per_gflop, Some(8_767));
+        assert_eq!(bs58::encode(c.admin).into_string(), "Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb");
+        assert_eq!(c.attesters.iter().map(|a| bs58::encode(a).into_string()).collect::<Vec<_>>(), ["9U5wdELZRod6PGxczjyLn91meTHuzVLAoEnFywczC5VD"]);
+        assert_eq!(c.attester_threshold, 1);
+        assert_eq!(g.target_bits, 0x1c1e_367f);
+        // 3 boxes x 2 threads x 3,085 nonces/s, 30 s: one fallback nonce (4 x 8 matrices, one 4 x 8
+        // tile) tests one jackpot hash against target x 2^16 (pearl_job::job::difficulty_bound with
+        // the fallback config: h*w*(dlen/r)*128 = 4*8*16*128), so a block takes 2^240 / target nonces
+        let fb = pearl_job::MiningConfig::from_bytes(&c.fallback_config).unwrap();
+        assert_eq!((c.fallback_m, c.fallback_n, pearl_job::job::penalized_adjustment_factor(&fb)), (4, 8, 1 << 16));
+        let (exp, mant) = (g.target_bits >> 24, (g.target_bits & 0x00ff_ffff) as u128);
+        let nonces = (1u128 << (240 - 8 * (exp - 3))) / mant;
+        assert!((555_000..=555_600).contains(&nonces), "{nonces}");
+    }
+
+    #[test]
+    fn genesis_params_take_each_key_at_its_width() {
+        let ops = "Bpxwemu6qrKfkmCUJ9y6daFdN1o5iiZvY9KopXWFT9Zb";
+        let gf: GenesisFile = serde_json::from_value(serde_json::json!({
+            "chain_id": 7, "timestamp_ms": 1, "target_bits": "0x207fffff", "admin": ops, "attester_threshold": 0,
+            "params": {"max_balance_rows": 8192, "post_inline_max": 2048, "max_code_size": 65536, "max_call_depth": 4,
+                       "house_operators": [ops], "price_mlamports_per_gflop": "8767", "finality_k": 60}
+        }))
+        .unwrap();
+        let c = gf.to_genesis().unwrap().config;
+        assert_eq!((c.max_balance_rows, c.post_inline_max, c.max_code_size, c.max_call_depth), (8192, 2048, 65536, 4));
+        assert_eq!(c.house_operators, vec![parse_key(ops).unwrap()]);
+        let bad = |params: serde_json::Value| {
+            let gf: GenesisFile = serde_json::from_value(serde_json::json!({"chain_id": 7, "timestamp_ms": 1, "target_bits": 1, "admin": ops, "attester_threshold": 0, "params": params})).unwrap();
+            gf.to_genesis().unwrap_err().to_string()
+        };
+        assert!(bad(serde_json::json!({"max_call_depth": 300})).contains("u8"));
+        assert!(bad(serde_json::json!({"max_balance_rows": 5_000_000_000u64})).contains("u32"));
+        assert!(bad(serde_json::json!({"house_operators": ops})).contains("list"));
+        assert!(bad(serde_json::json!({"no_such_param": 1})).contains("unknown param"));
+    }
 
     #[test]
     fn seeds_and_open_config() {
