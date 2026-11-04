@@ -1,0 +1,18 @@
+[Unit]
+Description=Cadre bridge relayer, Robinhood Chain side (RELAYER_SIDE=rh: CadreBridge/CadreStorefront <-> agent chain domain 2)
+After=cadre-node.service
+
+[Service]
+User=lode
+# /etc/lode/rh.env (600, lode): RH_RPC, RH_CHAIN_ID, RH_BRIDGE, RH_STOREFRONT, RH_HEADER_ORACLE,
+# RH_SIGNER_KEY, RH_ATTESTER_KEYS, RH_FINALITY, RH_REFUND_GRACE_MS (services/relayer/src/evm/config.ts).
+# Not services.env: this side never shares the Solana relayer's state file or keys.
+EnvironmentFile=/etc/lode/rh.env
+Environment=RELAYER_SIDE=rh NODE_RPC=http://127.0.0.1:10630 SIGNER_KEYS=/etc/lode/keys/attester.json AGENT_KEY=/etc/lode/keys/ops-rh.json RH_STATE_FILE=/var/lib/lode/relayer-rh.json HEALTH_PORT=10666 POLL_MS=10000
+WorkingDirectory=/home/lode/pearl-sol/services/relayer
+ExecStart=/home/lode/.local/node/bin/node src/main.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
