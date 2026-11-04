@@ -1,0 +1,18 @@
+[Unit]
+Description=Cadre header-oracle poster, Robinhood Chain (attester-signed final headers to CadreHeaderOracle every ORACLE_EVERY final blocks)
+After=cadre-node.service
+
+[Service]
+User=lode
+# /etc/lode/rh.env as for cadre-relayer-rh (RH_RPC, RH_CHAIN_ID, RH_BRIDGE, RH_HEADER_ORACLE, RH_SIGNER_KEY,
+# RH_ATTESTER_KEYS) plus RH_ORACLE_SENDER_KEY: a gas key the relayer does not send from (one EOA in two
+# processes races for nonces); services/relayer/src/evm/oracle-main.ts lists every variable.
+EnvironmentFile=/etc/lode/rh.env
+Environment=NODE_RPC=http://127.0.0.1:10630 ORACLE_EVERY=10 RH_DOMAIN=2 HEALTH_PORT=10669 POLL_MS=10000
+WorkingDirectory=/home/lode/pearl-sol/services/relayer
+ExecStart=/home/lode/.local/node/bin/node src/evm/oracle-main.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
