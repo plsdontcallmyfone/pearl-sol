@@ -49,6 +49,6 @@ case "${1:-}" in
     node "$ROOT/scripts/devnet-init/init.ts"
     "$ROOT/scripts/devnet-deploy.sh" ssh 0 "/opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana $SOLANA_RPC --payer /etc/lode/keys/ops.json status | grep -q '\"initialized\":true' || /opt/lode/bin/header-relay --node http://127.0.0.1:10630 --solana $SOLANA_RPC --payer /etc/lode/keys/ops.json init"
     node "$ROOT/scripts/devnet-init/init.ts"
-    "$ROOT/scripts/devnet-deploy.sh" ctl 0 enable --now cadre-relayer cadre-header-relay cadre-storefront cadre-crank ;;
+    "$ROOT/scripts/devnet-deploy.sh" ctl 0 enable --now cadre-relayer cadre-storefront cadre-crank ;;  # header-relay runs on boxes 1 and 2 (relay boxes)
   *) sed -n '2,10p' "$0"; exit 1 ;;
 esac
