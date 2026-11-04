@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 mod balance;
 mod blobparams;
+mod bridge2;
 mod contracts;
 mod dm;
 mod reject;
@@ -29,13 +30,14 @@ mod social;
 mod uncles;
 
 pub use contracts::{contract_fee_floor, gas_limit_of, precheck_contract, query_contract, simulate_call, vm, QueryResult, NATIVE_CALL_KINDS};
+pub use bridge2::precheck_bridge_unlock_v2;
 pub use dm::{precheck_dm, read_dm_params};
 pub use social::{precheck_social, social_fee_floor};
 pub use uncles::{execute_block_with_uncles, UncleInput};
 
 use agent_types::tx::{order_message, deposit_message, result_message, route_clear_message, verify_plain};
 use agent_types::{
-    escrow_address, is_reserved, pool_address, Coinbase, Hash, PostJob, Pubkey, Tx, TxBody, TxKind, SPL_SCALE, TOTAL_SUPPLY,
+    escrow_address, is_reserved, pool_address, Coinbase, Hash, PostJob, Pubkey, Tx, TxBody, SPL_SCALE, TOTAL_SUPPLY,
 };
 use state::config::{keys, Config};
 use state::schema::{self, Account, Agent, Counters, Deposit, Immature, JobExt, JobRecord, JobStatus, Key, Model, Route, TicketExt, Withdrawal};
@@ -87,8 +89,12 @@ pub struct BlockSummary {
     pub routed: Vec<(Pubkey, u64)>,
     pub tx_count: usize,
     pub withdrawals: Vec<Withdrawal>,
+    /// v2 withdrawal-log entries (docs/BRIDGE-V2.md), appended to the log after `withdrawals`.
+    pub withdrawals_v2: Vec<agent_types::bridge2::WithdrawalV2>,
     pub jobs_created: Vec<Hash>,
     pub deposits: Vec<u64>,
+    /// v2 deposits processed: `(domain, ext_nonce)`.
+    pub deposits_v2: Vec<(u8, u64)>,
     /// Contract txs' receipts and events in block order, gas used by them, and the block's
     /// contracts record (set by `finish` when there is at least one receipt).
     pub receipts: Vec<agent_types::contracts::Receipt>,
@@ -105,6 +111,8 @@ pub struct TxOutcome {
     pub job_id: Option<Hash>,
     /// Withdrawal-log entries this tx appended (a BridgeLock, or lien splits).
     pub withdrawals: Vec<Withdrawal>,
+    /// v2 entries this tx appended (a BridgeLockV2, or lien splits to another side).
+    pub withdrawals_v2: Vec<agent_types::bridge2::WithdrawalV2>,
     pub routed: Vec<(Pubkey, u64)>,
     /// Contract txs: unused gas paid back to the sender (the block's fees exclude it).
     pub fee_refund: u64,
@@ -455,14 +463,14 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         let ik = schema::immature_key(env.height);
         if let Some(b) = ex.ov.get(&ik).await? {
             let imm = Immature::decode(&b).map_err(|e| StateError::Corrupt(format!("immature: {e}")))?;
-            let mut ws = Vec::new();
-            let mut routed = Vec::new();
+            let mut o = TxOutcome::default();
             for (miner, amt, _) in &imm.entries {
-                ex.credit_income(miner, *amt, &mut ws, &mut routed).await.map_err(|e| ExecError::Block(e.to_string()))?;
+                ex.credit_income(miner, *amt, &mut o).await.map_err(|e| ExecError::Block(e.to_string()))?;
                 ex.summary.matured += amt;
             }
-            ex.summary.withdrawals.extend(ws);
-            ex.summary.routed.extend(routed);
+            ex.summary.withdrawals.extend(o.withdrawals);
+            ex.summary.withdrawals_v2.extend(o.withdrawals_v2);
+            ex.summary.routed.extend(o.routed);
             ex.ov.put(ik, None);
         }
         ex.speed_migration().await?;
@@ -476,14 +484,14 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
 
     /// Credit income `amt` to `who`, splitting the share of an active payout lien off
     /// into withdrawal entries (module doc). Plain credit when no lien is active.
-    async fn credit_income(&mut self, who: &Pubkey, amt: u64, ws: &mut Vec<Withdrawal>, routed: &mut Vec<(Pubkey, u64)>) -> Result<(), TxError> {
+    async fn credit_income(&mut self, who: &Pubkey, amt: u64, out: &mut TxOutcome) -> Result<(), TxError> {
         let h = self.env.height;
         let Some(mut r) = self.ov.route(who).await? else { return self.ov.credit(who, amt).await };
         if !r.is_active(h) {
             // An ended lien sends out what it still holds (if the bridge was paused) and
             // hands its dust back at the account's next income.
             if r.pending > 0 {
-                self.flush_route(who, &mut r, ws).await?;
+                self.flush_route(who, &mut r, out).await?;
                 self.ov.put_route(who, &r);
             }
             return self.ov.credit(who, amt).await;
@@ -493,24 +501,33 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         r.routed += share;
         r.pending += share;
         if share > 0 {
-            routed.push((*who, share));
+            out.routed.push((*who, share));
         }
-        self.flush_route(who, &mut r, ws).await?;
+        self.flush_route(who, &mut r, out).await?;
         self.ov.put_route(who, &r);
         self.ov.credit(who, amt - share).await
     }
 
     /// Move the lien's pending amount out in whole SPL units (unless the bridge is
-    /// paused); once the lien has ended, the dust left goes back to the account.
-    async fn flush_route(&mut self, who: &Pubkey, r: &mut Route, ws: &mut Vec<Withdrawal>) -> Result<(), TxError> {
+    /// paused, or the lien's bridge domain cannot take it now, docs/BRIDGE-V2.md); once the
+    /// lien has ended, the dust left goes back to the account.
+    async fn flush_route(&mut self, who: &Pubkey, r: &mut Route, o: &mut TxOutcome) -> Result<(), TxError> {
         let h = self.env.height;
         if !self.cfg.bridge_paused {
             let out = r.pending / SPL_SCALE * SPL_SCALE;
             if out > 0 {
-                self.ov.credit(&escrow_address(), out).await?;
-                r.pending -= out;
-                r.withdrawn += out;
-                ws.push(self.ov.append_withdrawal(who, &r.solana_recipient, out, h).await?);
+                let domain = self.ov.route_domain(who).await?;
+                if self.lien_payout_allowed(domain, out).await? {
+                    if domain == agent_types::bridge2::DOMAIN_SOLANA {
+                        self.ov.credit(&escrow_address(), out).await?;
+                        o.withdrawals.push(self.ov.append_withdrawal(who, &r.solana_recipient, out, h).await?);
+                    } else {
+                        let recipient = r.solana_recipient;
+                        o.withdrawals_v2.push(self.lock_to_domain(domain, who, &recipient, out).await?);
+                    }
+                    r.pending -= out;
+                    r.withdrawn += out;
+                }
             }
         }
         if !r.is_active(h) && r.pending > 0 && r.pending < SPL_SCALE {
@@ -545,9 +562,13 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                     self.summary.events.extend(o.events.iter().cloned());
                 }
                 self.summary.withdrawals.extend(o.withdrawals.iter().copied());
+                self.summary.withdrawals_v2.extend(o.withdrawals_v2.iter().copied());
                 self.summary.routed.extend(o.routed.iter().copied());
                 if let TxBody::BridgeUnlock { solana_nonce, .. } = &tx.body {
                     self.summary.deposits.push(*solana_nonce);
+                }
+                if let TxBody::BridgeUnlockV2 { domain, ext_nonce, .. } = &tx.body {
+                    self.summary.deposits_v2.push((*domain, *ext_nonce));
                 }
                 Ok(o)
             }
@@ -569,7 +590,10 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             return bad("bad tx signature");
         }
         let kind = tx.body.kind();
-        if kind != TxKind::BridgeUnlock && tx.fee < self.cfg.min_fee {
+        if kind.is_bridge_v2() {
+            self.check_bridge_v2_active().await?;
+        }
+        if !kind.is_unlock() && tx.fee < self.cfg.min_fee {
             return bad(format!("fee {} below min_fee {}", tx.fee, self.cfg.min_fee));
         }
         if kind.is_social() {
@@ -674,7 +698,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if let Some(te) = j.ticket() {
                     pay = self.settle_ticket_rows(&j, te).await?;
                 }
-                self.credit_income(&to, pay, &mut out.withdrawals, &mut out.routed).await?;
+                self.credit_income(&to, pay, out).await?;
             }
             TxBody::ExpireJob { job_id } => {
                 let Some(mut j) = self.ov.job(job_id).await? else { return bad("unknown job") };
@@ -689,7 +713,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 let refund = j.worker_pay;
                 let to = j.poster;
                 self.ov.put_job(&j);
-                self.credit_income(&to, refund, &mut out.withdrawals, &mut out.routed).await?;
+                self.credit_income(&to, refund, out).await?;
             }
             TxBody::BridgeUnlock { solana_nonce, recipient, amount_spl, job_order, sigs } => {
                 if self.cfg.bridge_paused {
@@ -732,6 +756,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 if *amount == 0 || amount % SPL_SCALE != 0 {
                     return bad("amount must be a positive multiple of 1000");
                 }
+                self.check_solana_lock(*amount).await?;
                 self.ov.debit(&tx.from, *amount).await?;
                 self.ov.credit(&escrow_address(), *amount).await?;
                 let w = self.ov.append_withdrawal(&tx.from, solana_recipient, *amount, h).await?;
@@ -739,6 +764,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             }
             TxBody::AdminConfig { key, value } if state::dm::is_dm_key(*key) => self.admin_dm_config(&tx.from, *key, value).await?,
             TxBody::AdminConfig { key, value } if state::blobparams::is_blob_key(*key) => self.admin_blob_config(&tx.from, *key, value).await?,
+            TxBody::AdminConfig { key, value } if state::bridge2::is_bridge_key(*key) => self.admin_bridge_config(&tx.from, *key, value).await?,
             TxBody::AdminConfig { key, value } => {
                 if tx.from != self.cfg.admin {
                     return bad("not the admin");
@@ -780,6 +806,9 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                 let r = match self.ov.route(&tx.from).await? {
                     Some(old) if old.is_active(h) => {
                         // One lien at a time; the account may only strengthen it.
+                        if self.ov.route_domain(&tx.from).await? != agent_types::bridge2::DOMAIN_SOLANA {
+                            return bad("an active route to another bridge domain exists: extend it with SetRouteV2");
+                        }
                         if old.solana_recipient != *solana_recipient || old.release_key != *release_key {
                             return bad("an active route exists: only an extension with the same recipient and release key is allowed");
                         }
@@ -799,7 +828,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                         let next = old.map(|o| o.route_nonce + 1).unwrap_or(0);
                         if let Some(mut o) = old {
                             // The ended lien's holdings go out to its recipient first.
-                            self.flush_route(&tx.from, &mut o, &mut out.withdrawals).await?;
+                            self.flush_route(&tx.from, &mut o, out).await?;
                             if o.pending >= SPL_SCALE {
                                 return bad("the previous route still holds funds while the bridge is paused");
                             }
@@ -823,6 +852,8 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                     }
                 };
                 self.ov.put_route(&tx.from, &r);
+                // a replaced lien to another side hands its domain back to Solana (no-op before v2)
+                self.ov.set_route_domain(&tx.from, agent_types::bridge2::DOMAIN_SOLANA).await?;
             }
             TxBody::ClearRoute { account, route_nonce, sig } => {
                 let Some(mut r) = self.ov.route(account).await? else { return bad("no route") };
@@ -840,7 +871,7 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
                     return bad("bad release signature");
                 }
                 r.cleared = true;
-                self.flush_route(account, &mut r, &mut out.withdrawals).await?;
+                self.flush_route(account, &mut r, out).await?;
                 self.ov.put_route(account, &r);
             }
             TxBody::RegisterModel(m) => self.register_model(&tx.from, m).await?,
@@ -861,6 +892,13 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
             TxBody::ChannelConfig(c) => self.channel_config(&tx.from, tx.nonce, c).await?,
             TxBody::ChannelMember { channel, action, member, pay } => self.channel_member(&tx.from, channel, *action, member, *pay).await?,
             TxBody::ChannelKey { channel, epoch, envelopes } => self.channel_key(&tx.from, channel, *epoch, envelopes).await?,
+            TxBody::BridgeUnlockV2 { domain, ext_nonce, recipient, amount_ext, job_order, sigs } => {
+                self.bridge_unlock_v2(*domain, *ext_nonce, recipient, *amount_ext, job_order.as_ref(), sigs, out).await?
+            }
+            TxBody::BridgeLockV2 { domain, recipient, amount } => self.bridge_lock_v2(&tx.from, *domain, recipient, *amount, out).await?,
+            TxBody::SetRouteV2 { domain, recipient, route_bps, until_height, cap, release_key } => {
+                self.set_route_v2(&tx.from, *domain, recipient, *route_bps, *until_height, *cap, release_key, out).await?
+            }
             TxBody::DeployCode(_) | TxBody::Instantiate(_) | TxBody::Call(_) | TxBody::Migrate(_) | TxBody::SetContractAdmin { .. } => {
                 return bad("contract kinds run through exec_contract");
             }
@@ -1223,7 +1261,12 @@ impl<'a, S: StateRead> BlockExecutor<'a, S> {
         if !self.summary.receipts.is_empty() {
             self.summary.contracts = Some(agent_types::contracts::ContractsRecord::build(h, &self.summary.receipts, &self.summary.events));
         }
-        let withdrawals = if withdrawal_log { self.summary.withdrawals.iter().map(Withdrawal::log_entry).collect() } else { Vec::new() };
+        // v1 entries in tx order, then v2 entries in tx order (docs/BRIDGE-V2.md "Log order")
+        let withdrawals = if withdrawal_log {
+            self.summary.withdrawals.iter().map(Withdrawal::log_entry).chain(self.summary.withdrawals_v2.iter().map(|w| w.log_entry())).collect()
+        } else {
+            Vec::new()
+        };
         Ok((WriteSet { writes: self.ov.into_writes(), withdrawals }, self.summary))
     }
 }

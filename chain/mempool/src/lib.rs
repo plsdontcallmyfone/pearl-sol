@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
-use agent_types::{Hash, Pubkey, Tx, TxKind};
+use agent_types::{Hash, Pubkey, Tx};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum MempoolError {
@@ -120,7 +120,7 @@ impl Mempool {
         if tx.chain_id != self.chain_id {
             return Err(MempoolError::WrongChain);
         }
-        let unlock = tx.body.kind() == TxKind::BridgeUnlock;
+        let unlock = tx.body.kind().is_unlock();
         if !unlock && tx.fee < min_fee {
             return Err(MempoolError::LowFee(tx.fee, min_fee));
         }
