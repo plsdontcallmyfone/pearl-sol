@@ -6,7 +6,8 @@
 //   node src/cli.ts status                                         snapshot + invariant + orders held for refund, no signing
 //   node src/cli.ts refund-old <below_nonce> [--send]              one-off (devnet rebuild 2026-11, D9): refund every order
 //                                                                  deposit below the relayer cursor whose Order is still Pending
-//                                                                  or Expired and has no refund record; dry run without --send
+//                                                                  or Expired and has no refund record; dry run without --send;
+//                                                                  --v1 signs the pre-2026-10-21 message (bridges not yet upgraded)
 //
 // Signers default to the public keys of SIGNER_KEYS.
 
@@ -15,7 +16,7 @@ import { KIND, bridgeLockBody, signTx } from "./agent-tx.ts";
 import { RpcChain } from "./chain.ts";
 import {
   BRIDGE_PROGRAM_ID, ORDER_STATUS_EXPIRED, ORDER_STATUS_PENDING, ata, bridgeConfigPda, bridgeDepositIx, bridgeInitializeIx,
-  bridgeRefundIx, bridgeRefundPda, createAtaIdempotentIx, decodeBridgeConfig, decodeDeposit, decodeOrder, depositPda,
+  REFUND_DOMAIN, bridgeRefundIx, bridgeRefundPda, createAtaIdempotentIx, decodeBridgeConfig, decodeDeposit, decodeOrder, depositPda,
   ed25519Instruction, markRefundedIx, orderPda, refundMessage, settleShareIx, sharePda, signEntries,
 } from "./codec.ts";
 import { loadConfig, loadKeypair } from "./config.ts";
@@ -82,6 +83,9 @@ async function main(): Promise<void> {
       // cursor starts above them (D7) and never sees them. Same transaction as Relayer.refundDeposits.
       const below = BigInt(args[0] ?? "NaN");
       const send = args.includes("--send");
+      const le = (x: bigint) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(x); return b; };
+      const message = (n: bigint, buyer: PublicKey, amount: bigint) => args.includes("--v1")
+        ? Buffer.concat([REFUND_DOMAIN, le(n), buyer.toBuffer(), le(amount)]) : refundMessage(n, buyer, amount);
       const program = cfg.storefrontProgram;
       const [c] = await token.getAccounts([bridgeConfigPda()]);
       if (!c || !c.owner.equals(BRIDGE_PROGRAM_ID)) throw new Error("bridge not initialized");
@@ -91,9 +95,16 @@ async function main(): Promise<void> {
       if (keys.length < bc.threshold) throw new Error(`hold ${keys.length} of ${bc.threshold} bridge signer keys`);
       const payer = loadKeypair(cfg.tokenPayerFile);
       const done: string[] = [], skipped: Record<string, string> = {};
+      const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const read = async (ks: Parameters<typeof token.getAccounts>[0]) => {
+        for (let i = 0; ; i++) {
+          try { return await token.getAccounts(ks); } catch (e) { if (i >= 6) throw e; await pause(2000 * (i + 1)); }
+        }
+      };
       for (let n = 0n; n < below && n < bc.depositNonce; n++) {
         const k = n.toString();
-        const [da, oa, ra, sa] = await token.getAccounts([depositPda(n), orderPda(n, program), bridgeRefundPda(n), sharePda(n, program)]);
+        await pause(250); // public RPCs rate-limit (429)
+        const [da, oa, ra, sa] = await read([depositPda(n), orderPda(n, program), bridgeRefundPda(n), sharePda(n, program)]);
         if (!da || !da.owner.equals(BRIDGE_PROGRAM_ID)) { skipped[k] = "no deposit"; continue; }
         if (!oa || !oa.owner.equals(program)) { skipped[k] = "plain deposit, no order"; continue; }
         if (ra && ra.owner.equals(BRIDGE_PROGRAM_ID)) { skipped[k] = "already refunded"; continue; }
@@ -103,7 +114,7 @@ async function main(): Promise<void> {
         if (!send) { done.push(`${k} ${order.buyer.toBase58()} ${d.amount}`); continue; }
         const ixs = [
           createAtaIdempotentIx(payer.publicKey, order.buyer, bc.mint, bc.tokenProgram),
-          ed25519Instruction(signEntries(keys, refundMessage(n, order.buyer, d.amount))),
+          ed25519Instruction(signEntries(keys, message(n, order.buyer, d.amount))),
           bridgeRefundIx({ payer: payer.publicKey, mint: bc.mint, nonce: n, buyer: order.buyer,
             buyerToken: ata(order.buyer, bc.mint, bc.tokenProgram), tokenProgram: bc.tokenProgram, order: orderPda(n, program) }),
           markRefundedIx(n, program),
@@ -111,7 +122,9 @@ async function main(): Promise<void> {
         if (sa && sa.owner.equals(program)) ixs.push(settleShareIx(n, order.buyer, program));
         try { done.push(`${k} ${await token.send(ixs, payer)}`); } catch (e) { skipped[k] = `send failed: ${e instanceof Error ? e.message : e}`; }
       }
-      console.log(JSON.stringify({ mode: send ? "sent" : "dry run", count: done.length, refunds: done, skipped }, null, 2));
+      const failed = Object.values(skipped).filter((v) => v.startsWith("send failed")).length;
+      for (const [k, v] of Object.entries(skipped)) if (v.startsWith("send failed")) skipped[k] = v.split("\n")[0].slice(0, 200);
+      console.log(JSON.stringify({ mode: send ? "sent" : "dry run", count: done.length, failed, refunds: done, skipped }, null, 2));
       return;
     }
     default:
