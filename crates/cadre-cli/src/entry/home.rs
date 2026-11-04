@@ -252,6 +252,8 @@ pub(crate) fn draw_hints(buf: &mut Buffer, pen: &Pen, app: &App, p: &Plan) {
     let back = format!(" {}", app.last_view.name());
     let parts: Vec<(&str, u32)> = if app.quote.is_some() {
         vec![("enter", TEXT), (" send DM", MUTED), ("  ", MUTED), ("esc", TEXT), (" cancel", MUTED)]
+    } else if app.esc_armed() {
+        vec![("esc", TEXT), (" again to clear", MUTED)]
     } else if p.box_w >= 60 {
         vec![("tab", TEXT), (" switch agent", MUTED), ("  ", MUTED), ("esc", TEXT), (back.as_str(), MUTED), ("  ", MUTED), ("ctrl+p", TEXT), (" commands", MUTED)]
     } else {
