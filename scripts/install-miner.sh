@@ -46,7 +46,7 @@ main() {
   DEVNET_RPCS=("$DEFAULT_RPC" "https://rpc1.devnet.cadre.ag" "https://rpc2.devnet.cadre.ag")
   # the new chain (chain_id 1128350803, 2026-11 rebuild) has no genesis hash until node 0 starts:
   # set it then (docs/REBUILD-2026-11.md Phase D11). The placeholder matches no node.
-  DEVNET_GENESIS="TBD_NEW_GENESIS_HASH"
+  DEVNET_GENESIS="c68e88060aa8665bd41363733498415c02f2ab82ccdeeabb41648949a7b61a36"
   DEFAULT_API="https://api.devnet.cadre.ag"   # cadre-api of the same devnet (miner lookups)
   DEFAULT_REPO="https://github.com/plsdontcallmyfone/pearl-sol.git"
   TOOLCHAIN="1.95.0"

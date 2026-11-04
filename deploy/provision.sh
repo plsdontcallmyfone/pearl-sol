@@ -11,7 +11,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q ufw curl jq lsof debian-keyring debian-archive-keyring apt-transport-https ca-certificates gnupg
 if [[ $ROLE == build ]]; then
-  apt-get install -y -q build-essential pkg-config libssl-dev libudev-dev clang cmake git protobuf-compiler python3 unzip
+  apt-get install -y -q build-essential pkg-config libssl-dev libudev-dev clang cmake git protobuf-compiler python3 python3-venv unzip
 fi
 id lode >/dev/null 2>&1 || useradd -m -s /bin/bash lode
 install -d -o lode -g lode -m 700 /home/lode/.ssh
