@@ -9,13 +9,16 @@
   },
   "scripts": {
     "start": "node src/main.ts",
+    "start:rh": "RELAYER_SIDE=rh node src/main.ts",
+    "oracle": "node src/evm/oracle-main.ts",
     "cli": "node src/cli.ts",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "@solana/web3.js": "1.99.0",
-    "@noble/hashes": "1.8.0"
+    "viem": "2.49.3"
   },
   "devDependencies": {
     "@types/node": "22.15.3",

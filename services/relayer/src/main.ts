@@ -1,56 +1,14 @@
-// Relayer daemon: polls Solana and the agent-chain node, relays, serves /health on HEALTH_PORT.
+// Relayer entry point. One process serves ONE side (docs/RH-TESTNET-PLAN.md 4.3):
+//
+//   RELAYER_SIDE unset or "solana"  the Solana relayer, exactly as before (src/solana-main.ts, env in src/config.ts)
+//   RELAYER_SIDE=rh                 the Robinhood Chain (EVM) side (src/evm/main.ts, env in src/evm/config.ts)
+//
+// Each side has its own state file, health port and keys; run two processes for two sides.
 
-import { RpcChain } from "./chain.ts";
-import { loadConfig, loadKeypair } from "./config.ts";
-import { startHealth } from "./health.ts";
-import { NodeRpc } from "./node.ts";
-import { Relayer } from "./relayer.ts";
-
-const cfg = loadConfig();
-const relayer = new Relayer({
-  token: new RpcChain("token", cfg.tokenRpc, cfg.commitment),
-  node: NodeRpc.http(cfg.nodeRpc),
-  signers: cfg.signerKeyFiles.map(loadKeypair),
-  tokenPayer: loadKeypair(cfg.tokenPayerFile),
-  agentKey: loadKeypair(cfg.agentKeyFile),
-  storefrontProgram: cfg.storefrontProgram,
-  stateFile: cfg.stateFile,
-  totalSupply: cfg.totalSupply,
-  allowSurplus: cfg.allowSurplus,
-  refundGraceMs: cfg.refundGraceMs,
-});
-
-const server = startHealth(cfg.healthPort, () => relayer.health(cfg.pollMs));
-server.on("error", (e) => {
-  console.error(`health server on :${cfg.healthPort} failed: ${e.message}`);
-  process.exit(1);
-});
-console.log(JSON.stringify({
-  msg: "relayer started",
-  tokenRpc: (() => { try { const u = new URL(cfg.tokenRpc); return `${u.protocol}//${u.host}`; } catch { return "(rpc url)"; } })(), // scheme://host only (keyed RPC)
-  nodeRpc: cfg.nodeRpc,
-  signers: relayer.o.signers.map((k) => k.publicKey.toBase58()),
-  agentKey: relayer.o.agentKey.publicKey.toBase58(),
-  health: `http://127.0.0.1:${cfg.healthPort}/health`,
-  stateFile: cfg.stateFile,
-}));
-
-let stopping = false;
-let timer: NodeJS.Timeout | undefined;
-async function loop(): Promise<void> {
-  if (stopping) return;
-  const r = await relayer.tick();
-  if (r.unlocked.length || r.released.length || r.finalized.length || r.expired.length || r.refunded.length || r.refused || r.errors.length) {
-    console.log(JSON.stringify({ t: r.at, height: r.chainHeight, unlocked: r.unlocked, released: r.released,
-      finalized: r.finalized, expired: r.expired, refunded: r.refunded, waitingDepth: r.waitingDepth, needsRefund: r.needsRefund, refused: r.refused, errors: r.errors }));
-  }
-  timer = setTimeout(loop, cfg.pollMs);
+const side = (process.env.RELAYER_SIDE ?? "solana").trim().toLowerCase();
+if (side === "solana") await import("./solana-main.ts");
+else if (side === "rh" || side === "evm") await import("./evm/main.ts");
+else {
+  console.error(`RELAYER_SIDE must be solana or rh (got ${JSON.stringify(side)})`);
+  process.exit(2);
 }
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => {
-    stopping = true;
-    if (timer) clearTimeout(timer);
-    server.close(() => process.exit(0));
-  });
-}
-void loop();
