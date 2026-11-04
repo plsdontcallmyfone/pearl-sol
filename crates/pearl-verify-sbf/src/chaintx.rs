@@ -40,6 +40,10 @@ pub const KIND_BRIDGE_LOCK: u8 = 7;
 pub const KIND_SET_ROUTE: u8 = 9;
 pub const KIND_CLEAR_ROUTE: u8 = 10;
 pub const KIND_POST_SEGMENTS: u8 = 12;
+/// Two-side bridge kinds (docs/BRIDGE-V2.md), valid on the chain from `bridge_v2_height`.
+pub const KIND_BRIDGE_UNLOCK_V2: u8 = 40;
+pub const KIND_BRIDGE_LOCK_V2: u8 = 41;
+pub const KIND_SET_ROUTE_V2: u8 = 42;
 const BODY: usize = 54;
 
 pub struct TxView<'a> {
@@ -188,6 +192,28 @@ pub fn job_from_tx(tx: &TxView, sha256: fn(&[&[u8]]) -> [u8; 32]) -> Result<JobC
             }
             let f = read_post_job(&mut r)?;
             let job_id = sha256(&[b"pearl-sol:order-job:v1", &solana_nonce.to_le_bytes()]);
+            let terms = blake3::hash_parts(&[
+                b"pearl-sol:order-terms:v1",
+                &recipient,
+                &f.m.to_le_bytes(),
+                &f.n.to_le_bytes(),
+                &f.k.to_le_bytes(),
+                &f.max_blocks.to_le_bytes(),
+                &f.deadline.to_le_bytes(),
+            ]);
+            (job_id, recipient, terms, f)
+        }
+        KIND_BRIDGE_UNLOCK_V2 => {
+            // `domain u8, ext_nonce u64, recipient [32], amount_ext u64, job_order u8, [PostJob], sigs`
+            let domain = r.u8()?;
+            let ext_nonce = r.u64()?;
+            let recipient = r.arr()?;
+            r.u64()?;
+            if r.u8()? != 1 {
+                return Err(Error::Tx);
+            }
+            let f = read_post_job(&mut r)?;
+            let job_id = sha256(&[b"cadre:order-job:v2", &[domain], &ext_nonce.to_le_bytes()]);
             let terms = blake3::hash_parts(&[
                 b"pearl-sol:order-terms:v1",
                 &recipient,
@@ -374,6 +400,38 @@ pub fn set_route(tx: &TxView) -> Result<SetRoute, Error> {
         cap: r.u64()?,
         release_key: r.arr()?,
     })
+}
+
+/// SetRouteV2 body (kind 42): `domain u8, recipient [32], route_bps u16, until_height u64, cap u64,
+/// release_key [32]`. Returns the domain and the lien (its `solana_recipient` field holds the
+/// other side's recipient, an EVM address left-padded to 32 bytes).
+pub fn set_route_v2(tx: &TxView) -> Result<(u8, SetRoute), Error> {
+    let body = tx.body();
+    if tx.kind() != KIND_SET_ROUTE_V2 || body.len() != 1 + 32 + 2 + 8 + 8 + 32 {
+        return Err(Error::Tx);
+    }
+    let mut r = Rd { b: body, pos: 0 };
+    let domain = r.u8()?;
+    Ok((
+        domain,
+        SetRoute {
+            account: tx.from(),
+            solana_recipient: r.arr()?,
+            route_bps: r.u16()?,
+            until_height: r.u64()?,
+            cap: r.u64()?,
+            release_key: r.arr()?,
+        },
+    ))
+}
+
+/// BridgeLockV2 body (kind 41): `(domain, recipient, amount)` (amount in chain base units).
+pub fn bridge_lock_v2(tx: &TxView) -> Result<(u8, [u8; 32], u64), Error> {
+    let body = tx.body();
+    if tx.kind() != KIND_BRIDGE_LOCK_V2 || body.len() != 1 + 32 + 8 {
+        return Err(Error::Tx);
+    }
+    Ok((body[0], body[1..33].try_into().unwrap(), u64::from_le_bytes(body[33..41].try_into().unwrap())))
 }
 
 /// ClearRoute body (kind 10): `(account, route_nonce)`.

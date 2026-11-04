@@ -56,6 +56,20 @@ fn quote(b: &[u8], max: usize) -> String {
         format!("\"{t}\"")
     }
 }
+/// Bridge domain names (docs/BRIDGE-V2.md).
+fn side_name(d: u8) -> &'static str {
+    match d {
+        agent_types::bridge2::DOMAIN_SOLANA => "Solana",
+        agent_types::bridge2::DOMAIN_RH => "Robinhood Chain",
+        _ => "bridge domain",
+    }
+}
+
+/// An external recipient: an EVM address (20 bytes left-padded) as 0x hex, else 32-byte hex.
+fn ext_addr(r: &[u8; 32]) -> String {
+    if r[..12] == [0; 12] { format!("0x{}", hex::encode(&r[12..])) } else { hex::encode(r) }
+}
+
 fn is_zero(k: &[u8; 32]) -> bool {
     k.iter().all(|b| *b == 0)
 }
@@ -225,6 +239,32 @@ pub fn chain_words(tx: Option<&Tx>, node_kind: &str, from: &str, params: &Value)
         TxBody::Migrate(m) => Words::new("Migrate", format!("{} moved contract {} to code {}", cxs(&tx.from), cxs(&m.contract), short(&hx(&m.code_hash)))).f("Contract", cx(&m.contract)).f("New code", hx(&m.code_hash)),
         TxBody::SetContractAdmin { contract, admin } => Words::new("SetContractAdmin", format!("admin of contract {} set to {}", cxs(contract), if is_zero(admin) { "none".into() } else { cxs(admin) })).f("Contract", cx(contract)).f("Admin", cx(admin)),
         #[allow(unreachable_patterns)]
+        TxBody::BridgeUnlockV2 { domain, ext_nonce, recipient, amount_ext, job_order, sigs } => {
+            let mut w = Words::new(
+                "BridgeUnlockV2",
+                format!("{} deposit #{ext_nonce} unlocked {} to {}{}", side_name(*domain), cadre_spl(*amount_ext), cxs(recipient), if job_order.is_some() { " as a storefront job order" } else { "" }),
+            )
+            .f("Domain", format!("{domain} ({})", side_name(*domain)))
+            .f("Recipient", cx(recipient))
+            .f("Amount", cadre_spl(*amount_ext))
+            .f("Deposit nonce", ext_nonce.to_string())
+            .f("Attested by", sigs.iter().map(|s| cxs(&s.pubkey)).collect::<Vec<_>>().join(", "));
+            if let Some(p) = job_order {
+                w = w.f("Order job", hx(&agent_types::bridge2::order_job_id_v2(*domain, *ext_nonce))).f("Order shape", format!("{}x{}x{}, W {}, P {}", p.m, p.n, p.k, cadre(p.worker_pay), cadre(p.protocol_fee)));
+            }
+            w
+        }
+        TxBody::BridgeLockV2 { domain, recipient, amount } => Words::new("BridgeLockV2", format!("{} locked {} to bridge out to {} {}", cxs(&tx.from), cadre(*amount), side_name(*domain), short(&ext_addr(recipient))))
+            .f("Domain", format!("{domain} ({})", side_name(*domain)))
+            .f("Recipient", ext_addr(recipient))
+            .f("Amount", cadre(*amount)),
+        TxBody::SetRouteV2 { domain, recipient, route_bps, until_height, cap, release_key } => Words::new("SetRouteV2", format!("{} set a payout lien: {}% of income to {} {} until block {}", cxs(&tx.from), *route_bps as f64 / 100.0, side_name(*domain), short(&ext_addr(recipient)), until_height))
+            .f("Domain", format!("{domain} ({})", side_name(*domain)))
+            .f("Recipient", ext_addr(recipient))
+            .f("Share", format!("{route_bps} bps"))
+            .f("Until", format!("block {until_height}"))
+            .f("Cap", cadre(*cap))
+            .f("Release key", if is_zero(release_key) { "none (cannot be cleared early)".into() } else { cx(release_key) }),
         _ => Words::new(node_kind, format!("{} from {} (described by kind name only in this build)", tx.body.kind().name(), cxs(&tx.from))),
     };
     w.f("From", from).f("Nonce", tx.nonce.to_string()).f("Fee", format!("{} CADRE", crate::fmt::amount(tx.fee as u128, crate::fmt::CHAIN_DP, crate::fmt::CHAIN_DP)))
