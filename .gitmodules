@@ -1,0 +1,9 @@
+[submodule "token-evm/lib/forge-std"]
+	path = token-evm/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "token-evm/lib/solady"]
+	path = token-evm/lib/solady
+	url = https://github.com/Vectorized/solady
+[submodule "token-evm/lib/v4-core"]
+	path = token-evm/lib/v4-core
+	url = https://github.com/Uniswap/v4-core

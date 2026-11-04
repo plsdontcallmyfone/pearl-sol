@@ -1,0 +1,52 @@
+{
+  "source": "chain/agent-types/vectors/bridge2.json at commit f764364 (chain builder worktree, branch worktree-agent-adec60493c3c242a0)",
+  "deposit": {
+    "domain": 2,
+    "chainId": 46630,
+    "bridge": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "nonce": 5,
+    "recipient": "0x97048629c5f7936b0750ede1613791edba1e135bac7074d401b43513dfc7b042",
+    "amount": 2500000,
+    "message": "0x63616472653a6465706f7369743a76320226b60000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a050000000000000097048629c5f7936b0750ede1613791edba1e135bac7074d401b43513dfc7b042a025260000000000"
+  },
+  "order": {
+    "domain": 2,
+    "chainId": 46630,
+    "bridge": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "nonce": 6,
+    "recipient": "0x97048629c5f7936b0750ede1613791edba1e135bac7074d401b43513dfc7b042",
+    "amount": 7000000,
+    "message": "0x63616472653a6465706f7369742d6f726465723a76320226b60000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a060000000000000097048629c5f7936b0750ede1613791edba1e135bac7074d401b43513dfc7b042c0cf6a00000000009c67c7a652e66ccc7f66e064bee0ad004ec09ef494ee9c2b0fec11d569b36f20",
+    "jobId": "0x7effba816db9d40ab16880793b2956877376332a79f5fadc6c57627eb93a95df",
+    "body": "0x40000000400000000004000000040000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1200697066733a2f2f6578616d706c652d6a6f6200f2052a0100000000ca9a3b00000000e8030000000000000a00000002d846b4319a8187f62db296f7065fe2d5aa3f40d140a896544c5de0ccd17a3a45222425e7502e3c79810a2ec39940bfd165fcb1747cd2706719ca363b350737c801",
+    "bodyHash": "0x9c67c7a652e66ccc7f66e064bee0ad004ec09ef494ee9c2b0fec11d569b36f20",
+    "bodyFields": {
+      "m": 64,
+      "n": 64,
+      "k": 1024,
+      "config": "0x00040000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "hashA": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hashB": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "dataUri": "0x697066733a2f2f6578616d706c652d6a6f62",
+      "workerPay": 5000000000,
+      "protocolFee": 1000000000,
+      "deadline": 1000,
+      "maxBlocks": 10,
+      "evaluators": [
+        "0xd846b4319a8187f62db296f7065fe2d5aa3f40d140a896544c5de0ccd17a3a45",
+        "0x222425e7502e3c79810a2ec39940bfd165fcb1747cd2706719ca363b350737c8"
+      ],
+      "threshold": 1
+    }
+  },
+  "withdrawal": {
+    "entry": "0x020200000000000000004d6b79ff5167d30fff5b24c088f8ca9cc543807e16ec80363d88aef63bf2c070000000000000000000000000c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c060e31600000000007800000000000000",
+    "domain": 2,
+    "nonce": 0,
+    "from": "0x4d6b79ff5167d30fff5b24c088f8ca9cc543807e16ec80363d88aef63bf2c070",
+    "recipient": "0x000000000000000000000000c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "recipientEvm": "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "amount": 1500000,
+    "height": 120
+  }
+}
