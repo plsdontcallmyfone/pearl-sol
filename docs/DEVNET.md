@@ -295,6 +295,12 @@ transformers 4.46.3, datasets 3.1.0, numpy>=2, safetensors, huggingface_hub), th
 tools/cadre/quantize.py as in REBUILD-2026-11 Phase E3. The quantized model gets a new model_id; the
 bullets below are the first devnet's.
 
+- Rebuild (2026-11-04): registered from the gateway key DrxAWV1u... at height 237 with
+  `cadre model register --parallel 4` (835 blobs, 1.78 GB, 19 s upload). model_id
+  cf2f75f58d33d9c20c34b83f755048ff6044f9a73ae8b738baf8cfc40fc278db, manifest
+  blob:8434632323e6873121dda1cc5475a86fb74c53236b6797ef08178f1cc78eab95, 144 matrices,
+  1,235,746,816 MACs per row; getModel answers on nodes 1 and 2.
+
 - Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
   registered from the gateway key with `pearl model register` at height 2293 (model_id
