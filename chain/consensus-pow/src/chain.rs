@@ -103,6 +103,8 @@ pub enum ChainEvent {
     NewTip { hash: Hash, height: u64, reorg_depth: u64, disconnected: Vec<Hash>, connected: Vec<Hash> },
     Finalized { hash: Hash, height: u64 },
     WithdrawalFinal(Withdrawal),
+    /// A v2 (two-side bridge) withdrawal became final (docs/BRIDGE-V2.md).
+    WithdrawalV2Final(agent_types::bridge2::WithdrawalV2),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +231,8 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     too_deep: HashSet<Hash>,
     tx_index: HashMap<Hash, (Hash, u32)>,
     withdraw_loc: BTreeMap<u64, u64>,
+    /// v2 withdrawal locations by `(domain, nonce)` (docs/BRIDGE-V2.md).
+    withdraw_loc_v2: BTreeMap<(u8, u64), u64>,
     /// Withdrawal-log size (operations, a commit boundary) after each FINAL block that
     /// appended withdrawals, by height. The log size at any final height H is the value
     /// of the last key <= H; historical proofs (getWithdrawalProof at_height) use it.
@@ -308,6 +312,7 @@ pub fn tx_accounts(t: &Tx) -> Vec<Pubkey> {
     match &t.body {
         agent_types::TxBody::Transfer { to, .. } => v.push(*to),
         agent_types::TxBody::BridgeUnlock { recipient, .. } => v.push(*recipient),
+        agent_types::TxBody::BridgeUnlockV2 { recipient, .. } => v.push(*recipient),
         agent_types::TxBody::ClearRoute { account, .. } => v.push(*account),
         agent_types::TxBody::RejectResult { deliverer, .. } => v.push(*deliverer),
         agent_types::TxBody::Follow { items } => v.extend(items.iter().map(|x| x.target)),
@@ -412,6 +417,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             too_deep: HashSet::new(),
             tx_index: HashMap::new(),
             withdraw_loc: BTreeMap::new(),
+            withdraw_loc_v2: BTreeMap::new(),
             log_size_at: BTreeMap::new(),
             rewards: Some(rewards),
             history: HashMap::new(),
@@ -534,6 +540,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                     self.withdraw_loc.insert(w.nonce, loc);
                     // A block's entries are followed by its commit op: size = last loc + 2.
                     self.log_size_at.insert(w.height, loc + 2);
+                } else if let Ok(w) = agent_types::bridge2::WithdrawalV2::from_log_entry(&e) {
+                    self.withdraw_loc_v2.insert((w.domain, w.nonce), loc);
+                    self.log_size_at.insert(w.height, loc + 2);
                 }
             }
         }
@@ -652,7 +661,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 None => return Ok(None),
             },
         };
-        let idx = txs.iter().rposition(|t| t.from == *account && matches!(t.body, agent_types::TxBody::SetRoute { .. }));
+        let idx = txs.iter().rposition(|t| t.from == *account && matches!(t.body, agent_types::TxBody::SetRoute { .. } | agent_types::TxBody::SetRouteV2 { .. }));
         Ok(idx.map(|i| RouteTxEntry { block_hash: hash, height: set_height, index: i as u32, route_nonce }))
     }
 
@@ -711,6 +720,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
     }
     pub fn withdrawal_location(&self, nonce: u64) -> Option<u64> {
         self.withdraw_loc.get(&nonce).copied()
+    }
+    /// Log location of v2 withdrawal `(domain, nonce)` once final.
+    pub fn withdrawal_v2_location(&self, domain: u8, nonce: u64) -> Option<u64> {
+        self.withdraw_loc_v2.get(&(domain, nonce)).copied()
     }
     pub fn orphan_count(&self) -> usize {
         self.orphans.len()
@@ -1223,7 +1236,13 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.withdraw_loc.insert(w.nonce, n.log_base + i as u64);
                 events.push(ChainEvent::WithdrawalFinal(*w));
             }
-            if !n.summary.withdrawals.is_empty() {
+            // v2 entries follow the block's v1 entries in the log
+            let v1 = n.summary.withdrawals.len() as u64;
+            for (j, w) in n.summary.withdrawals_v2.iter().enumerate() {
+                self.withdraw_loc_v2.insert((w.domain, w.nonce), n.log_base + v1 + j as u64);
+                events.push(ChainEvent::WithdrawalV2Final(*w));
+            }
+            if !n.summary.withdrawals.is_empty() || !n.summary.withdrawals_v2.is_empty() {
                 self.log_size_at.insert(height, n.snapshot.log_size);
             }
             for (i, t) in n.txs.iter().enumerate() {
@@ -1455,12 +1474,30 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
     /// `Ok(None)` if the withdrawal is not final yet.
     pub async fn withdrawal_proof_at(&self, nonce: u64, at_height: u64) -> Result<Option<(Vec<u8>, u64, Vec<u8>, Hash, Hash)>, ChainError> {
         let Some(loc) = self.withdraw_loc.get(&nonce).copied() else { return Ok(None) };
+        self.proof_at_loc(loc, at_height, &format!("withdrawal {nonce}")).await.map(Some)
+    }
+
+    /// v2 twin of [`Self::withdrawal_proof_at`] for `(domain, nonce)`.
+    pub async fn withdrawal_v2_proof_at(&self, domain: u8, nonce: u64, at_height: u64) -> Result<Option<(Vec<u8>, u64, Vec<u8>, Hash, Hash)>, ChainError> {
+        let Some(loc) = self.withdrawal_v2_location(domain, nonce) else { return Ok(None) };
+        self.proof_at_loc(loc, at_height, &format!("withdrawal {domain}/{nonce}")).await.map(Some)
+    }
+
+    /// v2 twin of [`Self::withdrawal_proof`].
+    pub async fn withdrawal_v2_proof(&self, domain: u8, nonce: u64) -> Result<Option<(Vec<u8>, u64, Vec<u8>, Hash)>, ChainError> {
+        let Some(loc) = self.withdrawal_v2_location(domain, nonce) else { return Ok(None) };
+        let entry = self.store.log_get(loc).await.map_err(internal)?.ok_or_else(|| internal("log entry missing"))?;
+        let (proof, root) = self.store.withdrawal_proof(loc).await.map_err(internal)?;
+        Ok(Some((entry, loc, proof, root)))
+    }
+
+    async fn proof_at_loc(&self, loc: u64, at_height: u64, what: &str) -> Result<(Vec<u8>, u64, Vec<u8>, Hash, Hash), ChainError> {
         if at_height > self.finalized().header.height {
             return invalid(format!("at_height {at_height} is not final (final height {})", self.finalized().header.height));
         }
         let size = self.log_size_at.range(..=at_height).next_back().map(|(_, s)| *s).unwrap_or(0);
         if loc >= size {
-            return invalid(format!("withdrawal {nonce} is not in the log at height {at_height} (it is in a later block)"));
+            return invalid(format!("{what} is not in the log at height {at_height} (it is in a later block)"));
         }
         let hash = self.canonical_hash(at_height).ok_or_else(|| internal("no canonical block at a final height"))?;
         let header = if hash == self.finalized { self.finalized().header } else {
@@ -1468,7 +1505,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         };
         let entry = self.store.log_get(loc).await.map_err(internal)?.ok_or_else(|| internal("log entry missing"))?;
         let proof = self.store.withdrawal_proof_at(loc, size).await.map_err(internal)?;
-        Ok(Some((entry, loc, proof, header.withdraw_root, hash)))
+        Ok((entry, loc, proof, header.withdraw_root, hash))
     }
 
     /// Committed withdrawal proof: `(log entry, location, proof bytes, root)`.

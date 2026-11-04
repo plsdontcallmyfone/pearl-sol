@@ -528,3 +528,39 @@ fn post_segments_vector_rebuilds_segment_jobs() {
     config.copy_from_slice(&standing::matrix_config(&base, 2048).to_bytes());
     assert_eq!(&config[8..14], &base.rows_pattern.to_bytes());
 }
+
+/// Two-side bridge (docs/BRIDGE-V2.md): the light client rebuilds a v2 order job (job id
+/// `sha256("cadre:order-job:v2" || domain || nonce)`) from a BridgeUnlockV2, and parses
+/// BridgeLockV2 / SetRouteV2, from the chain's published vectors.
+#[test]
+fn bridge_v2_tx_vectors() {
+    let v = vectors("bridge2.json");
+    let txs = v["txs"].as_array().unwrap();
+    let find = |n: &str| txs.iter().find(|t| t["name"] == n).unwrap().clone();
+    let t = find("bridge_unlock_v2_order");
+    let b = hex::decode(t["tx"].as_str().unwrap()).unwrap();
+    let view = chaintx::TxView::any_chain(&b).unwrap();
+    assert_eq!(view.kind(), chaintx::KIND_BRIDGE_UNLOCK_V2);
+    let j = chaintx::job_from_tx(&view, sha).unwrap();
+    let m = v["messages"].as_array().unwrap().iter().find(|m| m["name"] == "deposit_order_v2").unwrap();
+    assert_eq!(hex::encode(j.job_id), m["job_id"].as_str().unwrap());
+    // a plain v2 unlock creates no job
+    let p = find("bridge_unlock_v2");
+    let pb = hex::decode(p["tx"].as_str().unwrap()).unwrap();
+    assert!(chaintx::job_from_tx(&chaintx::TxView::any_chain(&pb).unwrap(), sha).is_err());
+    let l = find("bridge_lock_v2");
+    let lb = hex::decode(l["tx"].as_str().unwrap()).unwrap();
+    let (d, r, amt) = chaintx::bridge_lock_v2(&chaintx::TxView::any_chain(&lb).unwrap()).unwrap();
+    assert_eq!(d, 2);
+    assert_eq!(hex::encode(r), l["body"]["recipient"].as_str().unwrap());
+    assert_eq!(amt.to_string(), l["body"]["amount"].as_str().unwrap());
+    let s = find("set_route_v2");
+    let sb = hex::decode(s["tx"].as_str().unwrap()).unwrap();
+    let (d, route) = chaintx::set_route_v2(&chaintx::TxView::any_chain(&sb).unwrap()).unwrap();
+    assert_eq!((d, route.route_bps, route.until_height), (2, 2500, 100_000));
+    assert_eq!(hex::encode(route.solana_recipient), s["body"]["recipient"].as_str().unwrap());
+    // the v1 parser refuses the v2 kind
+    assert!(chaintx::set_route(&chaintx::TxView::any_chain(&sb).unwrap()).is_err());
+    // the v2 log entry is 90 bytes, never the 88 the Solana bridge pays
+    assert_eq!(hex::decode(v["withdrawal_v2"]["entry"].as_str().unwrap()).unwrap().len(), 90);
+}

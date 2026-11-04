@@ -160,6 +160,7 @@ fn merge_native(into: &mut TxOutcome, o: TxOutcome) {
     }
     into.extra_jobs.extend(o.extra_jobs);
     into.withdrawals.extend(o.withdrawals);
+    into.withdrawals_v2.extend(o.withdrawals_v2);
     into.routed.extend(o.routed);
 }
 

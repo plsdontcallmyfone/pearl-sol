@@ -452,6 +452,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             match &t.body {
                 TxBody::PostJob(p) => v.extend(blobs::parse_uri(&p.data_uri)),
                 TxBody::BridgeUnlock { job_order: Some(p), .. } => v.extend(blobs::parse_uri(&p.data_uri)),
+                TxBody::BridgeUnlockV2 { job_order: Some(p), .. } => v.extend(blobs::parse_uri(&p.data_uri)),
                 TxBody::SubmitResult { uri, .. } => v.extend(blobs::parse_uri(uri)),
                 _ => {}
             }
@@ -755,6 +756,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
         let job = match &tx.body {
             TxBody::PostJob(p) => Some(p),
             TxBody::BridgeUnlock { job_order: Some(p), .. } => Some(p),
+            TxBody::BridgeUnlockV2 { job_order: Some(p), .. } => Some(p),
             _ => None,
         };
         if let Some(p) = job {
@@ -779,6 +781,19 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             executor::precheck_bridge_unlock(&tx, &self.chain.tip().config)?;
             if self.chain.read_tip(&schema::deposit_key(*solana_nonce)).await.map_err(|e| e.to_string())?.is_some() {
                 return Err(format!("deposit {solana_nonce} already processed"));
+            }
+        }
+        // two-side bridge kinds (docs/BRIDGE-V2.md): activation, domain, attester sigs, replay
+        if tx.body.kind().is_bridge_v2() {
+            let bp = match self.chain.read_tip(&state::bridge2::params_key()).await.map_err(|e| e.to_string())? {
+                Some(b) => state::bridge2::BridgeParams::decode(&b).map_err(|e| e.to_string())?,
+                None => Default::default(),
+            };
+            executor::precheck_bridge_unlock_v2(&tx, &self.chain.tip().config, &bp, self.chain.tip_height() + 1)?;
+            if let TxBody::BridgeUnlockV2 { domain, ext_nonce, .. } = &tx.body {
+                if self.chain.read_tip(&state::bridge2::deposit_v2_key(*domain, *ext_nonce)).await.map_err(|e| e.to_string())?.is_some() {
+                    return Err(format!("deposit {domain}/{ext_nonce} already processed"));
+                }
             }
         }
         if tx.from == self.chain.tip().config.admin {
@@ -874,6 +889,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 }
                 ChainEvent::WithdrawalFinal(w) => {
                     let v = crate::dispatch::withdrawal_json(&self.chain, &w);
+                    self.notify("withdrawals", v);
+                }
+                ChainEvent::WithdrawalV2Final(w) => {
+                    let v = crate::bridge2::withdrawal_v2_json(&self.chain, &w);
                     self.notify("withdrawals", v);
                 }
             }

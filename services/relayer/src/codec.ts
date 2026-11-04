@@ -111,6 +111,65 @@ export const expiredMessage = (jobId: Buffer): Buffer => Buffer.concat([EXPIRED_
 /** Order job id on the chain: sha256("pearl-sol:order-job:v1" || nonce LE). */
 export const orderJobId = (nonce: bigint): Buffer => sha256(ORDER_JOB_DOMAIN, u64le(nonce));
 
+// ---------- two-side bridge (docs/BRIDGE-V2.md) ----------
+
+/** Bridge domains: 1 = Solana (kinds 6/7/9, the messages above), 2 = Robinhood Chain. */
+export const DOMAIN_SOLANA = 1;
+export const DOMAIN_RH = 2;
+export const RH_TESTNET_CHAIN_ID = 46630n;
+export const DEPOSIT_V2_DOMAIN = Buffer.from("cadre:deposit:v2");
+export const DEPOSIT_ORDER_V2_DOMAIN = Buffer.from("cadre:deposit-order:v2");
+export const ORDER_JOB_V2_DOMAIN = Buffer.from("cadre:order-job:v2");
+/** A v2 withdrawal-log entry is 90 bytes (v1 entries are 88). */
+export const WITHDRAWAL_V2_LEN = 90;
+
+/** The side a v2 message is bound to: its domain, chain id and bridge contract (20 or 32 bytes). */
+export interface BridgeSide {
+  domain: number;
+  extChainId: bigint;
+  bridgeAddr: Buffer;
+}
+
+function v2Head(prefix: Buffer, side: BridgeSide, nonce: bigint, recipient: Buffer, amountExt: bigint): Buffer {
+  if (side.bridgeAddr.length !== 20 && side.bridgeAddr.length !== 32) throw new Error("bridge address must be 20 or 32 bytes");
+  if (recipient.length !== 32) throw new Error("recipient must be 32 bytes");
+  return Buffer.concat([prefix, Buffer.from([side.domain]), u64le(side.extChainId), side.bridgeAddr, u64le(nonce), recipient, u64le(amountExt)]);
+}
+/** `b"cadre:deposit:v2" || domain u8 || ext_chain_id u64 LE || bridge_addr || ext_nonce u64 LE || recipient [32] || amount_ext u64 LE` */
+export const depositMessageV2 = (side: BridgeSide, nonce: bigint, recipient: Buffer, amountExt: bigint): Buffer =>
+  v2Head(DEPOSIT_V2_DOMAIN, side, nonce, recipient, amountExt);
+/** Order form: the same fields under `cadre:deposit-order:v2`, then sha256(PostJob body). */
+export const depositOrderMessageV2 = (side: BridgeSide, nonce: bigint, recipient: Buffer, amountExt: bigint, bodyHash: Buffer): Buffer =>
+  Buffer.concat([v2Head(DEPOSIT_ORDER_V2_DOMAIN, side, nonce, recipient, amountExt), bodyHash]);
+/** v2 order job id: sha256("cadre:order-job:v2" || domain u8 || ext_nonce u64 LE). */
+export const orderJobIdV2 = (domain: number, nonce: bigint): Buffer => sha256(ORDER_JOB_V2_DOMAIN, Buffer.from([domain]), u64le(nonce));
+/** An EVM address (0x + 40 hex or 20 bytes) left-padded to the chain's 32-byte recipient. */
+export function evmRecipient(addr: string | Buffer): Buffer {
+  const b = typeof addr === "string" ? Buffer.from(addr.replace(/^0x/, ""), "hex") : addr;
+  if (b.length !== 20) throw new Error("an EVM address is 20 bytes");
+  return Buffer.concat([Buffer.alloc(12), b]);
+}
+
+export interface WithdrawalV2 {
+  domain: number;
+  nonce: bigint;
+  from: PublicKey;
+  recipient: Buffer;
+  amountExt: bigint;
+  height: bigint;
+}
+/** `0x02 || domain u8 || nonce u64 LE || from [32] || recipient [32] || amount_ext u64 LE || height u64 LE` (90 bytes). */
+export function decodeWithdrawalV2(e: Buffer): WithdrawalV2 {
+  if (e.length !== WITHDRAWAL_V2_LEN || e[0] !== 2) throw new Error("not a v2 withdrawal entry");
+  return {
+    domain: e[1], nonce: e.readBigUInt64LE(2), from: new PublicKey(e.subarray(10, 42)), recipient: Buffer.from(e.subarray(42, 74)),
+    amountExt: e.readBigUInt64LE(74), height: e.readBigUInt64LE(82),
+  };
+}
+export function encodeWithdrawalV2(w: WithdrawalV2): Buffer {
+  return Buffer.concat([Buffer.from([2, w.domain]), u64le(w.nonce), w.from.toBuffer(), w.recipient, u64le(w.amountExt), u64le(w.height)]);
+}
+
 // ---------- ed25519 ----------
 
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");

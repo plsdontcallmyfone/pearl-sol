@@ -130,7 +130,70 @@ fn body_json(b: &TxBody) -> Value {
         TxBody::Migrate(m) => json!({"contract": b58(&m.contract), "code_hash": hex::encode(m.code_hash),
             "gas_limit": m.gas_limit.to_string(), "args": hex::encode(&m.args)}),
         TxBody::SetContractAdmin { contract, admin } => json!({"contract": b58(contract), "admin": b58(admin)}),
+        TxBody::BridgeUnlockV2 { domain, ext_nonce, recipient, amount_ext, job_order, sigs } => json!({
+            "domain": domain, "ext_nonce": ext_nonce, "recipient": b58(recipient), "amount_ext": amount_ext.to_string(),
+            "job_order": job_order.as_ref().map(job_json), "sigs": sigs_json(sigs)}),
+        TxBody::BridgeLockV2 { domain, recipient, amount } => json!({
+            "domain": domain, "recipient": hex::encode(recipient), "amount": amount.to_string()}),
+        TxBody::SetRouteV2 { domain, recipient, route_bps, until_height, cap, release_key } => json!({
+            "domain": domain, "recipient": hex::encode(recipient), "route_bps": route_bps, "until_height": until_height,
+            "cap": cap.to_string(), "release_key": b58(release_key)}),
     }
+}
+
+/// Two-side bridge (docs/BRIDGE-V2.md) in its own file, like standing.json, so tx.json and
+/// every wallet reading it stay byte-identical.
+fn bridge2_vectors() -> Value {
+    use agent_types::bridge2::*;
+    let alice = pubkey_from_seed(&seed(1));
+    let bob = pubkey_from_seed(&seed(2));
+    // Robinhood Chain testnet bridge (example address) and an EVM recipient left-padded to 32
+    let bridge: [u8; 20] = [0x5a; 20];
+    let mut evm = [0u8; 32];
+    evm[12..].copy_from_slice(&[0xc0; 20]);
+    let dmsg = deposit_message_v2(DOMAIN_RH, RH_TESTNET_CHAIN_ID, &bridge, 5, &bob, 2_500_000);
+    let job = sample_job();
+    let omsg = order_message_v2(DOMAIN_RH, RH_TESTNET_CHAIN_ID, &bridge, 6, &bob, 7_000_000, &job);
+    let dsig = signed_sig(30, &dmsg);
+    let osig = signed_sig(30, &omsg);
+    let w = WithdrawalV2 { domain: DOMAIN_RH, nonce: 0, from: alice, recipient: evm, amount_ext: 1_500_000, height: 120 };
+    let mut admin_domain = vec![DOMAIN_RH];
+    admin_domain.extend_from_slice(&RH_TESTNET_CHAIN_ID.to_le_bytes());
+    admin_domain.push(20);
+    admin_domain.extend_from_slice(&bridge);
+    admin_domain.push(0);
+    json!({
+        "domains": {"solana": DOMAIN_SOLANA, "robinhood": DOMAIN_RH, "max": MAX_DOMAIN, "ext_scale": EXT_SCALE},
+        "messages": [
+            {"name": "deposit_v2", "domain": DOMAIN_RH, "ext_chain_id": RH_TESTNET_CHAIN_ID, "bridge_addr": hex::encode(bridge),
+             "ext_nonce": 5, "recipient": b58(&bob), "amount_ext": "2500000", "message": hex::encode(&dmsg),
+             "attester_seed": hex::encode(seed(30)), "attester": b58(&pubkey_from_seed(&seed(30))), "sig": hex::encode(dsig.sig),
+             "rule": "b\"cadre:deposit:v2\" || domain u8 || ext_chain_id u64 LE || bridge_addr (20|32) || ext_nonce u64 LE || recipient [32] || amount_ext u64 LE"},
+            {"name": "deposit_order_v2", "domain": DOMAIN_RH, "ext_chain_id": RH_TESTNET_CHAIN_ID, "bridge_addr": hex::encode(bridge),
+             "ext_nonce": 6, "recipient": b58(&bob), "amount_ext": "7000000", "post_job_body": hex::encode(job.encode()),
+             "post_job_body_sha256": hex::encode(job.body_hash()), "message": hex::encode(&omsg), "sig": hex::encode(osig.sig),
+             "job_id": hex::encode(order_job_id_v2(DOMAIN_RH, 6)),
+             "job_id_rule": "sha256(b\"cadre:order-job:v2\" || domain u8 || ext_nonce u64 LE)",
+             "rule": "b\"cadre:deposit-order:v2\" || the deposit_v2 fields || sha256(PostJob body)"},
+        ],
+        "withdrawal_v2": {"fields": {"domain": w.domain, "nonce": w.nonce, "from": b58(&w.from), "recipient": hex::encode(w.recipient),
+                                     "recipient_evm": format!("0x{}", hex::encode(&w.recipient[12..])),
+                                     "amount_ext": w.amount_ext.to_string(), "height": w.height},
+                          "entry": hex::encode(w.log_entry()), "len": WithdrawalV2::LOG_LEN,
+                          "rule": "0x02 || domain u8 || nonce u64 LE || from [32] || recipient [32] || amount_ext u64 LE || height u64 LE"},
+        "admin": {"bridge_v2_height": {"key": 50, "value": hex::encode(1000u64.to_le_bytes())},
+                  "bridge_domain": {"key": 51, "value": hex::encode(&admin_domain),
+                                    "rule": "domain u8 || ext_chain_id u64 LE || addr_len u8 || addr || paused u8"}},
+        "txs": [
+            tx_vector("bridge_unlock_v2", 3, 0, 0, TxBody::BridgeUnlockV2 {
+                domain: DOMAIN_RH, ext_nonce: 5, recipient: bob, amount_ext: 2_500_000, job_order: None, sigs: vec![dsig] }).0,
+            tx_vector("bridge_unlock_v2_order", 3, 1, 0, TxBody::BridgeUnlockV2 {
+                domain: DOMAIN_RH, ext_nonce: 6, recipient: bob, amount_ext: 7_000_000, job_order: Some(job.clone()), sigs: vec![osig] }).0,
+            tx_vector("bridge_lock_v2", 1, 4, 1000, TxBody::BridgeLockV2 { domain: DOMAIN_RH, recipient: evm, amount: 1_500_000_000 }).0,
+            tx_vector("set_route_v2", 1, 5, 1000, TxBody::SetRouteV2 { domain: DOMAIN_RH, recipient: evm, route_bps: 2500,
+                until_height: 100_000, cap: 1_000_000_000_000, release_key: pubkey_from_seed(&seed(40)) }).0,
+        ],
+    })
 }
 
 fn tx_vector(name: &str, seed_i: u8, nonce: u64, fee: u64, body: TxBody) -> (Value, Tx) {
@@ -527,6 +590,7 @@ fn build() -> Vec<(&'static str, Value)> {
         ],
     });
     vec![
+        ("bridge2.json", bridge2_vectors()),
         ("dm.json", dm_v),
         ("contracts.json", contracts),
         ("social.json", social),

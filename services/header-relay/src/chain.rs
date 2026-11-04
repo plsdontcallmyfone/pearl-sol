@@ -191,7 +191,7 @@ pub fn jobs_in(txs: &[Vec<u8>]) -> Vec<([u8; 32], usize)> {
             }
             continue;
         }
-        if v.kind() != pv::chaintx::KIND_POST_JOB && v.kind() != pv::chaintx::KIND_BRIDGE_UNLOCK {
+        if v.kind() != pv::chaintx::KIND_POST_JOB && v.kind() != pv::chaintx::KIND_BRIDGE_UNLOCK && v.kind() != pv::chaintx::KIND_BRIDGE_UNLOCK_V2 {
             continue;
         }
         if let Ok(j) = pv::chaintx::job_from_tx(&v, sha256) {

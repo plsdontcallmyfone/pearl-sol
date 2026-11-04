@@ -26,6 +26,12 @@ export const KIND = {
   BridgeUnlock: 6,
   BridgeLock: 7,
   AdminConfig: 8,
+  SetRoute: 9,
+  ClearRoute: 10,
+  /** Two-side bridge (docs/BRIDGE-V2.md), valid from the chain's bridge_v2_height. */
+  BridgeUnlockV2: 40,
+  BridgeLockV2: 41,
+  SetRouteV2: 42,
 } as const;
 
 export const ESCROW_ADDRESS = new PublicKey(blake3(Buffer.from("pearl-sol:escrow:v1")));
@@ -101,6 +107,29 @@ export function bridgeUnlockBody(a: { solanaNonce: bigint; recipient: PublicKey;
 export const bridgeLockBody = (solanaRecipient: PublicKey, amount: bigint): Buffer =>
   Buffer.concat([solanaRecipient.toBuffer(), u64le(amount)]);
 
+/** BridgeUnlockV2: `domain u8, ext_nonce u64, recipient [32], amount_ext u64, job_order u8 (0/1), [PostJob body], count u8, (pubkey, sig)*`. */
+export function bridgeUnlockV2Body(a: { domain: number; extNonce: bigint; recipient: PublicKey; amountExt: bigint;
+  jobOrder: Buffer | null; sigs: AttesterSig[] }): Buffer {
+  return Buffer.concat([
+    Buffer.from([a.domain]), u64le(a.extNonce), a.recipient.toBuffer(), u64le(a.amountExt),
+    a.jobOrder ? Buffer.concat([Buffer.from([1]), a.jobOrder]) : Buffer.from([0]),
+    sigList(a.sigs),
+  ]);
+}
+
+/** BridgeLockV2: `domain u8, recipient [32] (EVM: 12 zero bytes || address), amount u64` (chain units, multiple of 1000). */
+export function bridgeLockV2Body(domain: number, recipient: Buffer, amount: bigint): Buffer {
+  if (recipient.length !== 32) throw new Error("recipient must be 32 bytes");
+  return Buffer.concat([Buffer.from([domain]), recipient, u64le(amount)]);
+}
+
+/** SetRouteV2: `domain u8, recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]`. */
+export function setRouteV2Body(a: { domain: number; recipient: Buffer; routeBps: number; untilHeight: bigint; cap: bigint; releaseKey: Buffer }): Buffer {
+  const bps = Buffer.alloc(2);
+  bps.writeUInt16LE(a.routeBps);
+  return Buffer.concat([Buffer.from([a.domain]), a.recipient, bps, u64le(a.untilHeight), u64le(a.cap), a.releaseKey]);
+}
+
 export { encodePostJobBody };
 export type { PostJobBody };
 
@@ -139,7 +168,10 @@ function readPostJobBody(rd: Reader): PostJobBody {
 export type DecodedBody =
   | { kind: 0; to: PublicKey; amount: bigint }
   | { kind: 6; solanaNonce: bigint; recipient: PublicKey; amountSpl: bigint; jobOrder: PostJobBody | null; sigs: AttesterSig[] }
-  | { kind: 7; solanaRecipient: PublicKey; amount: bigint };
+  | { kind: 7; solanaRecipient: PublicKey; amount: bigint }
+  | { kind: 40; domain: number; extNonce: bigint; recipient: PublicKey; amountExt: bigint; jobOrder: PostJobBody | null; sigs: AttesterSig[] }
+  | { kind: 41; domain: number; recipient: Buffer; amount: bigint }
+  | { kind: 42; domain: number; recipient: Buffer; routeBps: number; untilHeight: bigint; cap: bigint; releaseKey: PublicKey };
 
 export interface DecodedTx extends TxHeader {
   body: DecodedBody;
@@ -164,6 +196,18 @@ export function decodeTx(tx: Buffer): DecodedTx {
     const count = rd.u8();
     const sigs = Array.from({ length: count }, () => ({ pubkey: rd.key(), sig: rd.take(64) }));
     body = { kind, solanaNonce, recipient, amountSpl, jobOrder, sigs };
+  } else if (kind === KIND.BridgeUnlockV2) {
+    const domain = rd.u8(), extNonce = rd.u64(), recipient = rd.key(), amountExt = rd.u64();
+    const flag = rd.u8();
+    if (flag > 1) throw new Error("bad job_order flag");
+    const jobOrder = flag ? readPostJobBody(rd) : null;
+    const count = rd.u8();
+    const sigs = Array.from({ length: count }, () => ({ pubkey: rd.key(), sig: rd.take(64) }));
+    body = { kind, domain, extNonce, recipient, amountExt, jobOrder, sigs };
+  } else if (kind === KIND.BridgeLockV2) {
+    body = { kind, domain: rd.u8(), recipient: rd.take(32), amount: rd.u64() };
+  } else if (kind === KIND.SetRouteV2) {
+    body = { kind, domain: rd.u8(), recipient: rd.take(32), routeBps: rd.u16(), untilHeight: rd.u64(), cap: rd.u64(), releaseKey: rd.key() };
   } else throw new Error(`tx kind ${kind} not supported by this decoder`);
   if (rd.at !== rd.b.length) throw new Error("trailing bytes in tx body");
   return { chainId, from, nonce, fee, kind, body, unsigned: Buffer.from(tx.subarray(0, tx.length - 64)), sig: Buffer.from(tx.subarray(tx.length - 64)) };
