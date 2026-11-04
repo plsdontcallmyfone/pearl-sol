@@ -49,6 +49,10 @@ fn samples() -> Vec<Tx> {
         TxBody::BridgeLock { solana_recipient: [3; 32], amount: 1000 },
         TxBody::AdminConfig { key: 1, value: 1000u64.to_le_bytes().to_vec() },
         TxBody::SetRoute { solana_recipient: [1; 32], route_bps: 100, until_height: 9, cap: 5, release_key: [2; 32] },
+        TxBody::BridgeUnlockV2 { domain: 2, ext_nonce: 3, recipient: [2; 32], amount_ext: 9, job_order: None, sigs: sigs() },
+        TxBody::BridgeUnlockV2 { domain: 2, ext_nonce: 4, recipient: [2; 32], amount_ext: 9, job_order: Some(job()), sigs: sigs() },
+        TxBody::BridgeLockV2 { domain: 2, recipient: [3; 32], amount: 1000 },
+        TxBody::SetRouteV2 { domain: 2, recipient: [1; 32], route_bps: 100, until_height: 9, cap: 5, release_key: [2; 32] },
         TxBody::ClearRoute { account: [1; 32], route_nonce: 2, sig: [3; 64] },
         TxBody::RegisterModel(RegisterModel {
             name: b"m".to_vec(),

@@ -6,6 +6,7 @@
 //! the same bytes so the types travel over Commonware p2p and resolver channels.
 
 pub mod block;
+pub mod bridge2;
 pub mod coinbase;
 pub mod codec;
 pub mod contracts;

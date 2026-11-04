@@ -104,6 +104,11 @@ pub enum TxKind {
     Call = 32,
     Migrate = 33,
     SetContractAdmin = 34,
+    /// Two-side bridge (docs/BRIDGE-V2.md): valid from the chain's `bridge_v2_height`, never
+    /// for domain 1 (Solana keeps kinds 6, 7 and 9).
+    BridgeUnlockV2 = 40,
+    BridgeLockV2 = 41,
+    SetRouteV2 = 42,
 }
 
 impl TxKind {
@@ -139,6 +144,9 @@ impl TxKind {
             32 => Self::Call,
             33 => Self::Migrate,
             34 => Self::SetContractAdmin,
+            40 => Self::BridgeUnlockV2,
+            41 => Self::BridgeLockV2,
+            42 => Self::SetRouteV2,
             k => return Err(DecodeError::Kind(k)),
         })
     }
@@ -155,6 +163,16 @@ impl TxKind {
     /// the gas fee rule, and a failing call still lands (fee charged, state undone).
     pub fn is_contract(&self) -> bool {
         matches!(self, Self::DeployCode | Self::Instantiate | Self::Call | Self::Migrate | Self::SetContractAdmin)
+    }
+
+    /// The two-side bridge kinds (docs/BRIDGE-V2.md): valid from `bridge_v2_height`.
+    pub fn is_bridge_v2(&self) -> bool {
+        matches!(self, Self::BridgeUnlockV2 | Self::BridgeLockV2 | Self::SetRouteV2)
+    }
+
+    /// Kinds that pay no fee (attester-signed deposits).
+    pub fn is_unlock(&self) -> bool {
+        matches!(self, Self::BridgeUnlock | Self::BridgeUnlockV2)
     }
 
     pub fn name(&self) -> &'static str {
@@ -189,6 +207,9 @@ impl TxKind {
             Self::Call => "Call",
             Self::Migrate => "Migrate",
             Self::SetContractAdmin => "SetContractAdmin",
+            Self::BridgeUnlockV2 => "BridgeUnlockV2",
+            Self::BridgeLockV2 => "BridgeLockV2",
+            Self::SetRouteV2 => "SetRouteV2",
         }
     }
 }
@@ -441,6 +462,23 @@ pub enum TxBody {
     Migrate(Migrate),
     /// `contract [32] | admin [32]` (its admin only; zero admin = never migratable again).
     SetContractAdmin { contract: Pubkey, admin: Pubkey },
+    /// `domain u8, ext_nonce u64, recipient [32], amount_ext u64, job_order u8 (0|1),
+    ///  [PostJob body if 1], count u8, (pubkey [32], sig [64])*` (docs/BRIDGE-V2.md).
+    /// Replay key `(domain, ext_nonce)`; sigs over `bridge2::deposit_message_v2` (or the order message).
+    BridgeUnlockV2 {
+        domain: u8,
+        ext_nonce: u64,
+        recipient: Pubkey,
+        amount_ext: u64,
+        job_order: Option<PostJob>,
+        sigs: Vec<AttesterSig>,
+    },
+    /// `domain u8, recipient [32], amount u64` (chain units, a multiple of 1000); an EVM
+    /// recipient is the 20-byte address left-padded with 12 zero bytes.
+    BridgeLockV2 { domain: u8, recipient: Pubkey, amount: u64 },
+    /// Payout lien paying out to another side:
+    /// `domain u8, recipient [32], route_bps u16, until_height u64, cap u64, release_key [32]`.
+    SetRouteV2 { domain: u8, recipient: Pubkey, route_bps: u16, until_height: u64, cap: u64, release_key: Pubkey },
 }
 
 fn write_sigs(w: &mut W, sigs: &[AttesterSig]) {
@@ -495,6 +533,9 @@ impl TxBody {
             Self::Call(_) => TxKind::Call,
             Self::Migrate(_) => TxKind::Migrate,
             Self::SetContractAdmin { .. } => TxKind::SetContractAdmin,
+            Self::BridgeUnlockV2 { .. } => TxKind::BridgeUnlockV2,
+            Self::BridgeLockV2 { .. } => TxKind::BridgeLockV2,
+            Self::SetRouteV2 { .. } => TxKind::SetRouteV2,
         }
     }
 
@@ -579,6 +620,25 @@ impl TxBody {
             Self::Migrate(m) => m.write(w),
             Self::SetContractAdmin { contract, admin } => {
                 w.bytes(contract).bytes(admin);
+            }
+            Self::BridgeUnlockV2 { domain, ext_nonce, recipient, amount_ext, job_order, sigs } => {
+                w.u8(*domain).u64(*ext_nonce).bytes(recipient).u64(*amount_ext);
+                match job_order {
+                    None => {
+                        w.u8(0);
+                    }
+                    Some(p) => {
+                        w.u8(1);
+                        p.write(w);
+                    }
+                }
+                write_sigs(w, sigs);
+            }
+            Self::BridgeLockV2 { domain, recipient, amount } => {
+                w.u8(*domain).bytes(recipient).u64(*amount);
+            }
+            Self::SetRouteV2 { domain, recipient, route_bps, until_height, cap, release_key } => {
+                w.u8(*domain).bytes(recipient).u16(*route_bps).u64(*until_height).u64(*cap).bytes(release_key);
             }
         }
     }
@@ -690,6 +750,28 @@ impl TxBody {
             TxKind::Call => Self::Call(Call::read(r)?),
             TxKind::Migrate => Self::Migrate(Migrate::read(r)?),
             TxKind::SetContractAdmin => Self::SetContractAdmin { contract: r.arr()?, admin: r.arr()? },
+            TxKind::BridgeUnlockV2 => {
+                let domain = r.u8()?;
+                let ext_nonce = r.u64()?;
+                let recipient = r.arr()?;
+                let amount_ext = r.u64()?;
+                let job_order = match r.u8()? {
+                    0 => None,
+                    1 => Some(PostJob::read(r)?),
+                    _ => return Err(DecodeError::Invalid("job_order flag")),
+                };
+                let sigs = read_sigs(r)?;
+                Self::BridgeUnlockV2 { domain, ext_nonce, recipient, amount_ext, job_order, sigs }
+            }
+            TxKind::BridgeLockV2 => Self::BridgeLockV2 { domain: r.u8()?, recipient: r.arr()?, amount: r.u64()? },
+            TxKind::SetRouteV2 => Self::SetRouteV2 {
+                domain: r.u8()?,
+                recipient: r.arr()?,
+                route_bps: r.u16()?,
+                until_height: r.u64()?,
+                cap: r.u64()?,
+                release_key: r.arr()?,
+            },
         })
     }
 }
