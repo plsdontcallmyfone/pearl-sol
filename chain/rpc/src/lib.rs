@@ -2,6 +2,7 @@
 //! dispatcher ([`dispatch`], docs/RPC.md) and the HTTP / WebSocket servers ([`server`]).
 
 pub mod blobfetch;
+pub mod bridge2;
 pub mod core;
 pub mod cxjson;
 pub mod dispatch;

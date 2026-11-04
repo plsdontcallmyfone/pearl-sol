@@ -332,6 +332,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
 
     async fn dispatch_method(&mut self, method: &str, p: &Value, now_ms: u64) -> R {
         let p = if p.is_null() { &json!({}) } else { p };
+        // bridge v2 (docs/BRIDGE-V2.md): getBridgeCounters and the `domain` >= 2 forms
+        if let Some(r) = self.bridge2_dispatch(method, p).await {
+            return r;
+        }
         match method {
             "getChainInfo" => {
                 let tip = self.chain.tip();
@@ -365,6 +369,9 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                 v["segment_replay_blocks"] = json!(bp.segment_replay_blocks);
                 v["blob_params_activation_height"] = json!(act);
                 v["keys"]["segment_replay_blocks"] = json!(state::blobparams::keys::SEGMENT_REPLAY_BLOCKS);
+                // two-side bridge (own record, docs/BRIDGE-V2.md)
+                let b2p = self.bridge_params().await?;
+                crate::bridge2::params_fields(&mut v, &b2p, self.chain.tip_height() + 1);
                 Ok(v)
             }
             "getBlockTemplate" => {
