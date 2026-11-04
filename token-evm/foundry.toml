@@ -1,0 +1,38 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+# v4-core PoolManager pins 0.8.26, so the whole project builds with it (Cancun opcodes
+# run unchanged on Robinhood Chain, which is at Prague/Osaka level).
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 400
+via_ir = false
+bytecode_hash = "none"
+fs_permissions = [{ access = "read", path = "./test/vectors" }]
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "solady/=lib/solady/src/",
+  "v4-core/=lib/v4-core/src/",
+  "@uniswap/v4-core/=lib/v4-core/",
+]
+
+[profile.default.fuzz]
+runs = 512
+
+[profile.default.invariant]
+runs = 128
+depth = 64
+fail_on_revert = false
+
+[rpc_endpoints]
+rh_testnet = "https://rpc.testnet.chain.robinhood.com"
+
+[fmt]
+line_length = 110
+
+[lint]
+lint_on_build = false
