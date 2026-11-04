@@ -24,7 +24,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env = process.env;
 const SOL_RPC = env.SOLANA_RPC!;
 const DOMAIN = env.DEVNET_DOMAIN!; // deploy/devnet.env (docs/REBUILD-2026-11.md "Hostnames")
-const NODE_RPC = `https://rpc.${DOMAIN}`;
+const NODE_RPC = env.NODE_RPC ?? `https://rpc.${DOMAIN}`; // override (e.g. an ssh tunnel) before DNS is up
 const conn = new Connection(SOL_RPC, "confirmed");
 const loadKp = (f: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(resolve(ROOT, f), "utf8"))));
 const ops = loadKp("keys/devnet/ops-keypair.json");
