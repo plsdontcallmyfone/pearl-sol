@@ -5,7 +5,9 @@
 //   RH_RPC            EVM JSON-RPC                                  required
 //   RH_CHAIN_ID       expected eth_chainId                          default 46630
 //   RH_HEADER_ORACLE  CadreHeaderOracle address                     required
-//   RH_SIGNER_KEY     secp256k1 key file that sends the posts (pays gas)  required
+//   RH_ORACLE_SENDER_KEY  secp256k1 key file that sends the posts (pays gas). Use a key the
+//                     relayer does not send from (two processes on one EOA race for nonces)
+//                     default RH_SIGNER_KEY
 //   RH_ATTESTER_KEYS  comma-separated secp256k1 key files; those in the oracle's attester set
 //                     sign FinalHeader (EIP-712)                     default RH_SIGNER_KEY
 //   ORACLE_EVERY      post every N final blocks (decision E9)       default 10
@@ -31,7 +33,8 @@ const need = (k: string): string => {
   }
   return v;
 };
-const signer = loadEvmKey(need("RH_SIGNER_KEY"));
+const senderFile = env.RH_ORACLE_SENDER_KEY?.trim() || need("RH_SIGNER_KEY");
+const signer = loadEvmKey(senderFile);
 const oracle = getAddress(need("RH_HEADER_ORACLE"));
 const bridge = env.RH_BRIDGE ? getAddress(env.RH_BRIDGE) : undefined;
 const attesterFiles = (env.RH_ATTESTER_KEYS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -48,7 +51,7 @@ const poster = new OraclePoster({
   node: NodeV2.http(env.NODE_RPC ?? "http://127.0.0.1:10630"),
   evm,
   oracle,
-  attesters: (attesterFiles.length ? attesterFiles : [need("RH_SIGNER_KEY")]).map(loadEvmKey),
+  attesters: (attesterFiles.length ? attesterFiles : [senderFile]).map(loadEvmKey),
   every: Number(env.ORACLE_EVERY ?? 10),
   domain,
   isProcessed: bridge ? (n) => evm.isProcessed(n, "latest") : undefined,

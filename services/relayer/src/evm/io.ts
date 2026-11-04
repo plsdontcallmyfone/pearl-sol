@@ -69,7 +69,7 @@ export interface EvmIO {
   chainId(): Promise<bigint>;
   /** Block number at the configured finality, and latest. */
   blocks(): Promise<{ final: bigint; latest: bigint }>;
-  bridge(at: bigint): Promise<BridgeView>;
+  bridge(at: bigint | "latest"): Promise<BridgeView>;
   deposit(nonce: bigint, at: bigint | "latest"): Promise<EvmDeposit>;
   isProcessed(nonce: bigint, at: bigint | "latest"): Promise<boolean>;
   order(nonce: bigint, at: bigint | "latest"): Promise<EvmOrder>;
@@ -134,7 +134,7 @@ export class ViemEvm implements EvmIO {
     return { final: b.number ?? 0n, latest };
   }
 
-  async bridge(at: bigint): Promise<BridgeView> {
+  async bridge(at: bigint | "latest"): Promise<BridgeView> {
     const b = this.o.bridge;
     const r = <T>(fn: string, args: unknown[] = []) => this.read<T>(b, bridgeAbi, fn, args, at);
     const [token, domain, depositNonce, releaseModes, paused, headers, threshold, signers, minWithdrawalNonce] = await Promise.all([

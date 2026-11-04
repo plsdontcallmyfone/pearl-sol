@@ -189,11 +189,15 @@ export class EvmRelayer {
     if (this.o.expectedChainId !== null && chainId !== this.o.expectedChainId) {
       throw new Error(`RH RPC answers chain id ${chainId}, expected ${this.o.expectedChainId}`);
     }
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // RH reads are pinned to one block number, so they are taken once; only the chain reads
+    // (a tip that may move under us) sit inside the retry window, kept as short as possible.
+    const { final } = await evm.blocks();
+    const bridge = await evm.bridge(final);
+    const deposits: EvmDeposit[] = [];
+    for (let n = this.state.deposit; n < bridge.depositNonce; n++) deposits.push(await evm.deposit(n, final));
+    for (let attempt = 0; attempt < 5; attempt++) {
       const info = await node.getChainInfo();
-      const params = await node.getParams();
-      const v2 = await node.bridgeV2Params();
-      const ctr = await node.bridgeCounters(domain);
+      const [params, v2, ctr] = await Promise.all([node.getParams(), node.bridgeV2Params(), node.bridgeCounters(domain)]);
       const withdrawals: WithdrawalV2Ev[] = [];
       let withdrawalCount = 0n;
       for (let from = this.state.withdrawal; ; ) {
@@ -204,25 +208,19 @@ export class EvmRelayer {
         from = ev.withdrawals[ev.withdrawals.length - 1].nonce + 1n;
         if (from >= withdrawalCount) break;
       }
-
-      const { final } = await evm.blocks();
-      const bridge = await evm.bridge(final);
-      const deposits: EvmDeposit[] = [];
-      for (let n = this.state.deposit; n < bridge.depositNonce; n++) deposits.push(await evm.deposit(n, final));
-      const processed: boolean[] = [];
-      for (const w of withdrawals) processed.push(await evm.isProcessed(w.nonce, final));
-      const status = new Map<bigint, DepositV2Status>();
-      for (const d of deposits) status.set(d.nonce, await node.depositV2(domain, d.nonce));
-
+      const sts = await Promise.all(deposits.map((d) => node.depositV2(domain, d.nonce)));
       const after = await node.getChainInfo();
       if (after.tip === info.tip && ctr.height === info.height) {
+        const status = new Map<bigint, DepositV2Status>(deposits.map((d, i) => [d.nonce, sts[i]]));
+        const processed: boolean[] = [];
+        for (const w of withdrawals) processed.push(await evm.isProcessed(w.nonce, final));
         return {
           info, params, v2, counters: ctr.counters, withdrawals, withdrawalCount, final, bridge, deposits, status, processed, chainId,
           side: { domain, extChainId: chainId, bridgeAddr: hexBuf(this.o.bridge) },
         };
       }
     }
-    throw new Error("agent chain tip moved during three snapshot attempts");
+    throw new Error("agent chain tip moved during five snapshot attempts");
   }
 
   /** Why this relayer must not sign for the domain right now, or null. */
@@ -455,8 +453,7 @@ export class EvmRelayer {
 
   // ------------------------------------------------------------------ chain -> RH
 
-  private releasePath(s: Snapshot): { mode: "signers"; keys: EvmKey[] } | { mode: "proof" } | { mode: null; why: string } {
-    const b = s.bridge;
+  private releasePath(b: BridgeView): { mode: "signers"; keys: EvmKey[] } | { mode: "proof" } | { mode: null; why: string } {
     const keys = (b.releaseModes & MODE_SIGNERS) !== 0 ? pickSigners(this.o.attesters, b.signers, b.threshold) : null;
     const proofOn = (b.releaseModes & MODE_PROOF) !== 0 && b.headers !== ZERO_ADDR;
     const want = this.o.releaseMode;
@@ -471,11 +468,14 @@ export class EvmRelayer {
     res.waitingDepth = pending.filter((w) => !this.isFinal(w, K)).map((w) => w.nonce.toString());
     const ready = pending.filter((w) => this.isFinal(w, K));
     if (ready.length === 0) return;
-    if (s.bridge.paused) {
+    // Admin settings (modes, signer set, pause) as they are NOW: a release tx runs against
+    // the latest state, while the invariant reads stay at the finality block.
+    const now = await this.o.evm.bridge("latest");
+    if (now.paused) {
       res.errors.push("CadreBridge paused: not releasing");
       return;
     }
-    const path = this.releasePath(s);
+    const path = this.releasePath(now);
     if (path.mode === null) {
       res.errors.push(`cannot release ${ready.map((w) => w.nonce).join(",")}: ${path.why}`);
       return;
@@ -565,9 +565,11 @@ export class EvmRelayer {
         saveEvmState(this.o.stateFile, this.state); // the choice is persisted before anything is signed
       }
     }
-    const bkeys = pickSigners(this.o.attesters, s.bridge.signers, s.bridge.threshold);
-    for (const [k, r] of Object.entries(this.state.refunds)) {
-      if (r.shareSettled) continue;
+    const open = Object.entries(this.state.refunds).filter(([, r]) => !r.shareSettled);
+    if (open.length === 0) return;
+    const bnow = await evm.bridge("latest");
+    const bkeys = pickSigners(this.o.attesters, bnow.signers, bnow.threshold);
+    for (const [k, r] of open) {
       const nonce = BigInt(k);
       const id = `refund:${k}`;
       try {
@@ -575,7 +577,7 @@ export class EvmRelayer {
         if (!dep.refunded) {
           const st = await this.o.node.depositV2(this.o.domain, nonce);
           if (st.processed) throw new Error("deposit was unlocked on the chain; never refunding it");
-          if (!bkeys) throw new Error(`hold fewer than ${s.bridge.threshold} bridge signer keys; cannot refund`);
+          if (!bkeys) throw new Error(`hold fewer than ${bnow.threshold} bridge signer keys; cannot refund`);
           const sigs = await signBundle(bkeys, refundDigest(s.chainId, this.o.bridge, nonce, getAddress(dep.refundTo), dep.amount));
           const tx = await evm.send(this.o.bridge, encodeFunctionData({ abi: bridgeAbi, functionName: "refundDeposit", args: [nonce, sigs] }));
           r.tx = tx.hash;
