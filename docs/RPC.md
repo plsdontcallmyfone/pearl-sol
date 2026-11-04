@@ -431,6 +431,16 @@ against any final header it holds, not only the node's final tip. Same response 
 error) when `at_height` is below the withdrawal's block or above the final height. Without
 `at_height` the proof is against the node's current final root, as before.
 
+### Bridge v2: other sides (docs/BRIDGE-V2.md, from `bridge_v2_height`)
+With `"domain": 2` (Robinhood Chain) or any other domain >= 2, `getDeposit {"domain", "nonce"}`,
+`getWithdrawalProof {"domain", "nonce", "at_height"?}` and `getBridgeEvents {"domain", "from_nonce"?,
+"limit"?}` read the v2 replay set and the 90-byte v2 log entries (same response shapes; a v2
+withdrawal carries `version: 2`, `domain`, `recipient` hex and `recipient_evm`). Without `domain`
+(or with 1) they are the Solana methods above, unchanged. `getBridgeCounters {}` returns the escrow
+balance and per-domain `unlocked`, `locked`, `outstanding`, `deposit_count`, `withdrawal_count`
+(domain 1 derived: `TOTAL_SUPPLY - escrow - sum(other domains)`). `getParams` adds
+`bridge_v2_height`, `bridge_v2_active`, `bridge_domains` and the AdminConfig keys 50 and 51.
+
 ### getAccountTxs `{"account": "base58", "limit"?: 50, "before"?: "height:index"}`
 Txs touching the account on the canonical chain, newest first: txs it sent, Transfers to it,
 BridgeUnlocks to it, ClearRoutes naming it in their `account` field and RejectResults naming
