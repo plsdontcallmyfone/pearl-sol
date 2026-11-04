@@ -57,7 +57,7 @@ abstract contract Fixture is Test {
         token = new CadreToken(admin, SUPPLY);
         manager = new PoolManager(admin);
         oracle = new CadreHeaderOracle(admin, CADRE_CHAIN_ID, aa, 2);
-        bridge = new CadreBridge(admin, address(token), sa, 2, 0);
+        bridge = new CadreBridge(admin, address(token), 2, sa, 2, 0);
         bridge.setReleaseModes(3, address(oracle));
         reserve = new CadreReserve(
             admin, address(token), ICadreBridge(address(bridge)), miningPool,

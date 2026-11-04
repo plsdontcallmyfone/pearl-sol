@@ -23,6 +23,7 @@ interface ICadreBridge {
     function deposit(uint64 amount, bytes32 cadreRecipient) external returns (uint64 nonce);
     function depositFor(uint64 amount, bytes32 cadreRecipient, address refundTo) external returns (uint64 nonce);
     function depositNonce() external view returns (uint64);
+    function domain() external view returns (uint8);
     function isRefunded(uint64 nonce) external view returns (bool, address buyer, uint64 amount);
 }
 

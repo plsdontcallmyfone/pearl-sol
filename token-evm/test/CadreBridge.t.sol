@@ -160,7 +160,7 @@ contract CadreBridgeTest is Fixture {
         _deposit(10e6);
         address[] memory sa = new address[](3);
         for (uint256 i = 0; i < 3; i++) sa[i] = vm.addr(signerKeys[i]);
-        CadreBridge other = new CadreBridge(admin, address(token), sa, 2, 0);
+        CadreBridge other = new CadreBridge(admin, address(token), 2, sa, 2, 0);
         bytes[] memory forOther = sign(firstN(signerKeys, 2), other.releaseDigest(0, bob, 1e6));
         vm.expectRevert(SignerSet.BadSignature.selector);
         bridge.release(0, bob, 1e6, forOther);
@@ -214,7 +214,7 @@ contract CadreBridgeTest is Fixture {
     function test_minWithdrawalNonce() public {
         address[] memory sa = new address[](3);
         for (uint256 i = 0; i < 3; i++) sa[i] = vm.addr(signerKeys[i]);
-        CadreBridge b2 = new CadreBridge(admin, address(token), sa, 2, 100);
+        CadreBridge b2 = new CadreBridge(admin, address(token), 2, sa, 2, 100);
         vm.prank(admin);
         token.transfer(address(b2), 10e6);
         bytes[] memory s = sign(firstN(signerKeys, 2), b2.releaseDigest(99, bob, 1e6));
@@ -267,6 +267,33 @@ contract CadreBridgeTest is Fixture {
             vm.expectRevert(CadreBridge.WrongDomain.selector);
             bridge.releaseProof(e, 0, proof, h);
         }
+    }
+
+    /// The domain is per deployment: a bridge on domain 3 refuses domain 2 entries and pays
+    /// its own; domains outside 2..=15 cannot be configured.
+    function test_domainIsPerDeployment() public {
+        address[] memory sa = new address[](3);
+        for (uint256 i = 0; i < 3; i++) sa[i] = vm.addr(signerKeys[i]);
+        vm.expectRevert(CadreBridge.BadDomain.selector);
+        new CadreBridge(admin, address(token), 1, sa, 2, 0);
+        vm.expectRevert(CadreBridge.BadDomain.selector);
+        new CadreBridge(admin, address(token), 16, sa, 2, 0);
+        vm.startPrank(admin);
+        CadreBridge b3 = new CadreBridge(admin, address(token), 3, sa, 2, 0);
+        b3.setReleaseModes(2, address(oracle));
+        token.transfer(address(b3), 10e6);
+        vm.stopPrank();
+        bytes memory e2 = _entry(2, 0, bob, 1e6);
+        (bytes memory p2, bytes32 r2) = oneLeaf(Sha256Mmr.appendElement(e2));
+        bytes32 h2 = postRoot(r2, 60);
+        vm.expectRevert(CadreBridge.WrongDomain.selector);
+        b3.releaseProof(e2, 0, p2, h2);
+        bytes memory e3 = _entry(3, 0, bob, 1e6);
+        (bytes memory p3, bytes32 r3) = oneLeaf(Sha256Mmr.appendElement(e3));
+        bytes32 h3 = postRoot(r3, 61);
+        b3.releaseProof(e3, 0, p3, h3);
+        assertEq(token.balanceOf(bob), 1e6);
+        assertEq(uint8(b3.depositMessage(0)[16]), 3);
     }
 
     function test_releaseProofBadVersionOrLength() public {

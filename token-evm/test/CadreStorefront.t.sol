@@ -61,7 +61,7 @@ contract CadreStorefrontTest is Fixture {
         assertApproxEqRel(uint256(o.tokens), 889_000 * 1e6, 0.01e18);
         assertEq(o.workerPay + o.protocolFee, uint256(o.tokens) * 1000);
         assertEq(o.protocolFee, uint256(o.tokens) * 500 / 10_000 * 1000);
-        assertEq(o.jobId, CadreFormats.orderJobId(uint64(block.chainid), address(bridge), 0));
+        assertEq(o.jobId, CadreFormats.orderJobId(2, 0));
         CadreBridge.Deposit memory d = bridge.deposits(0);
         assertEq(d.sender, address(store));
         assertEq(d.refundTo, buyer);
@@ -76,7 +76,7 @@ contract CadreStorefrontTest is Fixture {
         assertEq(sha256(body), o.bodyHash);
         assertEq(
             store.depositOrderMessage(0),
-            CadreFormats.depositOrderMessage(uint64(block.chainid), address(bridge), 0, RECIPIENT, o.tokens, o.bodyHash)
+            CadreFormats.depositOrderMessage(2, uint64(block.chainid), address(bridge), 0, RECIPIENT, o.tokens, o.bodyHash)
         );
     }
 

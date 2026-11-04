@@ -6,9 +6,13 @@ pragma solidity 0.8.26;
 /// token-evm/FORMATS.md is the written spec; test/vectors/formats.json is an independent
 /// Rust encoding of the same bytes.
 library CadreFormats {
-    /// Bridge domains: 1 = Solana (v1 messages and entries), 2 = Robinhood Chain.
+    /// Bridge domains: 1 = Solana (v1 messages and entries), 2 = Robinhood Chain (testnet
+    /// 46630). The chain accepts v2 kinds for domains 2..=15; a redeployed EVM bridge takes a
+    /// new domain number (the chain's replay set is keyed by (domain, nonce)).
     uint8 internal constant DOMAIN_SOLANA = 1;
     uint8 internal constant DOMAIN_RH = 2;
+    uint8 internal constant DOMAIN_MIN_V2 = 2;
+    uint8 internal constant DOMAIN_MAX_V2 = 15;
 
     uint8 internal constant ENTRY_VERSION_V2 = 0x02;
     uint256 internal constant ENTRY_V2_LEN = 90;
@@ -65,18 +69,20 @@ library CadreFormats {
     /// attesters for BridgeUnlockV2; nothing on the EVM side verifies it):
     /// "cadre:deposit:v2" || domain u8 || chain_id u64 || bridge [20] || nonce u64 ||
     /// recipient [32] || amount u64.
-    function depositMessage(uint64 chainId, address bridge, uint64 nonce, bytes32 recipient, uint64 amount)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodePacked(
-            DEPOSIT_TAG, DOMAIN_RH, le64(chainId), bridge, le64(nonce), recipient, le64(amount)
-        );
+    function depositMessage(
+        uint8 domain,
+        uint64 chainId,
+        address bridge,
+        uint64 nonce,
+        bytes32 recipient,
+        uint64 amount
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(DEPOSIT_TAG, domain, le64(chainId), bridge, le64(nonce), recipient, le64(amount));
     }
 
     /// Order deposit: the same fields, a different tag, then sha256(PostJob body).
     function depositOrderMessage(
+        uint8 domain,
         uint64 chainId,
         address bridge,
         uint64 nonce,
@@ -85,14 +91,14 @@ library CadreFormats {
         bytes32 bodyHash
     ) internal pure returns (bytes memory) {
         return abi.encodePacked(
-            DEPOSIT_ORDER_TAG, DOMAIN_RH, le64(chainId), bridge, le64(nonce), recipient, le64(amount), bodyHash
+            DEPOSIT_ORDER_TAG, domain, le64(chainId), bridge, le64(nonce), recipient, le64(amount), bodyHash
         );
     }
 
-    /// Chain job id of the order paid by RH deposit `nonce`:
-    /// sha256("cadre:order-job:v2" || domain u8 || chain_id u64 || bridge [20] || nonce u64).
-    function orderJobId(uint64 chainId, address bridge, uint64 nonce) internal pure returns (bytes32) {
-        return sha256(abi.encodePacked(ORDER_JOB_TAG, DOMAIN_RH, le64(chainId), bridge, le64(nonce)));
+    /// Chain job id of the order paid by deposit `nonce` of `domain` (the chain's rule,
+    /// docs/BRIDGE-V2.md 3.2): sha256("cadre:order-job:v2" || domain u8 || nonce u64).
+    function orderJobId(uint8 domain, uint64 nonce) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked(ORDER_JOB_TAG, domain, le64(nonce)));
     }
 
     /// Parses a v2 withdrawal entry: 0x02 || domain u8 || nonce u64 || from [32] ||

@@ -9,7 +9,8 @@ import {Sha256Mmr} from "./lib/Sha256Mmr.sol";
 import {CadreFormats} from "./lib/CadreFormats.sol";
 import {ICadreHeaders, ICadreOrderSource, ICadreBridge} from "./interfaces/ICadre.sol";
 
-/// Robinhood Chain side of the Cadre bridge (domain 2). Port of token/programs/bridge.
+/// Robinhood Chain side of the Cadre bridge (domain 2 on testnet; the domain is a constructor
+/// immutable). Port of token/programs/bridge.
 ///
 /// - `deposit` / `depositFor` lock CADRE in this contract (lock/unlock, nothing minted)
 ///   under a dense nonce from 0. The relayer unlocks `amount x 1000` chain units on the
@@ -17,7 +18,7 @@ import {ICadreHeaders, ICadreOrderSource, ICadreBridge} from "./interfaces/ICadr
 /// - `release` pays a Cadre withdrawal (BridgeLockV2, domain 2) once M-of-N secp256k1
 ///   signers signed the EIP-712 `Release(nonce, recipient, amount)`.
 /// - `releaseProof` pays the same withdrawal from a Commonware MMR inclusion proof of its
-///   v2 withdrawal entry (version 0x02, domain 2 only) against `withdrawRoot` of a final
+///   v2 withdrawal entry (version 0x02, this bridge's domain only) against `withdrawRoot` of a final
 ///   header in `headers` (ICadreHeaders). Same processed bitmap: paid once either way.
 /// - `refundDeposit` returns an order deposit (made by the order source, the storefront)
 ///   to its buyer while the order is Pending or Expired, with M-of-N signatures over
@@ -31,7 +32,6 @@ contract CadreBridge is ICadreBridge, EIP712, Ownable, SignerSet {
 
     uint8 public constant MODE_SIGNERS = 1;
     uint8 public constant MODE_PROOF = 2;
-    uint8 public constant DOMAIN = CadreFormats.DOMAIN_RH;
     uint64 internal constant MAX_AMOUNT = type(uint64).max / 1000;
 
     bytes32 public constant RELEASE_TYPEHASH = keccak256("Release(uint64 nonce,address recipient,uint64 amount)");
@@ -47,6 +47,8 @@ contract CadreBridge is ICadreBridge, EIP712, Ownable, SignerSet {
     }
 
     address public immutable token;
+    /// This bridge's chain domain (2..=15; 2 = Robinhood Chain). A redeploy takes a new one.
+    uint8 public immutable domain;
     /// Withdrawal nonces below this are refused (set to the chain's next domain-2 withdrawal
     /// nonce when a bridge is redeployed, so an older bridge's withdrawals cannot replay).
     uint64 public immutable minWithdrawalNonce;
@@ -88,16 +90,20 @@ contract CadreBridge is ICadreBridge, EIP712, Ownable, SignerSet {
     error AlreadyRefunded();
     error NotRefundable();
     error OrderSourceFrozen();
+    error BadDomain();
 
     constructor(
         address owner_,
         address token_,
+        uint8 domain_,
         address[] memory signers_,
         uint8 threshold_,
         uint64 minWithdrawalNonce_
     ) {
         _initializeOwner(owner_);
+        if (domain_ < CadreFormats.DOMAIN_MIN_V2 || domain_ > CadreFormats.DOMAIN_MAX_V2) revert BadDomain();
         token = token_;
+        domain = domain_;
         minWithdrawalNonce = minWithdrawalNonce_;
         _setSigners(signers_, threshold_);
         releaseModes = MODE_SIGNERS;
@@ -164,7 +170,7 @@ contract CadreBridge is ICadreBridge, EIP712, Ownable, SignerSet {
     /// built by the storefront's `depositOrderMessage`.
     function depositMessage(uint64 nonce) external view returns (bytes memory) {
         Deposit storage d = _deposits[nonce];
-        return CadreFormats.depositMessage(uint64(block.chainid), address(this), nonce, d.recipient, d.amount);
+        return CadreFormats.depositMessage(domain, uint64(block.chainid), address(this), nonce, d.recipient, d.amount);
     }
 
     // ---------------------------------------------------------------- deposits
@@ -216,7 +222,7 @@ contract CadreBridge is ICadreBridge, EIP712, Ownable, SignerSet {
         (,,, bytes32 withdrawRoot) = h.roots(headerHash);
         bytes memory e = entry;
         CadreFormats.Entry memory w = CadreFormats.parseEntry(e);
-        if (w.domain != DOMAIN) revert WrongDomain();
+        if (w.domain != domain) revert WrongDomain();
         address recipient = CadreFormats.toAddress(w.recipient);
         Sha256Mmr.verifyInclusion(proof, Sha256Mmr.appendElement(e), location, withdrawRoot);
         _pay(w.nonce, recipient, w.amount, true);

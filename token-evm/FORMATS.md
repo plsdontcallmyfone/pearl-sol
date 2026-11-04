@@ -5,6 +5,12 @@ header oracle service must produce or check to match token-evm/. Every integer i
 Cadre message or entry is little endian (as on the chain and the Solana side). EIP-712
 structs use ordinary ABI encoding. Plan: docs/RH-TESTNET-PLAN.md 2.3 and 4.2.
 
+Chain side: docs/BRIDGE-V2.md in the chain builder's branch. Every layout below was diffed
+against it and matches (2026-11-04); `test/ChainBridge2.t.sol` checks the deposit, order
+deposit, order job id, PostJob body and v2 entry bytes against the chain's own vectors
+(`test/vectors/chain-bridge2.json`, copied from chain/agent-types/vectors/bridge2.json by
+`vectors-gen/chain_bridge2.py`; the file's `source` field names the commit).
+
 Vectors: `test/vectors/formats.json` (independent Rust encoding in `vectors-gen/`, the
 Solidity tests compare byte for byte), `test/vectors/mmr.json` (commonware-storage MMR),
 `test/vectors/devnet-withdrawals.json` (real devnet v1 withdrawals). Regenerate with
@@ -15,7 +21,7 @@ Solidity tests compare byte for byte), `test/vectors/mmr.json` (commonware-stora
 | Name | Value |
 |---|---|
 | domain Solana | `1` (v1 messages and 88-byte v1 entries, unchanged) |
-| domain RH | `2` |
+| domain RH | `2` (testnet). The chain takes v2 domains 2..=15; `CadreBridge.domain` is a constructor immutable, and a redeployed bridge takes a NEW domain (the chain's replay set is keyed by (domain, nonce)) |
 | RH testnet chain id | `46630` (the contracts use `block.chainid`) |
 | bridge address in messages | the 20-byte CadreBridge address, raw (not padded) |
 | token units | CADRE ERC-20 has 6 decimals; 1 token base unit = 1000 chain units (`EXT_TO_CHAIN`) |
@@ -35,7 +41,7 @@ to `cadreRecipient` (a 32-byte chain account).
 ### 2.1 Plain deposit message (attesters sign with ed25519 for BridgeUnlockV2)
 
     "cadre:deposit:v2"      16 bytes ASCII
-    domain                  u8  = 2
+    domain                  u8  (the bridge's domain, 2 on testnet)
     chain_id                u64 LE = 46630
     bridge                  [20] CadreBridge address
     nonce                   u64 LE
@@ -55,11 +61,13 @@ returns exactly these bytes; the full body is in `OrderBody(uint64 indexed nonce
 
 ### 2.3 Order job id
 
-    job_id = sha256("cadre:order-job:v2" || domain u8 = 2 || chain_id u64 LE || bridge [20] || nonce u64 LE)
+    job_id = sha256("cadre:order-job:v2" || domain u8 || nonce u64 LE)
 
-Stored in `getOrder(nonce).jobId` and emitted in `OrderPlaced`. The v1 Solana rule
-(`sha256("pearl-sol:order-job:v1" || nonce LE)`) would collide across domains, so RH order
-jobs MUST use this one.
+The chain's rule (BRIDGE-V2.md 3.2): no chain id and no bridge address, because the domain
+already separates deployments. Stored in `getOrder(nonce).jobId` and emitted in
+`OrderPlaced`. The v1 Solana rule (`sha256("pearl-sol:order-job:v1" || nonce LE)`) would
+collide across domains, so RH order jobs MUST use this one. The order job's Pearl header
+(`header_id = recipient`, `terms_hash`) is built by the chain exactly as for a Solana order.
 
 ## 3. Cadre chain -> RH withdrawal (BridgeLockV2)
 
@@ -74,7 +82,7 @@ jobs MUST use this one.
     74      8    amount    u64 LE, token base units (6 dp) = chain amount / 1000
     82      8    height    u64 LE, block height of the BridgeLockV2
 
-The RH bridge refuses: length != 90, version != 0x02, domain != 2, a recipient whose top
+The RH bridge refuses: length != 90, version != 0x02, domain != its own, a recipient whose top
 12 bytes are not zero, amount 0, nonce below `minWithdrawalNonce` (immutable, 0 on the
 first deploy), an already processed nonce.
 
@@ -86,7 +94,8 @@ by node RPC `getWithdrawalProof`: `varint leaves || varint inactive_peaks || var
 count x 32-byte digests`, verified against `withdraw_root` of a final header (SHA-256 MMR,
 BackwardFold bagging; `src/lib/Sha256Mmr.sol` is a line-for-line port of
 crates/pearl-verify-sbf/src/mmr.rs). `location` is the entry's leaf index in the whole log
-(shared by every domain).
+(shared by every domain; inside one block the chain appends all v1 entries in tx order,
+then all v2 entries in tx order).
 
 `CadreBridge.releaseProof(bytes entry, uint64 location, bytes proof, bytes32 headerHash)`.
 
@@ -120,7 +129,8 @@ each recovering to a configured signer, sorted by strictly ascending signer addr
     evaluator_count u8 || evaluators [32]* || threshold u8
 
 Same layout as the Solana storefront. `W = (tokens - P_tok) x 1000`, `P = P_tok x 1000`,
-`P_tok = tokens x protocolFeeBps / 10000`, so `W + P == amount x 1000`. `deadline` is
+`P_tok = tokens x protocolFeeBps / 10000`, so `W + P == amount x 1000` (the chain only
+needs `W + P <= amount x 1000`: it debits W + P from the unlocked recipient). `deadline` is
 RELATIVE (blocks after the unlock height). Emitted verbatim in `OrderBody`.
 
 ## 5. Final headers (CadreHeaderOracle, EIP-712)

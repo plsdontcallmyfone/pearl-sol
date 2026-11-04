@@ -44,7 +44,7 @@ independent encoding of the FORMATS.md messages.
    attesters (files, gitignored). Never reuse kappas/tender keys.
 2. `CadreToken` (whole supply to the deployer).
 3. `CadreHeaderOracle(cadreChainId, attesters, threshold)`.
-4. `CadreBridge(token, signers, threshold, minWithdrawalNonce)`, then
+4. `CadreBridge(token, domain = 2, signers, threshold, minWithdrawalNonce)`, then
    `setReleaseModes(3, oracle)` (signers + proof).
 5. `CadreReserve` (the desk's fee recipient is immutable, so the reserve comes first), then
    `CadreV4Desk(PoolManager, token, 3000, 60, reserve)`, `reserve.setBuyLimits(desk)`,
@@ -77,9 +77,9 @@ move every contract to a Safe before mainnet (solady `Ownable` two-step handover
 
 ## Operational notes
 
-- A bridge redeploy must pass `minWithdrawalNonce` = the chain's next domain-2 withdrawal
-  nonce, or the old bridge's withdrawals could be paid again by the new one (the entry does
-  not name the bridge).
+- A bridge redeploy takes a NEW domain number (2..=15, `BRIDGE_DOMAIN`) configured on the
+  chain, so the old bridge's entries and deposits never apply to it. `minWithdrawalNonce`
+  stays as a second guard for reusing a domain (it refuses nonces below it).
 - Deposit finality for the relayer: `safe` tag on testnet, `finalized` on mainnet (E8).
 - RH's public RPC keeps about 10 minutes of state and caps eth_getLogs at 10k logs; the
   relayer should read `deposits(nonce)` state and scan logs in small ranges.

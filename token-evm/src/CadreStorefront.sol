@@ -101,6 +101,8 @@ contract CadreStorefront is ICadreOrderSource, EIP712, Ownable, ReentrancyGuard,
 
     address public immutable token;
     ICadreBridge public immutable bridge;
+    /// The bridge's chain domain (order job ids and deposit messages carry it).
+    uint8 public immutable domain;
     ICadreDesk public desk;
 
     Config public config;
@@ -180,6 +182,7 @@ contract CadreStorefront is ICadreOrderSource, EIP712, Ownable, ReentrancyGuard,
         _initializeOwner(owner_);
         token = token_;
         bridge = bridge_;
+        domain = bridge_.domain();
         desk = desk_;
         _setConfig(config_);
         _setBuyback(buyback_, reserveCap_);
@@ -263,7 +266,7 @@ contract CadreStorefront is ICadreOrderSource, EIP712, Ownable, ReentrancyGuard,
     function depositOrderMessage(uint64 nonce) external view returns (bytes memory) {
         Order storage o = _orders[nonce];
         return CadreFormats.depositOrderMessage(
-            uint64(block.chainid), address(bridge), nonce, o.recipient, o.tokens, o.bodyHash
+            domain, uint64(block.chainid), address(bridge), nonce, o.recipient, o.tokens, o.bodyHash
         );
     }
 
@@ -371,7 +374,7 @@ contract CadreStorefront is ICadreOrderSource, EIP712, Ownable, ReentrancyGuard,
         o.ethSpent = uint128(spent);
         o.share = uint128(share);
         o.recipient = recipient;
-        o.jobId = CadreFormats.orderJobId(uint64(block.chainid), address(bridge), nonce);
+        o.jobId = CadreFormats.orderJobId(domain, nonce);
         o.bodyHash = sha256(body);
         orders++;
         totalEth += spent;

@@ -34,7 +34,7 @@ contract CadreFormatsTest is Fixture {
 
     function test_depositMessage() public view {
         bytes memory m = CadreFormats.depositMessage(
-            uint64(vm.parseJsonUint(j, ".chain_id")), _bridge(), uint64(vm.parseJsonUint(j, ".nonce")),
+            2, uint64(vm.parseJsonUint(j, ".chain_id")), _bridge(), uint64(vm.parseJsonUint(j, ".nonce")),
             vm.parseJsonBytes32(j, ".recipient"), uint64(vm.parseJsonUint(j, ".amount"))
         );
         assertEq(m, vm.parseJsonBytes(j, ".deposit_message"));
@@ -44,10 +44,10 @@ contract CadreFormatsTest is Fixture {
     function test_orderMessageAndJobId() public view {
         bytes32 bodyHash = vm.parseJsonBytes32(j, ".body_hash");
         bytes memory m = CadreFormats.depositOrderMessage(
-            46630, _bridge(), 5, vm.parseJsonBytes32(j, ".recipient"), 2_000_000, bodyHash
+            2, 46630, _bridge(), 5, vm.parseJsonBytes32(j, ".recipient"), 2_000_000, bodyHash
         );
         assertEq(m, vm.parseJsonBytes(j, ".deposit_order_message"));
-        assertEq(CadreFormats.orderJobId(46630, _bridge(), 5), vm.parseJsonBytes32(j, ".order_job_id"));
+        assertEq(CadreFormats.orderJobId(2, 5), vm.parseJsonBytes32(j, ".order_job_id"));
     }
 
     function test_postJobBody() public view {

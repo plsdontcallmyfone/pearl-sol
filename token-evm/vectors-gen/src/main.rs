@@ -235,10 +235,9 @@ fn formats_vectors() -> Value {
     dep_order.extend_from_slice(&recipient);
     dep_order.extend_from_slice(&amount.to_le_bytes());
     dep_order.extend_from_slice(&body_hash);
+    // The chain's rule (docs/BRIDGE-V2.md 3.2): no chain id, no bridge address.
     let mut job = b"cadre:order-job:v2".to_vec();
     job.push(DOMAIN_RH);
-    job.extend_from_slice(&RH_CHAIN_ID.to_le_bytes());
-    job.extend_from_slice(&bridge);
     job.extend_from_slice(&nonce.to_le_bytes());
     let job_id = sha(&[&job]);
     let entry = entry_v2(DOMAIN_RH, 9, [0x33; 32], evm_recipient(9), 123_456, 4242);

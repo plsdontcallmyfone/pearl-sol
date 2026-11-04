@@ -31,7 +31,8 @@ import {ICadreBridge, ICadreDesk} from "../src/interfaces/ICadre.sol";
 ///   SUPPLY               default 1e15 (1B x 1e6, E1 (a) on testnet)
 ///   LP_TOKENS, LP_ETH    pool seed (default 1M CADRE + 0.0005 ETH: the start price; testnet only)
 ///   RESERVE_TOKENS       default 200M CADRE
-///   MIN_WITHDRAWAL_NONCE the chain's next domain-2 withdrawal nonce (0 on a first deploy)
+///   BRIDGE_DOMAIN        chain bridge domain, default 2; a redeploy takes a NEW domain (2..=15)
+///   MIN_WITHDRAWAL_NONCE refuse withdrawal nonces below this (0 for a new domain)
 ///   DEPLOY_OUT           where to write the JSON (default deployments/rh-testnet.json)
 contract Deploy is Script {
     address constant CANONICAL_POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -62,6 +63,7 @@ contract Deploy is Script {
         uint256 lpEth;
         uint256 reserveTokens;
         uint64 minNonce;
+        uint8 domain;
     }
 
     function params() public view returns (Params memory p) {
@@ -81,6 +83,7 @@ contract Deploy is Script {
         p.lpEth = vm.envOr("LP_ETH", uint256(0.0005 ether));
         p.reserveTokens = vm.envOr("RESERVE_TOKENS", uint256(200_000_000 * 1e6));
         p.minNonce = uint64(vm.envOr("MIN_WITHDRAWAL_NONCE", uint256(0)));
+        p.domain = uint8(vm.envOr("BRIDGE_DOMAIN", uint256(2)));
     }
 
     function run() external returns (Out memory o) {
@@ -98,7 +101,7 @@ contract Deploy is Script {
     function _core(Params memory p, Out memory o) internal {
         o.token = address(new CadreToken(p.sender, p.supply));
         o.oracle = address(new CadreHeaderOracle(p.sender, p.cadreChainId, p.attesters, p.attesterThreshold));
-        CadreBridge bridge = new CadreBridge(p.sender, o.token, p.signers, p.signerThreshold, p.minNonce);
+        CadreBridge bridge = new CadreBridge(p.sender, o.token, p.domain, p.signers, p.signerThreshold, p.minNonce);
         bridge.setReleaseModes(3, o.oracle);
         o.bridge = address(bridge);
     }
