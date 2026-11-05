@@ -163,7 +163,7 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
     n="$2"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     cp "$ROOT"/deploy/systemd/hardening/*.conf "$tmp/"; scpb "$n" "$tmp"/*.conf "root@$(ip_of "$n"):/tmp/"
     sshb "$n" root 'set -e; cd /tmp
-      for u in $(systemctl list-unit-files --plain --no-legend "cadre-*.service" | awk "{print \$1}" | grep -v "^cadre-health"); do
+      for u in $(systemctl list-unit-files --plain --no-legend "cadre-*.service" | awk "{print \$1}" | grep -v "^cadre-health\|^cadre-backup"); do
         d=/etc/systemd/system/$u.d; install -d -m 755 $d; install -m 644 common.conf $d/10-hardening.conf
         case ${u%.service} in cadre-header-relay|cadre-settle|cadre-attester|cadre-gateway) install -m 644 native.conf $d/20-native.conf;; cadre-web) install -m 644 cadre-web.conf $d/20-web.conf;; esac
         echo "$u: $(systemd-analyze security $u 2>/dev/null | tail -1 | sed "s/.*: //") (after restart)"

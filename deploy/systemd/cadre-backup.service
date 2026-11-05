@@ -1,0 +1,5 @@
+[Unit]
+Description=Cadre devnet box backup (deploy/backup.sh as /usr/local/sbin/cadre-backup.sh; root and unhardened, it reads every service state file)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cadre-backup.sh
