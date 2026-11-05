@@ -56,7 +56,9 @@ async function batch(opts: { dryOut?: string }): Promise<void> {
   await sync(dir, remote, auth);
   const prevPath = join(dir, "dump.json");
   const prev: Manifest | null = existsSync(prevPath) ? JSON.parse(readFileSync(prevPath, "utf8")) : null;
-  if (prev && prev.cutoff.height > manifest.cutoff.height) {
+  // a dump of an earlier chain (another genesis, or written before dumps named theirs) is replaced, not guarded
+  const sameChain = !!prev?.cutoff.genesis_hash && prev.cutoff.genesis_hash === manifest.cutoff.genesis_hash;
+  if (prev && sameChain && prev.cutoff.height > manifest.cutoff.height) {
     log(`remote is ahead (cutoff ${prev.cutoff.height} > ${manifest.cutoff.height}); skipping this batch`);
     return;
   }

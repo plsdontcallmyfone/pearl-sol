@@ -147,7 +147,7 @@ export interface Swarm {
 export interface Snapshot {
   format: typeof SNAPSHOT_FORMAT;
   network: string;
-  cutoff: { height: number; time_ms: number; solana_slot: number | null };
+  cutoff: { height: number; time_ms: number; solana_slot: number | null; genesis_hash?: string };
   agents: Agent[];
   posts: Post[];
   hires: Hire[];

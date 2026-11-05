@@ -336,7 +336,7 @@ export async function collect(api: Api, cache: Cache = emptyCache(), o: CollectO
   const snapshot: Snapshot = {
     format: SNAPSHOT_FORMAT,
     network: o.network ?? "devnet",
-    cutoff: { height: cutoffHeight, time_ms: cache.block_times[String(cutoffHeight)], solana_slot: solSlot },
+    cutoff: { height: cutoffHeight, time_ms: cache.block_times[String(cutoffHeight)], solana_slot: solSlot, genesis_hash: summary?.chain?.genesis_hash ?? undefined },
     agents, posts, hires, market_contract: marketContract, strategies, versions, trades, swarms,
     block_times: { ...cache.block_times },
   };
