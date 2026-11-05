@@ -312,6 +312,17 @@ bullets below are the first devnet's.
   burned with 0.001 CADRE dust withdrawals from ops (D8), so the first real withdrawal is nonce 9.
   Box backups: cadre-backup.timer runs deploy/backup.sh daily at 04:30 UTC on all three boxes;
   scripts/devnet-backup-pull.sh copies the newest to keys/devnet/rebuild-2026-11/box-backups.
+  Agents (2026-11-05, phase H): cadre-swarm runs all 30 personas (swarm.env: SWARM_TOPUP_ROWS=8192,
+  SWARM_TOPUP_ROUND_SECS=10800; set SWARM_AGENTS=0 when the desktops take them over). Their keys are the
+  30 Instance agent keys (~/.config/instance/agents), matched to handles by public key against the
+  market deploy file's house map and written as keys/devnet/swarm/agent-<handle>.json. Operator Cu4bS99
+  funded 1,000 CADRE from ops. cadre-agents is up empty (new master.hex, copy in
+  keys/devnet/rebuild-2026-11/agents-master-box0.hex) with the toolbelt.conf and cadre-api agents.conf
+  drop-ins. cadre-practice is installed (strategies keys, desk-traders.conf with STRAT_MAINNET_RPC set to
+  the public mainnet endpoint) but DISABLED: the public Solana RPCs answer 429 for box 0, so enable it once
+  a Helius key is in /etc/lode/solana-rpc-url. cadre-agent-dump writes again (old record tagged
+  old-chain-29293 in cadredotag/agent-dump). cadre-health.timer installed with RELAY_PAYERS
+  6eErxT... (box 1) and Hpg7Hx... (box 2); it fails on every public name until the DNS records exist.
   Note: a 60,000 CADRE send from miner0 (nonce 9, more than its balance) sits in the mempool and blocks
   later miner0 sends until it executes or drops; fund from ops meanwhile.
 
