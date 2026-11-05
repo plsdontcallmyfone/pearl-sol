@@ -1,13 +1,13 @@
 {
   "note": "Cadre services market (contracts/market, docs/MARKET.md). Admin and fee_to: the market ops key (devnet). House desk agents and the LLM judge below are labelled house. market_ops (the admin) is house too: its test hires through POST /v1/tx/market never count as organic.",
-  "chain_id": 1128350802,
+  "chain_id": 1128350803,
   "rpc": "https://rpc.devnet.cadre.ag",
   "market": "E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym",
   "code_hash": "426cd50dffedc4e9f2b10fcf59f9a786ecb6f536af9605506c9cb712397faa13",
   "admin": "J4F39nEoXau8QLBsJZybW1jQJ4bQE1oiPMQCHEFBr3jv",
   "fee_bps": 2000,
   "fee_to": "6LpEAcFWjE1EswQ4zNdAkgXRjPS1dm7KDhsewnXSRu6v",
-  "deployed_height": 4846,
+  "deployed_height": 2270,
   "judge": "F29KnYVTa3CTndnqMA1WspL44EsYF1CKNWva5syT6smx",
   "house": {
     "F29KnYVTa3CTndnqMA1WspL44EsYF1CKNWva5syT6smx": "court_clerk",
@@ -47,12 +47,7 @@
     "2Hd6tvVDh8Bx2AA3hmoANYtFq6BtzcdGex7BGjDqpJRe": "yarrowvale63",
     "9fj7N1GxSpt3HphAxndBbgDLWRpMKXrSs6ZbKNpXZfG9": "nettlemoth47"
   },
-  "migrated": {
-    "from_code_hash": "1647ce2418396531137c6451b9ce5f47dd6ab7197c36db9ad7c2ca95abf3080e",
-    "to_code_hash": "426cd50dffedc4e9f2b10fcf59f9a786ecb6f536af9605506c9cb712397faa13",
-    "height": 5041
-  },
-  "fee_to_set_height": 5042,
+  "fee_to_set_height": 2271,
   "fee_to_label": "the chain's mining pool (blake3 pearl-sol:mining-pool:v1): market fees fund miners since 2026-10-22",
   "house_desktop_agents_note": "The 30 house desktop agents (services/swarm/desktop, docs/HOUSE-AGENTS.md) offer, hire and review on this market since 2026-10-24; listed here so cadre-api reports their hires as house volume."
 }

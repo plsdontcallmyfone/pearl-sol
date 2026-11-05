@@ -301,6 +301,20 @@ bullets below are the first devnet's.
   blob:8434632323e6873121dda1cc5475a86fb74c53236b6797ef08178f1cc78eab95, 144 matrices,
   1,235,746,816 MACs per row; getModel answers on nodes 1 and 2.
 
+- Rebuild contracts (2026-11-05, heights 2252 to 2366, deploy/*-devnet.json): swarms
+  654yr1HroSyqBosqFmn2n62MAzjfyrPVMzhjLTDNMQmt, strategies BvYwLdhADUUHcxUufQig4ZufpoJoN1EZmtTHxf6UZSXr
+  and market E1kpbaHn14z4Amdqb7SGjLbn576q1KPC3haAG6YQdsym (fee_to the mining pool) kept their old
+  addresses (same deployer and nonce); halt CDGYbVT1UQL5TjbLZ8zrjLeWk1qWuDuVZLZU7xs7FzLw (authority ops),
+  toolbelt 5e67E9KEz8Sew7NEazJXseCe61Y5mk89cWYmcwH3gvdZ, trading: DESK token
+  65QGmPmEyGBVFic2A5sDvnKWW9Kw4yWCHLA9sWRe4ZFn, CADRE/DESK pool G9W2BoCwjvRJxM2DAMXQt4LS79S4bwQhAbqEnCmhm6F8
+  (1,000 CADRE against 100M DESK), mandate 46eZUXhbtsrBED42aK6fHiw6JfLrUaVxPeXtfKjdVA5m. The SDK token
+  code (chain/contracts/testdata/token.wasm) was uploaded by trading ops. Withdrawal nonces 0 to 8 were
+  burned with 0.001 CADRE dust withdrawals from ops (D8), so the first real withdrawal is nonce 9.
+  Box backups: cadre-backup.timer runs deploy/backup.sh daily at 04:30 UTC on all three boxes;
+  scripts/devnet-backup-pull.sh copies the newest to keys/devnet/rebuild-2026-11/box-backups.
+  Note: a 60,000 CADRE send from miner0 (nonce 9, more than its balance) sits in the mempool and blocks
+  later miner0 sends until it executes or drops; fund from ops meanwhile.
+
 - Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
   registered from the gateway key with `pearl model register` at height 2293 (model_id

@@ -1,12 +1,12 @@
 {
   "network": "devnet",
-  "chain_id": 1128350802,
+  "chain_id": 1128350803,
   "contract": "BvYwLdhADUUHcxUufQig4ZufpoJoN1EZmtTHxf6UZSXr",
-  "code_hash": "a4665db8f57cb5606cfcd2c443cda9d32837e3f49fcdb90156846d0b822584b4",
+  "code_hash": "3a1809c0755e3796bb882f93283383d989d7880c3f63cc97258c467fb74752d8",
   "admin": "zero (immutable)",
-  "start_height": 6160,
-  "instantiate_tx": "b10fbe5fdaaebdbcebe9a9fb14c6aa23c0057920ab7167c81e1b8a2d9d5f21ba",
-  "instantiated_height": 6152,
+  "start_height": 0,
+  "instantiate_tx": "e60dc9e835fb7c481fa53b530b428efb3b4121ea7946722467bf5b78fc88b7ed",
+  "instantiated_height": 2255,
   "analyzer": "cadre-postmortem-v1",
   "analyzer_hash": "525bb9b2609d626a16da4fd3425a7aa1d456cd6fd24178fd226a62cd494866a2",
   "house": [
