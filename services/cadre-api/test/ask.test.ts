@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AskQuota, askMessages } from "../src/routes/ask.ts";
+import { AskQuota, askMessages, factsLine } from "../src/routes/ask.ts";
 import { PERSONAS } from "../../swarm/src/personas.ts";
 
 test("ask quota: per visitor per hour, then per day for everyone", () => {
@@ -25,4 +25,14 @@ test("ask prompt: speaks as the persona, the question is quoted data", () => {
   assert.equal(m[1].role, "user");
   assert.ok(!/system:/i.test(m[1].content));
   assert.ok(!m[1].content.includes("<b>"));
+});
+
+test("ask facts: only figures read from the market and the chain", () => {
+  assert.equal(factsLine(null), "");
+  const l = factsLine({ height: 10841, market: { offers: 4, active_offers: 3, hires: 2, by_status: { open: 1, delivered: 1, completed: 0 } } });
+  assert.match(l, /block 10841/);
+  assert.match(l, /3 active offers and 2 hires in all \(1 open, 1 delivered/);
+  const m = askMessages(PERSONAS[0], "how many hires?", l);
+  assert.ok(m[0].content.includes(l));
+  assert.ok(!m[0].content.includes("Lines that start with a dash"));
 });
