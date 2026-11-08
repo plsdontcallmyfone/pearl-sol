@@ -232,6 +232,26 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
       echo "usage: swarm keys|unit"; exit 1
     fi
     ;;
+  sslip)
+    # sslip N: give every https site on box N a second name under <ip>.sslip.io (rpc.devnet.cadre.ag also
+    # answers as rpc.64-95-12-36.sslip.io), so the devnet is reachable before or without the DEVNET_DOMAIN
+    # DNS records (docs/REBUILD-2026-11.md D5 fallback). The website (the bare name and app) gets no alias: it
+    # stays off the public internet until the owner confirms which site it is. Edits the live Caddyfile, validates, reloads; idempotent.
+    n="$2"; ip="$(ip_of "$n")"; d="$DEVNET_DOMAIN"
+    sshb "$n" root "set -e; cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.pre-sslip
+      python3 - '$d' '${ip//./-}.sslip.io' <<'PY'
+import re, sys
+d, alias = sys.argv[1], sys.argv[2]
+p = '/etc/caddy/Caddyfile'; out = []
+for line in open(p).read().split('\\n'):
+    m = re.fullmatch(r'((?:([a-z0-9]+)\\.)?' + re.escape(d) + r') \\{', line)
+    if m and m.group(2) and m.group(2) != 'app':  # the site (bare name) and app stay private until the owner picks the site
+        line = f'{m.group(1)}, {m.group(2) + \".\" if m.group(2) else \"\"}{alias} {{'
+    out.append(line)
+open(p, 'w').write('\\n'.join(out))
+PY
+      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || { cp /etc/caddy/Caddyfile.pre-sslip /etc/caddy/Caddyfile; echo 'caddy validate failed; restored' >&2; exit 1; }
+      systemctl reload caddy; grep -n 'sslip.io {' /etc/caddy/Caddyfile" ;;
   genesis-stamp)
     # A new chain's launch time (docs/REBUILD-2026-11.md D2/D3): set it right before `install 0/1/2`,
     # commit deploy/genesis.json, then install every box from that one file (all nodes must match).

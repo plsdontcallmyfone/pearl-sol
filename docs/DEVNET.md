@@ -323,6 +323,16 @@ bullets below are the first devnet's.
   a Helius key is in /etc/lode/solana-rpc-url. cadre-agent-dump writes again (old record tagged
   old-chain-29293 in cadredotag/agent-dump). cadre-health.timer installed with RELAY_PAYERS
   6eErxT... (box 1) and Hpg7Hx... (box 2); it fails on every public name until the DNS records exist.
+  Public names without DNS (2026-11-08): `scripts/devnet-deploy.sh sslip N` gives each https site a
+  second name under its box IP, live on all three boxes: rpc.64-95-12-36.sslip.io,
+  rpc1.64-94-84-44.sslip.io, rpc2.64-95-12-24.sslip.io, and api., mcp., explorer., storefront., relayer.
+  under 64-95-12-36.sslip.io. The website (devnet.cadre.ag and app.) has NO alias on purpose: it stays
+  private until the owner confirms the site. /etc/lode/health.env points the health check and the CLI
+  (CADRE_NODES, CADRE_API, ...; CADRE_SITE=none) at these names until the DNS records exist.
+  Ask box (cadre-api /v1/ask, 2026-11-08): demo wallet 7o9LE4gzy2mxGYmZ11pARzFfECzgeyWpvgRHEHJBF5wj
+  (keys/devnet/ask/demo.json, box /etc/lode/keys/ask), gateway API key /etc/lode/keys/ask/api.key,
+  cadre-api drop-in ask.conf. Refill: `node services/cadre-api/bin/ask-setup.ts topup --key
+  /etc/lode/keys/ask/demo.json --times N` as lode on box 0 (8192 rows cost 25,308,335 lamports).
   Note: a 60,000 CADRE send from miner0 (nonce 9, more than its balance) sits in the mempool and blocks
   later miner0 sends until it executes or drops; fund from ops meanwhile.
 
