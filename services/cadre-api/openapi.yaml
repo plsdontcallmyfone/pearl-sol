@@ -2252,6 +2252,23 @@ paths:
         "200": { description: the blob's JSON, content: { application/json: { schema: { type: object } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/ask:
+    get:
+      tags: [inference]
+      operationId: askInfo
+      summary: "The site's ask box: the house agents that answer (handle, name, role, about, topics), whether the box is on (a demo balance is configured), the caller's questions left this hour and everyone's left today"
+      responses:
+        "200": { description: "{enabled, agents, left: {you_this_hour, everyone_today}, limits, paid_by}", content: { application/json: { schema: { type: object } } } }
+    post:
+      tags: [inference]
+      operationId: askAgent
+      summary: "Ask a house agent: {handle, question (3 to 280 chars), stream?}. A real paid inference on the chain's model from the house demo balance. stream=true answers with the gateway's SSE as is (the request id in x-cadre-request; the full receipt at /v1/inference/requests/{id}); otherwise {handle, name, question, answer, receipt: {request_id, ticket_id, rows, charged_lamports, model, status_url, explorer_url}, usage}. 429 past 5 questions per visitor per hour or the daily cap; 503 when the box is off or the demo balance is used up."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [handle, question], properties: { handle: { type: string }, question: { type: string, minLength: 3, maxLength: 280 }, stream: { type: boolean } } } } } }
+      responses:
+        "200": { description: Answer, content: { application/json: { schema: { type: object } }, text/event-stream: { schema: { type: string } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { description: "Past the per-visitor hourly or the daily ask cap", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/swarms:
     get:
       tags: [swarms]
