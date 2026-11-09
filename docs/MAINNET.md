@@ -370,9 +370,11 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
   mainnet release adds the mainnet preset (ids above, `cadre.ag` names), fresh remote-config signing keys
   (cadre-extension docs/REMOTE-CONFIG.md "Key rotation"), and a decision on the bundled Diatype font,
   which is a commercial Dinamo face inherited from Leather with no licence of ours.
-- Security: everything found in the 2026-10-21 review is fixed (docs/SECURITY-REVIEW.md); an outside audit of the
-  four programs, mainly bridge and light client, is still recommended before real funds, and the gateway's
-  strict audience mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) is switched on once the store wallet is out.
+- Security: the 2026-10-21 review fixed what docs/SECURITY-REVIEW.md lists, but 18 findings were left open
+  in the local docs/security-private/ (one High, chain sync) and have not been re-checked since; several
+  must be fixed before a mainnet genesis or program deploy (docs/READINESS-PLAN.md track C). An outside audit
+  of the four programs and the chain's consensus and sync paths is still needed before real funds, and the
+  gateway's strict audience mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) is switched on once the store wallet is out.
 - Proof first: the devnet end-to-end and paid inference runs (REBUILD-2026-11.md J) are blocked on DNS
   and a Solana RPC key; section 10's "same commit on devnet twice" cannot be met until they run.
 - Wallet mainnet switch (2026-11-09, cadre-extension 0.1.1, docs/REMOTE-CONFIG.md "Mainnet launch"): the
