@@ -375,3 +375,11 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
   strict audience mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) is switched on once the store wallet is out.
 - Proof first: the devnet end-to-end and paid inference runs (REBUILD-2026-11.md J) are blocked on DNS
   and a Solana RPC key; section 10's "same commit on devnet twice" cannot be met until they run.
+- Wallet mainnet switch (2026-11-09, cadre-extension 0.1.1, docs/REMOTE-CONFIG.md "Mainnet launch"): the
+  wallet carries the mainnet network built in and hidden; one signed config with `launch.mainnetLive`
+  shows it and moves devnet wallets over, no store review on launch day. It fixes these names in the
+  build, so they must answer before the switch: `rpc.cadre.ag` (node 0 RPC), `api.cadre.ag` (cadre-api),
+  `cadre.ag` (site, serves /install-miner.sh) and `solana.cadre.ag` (a rate-limited reverse proxy on a
+  Cadre box in front of the keyed Solana mainnet provider, so the provider key never ships in the wallet).
+  The four program ids in section 2 are now also baked into that wallet release: do not regenerate the
+  program keypairs in ~/.config/pearl-sol/keys-mainnet.
