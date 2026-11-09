@@ -110,3 +110,16 @@ the gateway's strict audience mode once the store wallet is live.
 
 Devnet is "finished" when tracks A and B are green, D1 to D4 are live and the two node-local chain
 patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
+
+## Progress log
+
+- 2026-11-09: track C re-check done; wallet findings 1 and 2 and the font fixed (Cadre Wallet 0.1.2).
+- 2026-11-09: found outside the plan: the light client had been stalled for 21 hours behind one
+  timed-out send (header-relay kept a tx with no signature and never retried it). Fixed in 90debc6
+  with two regression tests, rolled to boxes 0 to 2. This was drill B7/B8 happening by itself, and it
+  shows D1 (alerts) is the most urgent build item: the health check flagged it all day to nobody.
+- 2026-11-09: B6 part 1 (box 0, 22:00 UTC): kill -9 of 13 services by systemd MainPID (api, explorer,
+  relayer, storefront, crank, attester, gateway, worker, settle, agents, swarm, agent-dump, web). All
+  13 active again within 75 s with new pids; public endpoints 200, relayer health ok, a paid ask
+  answered with the live block height. Not yet done: node and miner kills, box reboots, both relay
+  boxes at once.
