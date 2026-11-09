@@ -57,23 +57,32 @@ docs/measurements/ and a line in TEST-REPORT.
 | B11 | Backup restore: rebuild box 0's services on a scratch box from the newest backup | backups are real | services start from the restored state |
 | B12 | Wallet upgrade path: install 0.1.0-shaped storage, load 0.1.1, then flip a test build to a staging config with `launch.mainnetLive` | the flip in a real browser (only unit tested so far) | accounts intact, network moves once, withdraw falls back |
 
-## Track C: security closure (about 2 days plus an outside audit)
+## Track C: security closure (re-checked 2026-11-09; about 1 week of work plus an outside audit)
 
-The 2026-10-21 review fixed what it lists in docs/SECURITY-REVIEW.md, but 18 findings were left open
-in docs/security-private/ and have not been re-checked since. Some may be fixed by later rows.
+The 18 findings left open on 2026-10-21 were re-checked against main on 2026-11-09 (details in the
+local docs/security-private/RECHECK-2026-11-09.md). Result: 2 fixed since then (C-U6c job listing,
+O-gw gateway disk), 2 partly mitigated (C-U3, C-U4), the rest open, and 2 new ones found (New-1,
+New-2). The two wallet findings were fixed the same day in Cadre Wallet 0.1.2.
 
-1. Re-verify all 18 against today's code and move the fixed ones to SECURITY-REVIEW.md (half a day).
-2. Fix before a mainnet genesis or program deploy, because they cannot change afterwards:
-   C-U3 and B-3, S-7 (signed messages must name the chain and the deployment), B-4/L-6 and R-3/S-4
-   (initialize ordering: deploy and initialize in one step), C-U1 and C-U2 (the one High and its
-   sibling, chain sync), C-U4 and C-U5 (storage).
-3. Fix before the wallet goes to the store if possible, since each needs a store release:
-   wallet items 1 and 2 (the wallet should check quotes and the pay-to itself, not trust the API).
-4. Config decisions, owner: R-4/S-5 (buyback crank settings), A-1 and S-8 (admin keys: multisig).
-5. Ops: O-gw re-check (retention landed 2026-10-22), O-caddy-admin (unix socket).
-6. Turn on gateway strict audience mode after the store wallet is live.
-7. Outside audit of bridge, light client, reserve, storefront, and the chain's consensus and sync
-   paths. Owner picks the firm; scope doc can be generated from SPEC and SECURITY-REVIEW.
+| Group | Ids | State | When it must land |
+|---|---|---|---|
+| Messages name the chain and deployment | C-U3, S-7, B-3, New-1, admin guards | open | BEFORE the mainnet genesis and first program deploy (signed layouts and consensus rules cannot change cheaply afterwards) |
+| Initialize safety | B-4/L-6, R-3/S-4, B-3 launch window | open; the init scripts accept a program someone else initialized first | before any mainnet deploy: program gate + a launch script that checks after every step |
+| Admin hygiene | A-1, S-8, admin powers | open | same program revision; multisig, threshold admin key and timelock are owner decisions |
+| Buyback crank | R-4/S-5 | open, config never applied | owner decision (allowlist the cranker), before the first buyback |
+| Chain sync flooding | C-U1 (High), C-U2 | open | node-local patch, no consensus change: can ship to devnet now |
+| Blob store pressure | C-U4, C-U5, New-2 | partly | node-local patch + per-client limit at the proxy; registration deposit is free only at genesis |
+| Node memory at restart | C-U6b | open | before the chain is large; not launch blocking |
+| Light client reorg depth | residual | worse since K 60 | before mainnet (liveness only) |
+| Ops | O-caddy-admin | open | with the next box config pass |
+| Fixed | C-U6c, O-gw, wallet 1, wallet 2 | done | verify the gateway binary on box 0 is from main |
+| Acceptable with a note | S-6, L-3 (while relay reward is 0), C-U6a, C-U6d, wallet 3 | open | documented |
+
+Order: the three program groups are one program revision (one test pass, one devnet upgrade, then the
+mainnet build). The chain message change is one consensus revision at the mainnet genesis. The two
+node-local patches can roll on devnet first and double as tests for track B (B1, B5). Then the outside
+audit of bridge, light client, reserve, storefront and the chain's consensus and sync paths; turn on
+the gateway's strict audience mode once the store wallet is live.
 
 ## Track D: things still to build
 
@@ -96,8 +105,8 @@ in docs/security-private/ and have not been re-checked since. Some may be fixed 
 1. Now, no owner input needed: C1 (re-verify findings), D1 box-side alerts, D2, D3, B1, B6, B11,
    B12, and B2 to B5 against the sslip names.
 2. When DNS and the RPC key land: all of track A, then B7 to B10.
-3. Before the store upload if the owner can wait a day: C3 and D10.
-4. Before any mainnet step: C2, C4, D5 to D9, the outside audit, then MAINNET.md section 10.
+3. DONE 2026-11-09 in Cadre Wallet 0.1.2: the two wallet findings and the font (D10 screenshots with live figures still wait on track A).
+4. Before any mainnet step: all of track C above the "acceptable" row, D5 to D9, the outside audit, then MAINNET.md section 10.
 
-Devnet is "finished" when tracks A and B are green, D1 to D4 are live and C1 is done. Mainnet
-additionally needs C2 to C7 and D5 to D9.
+Devnet is "finished" when tracks A and B are green, D1 to D4 are live and the two node-local chain
+patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
