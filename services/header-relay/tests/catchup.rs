@@ -46,11 +46,16 @@ struct Sim {
     /// Blockhashes are valid this many slots after first use (0 = forever).
     expiry: u64,
     bh_slot: HashMap<Hash, u64>,
+    /// Transport failure (0 = off): every Nth `submit` returns an error, as an RPC call
+    /// that timed out does. `timeout_lands` says whether the node took the tx anyway.
+    timeout_every: u64,
+    timeout_lands: bool,
+    submits: u64,
 }
 
 impl Sim {
     fn new(svm: LiteSVM, payer: Keypair, rng: u64) -> Self {
-        Self { svm, payer, queue: vec![], results: HashMap::new(), slot: 0, rng, max_tx: 0, lose_every: 0, landed_ok: 0, lost: HashSet::new(), history_finds: true, expiry: 0, bh_slot: HashMap::new() }
+        Self { svm, payer, queue: vec![], results: HashMap::new(), slot: 0, rng, max_tx: 0, lose_every: 0, landed_ok: 0, lost: HashSet::new(), history_finds: true, expiry: 0, bh_slot: HashMap::new(), timeout_every: 0, timeout_lands: false, submits: 0 }
     }
 }
 
@@ -85,6 +90,13 @@ impl Ledger for Sim {
         assert!(size <= 1232, "tx too large: {size}");
         self.max_tx = self.max_tx.max(size);
         let sig = tx.signatures[0];
+        self.submits += 1;
+        if self.timeout_every > 0 && self.submits % self.timeout_every == 0 {
+            if self.timeout_lands {
+                self.queue.push(tx);
+            }
+            anyhow::bail!("simulated timeout: error sending request: operation timed out");
+        }
         self.queue.push(tx);
         Ok(sig)
     }
@@ -194,6 +206,14 @@ struct Run {
 
 /// `backlog` blocks visible at the start, then one more every `every` slots up to
 /// `total`, then `tail` slots to finish.
+/// A pass may fail only on a simulated transport error (the relay's main loop logs it and
+/// runs the next pass); anything else is a test failure.
+fn pass_ok(r: Result<bool>) {
+    if let Err(e) = r {
+        assert!(format!("{e:#}").contains("simulated timeout"), "pass failed: {e:#}");
+    }
+}
+
 fn run(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, max_slots: u64) -> Run {
     run_with(blocks, parallel, backlog, every, max_slots, |_| {})
 }
@@ -215,7 +235,7 @@ fn run_with(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, 
         if slot > 0 && slot % every == 0 && visible.get() < total {
             visible.set(visible.get() + 1);
         }
-        r.pass().unwrap();
+        pass_ok(r.pass());
         r.ledger.pause(0);
         slot += 1;
         let c = r.config().unwrap();
@@ -227,7 +247,7 @@ fn run_with(blocks: &Rc<Vec<Blk>>, parallel: usize, backlog: usize, every: u64, 
     }
     // a few more passes so finals / accumulate / close settle
     for _ in 0..12 {
-        r.pass().unwrap();
+        pass_ok(r.pass());
         r.ledger.pause(0);
     }
     let c = r.config().unwrap();
@@ -388,6 +408,39 @@ fn expired_but_landed_txs_are_not_sent_again() {
     assert_eq!(r.failed, 0, "errors {:?}", r.errors);
     assert!(r.errors.is_empty(), "errors {:?}", r.errors);
     assert_eq!(r.resends, 0, "every lost tx had landed");
+}
+
+fn timeouts(lands: bool) -> Run {
+    let p = small_params();
+    let blocks = Rc::new(mine(&p, 24));
+    run_with(&blocks, 6, 12, 4, 900, |s| {
+        s.timeout_every = 7;
+        s.timeout_lands = lands;
+        s.expiry = 2;
+    })
+}
+
+/// Regression (devnet 2026-11-09, light client stood at 12169 for 21 hours): a send that
+/// fails at the transport and never reached the node is sent again; before the fix its tx
+/// kept no signature, nothing retried it, and its header blocked every later one.
+#[test]
+fn a_send_that_timed_out_and_was_lost_is_retried() {
+    let r = timeouts(false);
+    println!("timeout, lost: {} txs, {} failed, {} resends, tip {} after {} slots; errors {:?}", r.txs, r.failed, r.resends, r.lc_tip, r.slots, r.errors);
+    assert_eq!(r.lc_tip, 24, "the light client reaches the tip");
+    assert_eq!(r.verified, 24);
+    assert!(r.resends > 0, "the lost sends are sent again");
+}
+
+/// The same timeout when the node took the tx anyway: it is tracked by the signature made
+/// before the send, found landed, and not run a second time.
+#[test]
+fn a_send_that_timed_out_but_landed_is_not_run_twice() {
+    let r = timeouts(true);
+    println!("timeout, landed: {} txs, {} failed, {} resends, {} dup sends, tip {}; errors {:?}", r.txs, r.failed, r.resends, r.dup_sends, r.lc_tip, r.errors);
+    assert_eq!(r.lc_tip, 24);
+    assert_eq!(r.verified, 24, "every header verified once (no restart)");
+    assert_eq!(r.failed, 0, "errors {:?}", r.errors);
 }
 
 /// Two relays on one ledger (`Rc<RefCell<Sim>>`), as boxes 1 and 2 run on devnet.

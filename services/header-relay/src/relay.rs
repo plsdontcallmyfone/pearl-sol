@@ -330,10 +330,16 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         if let Some(old) = t.sig.take() {
             t.prev.push(old);
         }
-        t.sig = Some(ledger.submit(tx)?);
+        // Record the signature before the send. A send can fail at the transport (RPC
+        // timeout) after the node took the tx: tracked, such a tx is polled like any other
+        // and found by the history check; untracked, the flight kept a tx with no signature
+        // that nothing ever retried, and its header blocked the lane (devnet, 2026-11-09:
+        // the light client stood at 12169 for 21 hours behind one timed-out send).
+        t.sig = tx.signatures.first().copied();
         t.bh = bh;
         t.sent = Instant::now();
         stats.txs += 1;
+        ledger.submit(tx)?;
         Ok(())
     }
 
@@ -671,10 +677,13 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         }
         sigs.extend(self.submit.iter().filter_map(|t| t.sig));
         sigs.extend(self.global.iter().filter(|t| !t.done).filter_map(|t| t.sig));
-        if sigs.is_empty() {
+        // txs that were never sent (see `fire`) have no signature to poll but still need a pass
+        let unsent = self.flights.iter().flat_map(|f| f.txs.iter()).chain(self.submit.iter()).chain(self.global.iter()).any(|t| !t.done && t.sig.is_none());
+        if sigs.is_empty() && !unsent {
             return Ok(());
         }
-        let states: HashMap<Signature, TxState> = sigs.iter().copied().zip(self.ledger.states(&sigs)?).collect();
+        let states: HashMap<Signature, TxState> =
+            if sigs.is_empty() { HashMap::new() } else { sigs.iter().copied().zip(self.ledger.states(&sigs)?).collect() };
         let mut cu_fail = false;
         // one isBlockhashValid per distinct blockhash per poll (the txs fired in one pass share
         // theirs): asking once per pending tx overran a public RPC's per-method limit, and the
@@ -682,7 +691,11 @@ impl<'a, L: Ledger, S: Src> Relay<'a, L, S> {
         let mut bh_valid: HashMap<Hash, bool> = HashMap::new();
         let resend_after = self.opts.resend_after;
         let mut check = |t: &mut Tx, ledger: &mut L, stats: &mut Stats| -> Result<Option<String>> {
-            let Some(sig) = t.sig else { return Ok(None) };
+            // never sent (its blockhash read failed before a signature existed): send it now
+            let Some(sig) = t.sig else {
+                Self::fire(ledger, t, bh, stats)?;
+                return Ok(None);
+            };
             match states.get(&sig) {
                 Some(TxState::Ok) => t.done = true,
                 Some(TxState::Failed(e)) => {
