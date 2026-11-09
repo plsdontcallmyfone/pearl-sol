@@ -337,6 +337,7 @@ bullets below are the first devnet's.
   later miner0 sends until it executes or drops; fund from ops meanwhile.
 
   Wallet config (2026-11-09): box 0 cadre-api serves the signed Cadre Wallet config at `/v1/wallet/config` from `/etc/lode/wallet-config.json` (drop-in `cadre-api.service.d/walletconfig.conf`, `WALLET_CONFIG_FILE`; read on every request, no restart). Sign and publish per cadre-extension docs/REMOTE-CONFIG.md; seq 1 is live (explorer links, devnet notice).
+  Light client stall (2026-11-09): the light client stood at 12169 from 00:00 to 21:37 UTC. One sendTransaction on box 1 timed out at the public Solana RPC; the relay kept that tx without a signature and never retried it, so header 12170 blocked both lanes (headers_per_min 0, inflight 1). Restarting cadre-header-relay on box 1 recovered it; fix 90debc6 (signature recorded before the send, unsent txs fired by the poll; tests/catchup.rs a_send_that_timed_out_*), header-relay 21d2e5a7... on boxes 1, 2 and box 0 (cadre-settle) since 21:56-22:00 UTC, old binary kept as header-relay.prev. The health check had the lag as WARN all day and nothing alerted anyone: alerts are READINESS-PLAN D1. Relay payers held 3.43 SOL each at 22:00 UTC (about 0.5 SOL a day each).
 - Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
   registered from the gateway key with `pearl model register` at height 2293 (model_id
