@@ -336,6 +336,7 @@ bullets below are the first devnet's.
   Note: a 60,000 CADRE send from miner0 (nonce 9, more than its balance) sits in the mempool and blocks
   later miner0 sends until it executes or drops; fund from ops meanwhile.
 
+  Wallet config (2026-11-09): box 0 cadre-api serves the signed Cadre Wallet config at `/v1/wallet/config` from `/etc/lode/wallet-config.json` (drop-in `cadre-api.service.d/walletconfig.conf`, `WALLET_CONFIG_FILE`; read on every request, no restart). Sign and publish per cadre-extension docs/REMOTE-CONFIG.md; seq 1 is live (explorer links, devnet notice).
 - Model: ~/cadre-models/llama-3.2-1b-instruct-w7a7-k2048 copied from the test box (329 files, 1.7 GB,
   the tree's sha256 list matched on both boxes), hardlinked to /var/lib/lode/cadre-model and
   registered from the gateway key with `pearl model register` at height 2293 (model_id
