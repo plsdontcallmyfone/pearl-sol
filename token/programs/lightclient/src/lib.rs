@@ -60,10 +60,14 @@ use pv::verify::{JobParams, Side};
 // docs/DEVNET.md) uses its own program keypair (keys/devnet/lightclient2-keypair.json, not committed).
 // Since the 2026-11 rebuild (docs/REBUILD-2026-11.md D4) this is a new id: the old devnet light client
 // 47mavKip... holds the dead chain's fixed-seed accounts and has no reset instruction.
-#[cfg(not(feature = "devnet"))]
+#[cfg(all(feature = "devnet", feature = "mainnet"))]
+compile_error!("features `devnet` and `mainnet` are exclusive");
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 declare_id!("BUDUW2bGexRGRHhEkBUj8dAvffRuXQQacredxKtRMHK5");
 #[cfg(feature = "devnet")]
 declare_id!("9WB5X6XXgVysKVWC58u4VifSWdTbBpGpawUQCQnFAQ36");
+#[cfg(feature = "mainnet")]
+declare_id!("7hCpDo5HvqzWmfmpjXVZp7QPsf3osubHF3uMUML8XxvY");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const CANON_SEED: &[u8] = b"canon";

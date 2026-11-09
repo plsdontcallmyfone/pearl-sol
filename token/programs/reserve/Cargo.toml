@@ -16,6 +16,8 @@ no-idl = []
 no-log-ix-name = []
 # public devnet program id (docs/DEVNET.md)
 devnet = []
+# Solana mainnet program id (docs/MAINNET.md; keypair in ~/.config/pearl-sol/keys-mainnet, never in a repo)
+mainnet = []
 idl-build = ["anchor-lang/idl-build"]
 
 

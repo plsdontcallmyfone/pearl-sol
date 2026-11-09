@@ -36,10 +36,14 @@ use pump::*;
 
 // Localnet id = keys/localnet/reserve-keypair.json; the public devnet build (`--features devnet`,
 // docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
-#[cfg(not(feature = "devnet"))]
+#[cfg(all(feature = "devnet", feature = "mainnet"))]
+compile_error!("features `devnet` and `mainnet` are exclusive");
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 declare_id!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
 #[cfg(feature = "devnet")]
 declare_id!("8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi");
+#[cfg(feature = "mainnet")]
+declare_id!("3P2jhm3WEKMJYPXykN8XTtGtH2DEJgjtBB8BDUx7VQzC");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 /// fund_mining defaults, PROVISIONAL (2026-10-19): 10M tokens (6 dp) per call, one call

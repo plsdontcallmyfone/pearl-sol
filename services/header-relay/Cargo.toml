@@ -39,6 +39,8 @@ pearl-job = { path = "../../crates/pearl-job" }
 [features]
 # public devnet program ids (docs/DEVNET.md)
 devnet = ["lightclient/devnet"]
+# Solana mainnet program ids (docs/MAINNET.md)
+mainnet = ["lightclient/mainnet"]
 
 [profile.release]
 opt-level = 3

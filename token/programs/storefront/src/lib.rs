@@ -150,10 +150,14 @@ use pump::*;
 
 // Localnet id = keys/localnet/storefront-keypair.json; the public devnet build (`--features devnet`,
 // docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
-#[cfg(not(feature = "devnet"))]
+#[cfg(all(feature = "devnet", feature = "mainnet"))]
+compile_error!("features `devnet` and `mainnet` are exclusive");
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 declare_id!("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
 #[cfg(feature = "devnet")]
 declare_id!("9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu");
+#[cfg(feature = "mainnet")]
+declare_id!("4WsdXqPyhr4wWwBDmCWPJZmSfap9KUr9Kro2mYZ5HvrL");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const TRADER_SEED: &[u8] = b"trader";
@@ -164,10 +168,12 @@ pub const SHARE_SEED: &[u8] = b"share";
 /// token/programs/reserve: its creator PDA owns the mining reserve ATA.
 pub const RESERVE_CREATOR_SEED: &[u8] = b"creator";
 /// token/programs/reserve `declare_id!` (keys/localnet/reserve-keypair.json).
-#[cfg(not(feature = "devnet"))]
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("4FkQcoCMJdRpZW7bK3wnaMoLjYdWaJBDB8xTUGskLY6p");
 #[cfg(feature = "devnet")]
 pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("8m1RBPiiscHWpXRDj4NevSFMN68tbgCC8f4hu6N4hVzi");
+#[cfg(feature = "mainnet")]
+pub const DEFAULT_RESERVE_PROGRAM: Pubkey = anchor_lang::solana_program::pubkey!("3P2jhm3WEKMJYPXykN8XTtGtH2DEJgjtBB8BDUx7VQzC");
 
 pub const MAX_ATTESTERS: usize = 10;
 pub const MAX_EVALUATORS: usize = 8;

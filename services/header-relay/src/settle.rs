@@ -28,14 +28,18 @@ use crate::sol::Sol;
 
 // Localnet ids by default; `--features devnet` builds the public devnet relay (docs/DEVNET.md),
 // which also switches the light-client id through lightclient/devnet.
-#[cfg(not(feature = "devnet"))]
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 pub const BRIDGE_ID: Pubkey = solana_sdk::pubkey!("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
-#[cfg(not(feature = "devnet"))]
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 pub const STOREFRONT_ID: Pubkey = solana_sdk::pubkey!("DxuuzbuTX32Na4yVDpjo7ZBZQWufFGjzGZASMRpPgXkr");
 #[cfg(feature = "devnet")]
 pub const BRIDGE_ID: Pubkey = solana_sdk::pubkey!("3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN");
+#[cfg(feature = "mainnet")]
+pub const BRIDGE_ID: Pubkey = solana_sdk::pubkey!("DzMPNPJq72CXWeRJA5EwNYedqoi8XSqgJV3DafX2VfnE");
 #[cfg(feature = "devnet")]
 pub const STOREFRONT_ID: Pubkey = solana_sdk::pubkey!("9XjvGk2xJdByPL6NmUCQg7RdBLyeDjWjikZBnwuWvAKu");
+#[cfg(feature = "mainnet")]
+pub const STOREFRONT_ID: Pubkey = solana_sdk::pubkey!("4WsdXqPyhr4wWwBDmCWPJZmSfap9KUr9Kro2mYZ5HvrL");
 const ATA_ID: Pubkey = solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const SYSTEM_ID: Pubkey = solana_sdk::pubkey!("11111111111111111111111111111111");
 const IX_SYSVAR: Pubkey = solana_sdk::pubkey!("Sysvar1nstructions1111111111111111111111111");

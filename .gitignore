@@ -18,6 +18,8 @@ scripts/demo/node_modules
 # public devnet keys: never commit (backup in ~/.config/pearl-sol/keys-devnet-backup)
 keys/devnet/
 keys/rh-testnet/
+# mainnet keys: never commit (backup in ~/.config/pearl-sol/keys-mainnet-backup)
+keys/mainnet/
 scripts/devnet-e2e/node_modules
 .devnet-e2e/
 scripts/devnet-init/node_modules

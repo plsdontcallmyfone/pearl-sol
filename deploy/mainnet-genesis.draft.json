@@ -1,0 +1,16 @@
+{
+  "_note": "DRAFT for docs/MAINNET.md. chain_id 0x4341444D (\"CADM\"); devnet is 0x43414453. timestamp_ms, target_bits, admin and attesters are set on launch day; the TBD strings make every tool refuse this file until then. params = the rebuilt devnet's (30 s blocks, K 60) with the D2 price; owner may change them.",
+  "chain_id": 1128350797,
+  "timestamp_ms": 0,
+  "target_bits": "TBD_from_expected_launch_hash_rate",
+  "admin": "TBD_admin_key_or_multisig_controlled",
+  "attesters": ["TBD_attester_1"],
+  "attester_threshold": 1,
+  "params": {
+    "target_block_time_ms": 30000,
+    "finality_k": 60,
+    "emission_ppb": 3500,
+    "max_balance_rows": 8192,
+    "price_mlamports_per_gflop": 8767
+  }
+}

@@ -35,10 +35,14 @@ pub mod sigverify;
 
 // Localnet id = keys/localnet/bridge-keypair.json; the public devnet build (`--features devnet`,
 // docs/DEVNET.md) uses its own program keypair (keys/devnet/, not committed).
-#[cfg(not(feature = "devnet"))]
+#[cfg(all(feature = "devnet", feature = "mainnet"))]
+compile_error!("features `devnet` and `mainnet` are exclusive");
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
 declare_id!("7LgyoRiKjNXD1AkMQUePb7TzTvRewEXKKLVzXB5vEjc8");
 #[cfg(feature = "devnet")]
 declare_id!("3S226LmVvsoA4QrEpwytiuLxREJrQHS7A1UkeDsJGFoN");
+#[cfg(feature = "mainnet")]
+declare_id!("DzMPNPJq72CXWeRJA5EwNYedqoi8XSqgJV3DafX2VfnE");
 
 pub const MAX_SIGNERS: usize = 10;
 /// Chain ids used in `Processed` seeds.

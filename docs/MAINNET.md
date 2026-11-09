@@ -5,6 +5,12 @@ never launch". Nothing in this file has been run against Solana mainnet; no main
 sent while writing it (the only mainnet access was read-only `getAccountInfo` of pump.fun's Global and
 FeeConfig, section 6). Launching needs the owner's explicit go-ahead and the decisions in section 11.
 
+Update 2026-11-09 (after the devnet rebuild, docs/REBUILD-2026-11.md): still prepare only, nothing sent
+to mainnet. Done since: the `mainnet` cargo feature (section 2 items 1 and 2) with fresh program ids,
+`deploy/mainnet.env` and `deploy/mainnet-genesis.draft.json` (item 3), and the Cadre Wallet store build
+(cadre-extension store/, devnet preset only). The launch chain itself is open: Solana (this file) or
+Robinhood Chain (docs/RH-TESTNET-PLAN.md, not built); section 12 lists what changed since 2026-10-20.
+
 Everything below is the devnet procedure (docs/DEVNET.md, run end to end 2026-10-19/20) with the
 differences mainnet brings. Every figure is either measured on the devnet (with its source) or read
 from chain; where no measurement exists the text says so.
@@ -17,20 +23,28 @@ from chain; where no measurement exists the text says so.
 | pump.fun | real devnet programs (pump `6EF8...`, PumpSwap `pAMM...`, fees `pfee...`) | the same program ids on mainnet |
 | pump Global | 0.3 SOL virtual reserves: a 1 SOL dev buy took the whole curve and it graduated at once | 30 SOL virtual reserves: the curve does not graduate on the dev buy (section 6) |
 | CADRE mint | create_v2 on devnet, BwJqbsJU... | a new create_v2 on mainnet (Token-2022, 1B supply, 6 dp, mint and freeze authority null) |
-| agent chain | 3 BitLaunch boxes, genesis deploy/genesis.json (chain_id 0x43414452) | a NEW genesis (new chain_id or at least new timestamp and keys); the devnet chain is never reused |
+| agent chain | 3 BitLaunch boxes, genesis deploy/genesis.json (chain_id 0x43414453 since the 2026-11 rebuild; 0x43414452 before) | a NEW genesis, draft deploy/mainnet-genesis.draft.json (chain_id 0x4341444D "CADM", new keys); the devnet chain is never reused |
 | Solana RPC | public api.devnet.solana.com (rate limited, the cause of the 2026-10-19 relay stall) | a keyed RPC is required (section 8) |
 | storefront x402 network | `solana-devnet` | `solana` (mainnet) |
 
 ## 2. Code changes still needed before a mainnet build
 
-None of these exist yet; each is small and follows the devnet pattern.
+Items 1 to 3 are done (2026-11-09); the rest are small and follow the devnet pattern.
 
-1. `token/programs/{reserve,bridge,storefront,lightclient}`: a `mainnet` cargo feature with
+1. DONE 2026-11-09: `token/programs/{reserve,bridge,storefront,lightclient}`: a `mainnet` cargo feature with
    `declare_id!` of the new mainnet program keypairs (today `#[cfg(feature = "devnet")]` /
    `#[cfg(not(feature = "devnet"))]`; storefront also its `DEFAULT_RESERVE_PROGRAM`).
-2. `services/header-relay`: `--features mainnet` (it embeds the light-client id like `devnet`).
-3. `deploy/mainnet.env` (box IPs, `SOLANA_RPC` placeholder only, program ids), `deploy/mainnet-idl/`
+2. DONE 2026-11-09: `services/header-relay`: `--features mainnet` (it embeds the light-client id like `devnet`).
+3. DONE as drafts 2026-11-09 (TBD_ values = owner decisions or purchases): `deploy/mainnet.env` (box IPs, `SOLANA_RPC` placeholder only, program ids), `deploy/mainnet-idl/`
    from the build, `deploy/genesis.json` for the mainnet chain (new file, e.g. `deploy/mainnet-genesis.json`).
+   The ids (`cargo check` clean under default, devnet and mainnet; both features at once is a compile
+   error): bridge DzMPNPJq72CXWeRJA5EwNYedqoi8XSqgJV3DafX2VfnE, storefront
+   4WsdXqPyhr4wWwBDmCWPJZmSfap9KUr9Kro2mYZ5HvrL, reserve 3P2jhm3WEKMJYPXykN8XTtGtH2DEJgjtBB8BDUx7VQzC,
+   lightclient 7hCpDo5HvqzWmfmpjXVZp7QPsf3osubHF3uMUML8XxvY. Keypairs in ~/.config/pearl-sol/keys-mainnet
+   (backup keys-mainnet-backup), outside every repo. town and mandate have no mainnet id (not in the launch set).
+   Still to do here: `scripts/devnet-deploy.sh` and `scripts/devnet-solana.sh` read deploy/devnet.env and
+   keys/devnet directly (about 70 places); give them a network switch (or copy them as mainnet-*.sh) only
+   when the launch is approved, so the live devnet scripts are not touched before then.
 4. `crates/pearl-cli`: a `mainnet` network profile (endpoints, program ids).
 5. `~/pearl-wallet` src/shared/pearl/networks.ts: a mainnet preset (node RPC, cadre-api, siteUrl, mint,
    program ids); `~/cadre-web` built with `NEXT_PUBLIC_CADRE_NETWORK=mainnet`.
@@ -98,7 +112,7 @@ owner go-ahead in writing.
 | storefront / bridge | finalize / release mode | proof only (light client) |
 | bridge | attesters | 1 of 1 on devnet (owner decision for mainnet) |
 | lightclient | params | mirror the chain AdminConfig at init (K 30, WTEMA, fallback m/n); any AdminConfig change must be mirrored with `set_params` |
-| chain | params | SPEC defaults: 60 s blocks, K 30, emission 7 ppm, alpha 0.8, WTEMA half life 1 h, min_fee 1000, min_protocol_fee 0 |
+| chain | params | as the rebuilt devnet (genesis params, D2): 30 s blocks, K 60, emission 3,500 ppb, max_balance_rows 8192, price 8,767 mlamports/GFLOP; other values SPEC defaults |
 | header-relay | slots | 3 per lane, 2 lanes (devnet since 2026-10-20) |
 | storefront-x402 | pricing | PRICE_BASE_LAMPORTS 10,000,000, PRICE_LAMPORTS_PER_GFLOP 100,000, OVERHEAD_LAMPORTS 14,000,000 are code defaults, "not a market price": OPEN (section 11) |
 
@@ -340,3 +354,24 @@ reimburse relayers (SPEC 5.3); funding that pool is an owner decision.
     (d) Nodes: block templates must see the whole round (TEMPLATE_JOB_SCAN 4096, was 512); devnet
     nodes run the old 512 (fine for the 1B's 144) until the next node rollout.
     Devnet stays on the 1B and the CPU worker (owner, 2026-10-20).
+
+## 12. What changed since 2026-10-20 (added 2026-11-09)
+
+- Chain parameters: the rebuilt devnet runs 30 s blocks, K 60, emission 3,500 ppb and the D2 price from
+  genesis; sections 4 and 5 assumed 60 s and K 30. The mainnet draft genesis uses the rebuilt values.
+- Hosting: BitLaunch deleted the first devnet when the balance went negative (2026-11-01). Mainnet needs a
+  funded runway and the balance watcher (REBUILD-2026-11.md J) before launch; its Mac job waits on the owner.
+- Solana RPC: box 0 hits 429s on the public devnet RPC today and the Helius key is used up; a keyed
+  mainnet RPC is a hard requirement, not an option.
+- A second launch chain: Robinhood Chain (bridge v2 kinds 40-42 on the chain, docs/BRIDGE-V2.md,
+  docs/RH-TESTNET-PLAN.md). Choosing it replaces sections 2 to 9 with the Solidity side and needs an EVM
+  account side in the wallet; nothing of that is built.
+- Wallet: Cadre Wallet 0.1.0 is store ready on the devnet preset (cadre-extension store/LISTING.md). A
+  mainnet release adds the mainnet preset (ids above, `cadre.ag` names), fresh remote-config signing keys
+  (cadre-extension docs/REMOTE-CONFIG.md "Key rotation"), and a decision on the bundled Diatype font,
+  which is a commercial Dinamo face inherited from Leather with no licence of ours.
+- Security: everything found in the 2026-10-21 review is fixed (docs/SECURITY-REVIEW.md); an outside audit of the
+  four programs, mainly bridge and light client, is still recommended before real funds, and the gateway's
+  strict audience mode (`CADRE_AUTH_REQUIRE_AUDIENCE=1`) is switched on once the store wallet is out.
+- Proof first: the devnet end-to-end and paid inference runs (REBUILD-2026-11.md J) are blocked on DNS
+  and a Solana RPC key; section 10's "same commit on devnet twice" cannot be met until they run.
