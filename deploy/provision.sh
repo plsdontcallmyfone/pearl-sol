@@ -23,7 +23,7 @@ if ! swapon --show | grep -q /swapfile; then
   fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
-# caddy from its official apt repo
+# caddy from its official apt repo (scripts/devnet-deploy.sh caddy N then swaps in the rate limit build, deploy/caddy-custom.sh)
 if ! command -v caddy >/dev/null; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list

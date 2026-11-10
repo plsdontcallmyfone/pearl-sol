@@ -1,7 +1,26 @@
+{
+	# admin API on a unix socket, not a TCP port (the unit gets RuntimeDirectory=caddy from deploy/caddy-custom.sh)
+	admin unix//run/caddy/admin.sock
+	# per-client limits (the rate_limit module, built in by deploy/caddy-custom.sh)
+	order rate_limit before basic_auth
+}
+
 # Cadre devnet https front (docs/DEVNET.md). Filled by scripts/devnet-deploy.sh install from deploy/devnet.env:
 # @DOMAIN@ = DEVNET_DOMAIN, @RPC_HOST@ = this box's node name (box 0 rpc, box 1 rpc1, box 2 rpc2);
 # the names and their DNS records: docs/REBUILD-2026-11.md "Hostnames".
 # Certificates: Let's Encrypt via caddy's automatic HTTPS (ports 80 + 443 open in ufw).
+# per-client request limit: `import rl <zone> <requests per minute>`, keyed on the client address.
+# Our own services talk to 127.0.0.1 ports directly and never pass through here. cadre-api keeps its own limit.
+(rl) {
+	rate_limit {
+		zone {args[0]} {
+			key {remote_host}
+			events {args[1]}
+			window 1m
+		}
+	}
+}
+
 # security headers for every site (set only when the app did not set them; `?` = default)
 (sec) {
 	header {
@@ -14,6 +33,7 @@
 
 @RPC_HOST@.@DOMAIN@ {
 	import sec
+	import rl rpc 600
 	encode gzip
 	@ws path /ws /ws/*
 	handle @ws {

@@ -4,6 +4,7 @@
 #   scripts/devnet-deploy.sh build             on box 0: binaries + devnet .so + IDLs (deploy/build.sh)
 #   scripts/devnet-deploy.sh ship              copy agent-node + pearl-miner from box 0 to boxes 1-2 (via the Mac)
 #   scripts/devnet-deploy.sh install N         units, configs, Caddyfile on box N (root)
+#   scripts/devnet-deploy.sh caddy N           https front only: rate limit build, Caddyfile, sslip names (root)
 #   scripts/devnet-deploy.sh keys N            the service keys box N needs (keys/devnet -> /etc/lode/keys, 600)
 #   scripts/devnet-deploy.sh ctl N ACTION [UNITS]  systemctl ACTION on box N (default: every cadre-* unit there)
 #   scripts/devnet-deploy.sh status            heights, peers, units on every box
@@ -232,6 +233,24 @@ print(\"1\"*(len(k)-len(k.lstrip(b\"\\0\")))+o)" "$f"'
       echo "usage: swarm keys|unit"; exit 1
     fi
     ;;
+  caddy)
+    # caddy N: the https front of box N alone: the caddy build with the rate limit module
+    # (deploy/caddy-custom.sh), the Caddyfile from the templates, the sslip aliases again, then a
+    # restart (not a reload: the admin endpoint moves to a unix socket). Validates before it swaps;
+    # the old file stays at /etc/caddy/Caddyfile.prev.
+    n="$2"; d="$DEVNET_DOMAIN"
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    sed -e "s/@RPC_HOST@/$(rpc_host "$n")/g" -e "s/@DOMAIN@/$d/g" "$ROOT/deploy/Caddyfile.tmpl" > "$tmp/Caddyfile"
+    [[ $n == 0 ]] && sed -e "s/@DOMAIN@/$d/g" "$ROOT/deploy/Caddyfile.box0.tmpl" >> "$tmp/Caddyfile"
+    if grep -q '@[A-Z_]*@' "$tmp/Caddyfile"; then echo "Caddyfile: unfilled placeholder" >&2; exit 1; fi
+    scpb "$n" "$tmp/Caddyfile" "root@$(ip_of "$n"):/tmp/Caddyfile.new"
+    scpb "$n" "$ROOT/deploy/caddy-custom.sh" "root@$(ip_of "$n"):/tmp/caddy-custom.sh"
+    sshb "$n" root "set -e; bash /tmp/caddy-custom.sh; rm -f /tmp/caddy-custom.sh
+      caddy validate --config /tmp/Caddyfile.new --adapter caddyfile >/dev/null 2>&1 || { caddy validate --config /tmp/Caddyfile.new --adapter caddyfile 2>&1 | tail -5 >&2; exit 1; }
+      cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev; install -m 644 /tmp/Caddyfile.new /etc/caddy/Caddyfile; rm -f /tmp/Caddyfile.new"
+    "$0" sslip "$n" >/dev/null 2>&1 || true   # its reload fails across the admin move; the restart below applies it
+    sshb "$n" root "caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || { cp /etc/caddy/Caddyfile.prev /etc/caddy/Caddyfile; echo 'validate failed after sslip; restored' >&2; exit 1; }
+      systemctl restart caddy; systemctl is-active caddy; grep -c 'import rl' /etc/caddy/Caddyfile" ;;
   sslip)
     # sslip N: give every https site on box N a second name under <ip>.sslip.io (rpc.devnet.cadre.ag also
     # answers as rpc.64-95-12-36.sslip.io), so the devnet is reachable before or without the DEVNET_DOMAIN
