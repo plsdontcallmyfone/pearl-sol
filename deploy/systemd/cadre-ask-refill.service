@@ -1,0 +1,14 @@
+[Unit]
+Description=Cadre ask box: top up the house demo balance when it runs low (bin/ask-setup.ts refill; at most ASK_REFILL_MAX_PER_DAY top-ups a UTC day)
+After=cadre-gateway.service
+[Service]
+Type=oneshot
+User=lode
+Group=lode
+WorkingDirectory=/home/lode/pearl-sol/services/cadre-api
+Environment=GATEWAY_URL=http://127.0.0.1:10664 ASK_REFILL_MIN_ROWS=2048 ASK_REFILL_MAX_PER_DAY=6
+EnvironmentFile=-/etc/lode/services.env
+ExecStart=/opt/lode/bin/with-rpc /bin/sh -c 'SOLANA_RPC=$$TOKEN_RPC exec /home/lode/.local/node/bin/node bin/ask-setup.ts refill --key /etc/lode/keys/ask/demo.json --state /var/lib/lode/cadre-api/ask-refill.json --min-rows $ASK_REFILL_MIN_ROWS --max-per-day $ASK_REFILL_MAX_PER_DAY'
+SuccessExitStatus=0
+# exit 2 = under the floor but capped for today: shows as failed so the health check sees it
+TimeoutStartSec=600

@@ -4,8 +4,11 @@
 //   node bin/ask-setup.ts topup  --key <demo.json> [--rows 8192] [--times 1] pay prepaid rows from the wallet's SOL (x402)
 //   node bin/ask-setup.ts apikey --key <demo.json> --out <api.key>         mint a gateway API key for the wallet (0600)
 //   node bin/ask-setup.ts status --key <demo.json>                         the wallet's prepaid balance
+//   node bin/ask-setup.ts refill --key <demo.json> --state <file> [--min-rows 2048] [--rows 8192] [--max-per-day 6]
+//                                    one top-up when the balance is under --min-rows, at most --max-per-day
+//                                    top-ups per UTC day (the spend cap; counted in --state). For a timer.
 // Env: GATEWAY_URL (default http://127.0.0.1:10664), SOLANA_RPC (devnet; default the public endpoint).
-import { existsSync, writeFileSync, chmodSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, renameSync } from "node:fs";
 import { Gateway, latestBlockhash } from "../../swarm/src/clients.ts";
 import { paymentHeader, type Requirement } from "../../swarm/src/pay.ts";
 import { createKeyFile, loadWallet } from "../../swarm/src/wallet.ts";
@@ -48,9 +51,31 @@ async function main() {
   }
   const w = loadWallet(arg("key"));
   const gw = new DemoGateway(gwUrl, w);
-  if (cmd === "topup") {
+  let refill: { file: string; day: string; count: number } | undefined;
+  if (cmd === "refill") {
+    const file = arg("state");
+    const minRows = Number(arg("min-rows", "2048"));
+    const maxPerDay = Number(arg("max-per-day", "6"));
+    const day = new Date().toISOString().slice(0, 10);
+    let count = 0;
+    try {
+      const st = JSON.parse(readFileSync(file, "utf8"));
+      if (st?.day === day && Number.isInteger(st.count)) count = st.count;
+    } catch { /* first run or a new file */ }
+    const b = await gw.balance();
+    const free = Number(b.body?.rows_free);
+    if (b.status !== 200 || !Number.isFinite(free)) throw new Error(`balance: ${b.status}`);
+    if (free >= minRows) { log({ event: "refill", action: "none", rows_free: free, min_rows: minRows, today: count }); return; }
+    if (count >= maxPerDay) {
+      log({ event: "refill", action: "capped", rows_free: free, today: count, max_per_day: maxPerDay });
+      process.exitCode = 2;
+      return;
+    }
+    refill = { file, day, count };
+  }
+  if (cmd === "topup" || refill) {
     const rows = Number(arg("rows", "8192"));
-    const times = Number(arg("times", "1"));
+    const times = refill ? 1 : Number(arg("times", "1"));
     for (let n = 0; n < times; n++) {
       const q = await retry("quote", async () => {
         const r = await gw.topup({ rows });
@@ -66,6 +91,12 @@ async function main() {
         return r.body;
       });
       log({ event: "topup", wallet: w.address, rows: paid?.rows ?? rows, ticket: paid?.ticket_id, order: paid?.order, price_lamports: q.maxAmountRequired });
+      if (refill) {
+        // count the top-up as soon as it is paid, so a crash after this cannot spend past the cap
+        const tmp = `${refill.file}.tmp-${process.pid}`;
+        writeFileSync(tmp, JSON.stringify({ day: refill.day, count: refill.count + 1 }) + "\n", { mode: 0o600 });
+        renameSync(tmp, refill.file);
+      }
     }
     return;
   }
@@ -86,7 +117,7 @@ async function main() {
     log({ event: "status", wallet: w.address, status: r.status, balance: r.body });
     return;
   }
-  throw new Error("usage: ask-setup.ts wallet|topup|apikey|status --key <file> ...");
+  throw new Error("usage: ask-setup.ts wallet|topup|apikey|status|refill --key <file> ...");
 }
 
 main().catch((e) => { console.error(JSON.stringify({ event: "fatal", error: (e as Error).message })); process.exit(1); });
