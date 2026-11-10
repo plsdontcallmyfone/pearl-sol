@@ -142,6 +142,17 @@ chain_id (mainnet attesters and evaluators must be fresh keys until a coordinate
 chain + relayer + attester change); putBlob rate limits are per node, not per client;
 RegisterModel pins its blobs for min_fee (8B row); listJobs and history index bounds.
 
+Sync flood patch (2026-11-10, node-local, no consensus or wire change; needs a cadre-node
+rolling restart). It closes the two sync-path resource issues named above:
+
+| id | severity | fix |
+|---|---|---|
+| C-U1 | high | bodies are scheduled only for headers whose ancestry reaches a live block; a body ask with no answer after 30 s gives its window slot back and waits behind never-asked headers; a header on a live parent must carry the required target and height |
+| C-U2 | medium | header fetches are tracked: at most 1024 at once, at most 16 started by one peer's gossip, each cancelled after 20 s |
+
+Tests: consensus-pow `tests/sync_flood.rs` (6), agent-node `fetches` unit tests (3) and
+`tests/sync_flood.rs` (a node syncs from an honest peer while another serves 600 junk headers).
+
 **Admin powers.** AdminConfig can name the attesters, so the admin can unlock the whole
 escrow balance (a mint-equivalent power), and can change every consensus setting
 (difficulty limits, block time, finality K, emission, alpha, fallback parameters). It

@@ -157,6 +157,15 @@ const MAX_HEADERS_ONLY: usize = 1 << 18;
 /// well under [`MAX_ORPHANS`] (2026-10-21: asking for every body at once overflowed the pool on
 /// a chain longer than it, and a fresh devnet node stopped at height 1).
 pub const BODY_WINDOW: usize = 512;
+/// A body asked for and not received after this long gives its window slot back: the fetch is
+/// cancelled and the header waits behind the ones never asked for (C-U1: an ask nobody can
+/// serve must not hold a slot for good). The resolver asks a peer again every 2 s and devnet
+/// bodies are about 25 KB, so an honest body is 15 request rounds late by then; an expired
+/// honest ask is simply issued again, which costs no more than the resolver's own retries.
+pub const BODY_ASK_TIMEOUT_MS: u64 = 30_000;
+/// Asks handed out again after an expiry hold at most `window / BODY_RETRY_SHARE` slots, so
+/// bodies nobody serves cannot refill the window while never-asked headers wait.
+pub const BODY_RETRY_SHARE: usize = 4;
 /// Byte budget of the orphan pool (security pass 2026-10-21). An orphan's work cannot be
 /// checked before its parent connects, so any peer can send them for free; without a budget a
 /// peer could park MAX_ORPHANS blocks of up to MAX_BLOCK_SIZE (16 MiB) at heights finality
@@ -203,6 +212,14 @@ pub fn fair_job_order(jobs: &mut [JobRecord], ticket: &dyn Fn(&Hash) -> Option<s
     }
 }
 
+/// One outstanding body ask: when it was handed out, and whether it is a repeat of an ask
+/// that expired.
+#[derive(Debug, Clone, Copy)]
+struct BodyAsk {
+    at_ms: u64,
+    retry: bool,
+}
+
 pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     store: Store<E>,
     archive: Option<BlockArchive<E>>,
@@ -216,10 +233,19 @@ pub struct Chain<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     orphans: HashMap<Hash, Block>,
     orphans_by_parent: HashMap<Hash, Vec<Hash>>,
     headers_only: HashMap<Hash, Header>,
-    /// Header-only entries whose body has not been asked for yet, by height.
+    /// Anchored header-only entries whose body has not been asked for yet, by height.
     body_queue: BTreeSet<(u64, Hash)>,
     /// Header-only entries whose body was asked for ([`Chain::next_bodies`]).
-    body_asked: HashSet<Hash>,
+    body_asked: HashMap<Hash, BodyAsk>,
+    /// Header-only entries whose ask expired ([`Chain::expire_bodies`]), oldest first. Entries
+    /// that left the header buffer or were queued again are skipped when popped.
+    body_retry: VecDeque<Hash>,
+    /// Held entries (header-only or orphan) whose ancestry reaches a live block through held
+    /// entries. Only these get a body ask (C-U1): a header above unknown ancestry costs its
+    /// sender nothing and no peer can serve a body that connects.
+    anchored: HashSet<Hash>,
+    /// Header-only entries by parent, to pass anchoring down when a missing parent arrives.
+    header_children: HashMap<Hash, Vec<Hash>>,
     /// Insertion order and bytes of `orphans`, insertion order of `headers_only` (budgets:
     /// over a cap the oldest entry is dropped instead of refusing new ones, so junk cannot
     /// leave either buffer full for honest entries).
@@ -409,7 +435,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             orphans_by_parent: HashMap::new(),
             headers_only: HashMap::new(),
             body_queue: BTreeSet::new(),
-            body_asked: HashSet::new(),
+            body_asked: HashMap::new(),
+            body_retry: VecDeque::new(),
+            anchored: HashSet::new(),
+            header_children: HashMap::new(),
             orphan_order: VecDeque::new(),
             orphan_bytes: 0,
             header_order: VecDeque::new(),
@@ -739,22 +768,56 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         self.headers_only.keys().copied().collect()
     }
 
-    /// Bodies to ask peers for now (headers-first sync): header-only entries not asked for yet,
-    /// lowest height first, at most `window` above the tip and at most `window` outstanding.
-    /// Each hash is handed out once; a body that could not be kept is handed out again.
-    pub fn next_bodies(&mut self, window: usize) -> Vec<Hash> {
-        let limit = self.tip_height().saturating_add(window as u64);
+    /// Bodies to ask peers for now (headers-first sync), at most `window` outstanding. Only
+    /// anchored header-only entries are handed out (their ancestry reaches a live block). Order:
+    /// never asked and above the tip, lowest height first and at most `window` above it; then
+    /// never asked at or below the tip (side branches); then asks that expired
+    /// ([`Chain::expire_bodies`]), oldest first, on at most `window / BODY_RETRY_SHARE` slots.
+    /// Each hash is handed out once per ask; a body that could not be kept is handed out again.
+    pub fn next_bodies(&mut self, window: usize, now_ms: u64) -> Vec<Hash> {
+        let tip = self.tip_height();
+        let limit = tip.saturating_add(window as u64);
         let mut out = Vec::new();
         while self.body_asked.len() < window {
-            let Some(&(height, hash)) = self.body_queue.first() else { break };
-            if height > limit {
-                break;
-            }
-            self.body_queue.pop_first();
+            let above = self.body_queue.range((tip.saturating_add(1), [0u8; 32])..).next().copied().filter(|(h, _)| *h <= limit);
+            let Some((height, hash)) = above.or_else(|| self.body_queue.first().copied().filter(|(h, _)| *h <= tip)) else { break };
+            self.body_queue.remove(&(height, hash));
             if self.headers_only.contains_key(&hash) {
-                self.body_asked.insert(hash);
+                self.body_asked.insert(hash, BodyAsk { at_ms: now_ms, retry: false });
                 out.push(hash);
             }
+        }
+        let retry_slots = (window / BODY_RETRY_SHARE).max(1);
+        let mut retries = self.body_asked.values().filter(|a| a.retry).count();
+        while self.body_asked.len() < window && retries < retry_slots {
+            let Some(hash) = self.body_retry.pop_front() else { break };
+            let Some(hd) = self.headers_only.get(&hash) else { continue };
+            if self.body_asked.contains_key(&hash) || self.body_queue.contains(&(hd.height, hash)) {
+                continue; // asked or queued again since it expired
+            }
+            self.body_asked.insert(hash, BodyAsk { at_ms: now_ms, retry: true });
+            retries += 1;
+            out.push(hash);
+        }
+        out
+    }
+
+    /// Body asks older than [`BODY_ASK_TIMEOUT_MS`]: each gives its window slot back and waits
+    /// behind the never-asked headers. The caller cancels the fetches (a hash may come back
+    /// from [`Chain::next_bodies`] right away; cancel first, then fetch).
+    pub fn expire_bodies(&mut self, now_ms: u64) -> Vec<Hash> {
+        let mut due: Vec<(u64, Hash)> =
+            self.body_asked.iter().filter(|(_, a)| now_ms.saturating_sub(a.at_ms) >= BODY_ASK_TIMEOUT_MS).map(|(h, a)| (a.at_ms, *h)).collect();
+        due.sort_unstable();
+        let mut out = Vec::with_capacity(due.len());
+        for (_, h) in due {
+            self.body_asked.remove(&h);
+            if self.invalid.contains(&h) {
+                self.forget_header(&h); // its body was refused: nothing left to ask for
+            } else {
+                self.body_retry.push_back(h);
+            }
+            out.push(h);
         }
         out
     }
@@ -764,12 +827,67 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         self.body_asked.len()
     }
 
+    /// Is this held entry's ancestry connected to a live block (so its body is scheduled)?
+    pub fn is_anchored(&self, h: &Hash) -> bool {
+        self.anchored.contains(h)
+    }
+
     /// A header-only entry got its body (connected or orphaned) or was dropped.
     fn forget_header(&mut self, hash: &Hash) {
         if let Some(hd) = self.headers_only.remove(hash) {
             self.body_queue.remove(&(hd.height, *hash));
+            if let Some(v) = self.header_children.get_mut(&hd.prev_hash) {
+                v.retain(|x| x != hash);
+                if v.is_empty() {
+                    self.header_children.remove(&hd.prev_hash);
+                }
+            }
         }
         self.body_asked.remove(hash);
+        self.anchored.remove(hash);
+    }
+
+    /// Keep a header-only entry (the caller checked the buffer has room).
+    fn hold_header(&mut self, hash: Hash, header: Header) {
+        self.header_order.push_back(hash);
+        self.header_children.entry(header.prev_hash).or_default().push(hash);
+        self.headers_only.insert(hash, header);
+    }
+
+    /// Mark the held entry `start` anchored, and every held descendant with it; header-only
+    /// ones join the body queue. Each entry is visited once: the walk stops at anchored ones.
+    fn anchor(&mut self, start: Hash) {
+        let mut stack = vec![start];
+        while let Some(h) = stack.pop() {
+            let header = self.headers_only.get(&h).map(|hd| hd.height);
+            if (header.is_none() && !self.orphans.contains_key(&h)) || !self.anchored.insert(h) {
+                continue;
+            }
+            if let Some(height) = header {
+                if !self.body_asked.contains_key(&h) {
+                    self.body_queue.insert((height, h));
+                }
+            }
+            self.push_held_children(&h, &mut stack);
+        }
+    }
+
+    /// `parent` became live: the entries waiting on it are anchored now.
+    fn anchor_children(&mut self, parent: &Hash) {
+        let mut kids = Vec::new();
+        self.push_held_children(parent, &mut kids);
+        for k in kids {
+            self.anchor(k);
+        }
+    }
+
+    fn push_held_children(&self, parent: &Hash, out: &mut Vec<Hash>) {
+        if let Some(v) = self.header_children.get(parent) {
+            out.extend_from_slice(v);
+        }
+        if let Some(v) = self.orphans_by_parent.get(parent) {
+            out.extend_from_slice(v);
+        }
     }
 
     /// Read `key` in the tip's state.
@@ -893,6 +1011,20 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         if t.is_zero() || t > nbits_to_target(cfg.pow_limit_bits) {
             return invalid("target_bits above pow limit");
         }
+        // On a live parent the height and the required target are known now: a header that
+        // connects straight to the tree (and anchors whatever hangs off it, C-U1) must carry
+        // the work a block there needs. The same two rules refuse its body in `connect`.
+        if let Some(ph) = self.live.get(&header.prev_hash).map(|p| p.header.height) {
+            if header.height != ph + 1 {
+                self.invalid.insert(hash);
+                return invalid("height is not parent + 1");
+            }
+            let want = self.required_bits(&header.prev_hash);
+            if header.target_bits != want {
+                self.invalid.insert(hash);
+                return invalid(format!("target_bits {:#x}, required {:#x}", header.target_bits, want));
+            }
+        }
         if header.is_fallback() {
             self.check_pow(&header, None, &proof, &cfg)?;
         } else {
@@ -932,9 +1064,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.forget_header(&old);
             }
         }
-        self.header_order.push_back(hash);
-        self.body_queue.insert((header.height, hash));
-        self.headers_only.insert(hash, header);
+        self.hold_header(hash, header);
+        // Its body is asked for once its ancestry reaches a live block (C-U1); until then it
+        // only waits for its parent's header.
+        if self.live.contains_key(&header.prev_hash) || self.anchored.contains(&header.prev_hash) {
+            self.anchor(hash);
+        }
         Ok(HeaderAccept::Stored { need_parent: if parent_known { None } else { Some(header.prev_hash) } })
     }
 
@@ -972,9 +1107,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 debug!(orphan = %hex(&old), height = b.header.height, "orphan pool over budget: dropped the oldest");
                 // its body is asked for again when the window reaches it
                 if !self.headers_only.contains_key(&old) && self.headers_only.len() < MAX_HEADERS_ONLY {
-                    self.header_order.push_back(old);
-                    self.body_queue.insert((b.header.height, old));
-                    self.headers_only.insert(old, b.header);
+                    self.hold_header(old, b.header);
+                    if self.anchored.contains(&old) {
+                        self.body_queue.insert((b.header.height, old));
+                    }
+                } else if !self.headers_only.contains_key(&old) {
+                    self.anchored.remove(&old);
                 }
             }
         }
@@ -1025,8 +1163,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                 self.too_deep.insert(hash);
                 return Err(ChainError::TooDeep);
             }
+            // an anchored header that got its body stays anchored as an orphan, so headers
+            // above it keep their place in the body schedule
+            let anchored = self.anchored.contains(&hash) || self.anchored.contains(&parent);
             self.forget_header(&hash);
             self.store_orphan(hash, parent, block);
+            if anchored {
+                self.anchor(hash);
+            }
             return Ok((Accept::Orphan { missing: parent }, Vec::new()));
         }
         let mut events = Vec::new();
@@ -1042,7 +1186,10 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
                             any_tip |= t;
                             queue.push_back(child);
                         }
-                        Err(e) => warn!(block = %hex(&child), "orphan rejected: {e}"),
+                        Err(e) => {
+                            self.anchored.remove(&child);
+                            warn!(block = %hex(&child), "orphan rejected: {e}")
+                        }
                     }
                 }
             }
@@ -1078,6 +1225,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
             hash,
             LiveNode { header: h, hash, cum_work, snapshot: snap, summary, txs: Arc::new(block.txs), config, log_base },
         );
+        self.anchor_children(&hash);
         debug!(height = h.height, block = %hex(&hash), "connected");
         if cum_work > self.tip().cum_work {
             self.set_tip(hash, events).await?;
@@ -1270,7 +1418,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
         self.headers_only.retain(|_, hd| hd.height > target_h);
         self.body_queue.retain(|(h, _)| *h > target_h);
         let headers = &self.headers_only;
-        self.body_asked.retain(|h| headers.contains_key(h));
+        self.body_asked.retain(|h, _| headers.contains_key(h));
+        self.body_retry.retain(|h| headers.contains_key(h));
+        self.header_children.retain(|_, v| {
+            v.retain(|h| headers.contains_key(h));
+            !v.is_empty()
+        });
+        let orphans = &self.orphans;
+        self.anchored.retain(|h| headers.contains_key(h) || orphans.contains_key(h));
         self.orphan_bytes = self.orphans.values().map(Self::orphan_size).sum();
         let o = &self.orphans;
         self.orphan_order.retain(|h| o.contains_key(h));
