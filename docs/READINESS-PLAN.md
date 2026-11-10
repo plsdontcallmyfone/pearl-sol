@@ -139,3 +139,8 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   (9 to 54 s per block over 100 blocks); restore runbook must replay storefront payments and relayer
   orders newer than the backup; off-box backups still wait on the Mac job approval; D1 alerts still
   wait on the owner's choice of channel.
+- 2026-11-10 18:14 UTC: B1 result: the fresh node on the Mac reached the tip (17,184 against 17,185
+  live) with no manual step: headers took 67 minutes (11:45 to 12:52 UTC), then bodies, and it
+  accepted the live gossiped blocks for the rest of the six hours it ran, across the node patch
+  rollout on all three boxes. Stopped and removed afterwards. The slow, silent header phase stays
+  on the list (batched header sync, a progress field).
