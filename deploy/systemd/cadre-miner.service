@@ -1,7 +1,7 @@
 [Unit]
 Description=Cadre devnet miner (block producer; --deliver on box 0 only)
 After=cadre-node.service
-Requires=cadre-node.service
+Wants=cadre-node.service
 
 [Service]
 User=lode

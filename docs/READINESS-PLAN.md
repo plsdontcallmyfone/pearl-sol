@@ -123,3 +123,19 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   13 active again within 75 s with new pids; public endpoints 200, relayer health ok, a paid ask
   answered with the live block height. Not yet done: node and miner kills, box reboots, both relay
   boxes at once.
+- 2026-11-10: the no-input list (numbers in docs/measurements/2026-11-10-readiness-drills.md).
+  DONE: D2 (Caddy with the rate limit module on all boxes; rpc 600, explorer 300, storefront and
+  relayer 120 a minute per client), O-caddy-admin (unix socket), D3 (cadre-ask-refill.timer, at most
+  6 top-ups a day), B6 (every kill and reboot recovered by itself: 10 to 36 s on boxes 1 and 2, about
+  2 minutes for a box 0 reboot), B11 (api and explorer started from the restored backup and reached
+  the tip; one backup copied to the Mac), B2 (limits hold, node answers in 4 to 12 ms under load),
+  B3 (3,840 tx flood: blocks capped at 2,000, higher-fee tx in the next block), B12 (wallet flip
+  55/55 in a browser), C-U1 + C-U2 patch merged and rolled to all three nodes.
+  PARTLY: B4 (16 parallel fine; the refusal above the queue cap not reached; 122 MB of disk per
+  request until final), B5 (rate and size limits proven; the full fill not run), B11 (no separate
+  scratch box), B1 (a fresh node on the Mac connects and backfills headers, but one at a time and
+  with no progress shown: hours before the first block).
+  NEW items: batched header sync + a sync progress field (before mainnet); block time burstiness
+  (9 to 54 s per block over 100 blocks); restore runbook must replay storefront payments and relayer
+  orders newer than the backup; off-box backups still wait on the Mac job approval; D1 alerts still
+  wait on the owner's choice of channel.
