@@ -65,6 +65,25 @@ enum Cmd {
         #[arg(long, default_value_t = 1_000_000)]
         base_nonce: u64,
     },
+    /// Mempool flood drill with real funds (docs/READINESS-PLAN.md B3): no attester, no minting.
+    Flood {
+        #[arg(long, default_value = "http://127.0.0.1:10630")]
+        rpc: String,
+        /// Funder key file (a 64-byte JSON array; the first 32 bytes are the seed). Never printed.
+        #[arg(long)]
+        funder_key: std::path::PathBuf,
+        /// Names this run's sender accounts (a new tag = fresh accounts at nonce 0).
+        #[arg(long)]
+        tag: String,
+        #[arg(long, default_value_t = 40)]
+        senders: u16,
+        #[arg(long, default_value_t = 60)]
+        per_sender: u64,
+        #[arg(long, default_value_t = 10)]
+        probe_fee_mult: u64,
+        #[arg(long, default_value_t = 6)]
+        watch_blocks: u64,
+    },
     /// Measure send -> preconfirmed (on another node) -> included times (docs/SPEED.md 7.2).
     PreconfProbe {
         /// Two or more node RPC URLs (txs go round robin, status is read on the next one).
@@ -110,6 +129,11 @@ fn main() -> Result<()> {
             let h = agent_node::miner::load(&rpc, seed32(&attester_seed)?, senders, per_sender, base_nonce)?;
             println!("sent {} txs in {:.2} s", h.len(), t.elapsed().as_secs_f64());
             Ok(())
+        }
+        Cmd::Flood { rpc, funder_key, tag, senders, per_sender, probe_fee_mult, watch_blocks } => {
+            let raw: Vec<u8> = serde_json::from_slice(&std::fs::read(&funder_key)?)?;
+            let seed: [u8; 32] = raw.get(..32).and_then(|s| s.try_into().ok()).ok_or_else(|| anyhow::anyhow!("funder key: need at least 32 bytes"))?;
+            agent_node::miner::flood(&rpc, seed, &tag, senders, per_sender, probe_fee_mult, watch_blocks)
         }
         Cmd::PreconfProbe { rpc, attester_seed, sender_seed, count, spacing, timeout } => agent_node::probe::run(agent_node::probe::ProbeArgs {
             rpcs: rpc,

@@ -151,3 +151,93 @@ pub fn load(rpc: &str, attester_seed: [u8; 32], senders: u8, per_sender: u64, ba
     }
     Ok(hashes)
 }
+
+/// Mempool flood drill (docs/READINESS-PLAN.md B3) with real funds: `funder` pays `senders`
+/// fresh accounts by plain transfers, each then queues `per_sender` 1-unit transfers at min_fee.
+/// A probe transfer from the funder at `probe_fee_mult` x min_fee goes in right after the flood;
+/// the report says how many blocks it waited. Watches `watch_blocks` new blocks. No attester key,
+/// no minting: the bridge invariant is untouched.
+pub fn flood(rpc: &str, funder: [u8; 32], tag: &str, senders: u16, per_sender: u64, probe_fee_mult: u64, watch_blocks: u64) -> Result<()> {
+    let c = Client::new(rpc);
+    let info = c.call("getChainInfo", json!({}))?;
+    let chain_id = info["chain_id"].as_u64().context("chain_id")? as u32;
+    let min_fee: u64 = c.call("getParams", json!({}))?["min_fee"].as_str().unwrap_or("1000").parse()?;
+    let fpk = pubkey_from_seed(&funder);
+    let facc = c.call("getAccount", json!({"account": bs58::encode(fpk).into_string()}))?;
+    let mut fnonce = facc["nonce"].as_u64().unwrap_or(0);
+    let fbal: u64 = facc["balance"].as_str().unwrap_or("0").parse()?;
+    let each = (per_sender + 1) * (min_fee + 1);
+    let need = senders as u64 * (each + min_fee) + probe_fee_mult * min_fee + 1;
+    if fbal < need {
+        bail!("funder balance {fbal} is under the {need} this run needs");
+    }
+    let seeds: Vec<[u8; 32]> = (0..senders).map(|i| *blake3::hash(&[b"cadre flood drill ".as_slice(), tag.as_bytes(), &i.to_le_bytes()].concat()).as_bytes()).collect();
+    // the funder may queue only so many txs ahead of its nonce: fund in waves
+    for wave in seeds.chunks(32) {
+        for s in wave {
+            let tx = Tx::signed(&funder, chain_id, fnonce, min_fee, TxBody::Transfer { to: pubkey_from_seed(s), amount: each });
+            c.call("sendTx", json!({"tx": b64(&tx.encode())}))?;
+            fnonce += 1;
+        }
+        let last = bs58::encode(pubkey_from_seed(wave.last().unwrap())).into_string();
+        let t0 = Instant::now();
+        while c.call("getAccount", json!({"account": last}))?["balance"].as_str().unwrap_or("0") == "0" {
+            if t0.elapsed() > Duration::from_secs(900) {
+                bail!("funding not mined after 900 s");
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+    println!("funded {} senders with {} each", senders, each);
+    let h0 = c.call("getChainInfo", json!({}))?["height"].as_u64().unwrap_or(0);
+    let t = Instant::now();
+    let (mut ok, mut refused) = (0u64, 0u64);
+    let mut reasons: std::collections::BTreeMap<String, u64> = Default::default();
+    for k in 0..per_sender {
+        for s in &seeds {
+            let tx = Tx::signed(s, chain_id, k, min_fee, TxBody::Transfer { to: [7; 32], amount: 1 });
+            match c.call("sendTx", json!({"tx": b64(&tx.encode())})) {
+                Ok(_) => ok += 1,
+                Err(e) => {
+                    refused += 1;
+                    *reasons.entry(e.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    let secs = t.elapsed().as_secs_f64();
+    println!("flood: {ok} accepted, {refused} refused in {secs:.1} s ({:.0} tx/s) {:?}", (ok + refused) as f64 / secs, reasons);
+    let probe = Tx::signed(&funder, chain_id, fnonce, min_fee * probe_fee_mult, TxBody::Transfer { to: [7; 32], amount: 1 });
+    let ph = c.call("sendTx", json!({"tx": b64(&probe.encode())}))?["tx_hash"].as_str().unwrap_or_default().to_string();
+    let i = c.call("getChainInfo", json!({}))?;
+    let sent_at = i["height"].as_u64().unwrap_or(0);
+    println!("probe at {probe_fee_mult}x fee sent at height {sent_at}, mempool {}", i["mempool_size"]);
+    let (mut seen, mut last_h, mut last_t, mut probe_in) = (0u64, sent_at, Instant::now(), None::<u64>);
+    while seen < watch_blocks {
+        std::thread::sleep(Duration::from_secs(1));
+        let i = c.call("getChainInfo", json!({}))?;
+        let h = i["height"].as_u64().unwrap_or(0);
+        if h == last_h {
+            continue;
+        }
+        let b = c.call("getBlock", json!({"height": h}))?;
+        let n = b["txs"].as_array().map(|a| a.len() as u64).or(b["tx_count"].as_u64()).unwrap_or(0);
+        if probe_in.is_none() {
+            let st = c.call("getTxStatus", json!({"tx_hash": ph}))?;
+            let s = st["status"].as_str().unwrap_or("");
+            if s == "included" || s == "final" {
+                probe_in = Some(st["height"].as_u64().unwrap_or(h));
+            }
+        }
+        println!("block {h}: {n} txs, {:.0} s after the last, mempool {}", last_t.elapsed().as_secs_f64(), i["mempool_size"]);
+        seen += h - last_h;
+        last_h = h;
+        last_t = Instant::now();
+    }
+    match probe_in {
+        Some(h) => println!("probe included at height {h}: {} block(s) after it was sent", h.saturating_sub(sent_at)),
+        None => println!("probe NOT included within {watch_blocks} blocks"),
+    }
+    println!("flood started at height {h0}");
+    Ok(())
+}
