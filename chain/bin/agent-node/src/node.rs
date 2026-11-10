@@ -29,6 +29,8 @@ use rpc::{ApiRequest, Core, Outbound, Subscriber};
 use sync::{Kind, SyncEvent, SyncMailbox};
 use tracing::{debug, warn};
 
+use crate::fetches::HeaderFetches;
+
 #[derive(Clone)]
 pub struct ActorConfig {
     pub tip_interval: Duration,
@@ -79,10 +81,22 @@ struct Net<S> {
     headers: SyncMailbox,
     bodies: SyncMailbox,
     blob_fetch: SyncMailbox,
+    /// Outstanding header fetches (C-U2): capped, per-peer limited, expiring.
+    header_fetches: HeaderFetches<PublicKey>,
 }
 
 impl<S: Sender<PublicKey = PublicKey>> Net<S> {
-    fn send(&mut self, outs: Vec<Outbound>) {
+    /// Send what the core queued. `from` is the peer whose gossip this loop turn handled (the
+    /// header fetches it caused count against that peer); `None` for sync deliveries, RPC
+    /// and the timer.
+    fn send(&mut self, outs: Vec<Outbound>, from: Option<&PublicKey>, now_ms: u64) {
+        // expired asks are cancelled before anything is (re)fetched
+        let mut drop_headers: HashSet<sync::Key> = self.header_fetches.expire(now_ms).iter().map(sync::key).collect();
+        let drop_bodies: HashSet<sync::Key> = outs.iter().filter_map(|o| if let Outbound::CancelBody(h) = o { Some(sync::key(h)) } else { None }).collect();
+        if !drop_bodies.is_empty() {
+            debug!(count = drop_bodies.len(), "body asks expired: fetches cancelled");
+            let _ = self.bodies.retain(move |key, _| !drop_bodies.contains(key));
+        }
         for o in outs {
             match o {
                 Outbound::Block(b) => {
@@ -92,9 +106,17 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                     let _ = self.txs.send(Recipients::All, IoBuf::from(b), false);
                 }
                 Outbound::FetchHeader(h) => {
-                    let fb = self.headers.fetch(sync::key(&h));
-                    debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
+                    let w = self.header_fetches.want(h, from, now_ms);
+                    if let Some(old) = w.evicted {
+                        drop_headers.insert(sync::key(&old));
+                    }
+                    if w.fetch {
+                        drop_headers.remove(&sync::key(&h));
+                        let fb = self.headers.fetch(sync::key(&h));
+                        debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
+                    }
                 }
+                Outbound::CancelBody(_) => {}
                 Outbound::FetchBody(h) => {
                     let fb = self.bodies.fetch(sync::key(&h));
                     debug!(key = %hex::encode(&h[..6]), ?fb, "fetch body");
@@ -113,6 +135,10 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                     let _ = self.blob_fetch.retain(move |key, _| *key != k);
                 }
             }
+        }
+        if !drop_headers.is_empty() {
+            debug!(count = drop_headers.len(), tracked = self.header_fetches.len(), "header fetches expired or over the cap: cancelled");
+            let _ = self.headers.retain(move |key, _| !drop_headers.contains(key));
         }
     }
 }
@@ -146,7 +172,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let (txs_s, mut txs_r) = channels.txs;
     let (tips_s, mut tips_r) = channels.tips;
     let (blobs_s, mut blobs_r) = channels.blobs;
-    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch };
+    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch, header_fetches: HeaderFetches::default() };
     core.peer_info = cfg.peer_info.clone();
     core.started_ms = now_ms(&context);
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
@@ -155,6 +181,8 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let mut seen = [0u64; 7];
 
     loop {
+        // the peer whose gossip this turn handles: header fetches it causes count against it
+        let mut from: Option<PublicKey> = None;
         // biased select: the tip timer comes first so a busy branch below cannot starve it
         // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21); then
         // block gossip, sync deliveries and tips/weak blocks BEFORE the RPC mailbox: a node whose
@@ -184,6 +212,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 seen[1] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
+                from = Some(peer.clone());
                 let t_dec = std::time::Instant::now();
                 match Block::decode(buf.as_ref()) {
                     Ok(b) => {
@@ -213,12 +242,13 @@ pub async fn run<E, CE, V, S, R, D, B>(
             ev = sync_rx.recv() => {
                 seen[5] += 1;
                 let Some(ev) = ev else { break };
-                handle_sync(&mut core, ev, now_ms(&context)).await;
+                handle_sync(&mut core, &mut net.header_fetches, ev, now_ms(&context)).await;
             },
             msg = tips_r.recv() => {
                 seen[4] += 1;
                 let Ok((peer, buf)) = msg else { break };
                 seen_peers.insert(peer.clone());
+                from = Some(peer.clone());
                 let b = buf.as_ref();
                 if consensus_pow::is_weak_msg(b) {
                     // weak block (docs/SPEED.md 2.2): invalid ones get the peer blocked like a bad block
@@ -273,15 +303,19 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 }
             },
         }
-        core.schedule_fetches();
-        let outs = core.take_outbox();
-        if !outs.is_empty() {
-            net.send(outs);
-        }
+        let now = now_ms(&context);
+        core.schedule_fetches(now);
+        // every turn, also with nothing to send: header fetches expire here
+        net.send(core.take_outbox(), from.as_ref(), now);
     }
 }
 
-async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(core: &mut Core<CE, V>, ev: SyncEvent, now: u64) {
+async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
+    core: &mut Core<CE, V>,
+    header_fetches: &mut HeaderFetches<PublicKey>,
+    ev: SyncEvent,
+    now: u64,
+) {
     match ev {
         SyncEvent::Delivered { kind: Kind::Header, key, value, verdict } => {
             debug!(key = %hex::encode(&key[..6]), "header delivered");
@@ -303,6 +337,11 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
                 },
                 _ => false,
             };
+            // on a refused answer the resolver keeps asking other peers: the entry stays
+            // tracked and expires like any other
+            if ok {
+                header_fetches.done(&key);
+            }
             let _ = verdict.send(ok);
         }
         SyncEvent::Delivered { kind: Kind::Body, key, value, verdict } => {

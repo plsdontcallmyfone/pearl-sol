@@ -58,9 +58,15 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Chain<E, V> {
     }
 
     /// Hand a header-only entry's body out again (its earlier fetch may have been lost).
+    /// Only anchored entries are scheduled (C-U1); [`Chain::repair_for`] names the lowest
+    /// header-only entry above a live block, which is one.
     pub fn reask_body(&mut self, h: &Hash) {
-        self.body_asked.remove(h);
-        if let Some(hd) = self.headers_only.get(h) {
+        let Some(hd) = self.headers_only.get(h).copied() else { return };
+        if self.live.contains_key(&hd.prev_hash) {
+            self.anchor(*h);
+        }
+        if self.anchored.contains(h) {
+            self.body_asked.remove(h);
             self.body_queue.insert((hd.height, *h));
         }
     }

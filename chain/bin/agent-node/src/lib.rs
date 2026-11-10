@@ -2,6 +2,7 @@
 //! that talks to a node over RPC.
 
 pub mod config;
+pub mod fetches;
 pub mod miner;
 pub mod node;
 pub mod probe;

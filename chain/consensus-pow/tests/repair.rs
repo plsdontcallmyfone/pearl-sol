@@ -109,11 +109,11 @@ fn orphan_chain_repair_names_the_missing_ancestor() {
         // its header arrives but not the body: ask for the body again
         dst.insert_header(fork[0].header, fork[0].proof.clone()).await.unwrap();
         assert_eq!(dst.repair_for(&tip), Some(consensus_pow::Repair::Body(fork[0].hash())));
-        let first = dst.next_bodies(512);
+        let first = dst.next_bodies(512, now);
         assert_eq!(first, vec![fork[0].hash()]);
-        assert!(dst.next_bodies(512).is_empty(), "handed out once");
+        assert!(dst.next_bodies(512, now).is_empty(), "handed out once");
         dst.reask_body(&fork[0].hash());
-        assert_eq!(dst.next_bodies(512), vec![fork[0].hash()], "a lost body fetch is handed out again");
+        assert_eq!(dst.next_bodies(512, now), vec![fork[0].hash()], "a lost body fetch is handed out again");
         // the body arrives: the orphans connect and the heavier branch wins
         let (a, _) = add(&mut dst, fork[0].clone(), now).await;
         assert_eq!(a, Accept::Added { tip: true });

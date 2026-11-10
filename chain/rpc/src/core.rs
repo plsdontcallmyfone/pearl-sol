@@ -23,6 +23,8 @@ pub enum Outbound {
     /// Ask the sync layer for this header (headers-first backfill).
     FetchHeader(Hash),
     FetchBody(Hash),
+    /// Stop fetching a body whose ask expired (it is asked for again later, behind others).
+    CancelBody(Hash),
     /// Push a blob (raw bytes) to every peer (one hop, only for blobs put over RPC).
     Blob(Vec<u8>),
     /// Fetch a blob by id through the blob resolver.
@@ -1093,8 +1095,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
     /// above the tip; consensus_pow::BODY_WINDOW). The node calls this after every event.
     /// Hand out the fetches due now: block bodies in height order, and blobs at most
     /// `BLOB_FETCH_WINDOW` at a time (stale blob fetches cancelled and queued again).
-    pub fn schedule_fetches(&mut self) {
-        for h in self.chain.next_bodies(consensus_pow::BODY_WINDOW) {
+    pub fn schedule_fetches(&mut self, now_ms: u64) {
+        // cancels first: an expired ask handed out again in the same call is fetched afresh
+        for h in self.chain.expire_bodies(now_ms) {
+            self.outbox.push(Outbound::CancelBody(h));
+        }
+        for h in self.chain.next_bodies(consensus_pow::BODY_WINDOW, now_ms) {
             self.outbox.push(Outbound::FetchBody(h));
         }
         let (start, cancel) = self.blob_fetch.pump(self.chain.tip_height(), crate::blobfetch::BLOB_FETCH_WINDOW);
