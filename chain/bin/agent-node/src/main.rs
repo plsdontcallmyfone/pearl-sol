@@ -262,12 +262,17 @@ async fn start<V: PowVerifier>(
     let (tx, rx) = futures::channel::mpsc::channel(1024);
     let http = tokio::spawn(rpc::server::serve_http(rpc_addr, tx.clone()));
     let ws = tokio::spawn(rpc::server::serve_ws(ws_addr, tx));
+    // CADRE_HEADER_BATCHES=off: ask for and serve single headers only (the sync before batches)
+    let header_batches = !std::env::var("CADRE_HEADER_BATCHES").is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false"));
+    if !header_batches {
+        tracing::info!("header batches off (CADRE_HEADER_BATCHES)");
+    }
     match mode {
         NetMode::Static { boots, peers } => {
             tracing::info!(%listen, peers = peers.len(), "p2p: static discovery");
             let started = net::start_discovery(context.child("p2p"), signer, listen, listen, boots, peers);
             let oracle = started.oracle;
-            let cfg = ActorConfig { tip_interval, ..Default::default() };
+            let cfg = ActorConfig { tip_interval, header_batches, ..Default::default() };
             run(context.child("node"), core, me, oracle.clone(), oracle, started.channels, rx, cfg).await;
         }
         NetMode::Open(nf) => {
@@ -284,6 +289,7 @@ async fn start<V: PowVerifier>(
                 tip_interval,
                 peer_count: Some(PeerCount(std::sync::Arc::new(move || o2.connected_count()))),
                 peer_info: Some(std::sync::Arc::new(move || agent_node::node::open_peers_json(&o4))),
+                header_batches,
             };
             let o3 = oracle.clone();
             let saver = tokio::spawn(async move {

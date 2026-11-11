@@ -355,6 +355,11 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                           "rebuilds": self.jobs.rebuilds, "updates": self.jobs.updates, "state_reads": self.jobs.reads},
             "mempool": {"size": self.mempool.len(), "failing": self.tx_strikes.len(), "evicted": self.evicted,
                         "evict_after_tips": crate::core::EVICT_AFTER_TIPS},
+            "sync": {"header_asks": self.sync_stats.header_asks, "headers_delivered": self.sync_stats.headers_delivered,
+                     "batch_asks": self.sync_stats.batch_asks, "batch_asks_expired": self.sync_stats.batch_asks_expired,
+                     "batches_delivered": self.sync_stats.batches_delivered, "batch_headers": self.sync_stats.batch_headers,
+                     "batches_refused": self.sync_stats.batches_refused, "batches_served": self.sync_stats.batches_served,
+                     "batch_serves_skipped": self.sync_stats.batch_serves_skipped},
         })
     }
 }

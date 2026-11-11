@@ -69,7 +69,9 @@ RSS, build cache 778 MB, cargo registry 300 MB, binary 19 MB.) Rust: same as the
    Outbound connections are enough to sync and mine. To accept peers too, open the p2p port in
    your firewall and add `"p2p_external": "<your public ip>:10640"`. `chmod 600 node.json`.
 
-4. Run it and check it caught up (`height` and `tip` equal to a public node's, `syncing` false):
+4. Run it and check it caught up (`height` and `tip` equal to a public node's, `syncing` false).
+   While it syncs, getChainInfo says `"syncing": true` with `best_header_height` (where it is
+   heading) next to `height` (where it is), and the node logs a `syncing` line every 30 s:
 
         agent-node run --config ~/cadre-node/node.json
         curl -s -X POST -H 'content-type: application/json' \
@@ -177,3 +179,35 @@ loads it at start, so a node rejoins without its seeds. `getPeers` lists live co
 Blobs live in `<data_dir>` under the `node-blobs` partition, one file per id. They are not
 consensus state: deleting them never makes a node reject a block; it only stops the node
 offering those jobs in its templates until it fetches the data again.
+
+## Header sync in batches (2026-11-11, node-local)
+
+A node that is behind walks headers down from a peer's tip to its own chain, then fetches the
+blocks. The walk used to be one header per round trip (67 minutes for about 17,000 headers on a
+fresh devnet node, docs/measurements/2026-11-10-readiness-drills.md). Now one request brings a
+header and as many of its ancestors as fit.
+
+- A batch ask is an ordinary request on the headers channel. Its key is the block hash XOR a fixed
+  mask (`sync::batch_key`), so it is the hash of no block. A node from before batches looks it up,
+  finds nothing and answers "do not have it", the answer it gives for any header it lacks. There
+  is no new channel and no new message kind.
+- A batch is at most 512 headers and 1 MiB (the first header always fits). It must start at the
+  header asked for and walk down parent by parent, or it is refused whole and the serving peer is
+  blocked. Every header in it then passes the checks a single header passes, in the same order:
+  proof hash, target limit, proof of work where it can be checked, anchoring before a body is
+  asked for.
+- The node asks for at most 32 batches at once, at most 2 for the walks started by one peer's
+  gossip, and gives a batch ask 8 s. A walk step after an accepted batch asks for the next batch
+  only. Any other step asks for the single header, with one batch ask next to it as a probe. An
+  unanswered batch ask is cancelled, the single header is asked for instead, and the walks of the
+  peer whose gossip started it get no probe for 30 s. So among peers that only serve single
+  headers a node syncs as before, with one small extra request every 30 s.
+- Batches are asked for only while the walk is more than 16 blocks above the node's tip. A node a
+  few blocks behind uses single headers as before.
+- Serving is budgeted over all peers: 8 batches at once, then one every 250 ms. Over the budget a
+  batch ask gets "do not have it".
+- `CADRE_HEADER_BATCHES=off` in the node's environment turns asking and serving off (the sync from
+  before batches).
+- Counters: getNodeStats `sync`. Progress: getChainInfo `syncing`, `best_header_height`, `sync`.
+
+Block and header validity, hashes and the wire format of blocks and transactions are unchanged.

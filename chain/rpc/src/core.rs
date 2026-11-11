@@ -22,6 +22,10 @@ pub enum Outbound {
     Tx(Vec<u8>),
     /// Ask the sync layer for this header (headers-first backfill).
     FetchHeader(Hash),
+    /// Ask for this header and its ancestors (the next step of a header walk). The node asks
+    /// for a batch where a peer serves one and for the single header otherwise. `after_batch`:
+    /// the step follows an accepted batch.
+    FetchHeaders { hash: Hash, after_batch: bool },
     FetchBody(Hash),
     /// Stop fetching a body whose ask expired (it is asked for again later, behind others).
     CancelBody(Hash),
@@ -48,6 +52,50 @@ pub const MAX_WANTED_BLOBS: usize = 1024;
 /// Unsolicited blob pushes stop once the store is `1 / PUSH_SHARE_DIVISOR` full.
 pub const PUSH_SHARE_DIVISOR: u64 = 2;
 
+/// A header walk counts as running for this long after its last new header.
+pub const HEADER_WALK_ACTIVE_MS: u64 = 60_000;
+
+/// The header walk in progress (headers-first sync), from what was delivered: for
+/// getChainInfo only. Heights are what the delivered headers say; none of them is executed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeaderWalk {
+    /// Highest and lowest height newly held since the walk started.
+    pub top: u64,
+    pub low: u64,
+    /// When a header was last newly held (0: never).
+    pub last_ms: u64,
+}
+
+/// Header sync counters since start (getNodeStats `sync`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncStats {
+    /// Single header fetches started, and single headers delivered and accepted.
+    pub header_asks: u64,
+    pub headers_delivered: u64,
+    /// Batch asks started, expired unanswered, and delivered and accepted.
+    pub batch_asks: u64,
+    pub batch_asks_expired: u64,
+    pub batches_delivered: u64,
+    /// Headers newly held out of delivered batches.
+    pub batch_headers: u64,
+    /// Batches refused as invalid (the serving peer is blocked).
+    pub batches_refused: u64,
+    /// Batches served to peers, and batch requests not served because the budget was spent.
+    pub batches_served: u64,
+    pub batch_serves_skipped: u64,
+}
+
+/// Where sync stands (getChainInfo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncInfo {
+    /// "headers" (walking headers down to the node's chain), "bodies" (headers connect,
+    /// blocks are being fetched and executed) or "synced".
+    pub phase: &'static str,
+    pub best_header_height: u64,
+    /// Lowest height the running header walk has reached.
+    pub walk_low: Option<u64>,
+}
+
 /// WebSocket subscriber: topics and a channel of JSON notification strings.
 pub struct Subscriber {
     pub topics: Vec<String>,
@@ -63,7 +111,9 @@ pub struct Core<E: commonware_storage::Context + Spawner, V: PowVerifier> {
     pub outbox: Vec<Outbound>,
     pub subscribers: Vec<Subscriber>,
     pub peers: usize,
-    pub syncing: bool,
+    /// The header walk in progress, noted by the node on header deliveries.
+    pub header_walk: HeaderWalk,
+    pub sync_stats: SyncStats,
     /// Counters for throughput reporting.
     pub blocks_accepted: u64,
     pub txs_accepted: u64,
@@ -305,7 +355,8 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             outbox: Vec::new(),
             subscribers: Vec::new(),
             peers: 0,
-            syncing: false,
+            header_walk: HeaderWalk::default(),
+            sync_stats: SyncStats::default(),
             blocks_accepted: 0,
             txs_accepted: 0,
             blobs: None,
@@ -831,8 +882,14 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
             Ok((Accept::Known, _)) => SubmitResult { accepted: true, hash, height, tip: false, reason: Some("already known".into()) },
             Ok((Accept::Orphan { missing }, _)) => {
-                tracing::debug!(block = %hex::encode(&hash[..6]), height, missing = %hex::encode(&missing[..6]), "orphan block: fetching its parent's header");
-                self.outbox.push(Outbound::FetchHeader(missing));
+                // A parent held as a header or an orphan needs no header fetch: its body is
+                // scheduled, or its own missing parent was asked for when it arrived. (Bodies of
+                // a syncing node arrive out of order, and each used to cost a header round trip
+                // that was answered with a header the node already held.)
+                if !self.chain.is_known(&missing) {
+                    tracing::debug!(block = %hex::encode(&hash[..6]), height, missing = %hex::encode(&missing[..6]), "orphan block: fetching its parent's header");
+                    self.outbox.push(Outbound::FetchHeader(missing));
+                }
                 SubmitResult { accepted: true, hash, height, tip: false, reason: Some("orphan: parent unknown, fetching".into()) }
             }
             Err(e) => SubmitResult { accepted: false, hash, height, tip: false, reason: Some(e.to_string()) },
@@ -1085,6 +1142,36 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             }
             s.tx.try_send(msg.clone()).is_ok()
         });
+    }
+
+    /// Headers at heights `low..=top` were newly held from a sync delivery.
+    pub fn note_headers(&mut self, top: u64, low: u64, now_ms: u64) {
+        let w = &mut self.header_walk;
+        if w.last_ms == 0 || now_ms.saturating_sub(w.last_ms) >= HEADER_WALK_ACTIVE_MS {
+            (w.top, w.low) = (top, low);
+        } else {
+            (w.top, w.low) = (w.top.max(top), w.low.min(low));
+        }
+        w.last_ms = now_ms.max(1);
+    }
+
+    /// Sync progress. The node is behind on headers while a walk that delivered a header in
+    /// the last [`HEADER_WALK_ACTIVE_MS`] holds headers more than one block above everything
+    /// that connects to its chain, and behind on bodies while a connected header is more than
+    /// one block above its tip (one block above is the tip being followed).
+    pub fn sync_info(&self, now_ms: u64) -> SyncInfo {
+        let height = self.chain.tip_height();
+        let connected = self.chain.anchored_header_top().unwrap_or(0).max(height);
+        let w = &self.header_walk;
+        let walking = w.last_ms != 0 && now_ms.saturating_sub(w.last_ms) < HEADER_WALK_ACTIVE_MS && w.top > connected + 1;
+        let phase = if walking {
+            "headers"
+        } else if connected > height + 1 {
+            "bodies"
+        } else {
+            "synced"
+        };
+        SyncInfo { phase, best_header_height: if walking { w.top } else { connected }, walk_low: walking.then_some(w.low) }
     }
 
     pub fn take_outbox(&mut self) -> Vec<Outbound> {

@@ -9,6 +9,11 @@
 //!   blocks (partitions, restarts) start a headers-first backfill.
 //! - blobs: raw blob bytes, pushed one hop by the node that took the putBlob.
 //! Headers, bodies and blobs (by id) are fetched through resolvers in the `sync` crate.
+//!
+//! Header walks (a peer is ahead: its tip's header, then that header's parent, and so on down
+//! to this node's chain) ask for batches where a peer serves them: one request for a header
+//! and up to 511 ancestors (`consensus_pow::chain::headers`, `sync::batch_key`). Peers from
+//! before batches answer the single-header requests as always.
 
 use std::collections::HashSet;
 use std::time::{Duration, UNIX_EPOCH};
@@ -21,15 +26,15 @@ use commonware_macros::select;
 use commonware_p2p::{Blocker, Provider, Receiver, Recipients, Sender};
 use commonware_resolver::Resolver as _;
 use commonware_runtime::{BufferPooler, Clock, IoBuf, Metrics, Spawner};
-use consensus_pow::{ChainError, HeaderAccept, PowVerifier};
+use consensus_pow::{ChainError, HeaderAccept, PowVerifier, MAX_HEADER_BATCH, MAX_HEADER_BATCH_BYTES};
 use futures::channel::mpsc;
 use futures::StreamExt;
 use net::Channels;
 use rpc::{ApiRequest, Core, Outbound, Subscriber};
 use sync::{Kind, SyncEvent, SyncMailbox};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-use crate::fetches::HeaderFetches;
+use crate::fetches::{BatchAsks, HeaderFetches, ServeBudget, BATCH_MIN_GAP};
 
 #[derive(Clone)]
 pub struct ActorConfig {
@@ -39,6 +44,9 @@ pub struct ActorConfig {
     pub peer_count: Option<PeerCount>,
     /// getPeers result (open net). None: list the peers heard from (static net).
     pub peer_info: Option<rpc::core::PeerInfoFn>,
+    /// Ask for and serve header batches. Off: the node asks for single headers only and
+    /// answers a batch ask with "do not have it", as a node from before batches does.
+    pub header_batches: bool,
 }
 
 impl std::fmt::Debug for ActorConfig {
@@ -49,7 +57,7 @@ impl std::fmt::Debug for ActorConfig {
 
 impl Default for ActorConfig {
     fn default() -> Self {
-        Self { tip_interval: Duration::from_secs(2), peer_count: None, peer_info: None }
+        Self { tip_interval: Duration::from_secs(2), peer_count: None, peer_info: None, header_batches: true }
     }
 }
 
@@ -81,17 +89,53 @@ struct Net<S> {
     headers: SyncMailbox,
     bodies: SyncMailbox,
     blob_fetch: SyncMailbox,
+    sync: SyncState,
+}
+
+/// What the node tracks about its own header asks and serves.
+struct SyncState {
     /// Outstanding header fetches (C-U2): capped, per-peer limited, expiring.
     header_fetches: HeaderFetches<PublicKey>,
+    /// Outstanding batch asks of the header walks: capped, per-peer limited, expiring.
+    batch_asks: BatchAsks<PublicKey>,
+    serve_budget: ServeBudget,
+    /// Serve batches ([`ActorConfig::header_batches`]).
+    batches: bool,
 }
 
 impl<S: Sender<PublicKey = PublicKey>> Net<S> {
+    /// Start the fetch of single header `h` unless it is tracked or over a cap.
+    fn fetch_header(&mut self, h: [u8; 32], from: Option<&PublicKey>, now_ms: u64, drop_headers: &mut HashSet<sync::Key>, stats: &mut rpc::core::SyncStats) {
+        let w = self.sync.header_fetches.want(h, from, now_ms);
+        if let Some(old) = w.evicted {
+            drop_headers.insert(sync::key(&old));
+        }
+        if w.fetch {
+            drop_headers.remove(&sync::key(&h));
+            stats.header_asks += 1;
+            let fb = self.headers.fetch(sync::key(&h));
+            debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
+        }
+    }
+
     /// Send what the core queued. `from` is the peer whose gossip this loop turn handled (the
     /// header fetches it caused count against that peer); `None` for sync deliveries, RPC
-    /// and the timer.
-    fn send(&mut self, outs: Vec<Outbound>, from: Option<&PublicKey>, now_ms: u64) {
+    /// and the timer. `walk` is the peer whose gossip started the header walk a sync delivery
+    /// continued (its batch asks count against that peer). `known` says whether the chain
+    /// holds a header.
+    fn send(&mut self, outs: Vec<Outbound>, from: Option<&PublicKey>, walk: Option<&PublicKey>, now_ms: u64, known: &dyn Fn(&[u8; 32]) -> bool, stats: &mut rpc::core::SyncStats) {
         // expired asks are cancelled before anything is (re)fetched
-        let mut drop_headers: HashSet<sync::Key> = self.header_fetches.expire(now_ms).iter().map(sync::key).collect();
+        let mut drop_headers: HashSet<sync::Key> = self.sync.header_fetches.expire(now_ms).iter().map(sync::key).collect();
+        // a batch ask nobody answered: cancelled, and the walk goes on with the single header
+        for (h, origin) in self.sync.batch_asks.expire(now_ms) {
+            debug!(key = %hex::encode(&h[..6]), "header batch ask unanswered: asking for the single header");
+            stats.batch_asks_expired += 1;
+            drop_headers.insert(sync::key(&sync::batch_key(&h)));
+            if !known(&h) {
+                self.fetch_header(h, None, now_ms, &mut drop_headers, stats);
+                self.sync.header_fetches.set_walk(&h, origin.as_ref());
+            }
+        }
         let drop_bodies: HashSet<sync::Key> = outs.iter().filter_map(|o| if let Outbound::CancelBody(h) = o { Some(sync::key(h)) } else { None }).collect();
         if !drop_bodies.is_empty() {
             debug!(count = drop_bodies.len(), "body asks expired: fetches cancelled");
@@ -105,15 +149,20 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
                 Outbound::Tx(b) => {
                     let _ = self.txs.send(Recipients::All, IoBuf::from(b), false);
                 }
-                Outbound::FetchHeader(h) => {
-                    let w = self.header_fetches.want(h, from, now_ms);
-                    if let Some(old) = w.evicted {
-                        drop_headers.insert(sync::key(&old));
+                Outbound::FetchHeader(h) => self.fetch_header(h, from, now_ms, &mut drop_headers, stats),
+                Outbound::FetchHeaders { hash: h, after_batch } => {
+                    let w = self.sync.batch_asks.want(h, walk, after_batch, now_ms);
+                    if w.batch {
+                        let k = sync::key(&sync::batch_key(&h));
+                        drop_headers.remove(&k);
+                        stats.batch_asks += 1;
+                        let fb = self.headers.fetch(k);
+                        debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header batch");
                     }
-                    if w.fetch {
-                        drop_headers.remove(&sync::key(&h));
-                        let fb = self.headers.fetch(sync::key(&h));
-                        debug!(key = %hex::encode(&h[..6]), ?fb, "fetch header");
+                    if w.single {
+                        // as before batches: the parent of a served header is the chain's own ask
+                        self.fetch_header(h, None, now_ms, &mut drop_headers, stats);
+                        self.sync.header_fetches.set_walk(&h, walk);
                     }
                 }
                 Outbound::CancelBody(_) => {}
@@ -137,7 +186,7 @@ impl<S: Sender<PublicKey = PublicKey>> Net<S> {
             }
         }
         if !drop_headers.is_empty() {
-            debug!(count = drop_headers.len(), tracked = self.header_fetches.len(), "header fetches expired or over the cap: cancelled");
+            debug!(count = drop_headers.len(), tracked = self.sync.header_fetches.len(), "header fetches expired or over the cap: cancelled");
             let _ = self.headers.retain(move |key, _| !drop_headers.contains(key));
         }
     }
@@ -172,7 +221,8 @@ pub async fn run<E, CE, V, S, R, D, B>(
     let (txs_s, mut txs_r) = channels.txs;
     let (tips_s, mut tips_r) = channels.tips;
     let (blobs_s, mut blobs_r) = channels.blobs;
-    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch, header_fetches: HeaderFetches::default() };
+    let sync_state = SyncState { header_fetches: HeaderFetches::default(), batch_asks: BatchAsks::new(cfg.header_batches), serve_budget: ServeBudget::default(), batches: cfg.header_batches };
+    let mut net = Net { blocks: blocks_s, txs: txs_s, tips: tips_s, blobs: blobs_s, headers, bodies, blob_fetch, sync: sync_state };
     core.peer_info = cfg.peer_info.clone();
     core.started_ms = now_ms(&context);
     let mut seen_peers: HashSet<PublicKey> = HashSet::new();
@@ -183,6 +233,8 @@ pub async fn run<E, CE, V, S, R, D, B>(
     loop {
         // the peer whose gossip this turn handles: header fetches it causes count against it
         let mut from: Option<PublicKey> = None;
+        // the peer whose gossip started the header walk this turn's sync delivery continued
+        let mut walk: Option<PublicKey> = None;
         // biased select: the tip timer comes first so a busy branch below cannot starve it
         // (no tip announcements, a stale peer count; seen on devnet box 1, 2026-10-21); then
         // block gossip, sync deliveries and tips/weak blocks BEFORE the RPC mailbox: a node whose
@@ -194,6 +246,12 @@ pub async fn run<E, CE, V, S, R, D, B>(
                 seen[6] += 1;
                 if seen[6] % 15 == 0 {
                     debug!(api = seen[0], blocks = seen[1], txs = seen[2], blobs = seen[3], tips = seen[4], sync = seen[5], timer = seen[6], height = core.chain.tip().header.height, "node loop events");
+                    // a syncing node says so (2026-11-10: a fresh node logged nothing for an hour)
+                    let s = core.sync_info(now_ms(&context));
+                    if s.phase != "synced" {
+                        info!(phase = s.phase, height = core.chain.tip_height(), best_header = s.best_header_height, header_walk_low = ?s.walk_low,
+                              headers_held = core.chain.headers_only_count(), bodies_outstanding = core.chain.bodies_outstanding(), "syncing");
+                    }
                 }
                 let tip = core.chain.tip();
                 let mut m = tip.hash.to_vec();
@@ -242,7 +300,7 @@ pub async fn run<E, CE, V, S, R, D, B>(
             ev = sync_rx.recv() => {
                 seen[5] += 1;
                 let Some(ev) = ev else { break };
-                handle_sync(&mut core, &mut net.header_fetches, ev, now_ms(&context)).await;
+                walk = handle_sync(&mut core, &mut net.sync, ev, now_ms(&context)).await;
             },
             msg = tips_r.recv() => {
                 seen[4] += 1;
@@ -306,42 +364,91 @@ pub async fn run<E, CE, V, S, R, D, B>(
         let now = now_ms(&context);
         core.schedule_fetches(now);
         // every turn, also with nothing to send: header fetches expire here
-        net.send(core.take_outbox(), from.as_ref(), now);
+        let outs = core.take_outbox();
+        let chain = &core.chain;
+        net.send(outs, from.as_ref(), walk.as_ref(), now, &|h| chain.is_known(h), &mut core.sync_stats);
     }
 }
 
+/// Handle one resolver event. Returns the peer whose gossip started the header walk a
+/// header delivery continued, when known.
 async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
     core: &mut Core<CE, V>,
-    header_fetches: &mut HeaderFetches<PublicKey>,
+    st: &mut SyncState,
     ev: SyncEvent,
     now: u64,
-) {
+) -> Option<PublicKey> {
+    let mut walk = None;
     match ev {
         SyncEvent::Delivered { kind: Kind::Header, key, value, verdict } => {
-            debug!(key = %hex::encode(&key[..6]), "header delivered");
-            let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
-                Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
-                    Ok(HeaderAccept::Stored { need_parent }) => {
-                        // the body is asked for by Core::schedule_fetches, in height order
-                        if let Some(p) = need_parent {
-                            core.outbox.push(Outbound::FetchHeader(p));
+            let anchor = sync::batch_key(&key);
+            let ok = if st.batch_asks.contains(&anchor) {
+                // the answer to a batch ask: only a batch that is one chain down from the
+                // header asked for is looked at, and each header is checked as a single one is
+                debug!(key = %hex::encode(&anchor[..6]), bytes = value.len(), "header batch delivered");
+                let r = match consensus_pow::decode_header_batch(&value) {
+                    Ok(batch) => core.chain.insert_header_batch(&anchor, batch).await,
+                    Err(e) => Err(e),
+                };
+                match r {
+                    Ok(acc) => {
+                        walk = st.batch_asks.delivered(&anchor).flatten();
+                        core.sync_stats.batches_delivered += 1;
+                        core.sync_stats.batch_headers += acc.stored as u64;
+                        if acc.stored > 0 {
+                            core.note_headers(acc.top_height, acc.low_height, now);
+                        }
+                        if let Some((p, height)) = acc.need_parent {
+                            core.outbox.push(walk_step(p, height, core.chain.tip_height(), true));
                         }
                         true
                     }
-                    Ok(HeaderAccept::Known) => true,
                     Err(ChainError::Invalid(e)) => {
-                        warn!("invalid header from peer: {e}");
+                        // the resolver asks other peers; the ask stays tracked and expires
+                        warn!("invalid header batch from peer: {e}");
+                        core.sync_stats.batches_refused += 1;
                         false
                     }
-                    Err(_) => true,
-                },
-                _ => false,
+                    Err(_) => {
+                        st.batch_asks.delivered(&anchor);
+                        true
+                    }
+                }
+            } else if consensus_pow::is_header_batch(&value) {
+                // No batch is asked for under this key. An answer to an ask that expired a
+                // moment ago is dropped unread and is not the peer's fault; it is that only if
+                // it is one chain down from the block the key names. Anything else is junk.
+                consensus_pow::decode_header_batch(&value).is_ok_and(|b| consensus_pow::check_header_links(&anchor, &b).is_ok())
+            } else {
+                debug!(key = %hex::encode(&key[..6]), "header delivered");
+                let ok = match consensus_pow::Chain::<CE, V>::decode_header_payload(&value) {
+                    Ok((h, proof)) if h.hash() == key => match core.chain.insert_header(h, proof).await {
+                        Ok(HeaderAccept::Stored { need_parent }) => {
+                            core.note_headers(h.height, h.height, now);
+                            // the body is asked for by Core::schedule_fetches, in height order
+                            if let Some(p) = need_parent {
+                                core.outbox.push(walk_step(p, h.height.saturating_sub(1), core.chain.tip_height(), false));
+                            }
+                            true
+                        }
+                        Ok(HeaderAccept::Known) => true,
+                        Err(ChainError::Invalid(e)) => {
+                            warn!("invalid header from peer: {e}");
+                            false
+                        }
+                        Err(_) => true,
+                    },
+                    _ => false,
+                };
+                // on a refused answer the resolver keeps asking other peers: the entry stays
+                // tracked and expires like any other
+                if ok {
+                    core.sync_stats.headers_delivered += 1;
+                    walk = st.header_fetches.walk_of(&key).cloned();
+                    st.header_fetches.done(&key);
+                }
+                ok
             };
-            // on a refused answer the resolver keeps asking other peers: the entry stays
-            // tracked and expires like any other
-            if ok {
-                header_fetches.done(&key);
-            }
             let _ = verdict.send(ok);
         }
         SyncEvent::Delivered { kind: Kind::Body, key, value, verdict } => {
@@ -362,7 +469,27 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
         }
         SyncEvent::Serve { kind, key, reply } => {
             let data = match kind {
-                Kind::Header => core.chain.header_with_proof(&key).await.ok().flatten(),
+                Kind::Header => match core.chain.header_with_proof(&key).await.ok().flatten() {
+                    Some(d) => Some(d),
+                    // not a header this node has: a batch ask, if the key names a block it has
+                    None if st.batches => {
+                        let anchor = sync::batch_key(&key);
+                        if !st.serve_budget.available(now) {
+                            if core.chain.is_known(&anchor) {
+                                core.sync_stats.batch_serves_skipped += 1;
+                            }
+                            None
+                        } else {
+                            let b = core.chain.header_batch(&anchor, MAX_HEADER_BATCH, MAX_HEADER_BATCH_BYTES).await.ok().flatten();
+                            if b.is_some() {
+                                st.serve_budget.take(now);
+                                core.sync_stats.batches_served += 1;
+                            }
+                            b
+                        }
+                    }
+                    None => None,
+                },
                 Kind::Body => core.chain.get_block(&key).await.ok().flatten().map(|b| b.encode()),
                 Kind::Blob => core.serve_blob(&key).await,
             };
@@ -370,6 +497,17 @@ async fn handle_sync<CE: commonware_storage::Context + Spawner, V: PowVerifier>(
                 let _ = reply.send(Bytes::from(d));
             }
         }
+    }
+    walk
+}
+
+/// The next ask of a header walk that needs header `h` at `height`: a batch while the walk is
+/// far above the node's tip, the single header near it and below it ([`BATCH_MIN_GAP`]).
+pub fn walk_step(h: [u8; 32], height: u64, tip_height: u64, after_batch: bool) -> Outbound {
+    if height > tip_height.saturating_add(BATCH_MIN_GAP) {
+        Outbound::FetchHeaders { hash: h, after_batch }
+    } else {
+        Outbound::FetchHeader(h)
     }
 }
 

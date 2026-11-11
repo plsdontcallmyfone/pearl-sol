@@ -121,6 +121,7 @@ async fn spawn_node(ctx: &deterministic::Context, i: usize, k: u32, mut cfg: Ope
         tip_interval: Duration::from_millis(500),
         peer_count: Some(PeerCount(Arc::new(move || count.connected_count()))),
         peer_info: Some(Arc::new(move || agent_node::node::open_peers_json(&info))),
+        ..Default::default()
     };
     ctx.child("node").with_attribute("node", i).spawn(move |c| async move {
         run(c, core, me, o1, o2, started.channels, rx, acfg).await;
