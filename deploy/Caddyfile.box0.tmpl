@@ -48,6 +48,22 @@ api.@DOMAIN@ {
 	}
 }
 
+# api.cadre.ag: the wallet's fallback source for its signed settings file (cadre-extension
+# docs/REMOTE-CONFIG.md). Only that one path is served here; everything else on this name is 404
+# until the mainnet API exists.
+api.cadre.ag {
+	import sec
+	encode gzip
+	import rl apiroot 120
+	@cfg path /v1/wallet/config
+	handle @cfg {
+		reverse_proxy 127.0.0.1:10685
+	}
+	handle {
+		respond 404
+	}
+}
+
 # Cadre Connect remote MCP (docs/CONNECT.md): the same cadre-api under a short name, so a user can
 # paste https://mcp.@DOMAIN@/mcp; OAuth metadata and the consent page follow the Host it came in on
 mcp.@DOMAIN@ {
