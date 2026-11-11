@@ -6,6 +6,10 @@
 //! - **bodies**: value = the full encoded block. The node checks `tx_root` and
 //!   `proof_hash` against the header it already holds, then executes it.
 //!
+//! A header key can also ask for a batch ([`batch_key`]): the header of a block and its
+//! ancestors in one value. It travels as an ordinary header request, so a node that does not
+//! know batches answers "do not have it" like for any unknown hash.
+//!
 //! Deliveries and serve requests are forwarded to the node actor as [`SyncEvent`]s; the
 //! actor answers with a verdict (invalid data blocks the serving peer) or the bytes.
 
@@ -117,4 +121,21 @@ pub fn request_timeout(kind: Kind) -> Duration {
 
 pub fn key(h: &[u8; 32]) -> Key {
     Digest(*h)
+}
+
+/// XOR mask that turns a block hash into the key asking for a header batch that starts at
+/// that block. A batch ask is an ordinary request on the headers channel whose key is no
+/// block's hash: a node from before batches looks the key up as a hash, finds nothing and
+/// answers "do not have it", the answer it gives for any header it lacks. No new channel or
+/// message kind is involved (the open network scores frames on a channel it does not know).
+pub const BATCH_KEY_MASK: [u8; 32] = *b"cadre:header-batch:v1:::::::::::";
+
+/// The headers-channel key that asks for the batch starting at block `anchor`. The same
+/// function maps the key back to the block hash.
+pub fn batch_key(anchor: &[u8; 32]) -> [u8; 32] {
+    let mut k = *anchor;
+    for (b, m) in k.iter_mut().zip(BATCH_KEY_MASK) {
+        *b ^= m;
+    }
+    k
 }

@@ -340,6 +340,7 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
             "getChainInfo" => {
                 let tip = self.chain.tip();
                 let f = self.chain.finalized();
+                let sync = self.sync_info(now_ms);
                 Ok(json!({
                     "chain_id": self.chain.chain_id(), "genesis_hash": hex::encode(self.chain.genesis_hash()),
                     "height": tip.header.height, "tip": hex::encode(tip.hash), "cumulative_work": u256_hex(tip.cum_work),
@@ -347,7 +348,12 @@ impl<E: commonware_storage::Context + Spawner, V: PowVerifier> Core<E, V> {
                     "target_bits": tip.header.target_bits, "next_target_bits": self.chain.required_bits(&tip.hash),
                     "timestamp_ms": tip.header.timestamp_ms,
                     "mempool_size": self.mempool.len(), "peers": self.peers, "finality_k": tip.config.finality_k,
-                    "syncing": self.syncing, "live_blocks": self.chain.live_count(),
+                    "syncing": sync.phase != "synced", "best_header_height": sync.best_header_height,
+                    "sync": {"phase": sync.phase, "block_height": tip.header.height, "header_height": sync.best_header_height,
+                             "blocks_behind": sync.best_header_height - tip.header.height,
+                             "header_walk_low": sync.walk_low, "headers_held": self.chain.headers_only_count(),
+                             "bodies_outstanding": self.chain.bodies_outstanding()},
+                    "live_blocks": self.chain.live_count(),
                     "blocks_accepted": self.blocks_accepted, "txs_accepted": self.txs_accepted,
                     "speed_height": crate::speed::speed_fields(self.chain.chain_id()).1,
                 }))

@@ -148,8 +148,23 @@ bridge acts only on final events.
  "cumulative_work": "hex", "finalized_height": 90, "finalized_hash": "hex",
  "target_bits": 545259519, "next_target_bits": 545259519, "timestamp_ms": 1760000000000,
  "mempool_size": 0, "peers": 2, "finality_k": 30, "syncing": false,
+ "best_header_height": 120,
+ "sync": {"phase": "synced", "block_height": 120, "header_height": 120, "blocks_behind": 0,
+          "header_walk_low": null, "headers_held": 0, "bodies_outstanding": 0},
  "live_blocks": 31, "blocks_accepted": 120, "txs_accepted": 40}
 ```
+Sync progress (2026-11-11). `height` is the last block this node executed. `best_header_height` is
+the highest header it is syncing towards; it is what peers' headers say and is not verified until
+the blocks are executed. `syncing` is true while `sync.phase` is not `synced`:
+- `headers`: the node is walking headers down from a peer's tip to its own chain.
+  `header_walk_low` is the lowest height the walk has reached (it ends just above `height`), and
+  `best_header_height` the top of the walk. A walk counts as running for 60 s after its last
+  header.
+- `bodies`: the headers connect to the node's chain and blocks are being fetched and executed;
+  `height` rises to `best_header_height`. `bodies_outstanding` is the number of blocks asked for
+  and not yet received, `headers_held` the headers waiting for their block.
+- `synced`: nothing known is more than one block above `height` (one block above is the tip being
+  followed).
 `speed_height` (docs/SPEED.md 3.1): the height of the block that runs the one-time 60 s -> 30 s
 migration on this chain (the devnet's `DEVNET_SPEED_HEIGHT`, 6000; test chain ids
 `0x7E570000 + h`), or null for chains without one.
@@ -353,11 +368,16 @@ calls a minute).
 ### getNodeStats `{}` (2026-10-22, node-local diagnostics)
 `{"uptime_ms", "rpc": {"<method>": {"calls", "total_ms", "avg_us"}}, "state_cache": {"hits",
 "misses", "bypass", "entries", "bytes", "budget_bytes"}, "job_index": {"built", "jobs", "records",
-"rebuilds", "updates", "state_reads"}, "mempool": {"size", "failing", "evicted", "evict_after_tips"}}`:
+"rebuilds", "updates", "state_reads"}, "mempool": {"size", "failing", "evicted", "evict_after_tips"},
+"sync": {"header_asks", "headers_delivered", "batch_asks", "batch_asks_expired", "batches_delivered",
+"batch_headers", "batches_refused", "batches_served", "batch_serves_skipped"}}`:
 RPC calls and time per method since the node started (methods sorted by total time; unknown method
 names counted as `(unknown)`), the state read cache (committed values by key: `hits`/`misses` are
 reads answered from it or from disk, `bypass` reads of keys an uncommitted block wrote, which go
-through the block's batch chain), the job index and the pool eviction counters.
+through the block's batch chain), the job index and the pool eviction counters. `sync` counts header
+requests since start: single headers asked for and accepted, header batches asked for, unanswered,
+accepted (`batch_headers`: headers newly held out of them) and refused as invalid, and batches this
+node served or skipped because its serve budget was spent.
 
 ### getBlock `{"hash": "hex"}` or `{"height": n}`, optional `"raw": true`
 ```json
