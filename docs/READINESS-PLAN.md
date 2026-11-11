@@ -177,3 +177,10 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   Every unit came back by itself. The alerts caught it (box 1 failing 14:29, recovered 14:39; box 0
   not answering 15:43, recovered 16:20); the box 0 alert was an hour late because the watcher's own
   box was down too, so a third watcher outside this provider is still needed.
+- 2026-11-11: DNS live: rpc, rpc1, rpc2, api, explorer, storefront, relayer, mcp, app under
+  devnet.cadre.ag answer over HTTPS with their own certificates; api.cadre.ag serves only
+  /v1/wallet/config; config.cadre.ag serves the signed wallet config from the public repo
+  cadredotag/wallet-config (GitHub Pages). The bare devnet.cadre.ag is still parked on purpose (the
+  site stays private). Off-box backup copy LIVE: the owner ran deploy/backup-push-setup.sh; the
+  daily backup on box 0 is now streamed to box 2 (/var/backups/cadre-box0/in, last 7 kept) over a
+  write-only key and checked by sha256; first copy verified.
