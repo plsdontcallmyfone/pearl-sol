@@ -156,3 +156,23 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   the provider reports it "ok"; a provider restart did not bring it back. The chain runs on boxes 0
   and 2. The saved Helius devnet key returns "max usage reached" and was never on the boxes, so all
   Solana reads still use the public endpoint.
+- 2026-11-11: batched header sync and sync progress merged (2d85dcb, from ba6e846; chain workspace
+  292 passed before one comment-only edit) and rolled to boxes 2, 1, 0 in that order (binary
+  a2bc0d65..., old one kept as agent-node.prev; kill switch CADRE_HEADER_BATCHES=off). Checked on
+  the real devnet with a throwaway node on box 0: (1) new binary against the OLD nodes synced to the
+  tip, 19,760 single header asks, one batch probe expired, no bans on either side; (2) against the
+  upgraded box 2 the header phase took about 2 minutes, box 2 served 456 batches, none refused, no
+  bans. getChainInfo now reports syncing, best_header_height and a sync object. Findings: inside
+  the datacentre batches are slower than single headers (about 170 against about 730 headers a
+  second: the serve budget of one batch per 250 ms is the limit), the gain is on slow links such
+  as the 2026-11-10 Mac run; during the body phase the node's RPC does not answer for minutes at a
+  time and memory climbs steadily (one run was killed at a 1.5 GB cap, with batches on; a run with
+  batches off climbs the same way), so a fresh node on a 2 GB box may not finish. Both need work
+  before mainnet.
+- 2026-11-11: A8 done by itself: the pending pool is empty on every node (node restarts dropped
+  the stuck miner0 transaction). Not yet checked: a send from miner0.
+- 2026-11-11: provider event: box 1 was unreachable from about 13:50 to 14:37 UTC, box 0 was
+  powered off from 14:42 to 16:18 UTC, box 2 restarted at about 15:34 UTC; none of it was ours.
+  Every unit came back by itself. The alerts caught it (box 1 failing 14:29, recovered 14:39; box 0
+  not answering 15:43, recovered 16:20); the box 0 alert was an hour late because the watcher's own
+  box was down too, so a third watcher outside this provider is still needed.
