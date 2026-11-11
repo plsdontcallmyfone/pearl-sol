@@ -167,8 +167,9 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   second: the serve budget of one batch per 250 ms is the limit), the gain is on slow links such
   as the 2026-11-10 Mac run; during the body phase the node's RPC does not answer for minutes at a
   time and memory climbs steadily (one run was killed at a 1.5 GB cap, with batches on; a run with
-  batches off climbs the same way), so a fresh node on a 2 GB box may not finish. Both need work
-  before mainnet.
+  batches off climbs the same way), so a fresh node on a 2 GB box may not finish. Two repeat runs, one with batches off and one with
+  them on, both synced in about 6 minutes with a 681 and 684 MB peak, so the 1.5 GB run is not
+  explained by the batch path and is not yet understood. Both need work before mainnet.
 - 2026-11-11: A8 done by itself: the pending pool is empty on every node (node restarts dropped
   the stuck miner0 transaction). Not yet checked: a send from miner0.
 - 2026-11-11: provider event: box 1 was unreachable from about 13:50 to 14:37 UTC, box 0 was
