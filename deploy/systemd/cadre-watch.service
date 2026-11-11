@@ -1,0 +1,16 @@
+[Unit]
+Description=Cadre devnet outside watcher (checks box 0's public endpoints, posts to ALERT_NTFY_URL)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lode
+EnvironmentFile=-/etc/lode/watch.env
+ExecStart=/opt/lode/bin/cadre-watch
+StateDirectory=cadre-watch
+TimeoutStartSec=120
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

@@ -237,5 +237,25 @@ fi
 
 overall=OK; for f in "${fails[@]:-}"; do [[ $f == *:FAIL ]] && overall=FAIL; [[ $f == *:WARN && $overall == OK ]] && overall=WARN; done
 echo "$now $overall ${fails[*]:-}" > "$LOG_DIR/status"
+# Alerts (READINESS-PLAN D1): with ALERT_NTFY_URL set in /etc/lode/health.env, the set of FAIL checks
+# is posted when it changes and has held for two runs in a row, again every ALERT_REPEAT_S while it
+# stays failing, and once when everything passes again. ALERT_IGNORE is a regex of checks to leave out.
+if [[ -n "${ALERT_NTFY_URL:-}" ]]; then
+  cur="$(printf '%s\n' "${fails[@]:-}" | grep ':FAIL$' | grep -vE "${ALERT_IGNORE:-^$}" | sort | tr '\n' ' ')"
+  cur="${cur% }"
+  last="$(cat "$STATE_DIR/alert-last" 2>/dev/null || true)"
+  prev="$(cat "$STATE_DIR/alert-prev" 2>/dev/null || true)"
+  age=$(( $(date +%s) - $(stat -c %Y "$STATE_DIR/alert-last" 2>/dev/null || echo 0) ))
+  msg=""
+  if [[ $cur != "$last" ]]; then
+    if [[ -z $cur ]]; then msg="Recovered: every check passes again"
+    elif [[ $cur == "$prev" ]]; then msg="Failing: $cur"; fi
+  elif [[ -n $cur ]] && (( age >= ${ALERT_REPEAT_S:-21600} )); then msg="Still failing: $cur"
+  fi
+  printf '%s' "$cur" > "$STATE_DIR/alert-prev"
+  if [[ -n $msg ]] && curl -fsS -m 15 -H "Title: Cadre devnet ($(hostname))" -d "$msg" "$ALERT_NTFY_URL" >/dev/null 2>&1; then
+    printf '%s' "$cur" > "$STATE_DIR/alert-last"
+  fi
+fi
 tail -n 20000 "$LOG_DIR/health.log" > "$LOG_DIR/health.log.tmp" && mv "$LOG_DIR/health.log.tmp" "$LOG_DIR/health.log"
 echo "$now $overall ${fails[*]:-}"

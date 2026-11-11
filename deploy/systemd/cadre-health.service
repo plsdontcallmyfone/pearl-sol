@@ -1,5 +1,5 @@
 [Unit]
-Description=Cadre devnet health check (writes /var/log/cadre-health/{health.log,status}; no external messaging)
+Description=Cadre devnet health check (writes /var/log/cadre-health/{health.log,status}; posts to ALERT_NTFY_URL when set)
 After=network-online.target
 Wants=network-online.target
 

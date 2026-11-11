@@ -144,3 +144,15 @@ patches are rolled. Mainnet additionally needs the rest of track C and D5 to D9.
   accepted the live gossiped blocks for the rest of the six hours it ran, across the node patch
   rollout on all three boxes. Stopped and removed afterwards. The slow, silent header phase stays
   on the list (batched header sync, a progress field).
+- 2026-11-11: D1 box-side alerts LIVE. The health check on box 0 posts the set of FAIL checks to a
+  private ntfy topic (topic name in keys/devnet/ntfy-topic on the Mac, ALERT_NTFY_URL in
+  /etc/lode/health.env) when it changes and has held for two runs, every 6 h while it stays failing,
+  and once on recovery; `local_desktops` is ignored while the desktops are off. A second watcher on
+  box 2 (cadre-watch.timer, deploy/watch-peer.sh) checks box 0's public endpoints so a dead box 0
+  still alerts. Proven with a real alert (box 1 down). Not covered: hosting runway (the token lives
+  on the Mac). deploy/backup-push.sh (box 0 to box 2 copy over a write-only key) is written but NOT
+  installed: it needs the owner's approval because it adds a login and a key between boxes.
+- 2026-11-11: box 1 (64.94.84.44) stopped answering on every port between 13:46 and 14:20 UTC while
+  the provider reports it "ok"; a provider restart did not bring it back. The chain runs on boxes 0
+  and 2. The saved Helius devnet key returns "max usage reached" and was never on the boxes, so all
+  Solana reads still use the public endpoint.
